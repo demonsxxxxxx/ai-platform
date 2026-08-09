@@ -229,6 +229,36 @@ require_account_lookup_absent() {
   fi
 }
 
+s72_list_process_uids() {
+  test -x /usr/bin/ps || return 1
+  LC_ALL=C /usr/bin/ps -e -o ruid= -o euid= -o suid= -o fuid= -o pid= --no-headers
+}
+
+require_no_live_uid_processes() {
+  target_uid=$1
+  case "$target_uid" in ""|*[!0-9]*) return 1 ;; esac
+  process_rows=$(s72_list_process_uids) || return 1
+  process_count=0
+  while IFS=' ' read -r real_uid effective_uid saved_uid filesystem_uid process_id extra; do
+    test -n "${real_uid:-}${effective_uid:-}${saved_uid:-}${filesystem_uid:-}${process_id:-}" \
+      || continue
+    test -z "${extra:-}" || return 1
+    for process_value in "$real_uid" "$effective_uid" "$saved_uid" "$filesystem_uid" "$process_id"; do
+      case "$process_value" in ""|*[!0-9]*) return 1 ;; esac
+    done
+    test "$process_id" -gt 0 || return 1
+    process_count=$((process_count + 1))
+    test "$process_count" -le 131072 || return 1
+    test "$real_uid" != "$target_uid" || return 1
+    test "$effective_uid" != "$target_uid" || return 1
+    test "$saved_uid" != "$target_uid" || return 1
+    test "$filesystem_uid" != "$target_uid" || return 1
+  done <<EOF
+$process_rows
+EOF
+  test "$process_count" -gt 0
+}
+
 gateway_runtime_identity() {
   s72_atomic_directory_identity "$RUNTIME_STATE"
 }
@@ -473,9 +503,11 @@ restore_gateway_identity() {
     test "$user_entry" = "$expected_user" || return 1
     test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
     test "$(cat "$workspace/gateway-user.intent")" = "$expected_user" || return 1
+    require_no_live_uid_processes "$gateway_uid" || return 1
     userdel "$SERVICE_USER" || return 1
     require_account_lookup_absent passwd "$SERVICE_USER" || return 1
     require_account_lookup_absent passwd "$gateway_uid" || return 1
+    require_no_live_uid_processes "$gateway_uid" || return 1
   else
     test "$?" -eq 2 || return 1
   fi
@@ -486,6 +518,7 @@ restore_gateway_identity() {
     test "$group_entry" = "$expected_group" || return 1
     test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
     test "$(cat "$workspace/gateway-group.intent")" = "$expected_group" || return 1
+    require_no_live_uid_processes "$gateway_uid" || return 1
     groupdel "$SERVICE_GROUP" || return 1
     require_account_lookup_absent group "$SERVICE_GROUP" || return 1
     require_account_lookup_absent group "$gateway_uid" || return 1
@@ -756,6 +789,31 @@ record_authority_state() {
   s72_atomic_record_authority_state "$@"
 }
 
+capture_snapshot_unit_runtime_state() {
+  snapshot=$1
+  unit=$2
+  load_state=$(systemctl show "$unit" -p LoadState --value) || return 1
+  active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+  unit_file_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+  if test -f "$snapshot/$unit.present"; then
+    test "$load_state" = loaded || return 1
+    case "$active_state" in
+      active|inactive) : > "$snapshot/$unit.$active_state" ;;
+      *) return 1 ;;
+    esac
+    case "$unit_file_state" in
+      enabled|disabled) : > "$snapshot/$unit.$unit_file_state" ;;
+      *) return 1 ;;
+    esac
+  else
+    test "$load_state" = not-found || return 1
+    test "$active_state" = inactive || return 1
+    test -z "$unit_file_state" || return 1
+    : > "$snapshot/$unit.inactive"
+    : > "$snapshot/$unit.disabled"
+  fi
+}
+
 snapshot_state() {
   snapshot=$1
   preflight_live_state
@@ -775,8 +833,7 @@ snapshot_state() {
     else
       : > "$snapshot/$unit.absent"
     fi
-    systemctl is-active --quiet "$unit" && : > "$snapshot/$unit.active" || : > "$snapshot/$unit.inactive"
-    systemctl is-enabled --quiet "$unit" && : > "$snapshot/$unit.enabled" || : > "$snapshot/$unit.disabled"
+    capture_snapshot_unit_runtime_state "$snapshot" "$unit" || return 1
   done
   if test -e "$CONFIG_DIR"; then
     require_gateway_config_contract
@@ -898,26 +955,35 @@ restore_snapshot_runtime() {
         systemctl disable "$unit" >/dev/null 2>&1 || return 1
         expected_unit_state=disabled
       fi
-      test "$(systemctl show "$unit" -p UnitFileState --value)" = "$expected_unit_state" || return 1
-      test "$(systemctl show "$unit" -p LoadState --value)" = loaded || return 1
+      actual_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+      actual_load_state=$(systemctl show "$unit" -p LoadState --value) || return 1
+      test "$actual_unit_state" = "$expected_unit_state" || return 1
+      test "$actual_load_state" = loaded || return 1
     else
-      current_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
-      if test -n "$current_unit_state"; then
+      actual_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+      actual_load_state=$(systemctl show "$unit" -p LoadState --value) || return 1
+      if test "$actual_unit_state" = enabled; then
         systemctl disable "$unit" >/dev/null 2>&1 || return 1
+      else
+        test -z "$actual_unit_state" || return 1
       fi
-      test -z "$(systemctl show "$unit" -p UnitFileState --value)" || return 1
-      test "$(systemctl show "$unit" -p LoadState --value)" = not-found || return 1
+      actual_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+      test -z "$actual_unit_state" || return 1
+      test "$actual_load_state" = not-found || return 1
     fi
     if test -f "$snapshot/$unit.active"; then
       systemctl restart "$unit" || return 1
-      test "$(systemctl show "$unit" -p ActiveState --value)" = active || return 1
+      actual_active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+      test "$actual_active_state" = active || return 1
     else
-      if test -f "$snapshot/$unit.present"; then
+      actual_active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+      if test "$actual_active_state" = active; then
         systemctl stop "$unit" >/dev/null 2>&1 || return 1
       else
-        systemctl stop "$unit" >/dev/null 2>&1 || :
+        test "$actual_active_state" = inactive || return 1
       fi
-      test "$(systemctl show "$unit" -p ActiveState --value)" = inactive || return 1
+      actual_active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+      test "$actual_active_state" = inactive || return 1
     fi
   done
 }

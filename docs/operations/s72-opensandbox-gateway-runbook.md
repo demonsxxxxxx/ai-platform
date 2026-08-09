@@ -152,12 +152,22 @@ enable/active state, and release pointer (or their prior absence), revalidates t
 complete filesystem state before restart, and verifies lifecycle/listener state
 again before commit. Unit restore requires the exact recorded `UnitFileState`,
 `LoadState`, and `ActiveState`; enable or disable failure and post-command drift
-leave the transaction uncommitted. The configured gateway UID binds the exact
+leave the transaction uncommitted. Snapshot capture accepts only exact `loaded`
+units whose active state is `active` or `inactive` and whose unit-file state is
+`enabled` or `disabled`, plus exact absent units reported as `not-found`,
+`inactive`, and an empty unit-file state. Query errors and states such as
+`failed`, `activating`, `static`, `masked`, `linked`, or `enabled-runtime` fail
+before mutation. The configured gateway UID binds the exact
 system group, account, home, shell, empty membership, and `0700` runtime directory.
 Creation intent is sealed before account mutation, and a new runtime directory is
 published from a transaction-owned private stage only after its device/inode is
 recorded. Recovery removes only exact objects created by that transaction; a
 pre-existing mismatch or later foreign replacement is preserved and fails closed.
+Immediately before and after a non-force account deletion, and again before group
+deletion, the installer strictly enumerates real, effective, saved, and filesystem
+UIDs for the bounded Linux process table. Any matching live process, malformed
+row, enumeration error, or empty enumeration refuses deletion or further
+transaction advancement; it never kills a process.
 Absent unit/config snapshots are accepted only with their
 sealed lifecycle authority; otherwise they fail closed. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces

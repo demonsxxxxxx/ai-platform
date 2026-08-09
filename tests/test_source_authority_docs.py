@@ -84,6 +84,9 @@ def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
     assert "identity-group-intent -> identity-group-ready" in runbook
     assert "`UnitFileState`, `LoadState`, and `ActiveState`" in runbook
     assert "gateway UID binds the exact system group, account, home, shell" in runbook
+    assert "`failed`, `activating`, `static`, `masked`, `linked`, or `enabled-runtime`" in runbook
+    assert "real, effective, saved, and filesystem UIDs" in runbook
+    assert "it never kills a process" in runbook
     assert "published from a transaction-owned private stage" in runbook
     assert "foreign replacement is preserved and fails closed" in runbook
     assert "device/inode" in runbook

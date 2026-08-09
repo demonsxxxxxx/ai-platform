@@ -1057,6 +1057,267 @@ def test_restore_runtime_fails_closed_before_state_advance(
 
 
 @pytest.mark.parametrize(
+    "systemd_contour",
+    [
+        "query-error",
+        "failed",
+        "activating",
+        "static",
+        "masked",
+        "linked",
+        "enabled-runtime",
+        "absent-loaded",
+        "present-not-found",
+    ],
+)
+def test_snapshot_state_rejects_unsealed_systemd_baselines_before_mutation(
+    tmp_path: pathlib.Path,
+    systemd_contour: str,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        SYSTEMD_DIR=$ROOT/systemd
+        CONFIG_DIR=$ROOT/config
+        WORKSPACE_ROOT=$ROOT/workspaces
+        DEPLOY_STATE=$ROOT/deploy
+        AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+        CURRENT_LINK=$ROOT/current
+        EXPECTED_AUTHORITY_SHA=1111111111111111111111111111111111111111
+        AUTHORITY_EVIDENCE_ID=sealed-systemd-baseline
+        snapshot=$ROOT/snapshot
+        mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$DEPLOY_STATE" "$snapshot"
+        printf '%s\n' owner > "$snapshot/transaction-owner"
+        case {shlex.quote(systemd_contour)} in
+          absent-loaded) ;;
+          *)
+            : > "$SYSTEMD_DIR/opensandbox-gateway.service"
+            : > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
+            ;;
+        esac
+        preflight_live_state() {{ :; }}
+        getfacl() {{ printf '%s\n' acl; }}
+        chown() {{ :; }}
+        stat() {{
+          if test "$1:$2" = '-c:%u'; then
+            printf '%s\n' 0
+          else
+            command stat "$@"
+          fi
+        }}
+        write_manifest() {{ :; }}
+        require_root_tree() {{ :; }}
+        verify_manifest() {{ :; }}
+        preflight_snapshot() {{ :; }}
+        s72_atomic_write_lifecycle_authority() {{ : > "$1"; }}
+        systemctl() {{
+          test "$1" = show || return 1
+          property=$4
+          case {shlex.quote(systemd_contour)}:$property in
+            query-error:*) return 1 ;;
+            failed:LoadState|activating:LoadState|static:LoadState|masked:LoadState|linked:LoadState|enabled-runtime:LoadState|absent-loaded:LoadState)
+              printf '%s\n' loaded
+              ;;
+            present-not-found:LoadState) printf '%s\n' not-found ;;
+            failed:ActiveState) printf '%s\n' failed ;;
+            activating:ActiveState) printf '%s\n' activating ;;
+            static:ActiveState|masked:ActiveState|linked:ActiveState|enabled-runtime:ActiveState|absent-loaded:ActiveState|present-not-found:ActiveState)
+              printf '%s\n' inactive
+              ;;
+            failed:UnitFileState|activating:UnitFileState|present-not-found:UnitFileState)
+              printf '%s\n' disabled
+              ;;
+            static:UnitFileState) printf '%s\n' static ;;
+            masked:UnitFileState) printf '%s\n' masked ;;
+            linked:UnitFileState) printf '%s\n' linked ;;
+            enabled-runtime:UnitFileState) printf '%s\n' enabled-runtime ;;
+            absent-loaded:UnitFileState) printf '%s' '' ;;
+            *) return 1 ;;
+          esac
+        }}
+        ! snapshot_state "$snapshot"
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize(
+    ("presence", "load_state", "active_state", "unit_file_state"),
+    [
+        ("present", "loaded", "active", "enabled"),
+        ("present", "loaded", "inactive", "disabled"),
+        ("absent", "not-found", "inactive", ""),
+    ],
+)
+def test_snapshot_state_preserves_each_supported_exact_systemd_baseline(
+    tmp_path: pathlib.Path,
+    presence: str,
+    load_state: str,
+    active_state: str,
+    unit_file_state: str,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        SYSTEMD_DIR=$ROOT/systemd
+        CONFIG_DIR=$ROOT/config
+        WORKSPACE_ROOT=$ROOT/workspaces
+        DEPLOY_STATE=$ROOT/deploy
+        AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+        CURRENT_LINK=$ROOT/current
+        EXPECTED_AUTHORITY_SHA=1111111111111111111111111111111111111111
+        AUTHORITY_EVIDENCE_ID=sealed-systemd-baseline
+        snapshot=$ROOT/snapshot
+        mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$DEPLOY_STATE" "$snapshot"
+        printf '%s\n' owner > "$snapshot/transaction-owner"
+        if test {shlex.quote(presence)} = present; then
+          : > "$SYSTEMD_DIR/opensandbox-gateway.service"
+          : > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
+        fi
+        preflight_live_state() {{ :; }}
+        getfacl() {{ printf '%s\n' acl; }}
+        chown() {{ :; }}
+        stat() {{
+          if test "$1:$2" = '-c:%u'; then
+            printf '%s\n' 0
+          else
+            command stat "$@"
+          fi
+        }}
+        write_manifest() {{ :; }}
+        require_root_tree() {{ :; }}
+        verify_manifest() {{ :; }}
+        preflight_snapshot() {{ :; }}
+        s72_atomic_write_lifecycle_authority() {{ : > "$1"; }}
+        systemctl() {{
+          case "$1" in
+            show)
+              case "$4" in
+                LoadState) printf '%s\n' {shlex.quote(load_state)} ;;
+                ActiveState) printf '%s\n' {shlex.quote(active_state)} ;;
+                UnitFileState) printf '%s\n' {shlex.quote(unit_file_state)} ;;
+                *) return 1 ;;
+              esac
+              ;;
+            is-active) test {shlex.quote(active_state)} = active ;;
+            is-enabled) test {shlex.quote(unit_file_state)} = enabled ;;
+            *) return 1 ;;
+          esac
+        }}
+        snapshot_state "$snapshot"
+        for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+          test -f "$snapshot/$unit.{active_state}"
+          if test {shlex.quote(unit_file_state)} = enabled; then
+            test -f "$snapshot/$unit.enabled"
+          else
+            test -f "$snapshot/$unit.disabled"
+          fi
+        done
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize("process_contour", ["live-before", "enumeration-error", "live-after"])
+def test_gateway_identity_restore_refuses_live_uid_or_enumeration_drift(
+    tmp_path: pathlib.Path,
+    process_contour: str,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        DEPLOY_STATE=$ROOT/deploy
+        RUNTIME_STATE=$ROOT/runtime
+        tx=11111111111111111111111111111111
+        workspace=$DEPLOY_STATE/.s72-transaction-$tx
+        snapshot=$ROOT/snapshot
+        mkdir -p "$workspace" "$snapshot"
+        printf '%s\n' schema=s72-transaction-owner-v1 "transaction=$tx" \
+          "root=$(command stat -c %d:%i "$workspace")" > "$workspace/transaction-owner"
+        printf '%s\n' 62001 > "$snapshot/gateway-service-uid"
+        : > "$snapshot/gateway-user.absent"
+        : > "$snapshot/gateway-group.absent"
+        : > "$snapshot/runtime-state.absent"
+        printf '%s\n' opensandbox-gateway:x:62001: > "$workspace/gateway-group.intent"
+        printf '%s\n' opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin \
+          > "$workspace/gateway-user.intent"
+        chmod 0400 "$workspace/transaction-owner" "$workspace/gateway-group.intent" \
+          "$workspace/gateway-user.intent" "$snapshot/gateway-service-uid"
+        chmod 0600 "$snapshot"/*.absent
+        s72_atomic_require_root_owned_regular() {{ test -f "$1" && test ! -L "$1"; }}
+        require_root_owned_regular() {{ test -f "$1" && test ! -L "$1"; }}
+        USER_ENTRY=opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin
+        GROUP_ENTRY=opensandbox-gateway:x:62001:
+        USERDEL_COUNT=0
+        GROUPDEL_COUNT=0
+        PROCESS_SCAN_COUNT=$ROOT/process-scan-count
+        printf '%s\n' 0 > "$PROCESS_SCAN_COUNT"
+        getent() {{
+          database=$1; key=$2
+          case "$database:$key" in
+            passwd:opensandbox-gateway|passwd:62001)
+              test -n "$USER_ENTRY" || return 2
+              printf '%s\n' "$USER_ENTRY"
+              ;;
+            group:opensandbox-gateway|group:62001)
+              test -n "$GROUP_ENTRY" || return 2
+              printf '%s\n' "$GROUP_ENTRY"
+              ;;
+            *) return 2 ;;
+          esac
+        }}
+        userdel() {{ USERDEL_COUNT=$((USERDEL_COUNT + 1)); USER_ENTRY=; }}
+        groupdel() {{ GROUPDEL_COUNT=$((GROUPDEL_COUNT + 1)); GROUP_ENTRY=; }}
+        s72_list_process_uids() {{
+          count=$(cat "$PROCESS_SCAN_COUNT")
+          count=$((count + 1))
+          printf '%s\n' "$count" > "$PROCESS_SCAN_COUNT"
+          case {shlex.quote(process_contour)}:$count in
+            enumeration-error:1) return 1 ;;
+            live-before:1|live-after:2) printf '%s\n' '62001 62001 62001 62001 4242' ;;
+            *) printf '%s\n' '0 0 0 0 1' ;;
+          esac
+        }}
+        ! restore_gateway_identity "$snapshot" "$tx"
+        case {shlex.quote(process_contour)} in
+          live-after)
+            test "$USERDEL_COUNT" -eq 1
+            test "$GROUPDEL_COUNT" -eq 0
+            test -z "$USER_ENTRY"
+            test -n "$GROUP_ENTRY"
+            ;;
+          *)
+            test "$USERDEL_COUNT" -eq 0
+            test "$GROUPDEL_COUNT" -eq 0
+            test -n "$USER_ENTRY"
+            test -n "$GROUP_ENTRY"
+            ;;
+        esac
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize(
     ("user_entry", "group_entry", "runtime_identity"),
     [
         (
@@ -1204,6 +1465,7 @@ def test_gateway_identity_recovery_is_idempotent_after_each_create_boundary(
         }}
         userdel() {{ USER_ENTRY=; }}
         groupdel() {{ GROUP_ENTRY=; }}
+        s72_list_process_uids() {{ printf '%s\n' '0 0 0 0 1'; }}
         require_gateway_identity_matches_transaction "$snapshot" "$tx"
         restore_gateway_identity "$snapshot" "$tx"
         test -z "$USER_ENTRY" && test -z "$GROUP_ENTRY"
@@ -1282,6 +1544,7 @@ def test_gateway_identity_creation_is_journaled_and_uses_a_private_runtime_stage
         useradd() { USER_ENTRY=opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin; }
         userdel() { USER_ENTRY=; }
         groupdel() { GROUP_ENTRY=; }
+        s72_list_process_uids() { printf '%s\n' '0 0 0 0 1'; }
         : > "$ROOT/phases"
         s72_atomic_advance_transaction() { printf '%s\n' "$3" >> "$ROOT/phases"; }
 
