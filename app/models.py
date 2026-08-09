@@ -562,7 +562,7 @@ class CreateRunRequest(BaseModel):
     session_id: str | None = None
     title: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
-    file_ids: list[str] = Field(default_factory=list)
+    file_ids: list[str] = Field(default_factory=list, max_length=32)
 
     @field_validator("tenant_id", "workspace_id", "agent_id")
     @classmethod
@@ -589,7 +589,10 @@ class CreateRunRequest(BaseModel):
     @field_validator("file_ids")
     @classmethod
     def validate_file_ids(cls, value: list[str]):
-        return [assert_safe_id(item, "file_ids") for item in value]
+        normalized = [assert_safe_id(item, "file_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("file_ids contains duplicates")
+        return normalized
 
 
 class CreateRunResponse(BaseModel):
@@ -1231,11 +1234,11 @@ class ChatStreamRequest(BaseModel):
     selected_skill: SelectedSkillRequest | None = None
     selected_agent_profile: SelectedAgentProfileRequest | None = None
     message: str = Field(min_length=1)
-    file_ids: list[str] = Field(default_factory=list)
+    file_ids: list[str] = Field(default_factory=list, max_length=32)
     input: dict[str, Any] = Field(default_factory=dict)
     title: str = ""
     agent_options: dict[str, bool | str | int | float] | None = None
-    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
     disabled_skills: list[str] = Field(default_factory=list)
     enabled_skills: list[str] | None = None
     disabled_mcp_tools: list[str] = Field(default_factory=list)
@@ -1357,7 +1360,10 @@ class ChatStreamRequest(BaseModel):
     @field_validator("file_ids")
     @classmethod
     def validate_chat_file_ids(cls, value: list[str]):
-        return [assert_safe_id(item, "file_ids") for item in value]
+        normalized = [assert_safe_id(item, "file_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("file_ids contains duplicates")
+        return normalized
 
     @field_validator("selected_mcp_tool_ids")
     @classmethod

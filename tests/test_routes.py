@@ -4397,6 +4397,92 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_run_reuses_snapshot_authorized_session_file_without_rebinding(monkeypatch):
+    calls = {}
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return skill(input_modes=["docx"])
+
+    async def fake_list_files(conn, **kwargs):
+        calls["list_files"] = kwargs
+        return [
+            {
+                "id": "file-prior",
+                "run_id": "run-prior",
+                "original_name": "source.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "created_at": "2026-08-01T00:00:00Z",
+            }
+        ]
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        assert kwargs["session_id"] == "ses-existing"
+        return "ses-existing"
+
+    async def fake_create_run(conn, **kwargs):
+        calls["run_file_ids"] = kwargs["input_json"]["file_ids"]
+        return kwargs["run_id"]
+
+    async def fake_bind_files(conn, **kwargs):
+        calls["bound_file_ids"] = kwargs["file_ids"]
+
+    async def fake_context(conn, **kwargs):
+        calls["context"] = kwargs
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-continuation",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": len(kwargs["file_ids"]),
+            "memory_record_count": 0,
+        }
+
+    async def fake_enqueue(payload):
+        calls["queue_file_ids"] = payload["file_ids"]
+        return 1
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_authorized_session_input_files",
+        fake_list_files,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.runs.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", fake_bind_files)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_context)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue)
+
+    response = await create_run(
+        CreateRunRequest(
+            workspace_id="default",
+            session_id="ses-existing",
+            agent_id="baoyu-translate",
+            capability_id="document_translation",
+        ),
+        principal=principal(),
+    )
+
+    assert response.session_id == "ses-existing"
+    assert calls["list_files"] == {
+        "tenant_id": "tenant-a",
+        "workspace_id": "default",
+        "user_id": "user-a",
+        "session_id": "ses-existing",
+    }
+    assert calls["run_file_ids"] == ["file-prior"]
+    assert calls["queue_file_ids"] == ["file-prior"]
+    assert calls["bound_file_ids"] == []
+    assert calls["context"]["file_ids"] == ["file-prior"]
+    assert calls["context"]["include_session_history"] is True
+
+
+@pytest.mark.asyncio
 async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     calls = []
 

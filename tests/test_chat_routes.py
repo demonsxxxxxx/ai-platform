@@ -3922,7 +3922,21 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         calls.append(("workspace", workspace_id))
 
     async def fake_authorize_files(conn, **kwargs):
-        calls.append(("files", kwargs["workspace_id"]))
+        calls.append(("files", kwargs["workspace_id"], kwargs["file_ids"]))
+
+    async def fake_list_authorized_session_input_files(conn, **kwargs):
+        calls.append(("reusable_files", kwargs["workspace_id"], kwargs["session_id"]))
+        return [
+            {
+                "id": "file_routed",
+                "original_name": "demo.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "created_at": "2026-08-01T00:00:00Z",
+            }
+        ]
+
+    async def fake_bind_files(conn, **kwargs):
+        calls.append(("bind", kwargs["file_ids"]))
 
     async def fake_enqueue_run(payload):
         calls.append(
@@ -3932,6 +3946,7 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
                 payload["agent_id"],
                 payload["skill_id"],
                 payload["workspace_id"],
+                payload["file_ids"],
             )
         )
         return 1
@@ -3949,7 +3964,11 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
     monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", fake_authorize_files)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_authorized_session_input_files",
+        fake_list_authorized_session_input_files,
+    )
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr(
@@ -3980,13 +3999,6 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         ChatStreamRequest(
             message="继续处理同一份文档",
             session_id=first.session_id,
-            attachments=[
-                {
-                    "key": "file_routed",
-                    "name": "demo.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
         ),
         agent_id="general-agent",
         principal=principal(),
@@ -3998,19 +4010,22 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
     assert calls == [
         ("resolve", "baoyu-translate", "baoyu-translate"),
         ("workspace", "default"),
-        ("files", "default"),
+        ("files", "default", ["file_routed"]),
         ("session", "ses_routed", "baoyu-translate", "default"),
         ("run", "ses_routed", "baoyu-translate", "baoyu-translate", "default", "run_routed_first"),
-        ("queue", "ses_routed", "baoyu-translate", "baoyu-translate", "default"),
+        ("bind", ["file_routed"]),
+        ("queue", "ses_routed", "baoyu-translate", "baoyu-translate", "default", ["file_routed"]),
         ("session_lookup", None, False),
         ("session_lookup", "workspace-routed", True),
         ("continuation_runs", "tenant-a", "user-a", "ses_routed", "workspace-routed", 1),
         ("resolve", "general-agent", "baoyu-translate"),
+        ("reusable_files", "workspace-routed", "ses_routed"),
         ("workspace", "workspace-routed"),
-        ("files", "workspace-routed"),
+        ("files", "workspace-routed", []),
         ("session", "ses_routed", "general-agent", "workspace-routed"),
         ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
-        ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed"),
+        ("bind", []),
+        ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", ["file_routed"]),
     ]
 
 

@@ -325,6 +325,9 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                         "run_id": "run-a",
                         "file_id": "file-a",
                         "original_name": "source.txt",
+                        "content_type": "text/plain",
+                        "size_bytes": 62,
+                        "sha256": "586f159eb24bde12ae462966dc7eddb6a08439c9d47ef6bf4e6d3a3e1ab662fe",
                         "content": "workspace staged content SENTINEL_RAW_CONTEXT_BODY_DO_NOT_LEAK",
                         "private_payload": {
                             "storage_key": "tenants/tenant-a/private/source.txt",
@@ -411,6 +414,9 @@ async def _stage_byte_cap_probe() -> dict[str, Any]:
                         "run_id": "run-a",
                         "file_id": "file-large",
                         "original_name": "large.txt",
+                        "content_type": "text/plain",
+                        "size_bytes": 16,
+                        "sha256": "9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f",
                         "content": "0123456789abcdef",
                     }
                 ]
