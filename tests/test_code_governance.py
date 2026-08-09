@@ -337,7 +337,6 @@ def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path
     candidate_evaluation = _evaluate_without_exception(code_governance, REPO_ROOT, base, head)
     applied_evaluation = _evaluate(REPO_ROOT, base, head)
     expected = {
-        ("production_file_count", None),
         ("production_net_loc", None),
     }
 
