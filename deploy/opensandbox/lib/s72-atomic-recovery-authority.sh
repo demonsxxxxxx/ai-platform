@@ -98,23 +98,23 @@ s72_atomic_require_root_tree() {
   test -z "$(find "$1" ! -user root -print -quit)"
 }
 
-s72_atomic_require_root_owned_regular() {
+s72_atomic_require_root_owned_regular() (
   path=$1
   mode=$2
   test -f "$path" && test ! -L "$path" || return 1
   test "$(stat -c %u "$path")" -eq 0 || return 1
   case "$(stat -c %G "$path")" in root|opensandbox-gateway) ;; *) return 1 ;; esac
   test "$(stat -c %a "$path")" = "$mode"
-}
+)
 
-s72_atomic_require_root_owned_directory() {
+s72_atomic_require_root_owned_directory() (
   path=$1
   mode=$2
   test -d "$path" && test ! -L "$path" || return 1
   test "$(stat -c %u "$path")" -eq 0 || return 1
   case "$(stat -c %G "$path")" in root|opensandbox-gateway) ;; *) return 1 ;; esac
   test "$(stat -c %a "$path")" = "$mode"
-}
+)
 
 s72_atomic_fsync_path() {
   python3 - "$1" <<'PY'

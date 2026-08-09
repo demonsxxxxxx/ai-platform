@@ -753,6 +753,36 @@ def test_transaction_records_are_immutable_self_authenticating_and_chained() -> 
     assert "transaction-record.*.tmp" not in helper
 
 
+def test_root_owned_node_checks_do_not_clobber_caller_state(tmp_path: pathlib.Path) -> None:
+    result = _run_bash(
+        r'''
+        set -eu
+        HELPER=$1; ROOT=$2
+        . "$HELPER"
+        mkdir "$ROOT/directory"
+        printf '%s\n' payload > "$ROOT/regular"
+        stat() {
+          case "$1:$2" in
+            -c:%u) printf '%s\n' 0 ;;
+            -c:%G) printf '%s\n' root ;;
+            -c:%a)
+              test -d "$3" && printf '%s\n' 700 || printf '%s\n' 600
+              ;;
+            *) command stat "$@" ;;
+          esac
+        }
+        mode=bootstrap
+        s72_atomic_require_root_owned_directory "$ROOT/directory" 700
+        test "$mode" = bootstrap
+        s72_atomic_require_root_owned_regular "$ROOT/regular" 600
+        test "$mode" = bootstrap
+        ''',
+        HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 @pytest.mark.parametrize(
     ("ss_output", "accepted"),
     [
@@ -891,7 +921,7 @@ def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_saf
 ) -> None:
     result = _run_privileged_bash(
         r'''
-        set -eux
+        set -eu
         HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4
         . "$HELPER"
         snapshots=$ROOT/snapshots
@@ -961,8 +991,8 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
               /opt/s72-source/deploy/opensandbox/rollback-s72.sh
             install -o root -g root -m 0644 "$HELPER" \
               /opt/s72-source/deploy/opensandbox/lib/s72-atomic-recovery-authority.sh
-            /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
-            /bin/sh -x /opt/s72-source/deploy/opensandbox/rollback-s72.sh --recover
+            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /opt/s72-source/deploy/opensandbox/rollback-s72.sh --recover
             test -d /var/lib/opensandbox-gateway-deploy/snapshots
             test -d /var/lib/opensandbox-gateway-deploy/transactions
             test -z "$(find /var/lib/opensandbox-gateway-deploy/transactions -mindepth 1 -print -quit)"
@@ -983,22 +1013,22 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
             snapshot_stage=$(s72_atomic_create_snapshot_stage "$SNAPSHOTS" "$tx")
 
             # This is the durable state left by death after reservation and stage creation.
-            /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             s72_atomic_load_transaction "$RECORDS" "$tx"
             test "$S72_TX_PHASE" = cleaned
             test ! -e "$transaction_workspace" && test ! -e "$snapshot_stage"
-            /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
 
             foreign=33333333333333333333333333333333
             foreign_stage=$SNAPSHOTS/.snapshot-stage-$foreign
             mkdir "$foreign_stage"
             printf '%s\n' preserve-foreign > "$foreign_stage/payload"
-            ! /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx preserve-foreign "$foreign_stage/payload"
             rm -rf "$foreign_stage"
 
             mkfifo "$DEPLOY/foreign-fifo"
-            ! /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             test -p "$DEPLOY/foreign-fifo"
             rm "$DEPLOY/foreign-fifo"
 
@@ -1006,7 +1036,7 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
             torn_record=$RECORDS/transaction-$torn-000000.record
             printf '%s\n' truncated > "$torn_record"
             chown root:root "$torn_record"; chmod 0400 "$torn_record"
-            ! /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx truncated "$torn_record"
           ' s72-production-entry "$INSTALLER" "$ROLLBACK" "$HELPER" "$ROOT"
         ''',
