@@ -65,6 +65,29 @@ browser using same-origin `/api/*`; the deployed thin shell proxies those calls
 to ai-platform. Split frontend/backend browser API origins are not part of the
 current ai-platform contract.
 
+When the company login APIs are unavailable, a local-only identity can be
+injected by the Node-side Vite proxy for UI testing:
+
+```bash
+AI_PLATFORM_LOCAL_AUTH_PROXY_ENABLED=true \
+AI_PLATFORM_LOCAL_AUTH_ROLE=user \
+VITE_AI_PLATFORM_API_TARGET=http://127.0.0.1:8020 \
+corepack pnpm dev
+```
+
+The opt-in proxy accepts only the `user` and `admin` roles, only targets a
+loopback API URL, and binds the dev server to `127.0.0.1`. Its default identity
+is `local-dev-user` in the `default` tenant. Override it with
+`AI_PLATFORM_LOCAL_AUTH_USER_ID`, `AI_PLATFORM_LOCAL_AUTH_TENANT_ID`, or
+`AI_PLATFORM_LOCAL_AUTH_DEPARTMENT_ID` when a focused ACL scenario requires a
+stable fixture. The browser never receives these headers, production builds do
+not enable the proxy, and the API still must explicitly set
+`FRONTEND_POC_AUTH_ENABLED=true`; never enable that backend flag in production.
+In this mode Vite also answers the bounded, non-credential
+`/api/ai/auth/bootstrap` handshake locally so an older or unconfigured local
+API cannot force the UI back to the company login page. All principal,
+catalog, Chat, file, and run requests still go to the configured API target.
+
 ## API Boundary
 
 The frontend must consume ai-platform public/admin projections only. It must not

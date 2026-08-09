@@ -24,3 +24,25 @@ test("dev proxy does not expose legacy LambChat backend route proxies", () => {
   assert.doesNotMatch(source, /"\/ws"/);
   assert.doesNotMatch(source, /Object\.fromEntries/);
 });
+
+test("local auth stays in the node-side dev proxy and is fail-closed", () => {
+  const source = readViteConfig();
+  const helper = readFileSync(
+    new URL("../../dev-auth-proxy.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /resolveLocalDevAuthProxy/);
+  assert.match(source, /localDevAuthBootstrapPlugin\(localDevAuthProxy\)/);
+  assert.match(source, /LOCAL_AUTH_BOOTSTRAP_MAX_BYTES = 4096/);
+  assert.match(source, /Cache-Control", "no-store/);
+  assert.match(source, /localDevAuthProxy\?\.serverHost \?\? true/);
+  assert.match(source, /LOCAL_AUTH_PROXY_STRIPPED_HEADERS/);
+  assert.match(source, /proxyReq\.removeHeader\(name\)/);
+  assert.match(source, /proxyReq\.setHeader\(name, value\)/);
+  assert.match(helper, /command !== "serve"/);
+  assert.match(helper, /loopback API address/);
+  assert.match(helper, /serverHost: "127\.0\.0\.1"/);
+  assert.match(helper, /"X-AI-Gateway-Secret"/);
+  assert.match(helper, /"X-AI-Permissions"/);
+});
