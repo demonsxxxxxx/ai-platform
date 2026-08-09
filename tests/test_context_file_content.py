@@ -6,13 +6,17 @@ import pytest
 from docx import Document
 from openpyxl import Workbook
 from pypdf import PdfWriter
-from pypdf.generic import DictionaryObject, NameObject, TextStringObject
+from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject
 
 from app.context.file_content import (
     ContextFileContentError,
     DOCX_CONTENT_TYPE,
+    MAX_DOCUMENT_SOURCE_BYTES,
+    MAX_PDF_OBJECTS_INSPECTED,
+    MAX_PDF_PAGES,
     MAX_TEXT_SOURCE_BYTES,
     PDF_CONTENT_TYPE,
+    _pdf_has_active_content,
     parse_context_file,
 )
 from app.file_parser_contracts import XLSX_CONTENT_TYPE
@@ -115,6 +119,46 @@ def test_parse_context_file_rejects_oversize_text():
     raw = b"a" * (MAX_TEXT_SOURCE_BYTES + 1)
     with pytest.raises(ContextFileContentError, match="context_file_too_large"):
         parse_context_file(_row("notes.txt", "text/plain", raw), raw)
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type", "prefix"),
+    [
+        ("source.docx", DOCX_CONTENT_TYPE, b"PK"),
+        ("source.pdf", PDF_CONTENT_TYPE, b"%PDF-"),
+    ],
+    ids=("docx", "pdf"),
+)
+def test_parse_context_file_rejects_oversize_documents(name, content_type, prefix):
+    raw = prefix + b"0" * (MAX_DOCUMENT_SOURCE_BYTES + 1 - len(prefix))
+
+    with pytest.raises(ContextFileContentError, match="context_file_too_large"):
+        parse_context_file(_row(name, content_type, raw), raw)
+
+
+def test_parse_context_file_rejects_pdf_page_limit():
+    stream = io.BytesIO()
+    writer = PdfWriter()
+    for _ in range(MAX_PDF_PAGES + 1):
+        writer.add_blank_page(width=20, height=20)
+    writer.write(stream)
+    raw = stream.getvalue()
+
+    with pytest.raises(ContextFileContentError, match="context_file_type_unsupported"):
+        parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
+
+
+def test_pdf_active_content_walk_fails_closed_at_object_limit():
+    root = DictionaryObject(
+        {
+            NameObject("/Items"): ArrayObject(
+                NumberObject(index) for index in range(MAX_PDF_OBJECTS_INSPECTED + 1)
+            )
+        }
+    )
+    reader = type("Reader", (), {"trailer": {"/Root": root}, "pages": []})()
+
+    assert _pdf_has_active_content(reader) is True
 
 
 @pytest.mark.parametrize(

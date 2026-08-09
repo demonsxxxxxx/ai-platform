@@ -325,3 +325,124 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
         await adapter._materialize_files(payload(file_ids=["file-unsafe"]), workspace)
 
     assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_files_uses_real_scoped_repository_query_for_prior_run_file(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    raw = _docx_bytes()
+    row = {
+        "id": "file-prior",
+        "run_id": "run-prior",
+        "original_name": "prior.docx",
+        "content_type": DOCX_CONTENT_TYPE,
+        "size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "storage_key": "files/prior.docx",
+    }
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+    class Connection:
+        sql = ""
+        params = ()
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return Cursor()
+
+    class FakeStorage:
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            assert (storage_key, max_bytes) == ("files/prior.docx", len(raw))
+            return raw
+
+    conn = Connection()
+
+    @asynccontextmanager
+    async def real_repository_transaction():
+        yield conn
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.transaction",
+        real_repository_transaction,
+    )
+
+    materialized = await adapter._materialize_files(
+        payload(file_ids=["file-prior"]),
+        workspace,
+    )
+
+    assert list(materialized) == ["prior.docx"]
+    assert "context_snapshot.included_file_ids ? files.id" in conn.sql
+    assert "current_run.input_json->>'context_snapshot_id' = current_run.context_snapshot_id" in conn.sql
+    assert conn.params == (
+        "run_1",
+        "default",
+        "default",
+        "user-a",
+        "ses_1",
+        "run_1",
+        "file-prior",
+    )
+    assert (workspace / "prior.docx").read_bytes() == raw
+    assert (workspace / "inputs" / "prior.docx").read_bytes() == raw
+
+
+@pytest.mark.asyncio
+async def test_materialize_files_cleans_all_written_copies_after_io_failure(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    raw = _docx_bytes()
+
+    class FakeStorage:
+        def get_bytes_bounded(self, **_kwargs):
+            return raw
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        return {
+            "original_name": f"{kwargs['file_id']}.docx",
+            "content_type": DOCX_CONTENT_TYPE,
+            "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "storage_key": f"files/{kwargs['file_id']}.docx",
+        }
+
+    original_write_bytes = type(workspace).write_bytes
+
+    def fail_second_canonical_write(path, content):
+        if path.parent.name == "inputs" and path.name == "file-b.docx":
+            raise OSError("simulated workspace write failure")
+        return original_write_bytes(path, content)
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr(type(workspace), "write_bytes", fail_second_canonical_write)
+
+    with pytest.raises(OSError, match="simulated workspace write failure"):
+        await adapter._materialize_files(
+            payload(file_ids=["file-a", "file-b"]),
+            workspace,
+        )
+
+    assert list(workspace.iterdir()) == []

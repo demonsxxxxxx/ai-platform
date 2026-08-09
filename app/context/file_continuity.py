@@ -306,10 +306,25 @@ async def materialize_run_context_files(
     if targets:
         inputs_dir.mkdir(parents=True, exist_ok=True)
     materialized_file_names: list[str] = []
-    for (target, canonical_target), content in zip(targets, validated_contents, strict=True):
-        target.write_bytes(content)
-        canonical_target.write_bytes(content)
-        materialized_file_names.append(target.name)
+    written_paths: list[Path] = []
+    try:
+        for (target, canonical_target), content in zip(targets, validated_contents, strict=True):
+            target.write_bytes(content)
+            written_paths.append(target)
+            canonical_target.write_bytes(content)
+            written_paths.append(canonical_target)
+            materialized_file_names.append(target.name)
+    except BaseException:
+        for written_path in reversed(written_paths):
+            try:
+                written_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            inputs_dir.rmdir()
+        except OSError:
+            pass
+        raise
     return ContextFileMaterialization(
         tuple(file_names),
         tuple(materialized_file_names),
