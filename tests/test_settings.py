@@ -103,3 +103,33 @@ def test_production_identity_boundary_requires_gateway_secret_and_forbids_poc():
 def test_default_tenant_is_fixed_deployment_scope():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, default_tenant_id="customer-a")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "run_event_retention_days",
+        "context_snapshot_retention_days",
+        "audit_retention_days",
+        "message_retention_days",
+        "file_retention_days",
+    ],
+)
+def test_production_rejects_unimplemented_nonzero_retention_policies(field):
+    with pytest.raises(ValidationError, match="unsupported_retention_policy_in_production"):
+        Settings(
+            _env_file=None,
+            deployment_environment="production",
+            trusted_principal_secret="gateway-secret",
+            **{field: 7},
+        )
+
+
+def test_nonproduction_retention_projection_can_report_unsupported_configuration():
+    settings = Settings(
+        _env_file=None,
+        deployment_environment="test",
+        run_event_retention_days=7,
+    )
+
+    assert settings.run_event_retention_days == 7

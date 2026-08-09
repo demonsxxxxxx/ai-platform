@@ -99,11 +99,15 @@ async def admin_retention_status(
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
     settings = get_settings()
+    policy = retention_policy_projection(settings)
     async with transaction() as conn:
-        backlog = await repositories.get_data_retention_backlog(conn)
+        backlog = await repositories.get_data_retention_backlog(
+            conn,
+            retention_days=dict(policy["configurable_retention_days"]),
+        )
     return {
         "status": "ok",
-        "policy": retention_policy_projection(settings),
+        "policy": policy,
         "backlog": backlog,
     }
 

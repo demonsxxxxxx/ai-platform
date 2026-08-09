@@ -106,13 +106,17 @@ Cleanup runs in small worker batches and is retryable:
 - `run_events` (including their `run_event_batches` binding), context snapshots,
   audit rows, messages, and files expose explicit retention-day settings. Their
   default is `0`, which means retain and do not physically delete. Until product
-  retention and reference rules are approved for a class, the runtime reports
-  it in `disabled_fail_safe` instead of guessing a deletion policy.
+  retention and reference rules are approved and a reference-safe cleaner is
+  implemented, `0` is reported as `disabled_fail_safe`; a non-zero value is
+  reported as `unsupported_not_implemented` and maintenance performs no delete.
+  Production settings reject those non-zero values during startup.
 
-`GET /admin/retention/status` exposes the policy projection plus pending,
-processing, failed, and deletion-ready backlog counts. Disabling cleanup never
-turns into implicit deletion. The worker's artifact and memory maintenance may
-be paused independently through the documented environment settings.
+`GET /admin/retention/status` exposes the policy projection, artifact/object
+states, and age-eligible row counts for unsupported classes. Those counts are
+observability only, not deletion eligibility or a claim that cleanup exists.
+Disabling cleanup never turns into implicit deletion. The worker's artifact and
+memory maintenance may be paused independently through the documented
+environment settings.
 
 ## PostgreSQL payload bounds
 

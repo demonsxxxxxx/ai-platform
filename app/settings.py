@@ -157,6 +157,15 @@ class Settings(BaseSettings):
                 raise ValueError("frontend_poc_auth_forbidden_in_production")
             if not self.trusted_principal_secret.strip():
                 raise ValueError("trusted_principal_secret_required_in_production")
+            unsupported_retention = {
+                "run_events": self.run_event_retention_days,
+                "context_snapshots": self.context_snapshot_retention_days,
+                "audit": self.audit_retention_days,
+                "messages": self.message_retention_days,
+                "files": self.file_retention_days,
+            }
+            if any(days > 0 for days in unsupported_retention.values()):
+                raise ValueError("unsupported_retention_policy_in_production")
         return self
 
 @lru_cache(maxsize=1)

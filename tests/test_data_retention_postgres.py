@@ -63,6 +63,15 @@ async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
         )
         await admin.execute(
             """
+            insert into messages(id, tenant_id, session_id, run_id, role, content, created_at)
+            values (
+              'message-old', 'tenant-a', 'session-a', 'run-a', 'user', 'old',
+              clock_timestamp() - interval '8 days'
+            )
+            """
+        )
+        await admin.execute(
+            """
             insert into artifacts(
               id, tenant_id, run_id, artifact_type, label, content_type,
               storage_key, size_bytes, expires_at
@@ -160,6 +169,12 @@ async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
             assert not retention_task.done()
 
         assert await retention_task == []
+        backlog = await repositories.get_data_retention_backlog(
+            retention_conn,
+            retention_days={"messages": 7},
+        )
+        assert backlog["messages_age_eligible"] == 1
+        assert backlog["run_events_age_eligible"] == 0
         cursor = await retention_conn.execute(
             """
             select artifacts.lifecycle_state,

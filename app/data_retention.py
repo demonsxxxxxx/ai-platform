@@ -23,11 +23,17 @@ def retention_policy_projection(settings: object) -> dict[str, object]:
         "messages": int(getattr(settings, "message_retention_days", 0)),
         "files": int(getattr(settings, "file_retention_days", 0)),
     }
+    unsupported = sorted(name for name, days in configurable.items() if days > 0)
     return {
         "artifacts": "expires_at_with_reference_safe_object_outbox",
         "memory": "soft_delete_then_reference_safe_physical_purge",
         "configurable_retention_days": configurable,
         "disabled_fail_safe": sorted(name for name, days in configurable.items() if days <= 0),
+        "unsupported_not_implemented": unsupported,
+        "runtime_status": {
+            name: "unsupported_not_implemented" if days > 0 else "disabled_fail_safe"
+            for name, days in configurable.items()
+        },
     }
 
 
@@ -41,6 +47,14 @@ async def run_data_retention_maintenance(
 
     global _next_cleanup_at
     settings = settings or get_settings()
+    policy = retention_policy_projection(settings)
+    unsupported = list(policy["unsupported_not_implemented"])
+    if unsupported:
+        return {
+            "status": "unsupported_retention_configuration",
+            "unsupported_retention_classes": unsupported,
+            "deleted_objects": 0,
+        }
     enabled = bool(getattr(settings, "data_retention_worker_cleanup_enabled", True))
     interval = float(getattr(settings, "data_retention_worker_cleanup_interval_seconds", 300.0))
     current_time = time.monotonic() if now is None else float(now)

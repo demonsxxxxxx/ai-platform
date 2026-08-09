@@ -119,3 +119,26 @@ def test_undecided_retention_classes_are_explicitly_fail_safe():
         "messages",
         "run_events",
     ]
+    assert projection["unsupported_not_implemented"] == []
+    assert set(projection["runtime_status"].values()) == {"disabled_fail_safe"}
+
+
+@pytest.mark.asyncio
+async def test_nonzero_unimplemented_retention_is_reported_and_never_runs_cleanup(monkeypatch):
+    configured = settings()
+    configured.run_event_retention_days = 7
+
+    async def forbidden_transaction():
+        raise AssertionError("unsupported retention must fail before opening a transaction")
+
+    monkeypatch.setattr(data_retention, "transaction", forbidden_transaction)
+    projection = data_retention.retention_policy_projection(configured)
+    result = await data_retention.run_data_retention_maintenance(configured, now=10)
+
+    assert projection["unsupported_not_implemented"] == ["run_events"]
+    assert projection["runtime_status"]["run_events"] == "unsupported_not_implemented"
+    assert result == {
+        "status": "unsupported_retention_configuration",
+        "unsupported_retention_classes": ["run_events"],
+        "deleted_objects": 0,
+    }

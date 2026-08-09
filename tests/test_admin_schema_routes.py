@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -48,3 +50,31 @@ def test_admin_apply_schema_allows_platform_admin(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"status": "schema_applied"}
     assert called == ["apply"]
+
+
+def test_admin_retention_status_exposes_unsupported_policy_and_age_backlog(monkeypatch):
+    configured = Settings(frontend_poc_auth_enabled=True, run_event_retention_days=7)
+    calls = []
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_backlog(_conn, *, retention_days):
+        calls.append(retention_days)
+        return {"run_events_age_eligible": 12}
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: configured)
+    monkeypatch.setattr("app.routes.health.get_settings", lambda: configured)
+    monkeypatch.setattr("app.routes.health.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.health.repositories.get_data_retention_backlog", fake_backlog)
+
+    response = TestClient(create_app()).get(
+        "/api/ai/admin/retention/status",
+        headers=_headers("platform_admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["policy"]["unsupported_not_implemented"] == ["run_events"]
+    assert response.json()["backlog"] == {"run_events_age_eligible": 12}
+    assert calls[0]["run_events"] == 7

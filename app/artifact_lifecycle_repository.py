@@ -231,7 +231,17 @@ async def purge_deleted_memory_records(
     return list(await cursor.fetchall())
 
 
-async def get_data_retention_backlog(conn: AsyncConnection) -> dict[str, int]:
+async def get_data_retention_backlog(
+    conn: AsyncConnection,
+    *,
+    retention_days: dict[str, int] | None = None,
+) -> dict[str, int]:
+    days = retention_days or {}
+    run_event_days = max(0, int(days.get("run_events", 0)))
+    context_snapshot_days = max(0, int(days.get("context_snapshots", 0)))
+    audit_days = max(0, int(days.get("audit", 0)))
+    message_days = max(0, int(days.get("messages", 0)))
+    file_days = max(0, int(days.get("files", 0)))
     cursor = await conn.execute(
         """
         select
@@ -239,8 +249,34 @@ async def get_data_retention_backlog(conn: AsyncConnection) -> dict[str, int]:
            where lifecycle_state = 'active' and expires_at is not null and expires_at <= now()) as expired_artifacts,
           (select count(*) from artifacts where lifecycle_state = 'delete_pending') as artifact_delete_pending,
           (select count(*) from object_deletion_outbox where state <> 'deleted') as object_delete_backlog,
-          (select count(*) from memory_records where status = 'deleted' and deleted_at is not null) as memory_soft_deleted
-        """
+          (select count(*) from memory_records where status = 'deleted' and deleted_at is not null) as memory_soft_deleted,
+          (select count(*) from run_events
+           where %s > 0 and created_at <= now() - (%s * interval '1 day')) as run_events_age_eligible,
+          (select count(*) from run_event_batches
+           where %s > 0 and callback_received_at <= now() - (%s * interval '1 day')) as run_event_batches_age_eligible,
+          (select count(*) from run_context_snapshots
+           where %s > 0 and created_at <= now() - (%s * interval '1 day')) as context_snapshots_age_eligible,
+          (select count(*) from audit_logs
+           where %s > 0 and created_at <= now() - (%s * interval '1 day')) as audit_age_eligible,
+          (select count(*) from messages
+           where %s > 0 and created_at <= now() - (%s * interval '1 day')) as messages_age_eligible,
+          (select count(*) from files
+           where %s > 0 and created_at <= now() - (%s * interval '1 day')) as files_age_eligible
+        """,
+        (
+            run_event_days,
+            run_event_days,
+            run_event_days,
+            run_event_days,
+            context_snapshot_days,
+            context_snapshot_days,
+            audit_days,
+            audit_days,
+            message_days,
+            message_days,
+            file_days,
+            file_days,
+        ),
     )
     row = await cursor.fetchone() or {}
     keys = (
@@ -248,6 +284,12 @@ async def get_data_retention_backlog(conn: AsyncConnection) -> dict[str, int]:
         "artifact_delete_pending",
         "object_delete_backlog",
         "memory_soft_deleted",
+        "run_events_age_eligible",
+        "run_event_batches_age_eligible",
+        "context_snapshots_age_eligible",
+        "audit_age_eligible",
+        "messages_age_eligible",
+        "files_age_eligible",
     )
     return {key: int(row.get(key) or 0) for key in keys}
 
