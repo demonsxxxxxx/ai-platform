@@ -1569,7 +1569,7 @@ def test_v1_bootstrap_cannot_downgrade_a_signed_v2_cookie(monkeypatch):
 
 def test_v1_matching_context_migrates_without_extending_and_nonmatching_authenticated_v1_fails_closed(monkeypatch):
     redis = FakeAuthRedis()
-    settings = install_auth_context_dependencies(monkeypatch, redis)
+    install_auth_context_dependencies(monkeypatch, redis)
     install_company_login(monkeypatch)
     client = TestClient(create_app())
     legacy_cookie = bootstrap(client, "M" * 43)
