@@ -4825,8 +4825,8 @@ async def append_event(
     input_token_count: int = 0,
     output_token_count: int = 0,
     total_token_count: int = 0,
-    estimated_cost_minor: int = 0,
-) -> str:
+    estimated_cost_minor: int = 0, return_record: bool = False,
+) -> str | dict[str, Any]:
     try:
         return await _run_event_repository.append_event(
             conn,
@@ -4844,7 +4844,7 @@ async def append_event(
             input_token_count=input_token_count,
             output_token_count=output_token_count,
             total_token_count=total_token_count,
-            estimated_cost_minor=estimated_cost_minor,
+            estimated_cost_minor=estimated_cost_minor, return_record=return_record,
         )
     except _run_event_repository.RunEventLedgerConflictError as exc:
         raise _repository_ledger_conflict(exc) from exc
@@ -6760,6 +6760,10 @@ async def progress_run_tool_permission_terminalization(
         user_id=staged.get("user_id") if retired_admission_rejection else None,
         action="run.admission.rejected" if retired_admission_rejection else f"run.{target_status}",
         target_type="run", target_id=run_id, trace_id=staged.get("trace_id"), payload_json=audit_payload,
+    )
+    from app.streaming.redis import ensure_run_terminal_intent
+    await ensure_run_terminal_intent(
+        conn, tenant_id=tenant_id, run_id=run_id, status=target_status
     )
     return ToolPermissionTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
@@ -10568,7 +10572,6 @@ async def complete_run(
     run_id: str,
     result_json: dict[str, Any],
 ) -> bool:
-    """Complete one run after a run-first, fixed-time permission-grant transaction."""
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     lock_cursor = await conn.execute(
         """
@@ -10585,13 +10588,11 @@ async def complete_run(
     locked_run = await lock_cursor.fetchone()
     if locked_run is None:
         return False
-
     clock_cursor = await conn.execute("select clock_timestamp() as authority_now", ())
     clock_row = await clock_cursor.fetchone()
     authority_now = clock_row.get("authority_now") if clock_row is not None else None
     if not isinstance(authority_now, datetime):
         raise RepositoryConflictError("run_completion_authority_clock_missing")
-
     permission_cursor = await conn.execute(
         """
         select id, status, decision, expires_at
@@ -10610,18 +10611,12 @@ async def complete_run(
         if status == "pending":
             return False
         expires_at = permission.get("expires_at")
-        valid_allow_for_run = (
-            status == "decided"
-            and str(permission.get("decision") or "") == "allow_for_run"
-            and isinstance(expires_at, datetime)
-            and expires_at > authority_now
-        )
+        valid_allow_for_run = status == "decided" and str(permission.get("decision") or "") == "allow_for_run" and isinstance(expires_at, datetime) and expires_at > authority_now
         if not valid_allow_for_run:
             return False
         valid_allow_for_run_ids.append(str(permission.get("id") or ""))
     if any(not request_id for request_id in valid_allow_for_run_ids):
         raise RepositoryConflictError("allow_for_run_id_missing")
-
     cursor = await conn.execute(
         """
         update runs
@@ -10673,6 +10668,8 @@ async def complete_run(
         consumed_ids = {str(item.get("id") or "") for item in await consumed_cursor.fetchall()}
         if consumed_ids != set(valid_allow_for_run_ids):
             raise RepositoryConflictError("allow_for_run_consumption_mismatch")
+    from app.streaming.redis import ensure_run_terminal_intent
+    await ensure_run_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id, status="succeeded")
     return True
 
 

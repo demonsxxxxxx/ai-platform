@@ -13,6 +13,7 @@ import pytest
 
 from app import agent_conversation_repository, repositories
 from app import run_event_repository
+from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -57,6 +58,14 @@ from app.repositories import (
 
 async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_legacy_repository_fakes_from_sse_terminal_extension(monkeypatch):
+    async def no_terminal_intent(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(streaming_redis, "ensure_run_terminal_intent", no_terminal_intent)
 
 
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():

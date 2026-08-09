@@ -109,6 +109,38 @@ test("commits an accepted answer delta before a later immediate execution update
   assert.deepEqual(commits, ["delta:answer", "execution:started"]);
 });
 
+test("acknowledges every coalesced semantic delta only after the merged reducer commit", () => {
+  const clock = new FakePresentationClock();
+  const presentation = new PublicStreamPresentation(clock);
+  const commits: string[] = [];
+  const acknowledgements: string[] = [];
+  presentation.activate(owner);
+
+  presentation.enqueueAssistantDelta(
+    owner,
+    "first ",
+    (content, onApplied) => {
+      commits.push(content);
+      onApplied();
+    },
+    { onCommitted: () => acknowledgements.push("first") },
+  );
+  presentation.enqueueAssistantDelta(
+    owner,
+    "second",
+    (content, onApplied) => {
+      commits.push(content);
+      onApplied();
+    },
+    { onCommitted: () => acknowledgements.push("second") },
+  );
+
+  assert.deepEqual(acknowledgements, []);
+  clock.flushAnimationFrame();
+  assert.deepEqual(commits, ["first second"]);
+  assert.deepEqual(acknowledgements, ["first", "second"]);
+});
+
 test("discards a stale owner buffer before it can contaminate the replacement shell", () => {
   const clock = new FakePresentationClock();
   const presentation = new PublicStreamPresentation(clock);
