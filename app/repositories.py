@@ -39,8 +39,7 @@ from app.control_plane_contracts import (
 )
 from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
-from app.persistence import RepositoryNotFoundError
-from app.persistence import chat_submissions
+from app.persistence import RepositoryNotFoundError, chat_submissions
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
     AUDIT_PAYLOAD_MAX_BYTES,
@@ -68,7 +67,6 @@ from app.skills.pinning import (
     SkillVersionMaterializationError,
     build_skill_snapshot_governance,
 )
-
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import evaluate_tool_policy, max_risk
 from app.validation import SAFE_ID_PATTERN
@@ -88,18 +86,13 @@ list_revealed_artifact_sessions = _artifact_lifecycle_repository.list_revealed_a
 list_revealed_artifacts = _artifact_lifecycle_repository.list_revealed_artifacts
 purge_deleted_memory_records = _artifact_lifecycle_repository.purge_deleted_memory_records
 queue_expired_artifacts_for_deletion = _artifact_lifecycle_repository.queue_expired_artifacts_for_deletion
-requeue_dead_letter_object_deletion = (
-    _artifact_lifecycle_repository.requeue_dead_letter_object_deletion
-)
-
+requeue_dead_letter_object_deletion = _artifact_lifecycle_repository.requeue_dead_letter_object_deletion
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
 claim_chat_submission = chat_submissions.claim_chat_submission
 finalize_chat_submission = chat_submissions.finalize_chat_submission
 get_chat_submission = chat_submissions.get_chat_submission
-
-
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
