@@ -1000,7 +1000,6 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
             return FakeCursor()
 
     conn = RetentionConnection()
-
     await repositories.queue_expired_artifacts_for_deletion(conn, limit=20)
     lock_sql, lock_params = conn.calls[0]
     write_sql, write_params = conn.calls[1]
