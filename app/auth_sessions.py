@@ -1636,6 +1636,9 @@ def principal_snapshot(principal: Any) -> dict[str, object]:
         "roles": [str(role) for role in principal.roles],
         "permissions": [str(permission) for permission in principal.permissions],
         "source": str(principal.source),
+        "authz_policy_version": int(principal.authz_policy_version),
+        "authority_source": str(principal.authority_source or principal.source),
+        "authority_checked_at": str(principal.authority_checked_at),
     }
 
 

@@ -5,7 +5,12 @@ from typing import Any
 
 import httpx
 
-from app.auth import AuthPrincipal, normalize_roles
+from app.auth import (
+    COMPANY_AUTHZ_POLICY_VERSION,
+    AuthPrincipal,
+    authority_checked_at_now,
+    normalize_roles,
+)
 from app.settings import get_settings
 from app.validation import assert_safe_id
 
@@ -128,6 +133,9 @@ async def resolve_login_principal(
         roles=roles,
         permissions=_effective_permissions(roles),
         source="company-login",
+        authz_policy_version=COMPANY_AUTHZ_POLICY_VERSION,
+        authority_source="company-user-info",
+        authority_checked_at=authority_checked_at_now(),
     )
 
 
@@ -162,6 +170,9 @@ async def resolve_current_principal(
         roles=roles,
         permissions=_effective_permissions(roles),
         source="company-user-info-current",
+        authz_policy_version=COMPANY_AUTHZ_POLICY_VERSION,
+        authority_source="company-user-info",
+        authority_checked_at=authority_checked_at_now(),
     )
 
 

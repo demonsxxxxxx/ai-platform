@@ -1072,10 +1072,14 @@ class PrincipalResponse(BaseModel):
     user_name: str = ""
     display_name: str
     tenant_id: str
+    department_id: str = ""
     roles: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
     is_admin: bool = False
     source: str = ""
+    authz_policy_version: int = 0
+    authority_source: str = ""
+    authority_checked_at: str = ""
 
 
 class CapabilitySuggestionResponse(BaseModel):

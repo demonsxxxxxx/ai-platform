@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
     memory_retention_worker_cleanup_limit: int = Field(default=200)
     run_event_stream_max_heartbeats: int = Field(default=3600)
+    deployment_environment: Literal["development", "test", "production"] = Field(default="development")
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")
     cors_allow_origins: str = Field(
@@ -135,6 +136,17 @@ class Settings(BaseSettings):
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
+
+    @model_validator(mode="after")
+    def validate_single_enterprise_identity_boundary(self) -> "Settings":
+        if self.default_tenant_id != "default":
+            raise ValueError("default_tenant_id_must_be_default_deployment_scope")
+        if self.deployment_environment == "production":
+            if self.frontend_poc_auth_enabled:
+                raise ValueError("frontend_poc_auth_forbidden_in_production")
+            if not self.trusted_principal_secret.strip():
+                raise ValueError("trusted_principal_secret_required_in_production")
+        return self
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

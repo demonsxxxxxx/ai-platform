@@ -86,3 +86,20 @@ def test_capacity_and_redis_pool_defaults_are_bounded_independently():
 def test_redis_max_connections_rejects_non_positive_values():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, redis_max_connections=0)
+
+
+def test_production_identity_boundary_requires_gateway_secret_and_forbids_poc():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, deployment_environment="production")
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            deployment_environment="production",
+            trusted_principal_secret="secret",
+            frontend_poc_auth_enabled=True,
+        )
+
+
+def test_default_tenant_is_fixed_deployment_scope():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, default_tenant_id="customer-a")

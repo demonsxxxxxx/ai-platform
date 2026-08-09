@@ -297,7 +297,11 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
         target_id=principal.user_id,
         payload_json={
             "source": principal.source,
+            "authority_source": principal.authority_source or principal.source,
+            "authority_checked_at": principal.authority_checked_at,
+            "authz_policy_version": principal.authz_policy_version,
             "work_id": principal.user_id,
+            "department_id": principal.department_id,
             "roles": principal.roles,
             "permissions": principal.permissions,
             "is_admin": is_ai_admin(principal),

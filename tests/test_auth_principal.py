@@ -224,6 +224,34 @@ def test_require_principal_accepts_gateway_signed_principal(monkeypatch):
     assert response.json() == {"user_id": "u-001"}
 
 
+def test_require_principal_rejects_cross_deployment_tenant_from_trusted_gateway(monkeypatch):
+    monkeypatch.setattr(
+        "app.auth.get_settings",
+        lambda: SimpleNamespace(
+            trusted_principal_secret="secret",
+            frontend_poc_auth_enabled=False,
+            default_tenant_id="default",
+        ),
+    )
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(principal: AuthPrincipal = Depends(require_principal)):
+        return {"user_id": principal.user_id}
+
+    response = TestClient(app).get(
+        "/probe",
+        headers={
+            "x-ai-user-id": "u-001",
+            "x-ai-tenant-id": "customer-a",
+            "x-ai-gateway-secret": "secret",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tenant_scope_not_allowed"
+
+
 def test_require_principal_accepts_frontend_poc_principal_only_when_enabled(monkeypatch):
     monkeypatch.setattr(
         "app.auth.get_settings",
