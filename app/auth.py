@@ -206,13 +206,45 @@ def _enforce_deployment_scope(principal: AuthPrincipal, settings: object) -> Aut
     return principal
 
 
+def _enforce_company_authority_freshness(
+    principal: AuthPrincipal,
+    settings: object,
+) -> AuthPrincipal:
+    """Fail closed when a company-derived authorization snapshot is stale."""
+
+    if principal.source != "company-login":
+        return principal
+    if principal.authz_policy_version != COMPANY_AUTHZ_POLICY_VERSION:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_session")
+    if not principal.authority_source.strip() or not principal.authority_checked_at.strip():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+    try:
+        checked_at = datetime.fromisoformat(principal.authority_checked_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_authority",
+        ) from exc
+    if checked_at.tzinfo is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+    age_seconds = (datetime.now(timezone.utc) - checked_at.astimezone(timezone.utc)).total_seconds()
+    max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 15 * 60))
+    if age_seconds < -60 or age_seconds > max_age_seconds:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+    return principal
+
+
 async def require_principal(request: Request) -> AuthPrincipal:
     settings = get_settings()
     principal = principal_from_trusted_headers(request.headers)
     if principal is None:
         authorization = request.headers.get("authorization", "")
         if authorization.lower().startswith("bearer "):
-            return _enforce_deployment_scope(verify_principal_session(authorization[7:].strip()), settings)
+            bearer_principal = verify_principal_session(authorization[7:].strip())
+            return _enforce_deployment_scope(
+                _enforce_company_authority_freshness(bearer_principal, settings),
+                settings,
+            )
         context_handle = request.cookies.get(
             getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
             "",
@@ -229,7 +261,7 @@ async def require_principal(request: Request) -> AuthPrincipal:
             except AuthContextError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
             if snapshot is not None:
-                return _enforce_deployment_scope(AuthPrincipal(
+                browser_principal = AuthPrincipal(
                     user_id=str(snapshot["user_id"]),
                     display_name=str(snapshot["display_name"]),
                     tenant_id=str(snapshot["tenant_id"]),
@@ -237,10 +269,14 @@ async def require_principal(request: Request) -> AuthPrincipal:
                     roles=[str(item) for item in snapshot["roles"]],
                     permissions=[str(item) for item in snapshot["permissions"]],
                     source=str(snapshot["source"]),
-                    authz_policy_version=int(snapshot.get("authz_policy_version") or COMPANY_AUTHZ_POLICY_VERSION),
-                    authority_source=str(snapshot.get("authority_source") or snapshot["source"]),
-                    authority_checked_at=str(snapshot.get("authority_checked_at") or ""),
-                ), settings)
+                    authz_policy_version=int(snapshot["authz_policy_version"]),
+                    authority_source=str(snapshot["authority_source"]),
+                    authority_checked_at=str(snapshot["authority_checked_at"]),
+                )
+                return _enforce_deployment_scope(
+                    _enforce_company_authority_freshness(browser_principal, settings),
+                    settings,
+                )
     if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     ai_session_cookie_name: str = Field(default="ai_platform_session")
     ai_session_cookie_secure: bool = Field(default=False)
     ai_session_max_age_seconds: int = Field(default=8 * 60 * 60)
+    company_authority_freshness_seconds: int = Field(default=15 * 60, ge=60, le=8 * 60 * 60)
     auth_context_secret: str = Field(default="")
     auth_context_cookie_name: str = Field(default="ai_platform_auth_context")
     auth_context_cookie_secure: bool = Field(default=False)
