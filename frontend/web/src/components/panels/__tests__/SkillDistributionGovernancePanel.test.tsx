@@ -22,7 +22,7 @@ test("Skill distribution editor uses server-backed ACL controls and safe errors"
   assert.match(source, /resolveDepartmentSelection/);
   assert.doesNotMatch(source, /departmentInput|parseDepartmentIds/);
   assert.match(source, /<RoleSelector/);
-  assert.match(source, /普通用户目录和运行准入仍由服务端过滤/);
+  assert.match(source, /实际使用权限仍由服务端校验/);
   assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
 });
 

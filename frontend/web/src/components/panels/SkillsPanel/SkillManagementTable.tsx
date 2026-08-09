@@ -27,7 +27,7 @@ interface SkillManagementTableProps {
   skills: SkillResponse[];
 }
 
-function tenantDistributionKey(skill: SkillResponse): string {
+function catalogStatusKey(skill: SkillResponse): string {
   if (skill.marketplace_is_active) return "skills.managementTable.distributed";
   if (skill.is_published) return "skills.managementTable.distributionDisabled";
   return "skills.managementTable.notInDirectory";
@@ -73,7 +73,7 @@ export function SkillManagementTable({
         <span role="columnheader">{t("skills.managementTable.skill")}</span>
         <span className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</span>
         <span role="columnheader">{t("skills.managementTable.runtimeStatus")}</span>
-        <span className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.tenantDistribution")}</span>
+        <span className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.catalogStatus")}</span>
         <span className="skill-management-table__updated" role="columnheader">{t("skills.managementTable.updatedAt")}</span>
         <span aria-label={t("skills.managementTable.actions")} role="columnheader" />
       </div>
@@ -176,14 +176,14 @@ export function SkillManagementTable({
 
             <div
               className="skill-management-table__distribution min-w-0"
-              data-label={t("skills.managementTable.tenantDistribution")}
+              data-label={t("skills.managementTable.catalogStatus")}
               role="cell"
             >
               <span
                 className={`skill-management-table__status ${skill.marketplace_is_active ? "skill-management-table__status--distribution" : ""}`}
               >
                 <Store aria-hidden="true" size={13} />
-                {t(tenantDistributionKey(skill))}
+                {t(catalogStatusKey(skill))}
               </span>
               {skill.published_marketplace_name ? (
                 <span

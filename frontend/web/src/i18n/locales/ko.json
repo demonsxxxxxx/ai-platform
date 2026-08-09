@@ -1605,7 +1605,7 @@
       "selectDetailPrompt": "카탈로그에서 Skill을 선택하세요.",
       "skill": "스킬",
       "tags": "태그",
-      "tenantDistribution": "카탈로그 상태",
+      "catalogStatus": "카탈로그 상태",
       "updatedAt": "업데이트 시간"
     },
     "confirmDelete": "스킬 삭제",

@@ -1607,7 +1607,7 @@
       "selectDetailPrompt": "Выберите Skill в каталоге, чтобы открыть сведения.",
       "skill": "Навык",
       "tags": "Теги",
-      "tenantDistribution": "Статус каталога",
+      "catalogStatus": "Статус каталога",
       "updatedAt": "Обновлено"
     },
     "confirmDelete": "Удалить навык",

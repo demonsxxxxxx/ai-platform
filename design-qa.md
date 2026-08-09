@@ -9,7 +9,7 @@
 
 **Full-view comparison evidence**
 
-- The implementation preserves the source hierarchy: governance status, one catalog toolbar, one canonical selected row, and a selected-Skill detail with release and capability-distribution authority rails.
+- The implementation preserves the source hierarchy: governance status, one catalog toolbar, one canonical selected row, and a selected-Skill detail with release and user-visibility controls.
 - The production sidebar and header intentionally differ from the cropped reference chrome; the requested content uses the existing application shell and theme tokens.
 - Desktop uses a balanced master-detail grid. The 768 px and 390 x 844 browser-smoke captures collapse to one column and remain vertically reachable without body-level horizontal overflow.
 
@@ -18,7 +18,7 @@
 - Catalog/detail region: the implementation removes the reference's second independent Skill list while retaining the selected detail, which is the issue's required information-architecture correction.
 - Scope editor: status, ordinary-user visibility, explicit all/restricted department mode, authoritative department multi-select, roles, save, error, and success states use existing controls and Lucide icons.
 - Typography uses the existing product font stack and weights. Spacing, borders, radii, colors, and shadows use existing theme tokens. No image assets or custom SVG/CSS drawings were introduced.
-- Copy replaces the misleading “租户分发中” catalog label with neutral catalog availability wording while retaining the explicit server contract label where authority provenance matters.
+- Product-facing copy removes tenant and internal capability-distribution terminology in favor of catalog status, user visibility, department scope, and role scope.
 
 **Comparison history**
 

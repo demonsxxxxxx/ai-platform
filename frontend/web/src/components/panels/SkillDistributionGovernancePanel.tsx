@@ -176,7 +176,7 @@ export function SkillDistributionGovernancePanel({
             Skill 可见范围
           </h2>
           <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-            此处仅配置服务端 capability-distribution；普通用户目录和运行准入仍由服务端过滤。
+            配置该 Skill 对哪些用户、部门和角色可见；实际使用权限仍由服务端校验。
           </p>
         </div>
         <button
@@ -238,7 +238,7 @@ export function SkillDistributionGovernancePanel({
                     </small>
                   </div>
                   <div>
-                    <span>租户 capability-distribution</span>
+                    <span>用户可见范围</span>
                     <strong>
                       {(selectedDistribution?.status ??
                         selectedSkill.distributionStatus) === "active" &&

@@ -1605,7 +1605,7 @@
       "selectDetailPrompt": "カタログからSkillを選択してください。",
       "skill": "スキル",
       "tags": "タグ",
-      "tenantDistribution": "カタログ状態",
+      "catalogStatus": "カタログ状態",
       "updatedAt": "更新日時"
     },
     "confirmDelete": "スキルを削除",

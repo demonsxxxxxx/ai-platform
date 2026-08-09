@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("Skill workbench separates runtime and tenant distribution without a public writer", () => {
+test("Skill workbench separates runtime and catalog visibility without a public writer", () => {
   const table = readFileSync(
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),
     "utf8",
@@ -79,7 +79,7 @@ test("management table translations stay complete across supported locales", () 
     "selectDetailPrompt",
     "skill",
     "tags",
-    "tenantDistribution",
+    "catalogStatus",
     "updatedAt",
   ];
 
