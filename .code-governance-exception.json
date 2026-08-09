@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "2b91eabf4a6a4f19898e9dbef0657025b4ba8120",
-    "scope_sha256": "8de825fbcb41eee9747ceb629a27538dcccbbcfa3cfd49dbb29d6b20789dddcc"
+    "scope_sha256": "84e4de13de422e32ecfe7949eb019a7a460d1cb8553cc7df844474a41a776151"
   },
   "expires_on": "2026-08-17",
   "owner": "issue-843-internal-test-delivery",
