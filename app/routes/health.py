@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import apply_schema, transaction
+from app.data_retention import retention_policy_projection
+from app import repositories
 from app.queue import get_queue_status, get_redis
 from app.schema_migrations import TARGET_SCHEMA_VERSION, schema_status
 from app.settings import get_settings
@@ -87,6 +89,22 @@ async def admin_status(principal: AuthPrincipal = Depends(require_principal)) ->
     return {
         "status": "ok",
         "queue": await get_queue_status(),
+    }
+
+
+@router.get("/admin/retention/status")
+async def admin_retention_status(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    settings = get_settings()
+    async with transaction() as conn:
+        backlog = await repositories.get_data_retention_backlog(conn)
+    return {
+        "status": "ok",
+        "policy": retention_policy_projection(settings),
+        "backlog": backlog,
     }
 
 

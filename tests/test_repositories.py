@@ -989,6 +989,27 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
 
 
 @pytest.mark.asyncio
+async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
+    conn = RecordingConnection()
+
+    await repositories.queue_expired_artifacts_for_deletion(conn, limit=20)
+    sql, params = conn.calls[-1]
+    assert "for update of artifacts skip locked" in sql
+    assert "sessions.status <> 'active'" in sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in sql
+    assert "insert into object_deletion_outbox" in sql
+    assert params == (20,)
+
+    await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
+    sql, params = conn.calls[-1]
+    assert "for update of memory_records skip locked" in sql
+    assert "snapshots.included_memory_ids ? memory_records.id" in sql
+    assert "sessions.status = 'active'" in sql
+    assert "delete from memory_records" in sql
+    assert params == (7, 25)
+
+
+@pytest.mark.asyncio
 async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
     query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
     assert callable(query), "dedicated authorized run-message projection is missing"

@@ -2083,6 +2083,9 @@ create table if not exists artifacts (
   manifest_json jsonb not null default '{}'::jsonb,
   retention_policy text not null default 'standard_90d',
   expires_at timestamptz,
+  lifecycle_state text not null default 'active',
+  delete_requested_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -2090,11 +2093,40 @@ alter table artifacts add column if not exists trace_id text not null default ''
 alter table artifacts add column if not exists manifest_version text not null default 'ai-platform.artifact-manifest.v1';
 alter table artifacts add column if not exists retention_policy text not null default 'standard_90d';
 alter table artifacts add column if not exists expires_at timestamptz;
+alter table artifacts add column if not exists lifecycle_state text not null default 'active';
+alter table artifacts add column if not exists delete_requested_at timestamptz;
+alter table artifacts add column if not exists deleted_at timestamptz;
+alter table artifacts drop constraint if exists chk_artifacts_lifecycle_state;
+alter table artifacts add constraint chk_artifacts_lifecycle_state
+  check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
+
+create table if not exists object_deletion_outbox (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  artifact_id text not null references artifacts(id),
+  storage_key text not null,
+  state text not null default 'pending'
+    check (state in ('pending', 'processing', 'failed', 'deleted')),
+  attempts integer not null default 0,
+  available_at timestamptz not null default now(),
+  leased_at timestamptz,
+  receipt_at timestamptz,
+  last_error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, artifact_id)
+);
+create index if not exists idx_object_deletion_outbox_claim
+  on object_deletion_outbox(state, available_at asc, created_at asc, id asc)
+  where state in ('pending', 'processing', 'failed');
 
 create index if not exists idx_files_tenant_owner_session_created
   on files(tenant_id, workspace_id, user_id, session_id, created_at desc, id desc);
 create index if not exists idx_artifacts_tenant_run_created
   on artifacts(tenant_id, run_id, created_at desc, id desc);
+create index if not exists idx_artifacts_expired_cleanup
+  on artifacts(expires_at asc, created_at asc, id asc)
+  where lifecycle_state = 'active' and expires_at is not null;
 
 create table if not exists audit_logs (
   id text primary key,

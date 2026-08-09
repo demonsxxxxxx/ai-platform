@@ -1,0 +1,121 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import pytest
+
+from app import data_retention
+
+
+@asynccontextmanager
+async def fake_transaction():
+    yield object()
+
+
+class RecordingStorage:
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.deleted = []
+
+    def delete_object(self, *, storage_key):
+        if self.fail:
+            raise RuntimeError("minio unavailable with private detail")
+        self.deleted.append(storage_key)
+
+
+def settings():
+    return SimpleNamespace(
+        data_retention_worker_cleanup_enabled=True,
+        data_retention_worker_cleanup_interval_seconds=300,
+        artifact_retention_cleanup_limit=10,
+        memory_physical_purge_limit=11,
+        memory_physical_purge_grace_days=7,
+        run_event_retention_days=0,
+        context_snapshot_retention_days=0,
+        audit_retention_days=0,
+        message_retention_days=0,
+        file_retention_days=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_retention_maintenance_receipts_successful_object_delete(monkeypatch):
+    calls = []
+    storage = RecordingStorage()
+    data_retention._next_cleanup_at = 0
+
+    async def queue(_conn, *, limit):
+        calls.append(("queue", limit))
+        return [{"tenant_id": "default", "artifact_id": "art-a"}]
+
+    async def purge(_conn, *, grace_days, limit):
+        calls.append(("purge", grace_days, limit))
+        return [{"tenant_id": "default", "id": "mem-a"}]
+
+    async def claim(_conn, *, limit):
+        return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
+
+    async def complete(_conn, **kwargs):
+        calls.append(("complete", kwargs))
+        return True
+
+    async def audit(_conn, **kwargs):
+        calls.append(("audit", kwargs["payload_json"]))
+
+    monkeypatch.setattr(data_retention, "transaction", fake_transaction)
+    monkeypatch.setattr(data_retention.repositories, "queue_expired_artifacts_for_deletion", queue)
+    monkeypatch.setattr(data_retention.repositories, "purge_deleted_memory_records", purge)
+    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
+    monkeypatch.setattr(data_retention.repositories, "complete_object_deletion", complete)
+    monkeypatch.setattr(data_retention.repositories, "append_audit_log", audit)
+
+    result = await data_retention.run_data_retention_maintenance(settings(), now=10, storage=storage)
+
+    assert result == {
+        "status": "completed",
+        "queued_artifacts": 1,
+        "purged_memory": 1,
+        "claimed_objects": 1,
+        "deleted_objects": 1,
+        "failed_objects": 0,
+    }
+    assert storage.deleted == ["private/a"]
+    assert "private/a" not in str(calls)
+
+
+@pytest.mark.asyncio
+async def test_retention_failure_records_only_safe_error_code(monkeypatch):
+    failures = []
+    data_retention._next_cleanup_at = 0
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def claim(_conn, *, limit):
+        return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
+
+    async def fail(_conn, **kwargs):
+        failures.append(kwargs)
+
+    monkeypatch.setattr(data_retention, "transaction", fake_transaction)
+    monkeypatch.setattr(data_retention.repositories, "queue_expired_artifacts_for_deletion", empty)
+    monkeypatch.setattr(data_retention.repositories, "purge_deleted_memory_records", empty)
+    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
+    monkeypatch.setattr(data_retention.repositories, "fail_object_deletion", fail)
+
+    result = await data_retention.run_data_retention_maintenance(
+        settings(), now=10, storage=RecordingStorage(fail=True)
+    )
+
+    assert result["failed_objects"] == 1
+    assert failures == [{"outbox_id": "out-a", "error_code": "object_delete_runtimeerror"}]
+
+
+def test_undecided_retention_classes_are_explicitly_fail_safe():
+    projection = data_retention.retention_policy_projection(settings())
+    assert projection["disabled_fail_safe"] == [
+        "audit",
+        "context_snapshots",
+        "files",
+        "messages",
+        "run_events",
+    ]
