@@ -912,6 +912,9 @@ async def create_run(
                 principal_roles=principal.roles,
                 principal_department_id=principal.department_id,
                 auth_source=principal.source,
+                authz_policy_version=principal.authz_policy_version,
+                authority_source=principal.authority_source or principal.source,
+                authority_checked_at=principal.authority_checked_at or None,
                 run_id=run_id,
             )
             await repositories.insert_run_skill_snapshots_at_creation(

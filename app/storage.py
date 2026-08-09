@@ -80,6 +80,11 @@ class ObjectStorage:
         finally:
             body.close()
 
+    def delete_object(self, *, storage_key: str) -> None:
+        """Idempotently delete one object; PostgreSQL owns durable receipts."""
+
+        self.client.delete_object(Bucket=self.bucket, Key=storage_key)
+
     def presigned_get_url(self, *, storage_key: str, expires_in_seconds: int = 300) -> str:
         return self.client.generate_presigned_url(
             ClientMethod="get_object",

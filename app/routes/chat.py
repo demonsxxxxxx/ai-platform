@@ -1,6 +1,10 @@
+import base64
+import binascii
 import hashlib
+import json
 import logging
-from typing import Any
+from datetime import datetime
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -104,6 +108,44 @@ _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
 _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
 _SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
+_MESSAGE_CURSOR_VERSION = 1
+
+
+def _encode_message_cursor(row: dict[str, Any], *, session_id: str) -> str:
+    created_at = row.get("created_at")
+    if isinstance(created_at, datetime):
+        created_at = created_at.isoformat()
+    if not isinstance(created_at, str) or not created_at:
+        raise ValueError("message_cursor_invalid")
+    payload = {
+        "v": _MESSAGE_CURSOR_VERSION,
+        "session_id": session_id,
+        "created_at": created_at,
+        "message_id": str(row.get("id") or ""),
+    }
+    if not payload["message_id"]:
+        raise ValueError("message_cursor_invalid")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_message_cursor(value: str, *, session_id: str) -> tuple[datetime, str]:
+    try:
+        padding = "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(f"{value}{padding}").decode("utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != _MESSAGE_CURSOR_VERSION
+            or payload.get("session_id") != session_id
+        ):
+            raise ValueError
+        created_at = datetime.fromisoformat(str(payload["created_at"]).replace("Z", "+00:00"))
+        message_id = str(payload["message_id"])
+        if created_at.tzinfo is None or not message_id or len(message_id) > 200:
+            raise ValueError
+        return created_at, message_id
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="message_cursor_invalid") from exc
 
 
 class _ChatSubmissionNoStoreRoute(APIRoute):
@@ -1193,6 +1235,8 @@ async def create_chat_session(
 @router.get("/chat/sessions/{session_id}/messages", response_model=ChatMessagesResponse)
 async def list_messages(
     session_id: str,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=1000)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatMessagesResponse:
     async with transaction() as conn:
@@ -1204,12 +1248,16 @@ async def list_messages(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        rows = await repositories.list_authorized_messages(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-        )
+        boundary = _decode_message_cursor(cursor, session_id=session_id) if cursor is not None else None
+        message_query: dict[str, Any] = {
+            "tenant_id": principal.tenant_id,
+            "user_id": principal.user_id,
+            "session_id": session_id,
+        }
+        if boundary is not None or limit != 100:
+            message_query.update({"cursor": boundary, "limit": limit + 1})
+        rows = await repositories.list_authorized_messages(conn, **message_query)
+    page = rows[:limit]
     return ChatMessagesResponse(
         messages=[
             ChatMessageResponse(
@@ -1221,8 +1269,9 @@ async def list_messages(
                 metadata=_message_metadata(row, principal),
                 created_at=row.get("created_at"),
             )
-            for row in rows
-        ]
+            for row in page
+        ],
+        next_cursor=_encode_message_cursor(page[-1], session_id=session_id) if len(rows) > limit and page else None,
     )
 
 
@@ -2012,6 +2061,9 @@ async def chat_stream(
                 "principal_roles": principal.roles,
                 "principal_department_id": principal.department_id,
                 "auth_source": principal.source,
+                "authz_policy_version": principal.authz_policy_version,
+                "authority_source": principal.authority_source or principal.source,
+                "authority_checked_at": principal.authority_checked_at or None,
             }
             if admitted_agent_profile is not None:
                 run_create_kwargs.update(

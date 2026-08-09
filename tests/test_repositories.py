@@ -13,6 +13,7 @@ import pytest
 
 from app import agent_conversation_repository, repositories
 from app import run_event_repository
+from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
@@ -783,7 +784,8 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "from messages" in messages_sql
     assert "tenant_id = %s and session_id = %s" in messages_sql
     assert "order by created_at asc, id asc" in messages_sql
-    assert messages_params == ("tenant-a", "session-a")
+    assert "limit %s" in messages_sql
+    assert messages_params == ("tenant-a", "session-a", 201)
 
 
 @pytest.mark.asyncio
@@ -970,7 +972,52 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
     assert "messages.session_id = %s" in sql
     assert "sessions.user_id = %s" in sql
     assert "order by messages.created_at asc, messages.id asc" in sql
-    assert params == ("tenant-a", "session-a", "user-a")
+    assert "limit %s" in sql
+    assert params == ("tenant-a", "session-a", "user-a", 101)
+
+    boundary = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    await repositories.list_authorized_messages(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        cursor=(boundary, "msg-a"),
+        limit=50,
+    )
+    sql, params = conn.calls[-1]
+    assert "(messages.created_at, messages.id) > (%s, %s)" in sql
+    assert params == ("tenant-a", "session-a", "user-a", boundary, "msg-a", 50)
+
+
+@pytest.mark.asyncio
+async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
+    class RetentionConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if len(self.calls) == 1:
+                return SingleRowCursor({"id": "artifact-a", "tenant_id": "tenant-a", "storage_key": "a"})
+            return FakeCursor()
+
+    conn = RetentionConnection()
+    await repositories.queue_expired_artifacts_for_deletion(conn, limit=20)
+    lock_sql, lock_params = conn.calls[0]
+    write_sql, write_params = conn.calls[1]
+    assert "for update of artifacts skip locked" in lock_sql
+    assert "sessions.status <> 'active'" in lock_sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in lock_sql
+    assert lock_params == (20,)
+    assert "insert into object_deletion_outbox" in write_sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert json.loads(write_params[0]) == ["artifact-a"]
+
+    await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
+    sql, params = conn.calls[-1]
+    assert "for update of memory_records skip locked" in sql
+    assert "snapshots.included_memory_record_ids ? memory_records.id" in sql
+    assert "sessions.status = 'active'" in sql
+    assert "delete from memory_records" in sql
+    assert params == (7, 25)
 
 
 @pytest.mark.asyncio
@@ -1687,6 +1734,46 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert copied["skill_manifests"] == [source_manifest]
     assert copied["file_ids"] == ["file-prior"]
     assert not any(sql.startswith("update files") for sql, _params in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_copy_run_rejects_expanded_resume_input_before_generation_write(monkeypatch):
+    async def get_source(*_args, **_kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "workspace-a",
+            "session_id": "session-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "principal_roles": ["user"],
+            "principal_department_id": "qa",
+            "auth_source": "company-login",
+            "input_json": {"input": {"message": "retry"}},
+        }
+
+    async def allow(*_args, **_kwargs):
+        return None
+
+    async def oversized_resume(*_args, **_kwargs):
+        return {"step-a": {"value": "x" * RUN_INPUT_MAX_BYTES}}, {}
+
+    async def forbidden_generation(*_args, **_kwargs):
+        raise AssertionError("oversized copied input must fail before session generation allocation")
+
+    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
+    monkeypatch.setattr(repositories, "require_replay_source_identity", lambda **_kwargs: None)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", allow)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", allow)
+    monkeypatch.setattr(repositories, "_completed_steps_for_resume", oversized_resume)
+    monkeypatch.setattr(repositories, "allocate_session_run_generation", forbidden_generation)
+
+    with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
+        )
 
 
 @pytest.mark.asyncio
@@ -5109,6 +5196,8 @@ async def test_create_context_snapshot_persists_scope_and_context_contract():
     assert "eligible_message_count = jsonb_array_length(message_ids)" in sql
     assert "eligible_file_count = jsonb_array_length(file_ids)" in sql
     assert "eligible_artifact_count = jsonb_array_length(artifact_ids)" in sql
+    assert "locked_artifacts as materialized" in sql
+    assert "for update of artifacts" in sql
     assert "eligible_memory_record_count = jsonb_array_length(memory_record_ids)" in sql
     assert "runs.workspace_id = %s" not in sql
     assert "runs.session_id = %s" not in sql
@@ -9309,8 +9398,14 @@ async def test_upsert_run_step_merges_existing_payload_on_conflict():
         payload_json={"checkpoint_reused": True, "output": "code output"},
     )
 
-    sql, _params = conn.calls[0]
-    assert "payload_json = run_steps.payload_json || excluded.payload_json" in sql
+    assert conn.calls[0][0].startswith("select pg_advisory_xact_lock")
+    assert conn.calls[1][0].endswith("for update")
+    update_sql, update_params = conn.calls[2]
+    assert update_sql.startswith("update run_steps")
+    assert json.loads(update_params[5]) == {
+        "checkpoint_reused": True,
+        "output": "code output",
+    }
 
 
 @pytest.mark.asyncio
@@ -10160,17 +10255,23 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
     )
 
     sql, params = conn.calls[0]
-    assert "update runs" in sql
-    assert "coalesce(input_json, '{}'::jsonb) || %s::jsonb" in sql
+    assert "select id, input_json" in sql
+    assert sql.endswith("for update")
     assert "tenant_id = %s and id = %s" in sql
     assert params == (
-        json.dumps(execution_snapshot, ensure_ascii=False),
         "default",
         "run-a",
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+    )
+    update_sql, update_params = conn.calls[1]
+    assert update_sql.startswith("update runs set input_json = %s::jsonb")
+    assert update_params == (
+        repositories.compact_json_dumps(execution_snapshot),
+        "default",
+        "run-a",
     )
 
 
@@ -10198,16 +10299,15 @@ async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_
         execution_snapshot=execution_snapshot,
     )
 
-    assert len(conn.calls) == 1
+    assert len(conn.calls) == 2
     _, params = conn.calls[0]
     assert params == (
-        json.dumps(execution_snapshot, ensure_ascii=False),
         "tenant-a",
         "run-empty",
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
     )
 
 

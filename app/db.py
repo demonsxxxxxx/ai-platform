@@ -168,6 +168,8 @@ async def transaction() -> AsyncIterator[AsyncConnection]:
 
 
 async def apply_schema() -> None:
-    sql = SCHEMA_PATH.read_text(encoding="utf-8")
-    async with transaction() as conn:
-        await conn.execute(sql)
+    """Compatibility entrypoint routed through versioned migrations."""
+
+    from app.schema_migrations import apply_migrations
+
+    await apply_migrations()

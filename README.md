@@ -4,7 +4,8 @@ Thin platform service for the enterprise AI Agent platform.
 
 ## Responsibilities
 
-- Owns tenant, workspace, agent, skill, session, run, file, artifact, and run event facts.
+- Owns the fixed deployment scope plus workspace, user, agent, skill, session,
+  run, file, artifact, and run-event facts. It is not a tenant-management product.
 - Stores uploaded files and generated artifacts in MinIO/S3.
 - Enqueues AI runs for worker execution.
 - Delegates execution to adapters such as the existing 211 review runtime.
@@ -38,9 +39,16 @@ curl -b "ai_platform_session=<cookie>" http://127.0.0.1:8020/api/ai/auth/me
 ## Smoke test
 
 ```powershell
-curl -X POST http://127.0.0.1:8020/api/ai/admin/apply-schema
-curl http://127.0.0.1:8020/api/ai/health
+python -m app.schema_migrations apply
+python -m app.schema_migrations status
+curl http://127.0.0.1:8020/api/ai/ready
 ```
+
+Compose runs the same migration command as a one-shot dependency before the API
+or worker starts. The authenticated `/admin/apply-schema` route remains only as
+an emergency-compatible wrapper around the versioned migration runner. See
+`docs/architecture/single-enterprise-data-lifecycle.md` for the identity,
+schema, retention, and rollback contract.
 
 ## Worker
 

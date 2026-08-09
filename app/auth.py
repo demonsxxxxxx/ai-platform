@@ -5,6 +5,7 @@ from hmac import compare_digest
 import hmac
 import json
 import time
+from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
 from fastapi import HTTPException, Request, status
@@ -45,6 +46,13 @@ class AuthPrincipal:
     roles: list[str] = field(default_factory=list)
     permissions: list[str] = field(default_factory=list)
     source: str = "trusted-header"
+    authz_policy_version: int = COMPANY_AUTHZ_POLICY_VERSION
+    authority_source: str = ""
+    authority_checked_at: str = ""
+
+
+def authority_checked_at_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -65,6 +73,8 @@ def principal_from_trusted_headers(headers: Mapping[str, str]) -> AuthPrincipal 
         department_id=lowered.get("x-ai-department-id", "").strip(),
         roles=_split_csv(lowered.get("x-ai-roles")),
         permissions=_split_csv(lowered.get("x-ai-permissions")),
+        authority_source="trusted-gateway",
+        authority_checked_at=authority_checked_at_now(),
     )
 
 
@@ -93,10 +103,14 @@ def principal_to_response(principal: AuthPrincipal) -> dict[str, object]:
         "user_name": principal.user_id,
         "display_name": principal.display_name,
         "tenant_id": principal.tenant_id,
+        "department_id": principal.department_id,
         "roles": principal.roles,
         "permissions": principal.permissions,
         "is_admin": is_ai_admin(principal),
         "source": principal.source,
+        "authz_policy_version": principal.authz_policy_version,
+        "authority_source": principal.authority_source or principal.source,
+        "authority_checked_at": principal.authority_checked_at,
     }
 
 
@@ -130,11 +144,12 @@ def sign_principal_session(principal: AuthPrincipal) -> str:
         "roles": principal.roles,
         "permissions": principal.permissions,
         "source": principal.source,
+        "authz_policy_version": principal.authz_policy_version,
+        "authority_source": principal.authority_source,
+        "authority_checked_at": principal.authority_checked_at,
         "iat": now,
         "exp": now + int(settings.ai_session_max_age_seconds),
     }
-    if principal.source == "company-login":
-        payload["authz_policy_version"] = COMPANY_AUTHZ_POLICY_VERSION
     header_part = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
     payload_part = _b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     signing_input = f"{header_part}.{payload_part}"
@@ -176,16 +191,60 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         roles=[str(item) for item in payload.get("roles") or []],
         permissions=[str(item) for item in payload.get("permissions") or []],
         source=source,
+        authz_policy_version=int(payload.get("authz_policy_version") or 0),
+        authority_source=str(payload.get("authority_source") or ""),
+        authority_checked_at=str(payload.get("authority_checked_at") or ""),
     )
 
 
+def _enforce_deployment_scope(principal: AuthPrincipal, settings: object) -> AuthPrincipal:
+    if getattr(settings, "deployment_environment", "development") != "production":
+        return principal
+    configured_scope = getattr(settings, "default_tenant_id", None)
+    if configured_scope is not None and principal.tenant_id != str(configured_scope):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tenant_scope_not_allowed")
+    return principal
+
+
+def _enforce_company_authority_freshness(
+    principal: AuthPrincipal,
+    settings: object,
+) -> AuthPrincipal:
+    """Fail closed when a company-derived authorization snapshot is stale."""
+
+    if principal.source != "company-login":
+        return principal
+    if principal.authz_policy_version != COMPANY_AUTHZ_POLICY_VERSION:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_session")
+    if not principal.authority_source.strip() or not principal.authority_checked_at.strip():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+    try:
+        checked_at = datetime.fromisoformat(principal.authority_checked_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_authority",
+        ) from exc
+    if checked_at.tzinfo is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+    age_seconds = (datetime.now(timezone.utc) - checked_at.astimezone(timezone.utc)).total_seconds()
+    max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 15 * 60))
+    if age_seconds < -60 or age_seconds > max_age_seconds:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+    return principal
+
+
 async def require_principal(request: Request) -> AuthPrincipal:
+    settings = get_settings()
     principal = principal_from_trusted_headers(request.headers)
     if principal is None:
         authorization = request.headers.get("authorization", "")
         if authorization.lower().startswith("bearer "):
-            return verify_principal_session(authorization[7:].strip())
-        settings = get_settings()
+            bearer_principal = verify_principal_session(authorization[7:].strip())
+            return _enforce_deployment_scope(
+                _enforce_company_authority_freshness(bearer_principal, settings),
+                settings,
+            )
         context_handle = request.cookies.get(
             getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
             "",
@@ -202,7 +261,7 @@ async def require_principal(request: Request) -> AuthPrincipal:
             except AuthContextError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
             if snapshot is not None:
-                return AuthPrincipal(
+                browser_principal = AuthPrincipal(
                     user_id=str(snapshot["user_id"]),
                     display_name=str(snapshot["display_name"]),
                     tenant_id=str(snapshot["tenant_id"]),
@@ -210,16 +269,22 @@ async def require_principal(request: Request) -> AuthPrincipal:
                     roles=[str(item) for item in snapshot["roles"]],
                     permissions=[str(item) for item in snapshot["permissions"]],
                     source=str(snapshot["source"]),
+                    authz_policy_version=int(snapshot["authz_policy_version"]),
+                    authority_source=str(snapshot["authority_source"]),
+                    authority_checked_at=str(snapshot["authority_checked_at"]),
+                )
+                return _enforce_deployment_scope(
+                    _enforce_company_authority_freshness(browser_principal, settings),
+                    settings,
                 )
     if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing_authenticated_principal",
         )
-    settings = get_settings()
     expected_secret = settings.trusted_principal_secret
     if settings.frontend_poc_auth_enabled and not request.headers.get("x-ai-gateway-secret", ""):
-        return AuthPrincipal(
+        return _enforce_deployment_scope(AuthPrincipal(
             user_id=principal.user_id,
             display_name=principal.display_name,
             tenant_id=principal.tenant_id,
@@ -227,7 +292,10 @@ async def require_principal(request: Request) -> AuthPrincipal:
             roles=principal.roles,
             permissions=principal.permissions,
             source="frontend-poc",
-        )
+            authz_policy_version=principal.authz_policy_version,
+            authority_source="frontend-poc",
+            authority_checked_at=principal.authority_checked_at,
+        ), settings)
     if not expected_secret:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -239,4 +307,4 @@ async def require_principal(request: Request) -> AuthPrincipal:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="invalid_gateway_principal_secret",
         )
-    return principal
+    return _enforce_deployment_scope(principal, settings)

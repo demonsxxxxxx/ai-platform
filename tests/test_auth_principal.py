@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +21,15 @@ from app.auth import (
 
 
 def session_settings():
-    return SimpleNamespace(ai_session_secret="synthetic-secret", ai_session_max_age_seconds=28800)
+    return SimpleNamespace(
+        ai_session_secret="synthetic-secret",
+        ai_session_max_age_seconds=28800,
+        auth_context_cookie_name="ai_platform_auth_context",
+        company_authority_freshness_seconds=900,
+        deployment_environment="development",
+        trusted_principal_secret="gateway-secret",
+        frontend_poc_auth_enabled=False,
+    )
 
 
 def sign_legacy_session(payload: dict[str, object]) -> str:
@@ -147,6 +156,99 @@ def test_non_company_signed_session_remains_compatible_without_policy_version(mo
     assert principal.roles == ["user"]
 
 
+def _browser_company_snapshot(*, policy_version: int = 1, checked_at: str | None = None) -> dict[str, object]:
+    return {
+        "user_id": "browser-user",
+        "display_name": "Browser User",
+        "tenant_id": "default",
+        "department_id": "qa",
+        "roles": ["user"],
+        "permissions": ["agent:use"],
+        "source": "company-login",
+        "authz_policy_version": policy_version,
+        "authority_source": "company-user-info",
+        "authority_checked_at": checked_at or datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _browser_authority_app() -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/auth/me")
+    async def auth_me(principal: AuthPrincipal = Depends(require_principal)):
+        return {
+            "user_id": principal.user_id,
+            "authz_policy_version": principal.authz_policy_version,
+            "authority_source": principal.authority_source,
+            "authority_checked_at": principal.authority_checked_at,
+        }
+
+    @app.post("/runs")
+    async def run_admission(principal: AuthPrincipal = Depends(require_principal)):
+        return {
+            "department_id": principal.department_id,
+            "roles": principal.roles,
+            "permissions": principal.permissions,
+            "authz_policy_version": principal.authz_policy_version,
+            "authority_source": principal.authority_source,
+            "authority_checked_at": principal.authority_checked_at,
+        }
+
+    return app
+
+
+def test_browser_principal_preserves_authority_facts_through_me_and_run_admission(monkeypatch):
+    snapshot = _browser_company_snapshot()
+
+    async def principal_for_context(_handle, _settings):
+        return snapshot
+
+    monkeypatch.setattr("app.auth.get_settings", session_settings)
+    monkeypatch.setattr("app.auth.principal_for_context", principal_for_context)
+    client = TestClient(_browser_authority_app())
+    client.cookies.set("ai_platform_auth_context", "context-handle")
+
+    me_response = client.get("/auth/me")
+    admission_response = client.post("/runs")
+
+    assert me_response.status_code == 200
+    assert admission_response.status_code == 200
+    for field in ("authz_policy_version", "authority_source", "authority_checked_at"):
+        assert me_response.json()[field] == snapshot[field]
+        assert admission_response.json()[field] == snapshot[field]
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "detail"),
+    [
+        (_browser_company_snapshot(policy_version=2), "stale_company_session"),
+        (
+            _browser_company_snapshot(
+                checked_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()
+            ),
+            "stale_company_authority",
+        ),
+    ],
+)
+def test_browser_principal_stale_policy_or_authority_fails_closed_for_me_and_admission(
+    monkeypatch,
+    snapshot,
+    detail,
+):
+    async def principal_for_context(_handle, _settings):
+        return snapshot
+
+    monkeypatch.setattr("app.auth.get_settings", session_settings)
+    monkeypatch.setattr("app.auth.principal_for_context", principal_for_context)
+    client = TestClient(_browser_authority_app())
+    client.cookies.set("ai_platform_auth_context", "context-handle")
+
+    for method, path in ((client.get, "/auth/me"), (client.post, "/runs")):
+        response = method(path)
+        assert response.status_code == 401
+        assert response.json()["detail"] == detail
+
+
 def test_require_principal_rejects_forged_headers_without_gateway_secret(monkeypatch):
     monkeypatch.setattr(
         "app.auth.get_settings",
@@ -222,6 +324,35 @@ def test_require_principal_accepts_gateway_signed_principal(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"user_id": "u-001"}
+
+
+def test_require_principal_rejects_cross_deployment_tenant_from_trusted_gateway(monkeypatch):
+    monkeypatch.setattr(
+        "app.auth.get_settings",
+        lambda: SimpleNamespace(
+            trusted_principal_secret="secret",
+            frontend_poc_auth_enabled=False,
+            default_tenant_id="default",
+            deployment_environment="production",
+        ),
+    )
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(principal: AuthPrincipal = Depends(require_principal)):
+        return {"user_id": principal.user_id}
+
+    response = TestClient(app).get(
+        "/probe",
+        headers={
+            "x-ai-user-id": "u-001",
+            "x-ai-tenant-id": "customer-a",
+            "x-ai-gateway-secret": "secret",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tenant_scope_not_allowed"
 
 
 def test_require_principal_accepts_frontend_poc_principal_only_when_enabled(monkeypatch):

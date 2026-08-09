@@ -7,7 +7,10 @@ from fastapi.responses import JSONResponse
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import apply_schema, transaction
+from app.data_retention import retention_policy_projection
+from app import repositories
 from app.queue import get_queue_status, get_redis
+from app.schema_migrations import TARGET_SCHEMA_VERSION, schema_status
 from app.settings import get_settings
 
 router = APIRouter()
@@ -24,6 +27,13 @@ async def health() -> dict[str, str]:
 async def _probe_postgresql() -> None:
     async with transaction() as conn:
         await conn.execute("select 1")
+
+
+async def _probe_schema() -> None:
+    async with transaction() as conn:
+        status = await schema_status(conn)
+    if not status["ready"]:
+        raise RuntimeError("schema_not_current")
 
 
 async def _probe_redis() -> None:
@@ -51,11 +61,12 @@ async def _dependency_status(
 async def readiness() -> JSONResponse:
     settings = get_settings()
     timeout_seconds = float(settings.datastore_readiness_timeout_seconds)
-    postgresql, redis = await asyncio.gather(
+    postgresql, schema, redis = await asyncio.gather(
         _dependency_status(_probe_postgresql, timeout_seconds=timeout_seconds),
+        _dependency_status(_probe_schema, timeout_seconds=timeout_seconds),
         _dependency_status(_probe_redis, timeout_seconds=timeout_seconds),
     )
-    ready = postgresql == redis == "ok"
+    ready = postgresql == schema == redis == "ok"
     return JSONResponse(
         status_code=200 if ready else 503,
         content={
@@ -63,6 +74,8 @@ async def readiness() -> JSONResponse:
             "runtime_commit": os.environ.get("AI_PLATFORM_RUNTIME_COMMIT", "unknown"),
             "dependencies": {
                 "postgresql": postgresql,
+                "schema": schema,
+                "target_schema_version": TARGET_SCHEMA_VERSION,
                 "redis": redis,
             },
         },
@@ -77,6 +90,51 @@ async def admin_status(principal: AuthPrincipal = Depends(require_principal)) ->
         "status": "ok",
         "queue": await get_queue_status(),
     }
+
+
+@router.get("/admin/retention/status")
+async def admin_retention_status(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    settings = get_settings()
+    policy = retention_policy_projection(settings)
+    async with transaction() as conn:
+        backlog = await repositories.get_data_retention_backlog(
+            conn,
+            retention_days=dict(policy["configurable_retention_days"]),
+        )
+    return {
+        "status": "ok",
+        "policy": policy,
+        "backlog": backlog,
+        "alerts": {
+            "object_delete_dead_letter": backlog["object_delete_dead_letter"] > 0,
+            "object_delete_reconcile_required": backlog[
+                "object_delete_reconcile_required"
+            ]
+            > 0,
+        },
+    }
+
+
+@router.post("/admin/retention/object-deletions/{outbox_id}/requeue")
+async def admin_requeue_object_deletion(
+    outbox_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    async with transaction() as conn:
+        requeued = await repositories.requeue_dead_letter_object_deletion(
+            conn,
+            outbox_id=outbox_id,
+            tenant_id=principal.tenant_id,
+        )
+    if not requeued:
+        raise HTTPException(status_code=409, detail="object_deletion_not_requeueable")
+    return {"status": "requeued", "outbox_id": outbox_id}
 
 
 @router.post("/admin/apply-schema")
