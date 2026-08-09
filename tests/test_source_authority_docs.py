@@ -72,8 +72,18 @@ def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
     assert "tls/upstream-ca.pem" in runbook
     assert "system trust store" in runbook
     assert "Before an ai-platform provider switch" in runbook
-    assert "/var/lib/opensandbox-gateway-deploy/install.lock" in runbook
+    assert "/run/lock/opensandbox-gateway-s72-install.lock" in runbook
     assert "recovery snapshot" in runbook
+    assert "install-s72.sh --recover" in runbook
+    assert "same-parent rename" in runbook
+    assert "MANIFEST.identity" in runbook and "SNAPSHOT.seal" in runbook
+    assert "self-authenticating transaction-record chain" in runbook
+    assert "reserved -> snapshot-published -> release-published -> staged" in runbook
+    assert "runtime-restored -> committed -> cleaned" in runbook
+    assert "device/inode" in runbook
+    assert "exactly one `LISTEN` `127.0.0.1:8080`" in runbook
+    assert "left untouched and recovery fails closed" in runbook
+    assert "They do not prove a live systemd/Docker deployment" in runbook
     assert "cannot establish a `211 verified` claim" in runbook
 
 

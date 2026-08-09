@@ -20,7 +20,9 @@ its real path is non-symlinked, every path is root-owned, `HEAD`,
 `OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA` are the same 40-character commit.
 The installer archives only the gateway and deployment subjects into an immutable
 root-owned release below `/opt/opensandbox-gateway/releases/<commit>`, verifies
-its manifest, and atomically changes `current` only after the service checks.
+its manifest, applies the sealed desired state through the recovery transaction,
+and commits only after the current pointer, service state, and listener are all
+revalidated.
 
 Use the live scripts, with values obtained through the authorized host procedure:
 
@@ -75,12 +77,52 @@ redacted, subject-bound remote evidence through that authorized procedure.
 
 ## Snapshot, Rollback, And Recovery
 
-`install-s72.sh` holds `/var/lib/opensandbox-gateway-deploy/install.lock` and
-creates a root-only snapshot of gateway units, configuration, workspace ACL,
-authority state, and the current release pointer before mutation. On an install
-failure it restores that snapshot; if restoration fails, it preserves the unique
-recovery snapshot and exits fail-closed for operator recovery. Do not delete or
-edit that snapshot to continue an installation.
+`install-s72.sh` first opens and locks the trusted, pre-existing
+`/run/lock/opensandbox-gateway-s72-install.lock`; it performs no persistent
+bootstrap before this lock is held. It creates a private transaction-owned
+snapshot stage below `/var/lib/opensandbox-gateway-deploy/snapshots`, on the same
+filesystem as the final snapshot. The stage has a closed typed inventory: only
+the declared unit, configuration, ACL, authority, current-pointer, rollback-pointer,
+lifecycle, manifest, and marker payloads are allowed. Marker and payload presence
+is biconditional. Symlinks, FIFOs, sockets, devices, unknown entries, mixed marker
+states, and foreign or replaced inodes fail closed.
+
+Every snapshot file and directory is flushed before `MANIFEST.identity` and
+`SNAPSHOT.seal` are created in the private stage. The already sealed stage is
+published by one same-parent rename, the snapshots parent is flushed, and the
+published root identity and seal are checked again. A manifest never describes a
+different pre-publication root.
+
+Each install or rollback has one immutable, self-authenticating transaction-record
+chain under `/var/lib/opensandbox-gateway-deploy/transactions`. Records bind the
+operation, sequence, phase, source and destination commits, non-secret evidence,
+recovery and apply snapshots, stage identity, and prior record seal. The supported
+phases cover reservation, snapshot and release publication, staging, stop intent,
+each restore mutation, revalidation, runtime restore, commit, and cleanup. A torn,
+unknown, out-of-order, replaced, or corrupt record is preserved and rejected; it
+is never repaired by deleting or editing state.
+
+The normal install chain is `reserved -> snapshot-published ->
+release-published -> staged -> stop-intent -> stopped -> units-applied ->
+config-applied -> acl-applied -> authority-applied -> pointer-applied ->
+current-applied -> revalidated -> runtime-restored -> committed -> cleaned`.
+Rollback omits `release-published`; crash recovery records `recovering` before it
+re-enters at `staged`. Only the transitions encoded by this chain are valid.
+
+On process death or a partial install/rollback failure, run only the supported
+recovery entry after reacquiring the same mutation lease:
+
+```sh
+sudo deploy/opensandbox/install-s72.sh --recover
+```
+
+Recovery verifies the sealed snapshot and transaction chain, accepts live files
+only when they match either the recovery or apply snapshot, then resumes the
+journaled restore. Private stages are removed only when their recorded transaction
+and root device/inode still match. An unknown pre-existing or replaced object is
+left untouched and recovery fails closed. If automatic recovery cannot finish,
+the transaction and its unique recovery snapshot remain authoritative evidence;
+do not manually delete, rename, or edit them.
 
 Use the live rollback script only with a freshly resolved authority SHA and a
 new non-secret evidence ID:
@@ -92,12 +134,27 @@ sudo env \
   deploy/opensandbox/rollback-s72.sh
 ```
 
-Rollback verifies the root-owned snapshot manifest, confined release path,
-recorded release provenance, and that the rollback release remains an ancestor
-of the supplied fresh authority. It restores the prior units, configuration,
-ACL, authority state, enable/active state, and release pointer (or their prior
-absence), then rechecks local OpenSandbox health. It never changes ai-platform
+Rollback verifies the root-owned snapshot manifest and seal, confined release
+path, recorded release provenance, and the source/evidence identity captured in
+the snapshot. The freshly supplied authority still gates the current source, but
+cannot rewrite the sealed rollback subject. Before the first stop or file change,
+the engine validates the current units, configuration, ACL and pointer identities,
+the exact `opensandbox.service` fragment, and exactly one `LISTEN`
+`127.0.0.1:8080` endpoint. Substring ports such as `80800` or `18080`, wildcard
+listeners, IPv6 aliases, duplicates, missing listeners, and lifecycle drift fail
+before mutation.
+
+The transaction restores the prior units, configuration, ACL, authority state,
+enable/active state, and release pointer (or their prior absence), revalidates the
+complete filesystem state before restart, and verifies lifecycle/listener state
+again before commit. Absent unit/config snapshots are accepted only with their
+sealed lifecycle authority; otherwise they fail closed. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces
 the separate 211 release/rollback authority. Suspected secret exposure requires
 the designated security response and downstream secret rotation before further
 use.
+
+Repository tests and required Ubuntu CI prove source contracts, POSIX node and
+race handling, transaction replay, and complete module collection. They do not
+prove a live systemd/Docker deployment, a registry artifact, an s72 host rollback,
+or 211 runtime acceptance. Those remain separate authorized host gates.

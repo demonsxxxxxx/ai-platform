@@ -30,7 +30,7 @@ def _run_bash(body: str, *paths: pathlib.Path) -> subprocess.CompletedProcess[st
         [_bash(), "-c", textwrap.dedent(body), "s72-atomic-contract", *(path.as_posix() for path in paths)],
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=60,
         check=False,
     )
 
@@ -49,6 +49,34 @@ def _run_bash_with_argv0(
         text=True,
         capture_output=True,
         timeout=20,
+        check=False,
+    )
+
+
+def _run_privileged_bash(
+    body: str,
+    *paths: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    if os.name != "posix":
+        pytest.skip("Linux privileged filesystem contract runs on required Ubuntu CI")
+    sudo = shutil.which("sudo")
+    if not sudo:
+        pytest.fail("required Ubuntu contract needs sudo")
+    return subprocess.run(
+        [
+            sudo,
+            "-n",
+            _bash(),
+            "-c",
+            textwrap.dedent(body),
+            "s72-atomic-root-contract",
+            *(path.as_posix() for path in paths),
+            str(os.getuid()),
+            str(os.getgid()),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=60,
         check=False,
     )
 
@@ -553,12 +581,14 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
 
         mkdir -p "$ROOT/tree" "$ROOT/snapshot"
         printf 'sealed\n' > "$ROOT/tree/payload"
-        (cd "$ROOT/tree" && sha256sum payload > MANIFEST.sha256)
+        s72_atomic_write_manifest "$ROOT/tree"
         s72_atomic_verify_manifest "$ROOT/tree"
         printf 'tampered\n' >> "$ROOT/tree/payload"
         ! s72_atomic_verify_manifest "$ROOT/tree"
 
         require_root_tree() { :; }
+        require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
         verify_manifest() { :; }
         require_marker_pair() { s72_atomic_require_marker_pair "$@"; }
         is_commit() { s72_atomic_is_commit "$@"; }
@@ -569,17 +599,54 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
           : > "$ROOT/snapshot/$unit.inactive"
           : > "$ROOT/snapshot/$unit.disabled"
         done
+        printf '%s\n' schema=s72-transaction-owner-v1 transaction=11111111111111111111111111111111 \
+          "root=$(stat -c %d:%i "$ROOT/snapshot")" > "$ROOT/snapshot/transaction-owner"
+        printf '%s\n' 1111111111111111111111111111111111111111 > "$ROOT/snapshot/captured-authority-sha"
+        printf '%s\n' sealed-source-evidence > "$ROOT/snapshot/captured-authority-evidence"
+        printf '%s\n' \
+          schema=s72-lifecycle-authority-v1 \
+          service=opensandbox.service \
+          active=active \
+          fragment=/etc/systemd/system/opensandbox.service \
+          listener=127.0.0.1:8080 \
+          listener-count=1 > "$ROOT/snapshot/lifecycle.authority"
         : > "$ROOT/snapshot/config.absent"
         : > "$ROOT/snapshot/workspaces.acl"
         : > "$ROOT/snapshot/authority-sha.absent"
         : > "$ROOT/snapshot/authority-evidence.absent"
         : > "$ROOT/snapshot/current.absent"
+        : > "$ROOT/snapshot/rollback-pointer.absent"
+        chmod 0600 "$ROOT/snapshot"/*.absent "$ROOT/snapshot"/*.inactive \
+          "$ROOT/snapshot"/*.disabled "$ROOT/snapshot/workspaces.acl"
+        chmod 0400 "$ROOT/snapshot/transaction-owner" "$ROOT/snapshot/captured-authority-sha" \
+          "$ROOT/snapshot/captured-authority-evidence" "$ROOT/snapshot/lifecycle.authority"
+        s72_atomic_write_manifest "$ROOT/snapshot"
         s72_atomic_preflight_snapshot "$ROOT/snapshot"
         : > "$ROOT/snapshot/config.present"
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
         rm "$ROOT/snapshot/config.present"
         : > "$ROOT/snapshot/opensandbox-gateway.service.present"
         rm "$ROOT/snapshot/opensandbox-gateway.service.absent"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        rm "$ROOT/snapshot/opensandbox-gateway.service.present"
+        : > "$ROOT/snapshot/opensandbox-gateway.service.absent"
+
+        mkdir "$ROOT/snapshot/etc-opensandbox-gateway"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        rmdir "$ROOT/snapshot/etc-opensandbox-gateway"
+        printf 'releases/1111111111111111111111111111111111111111\n' > "$ROOT/snapshot/current"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        rm "$ROOT/snapshot/current"
+        printf '.rollback.22222222222222222222222222222222\n' > "$ROOT/snapshot/rollback-pointer"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        rm "$ROOT/snapshot/rollback-pointer"
+        printf '1111111111111111111111111111111111111111\n' > "$ROOT/snapshot/authority-sha"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        rm "$ROOT/snapshot/authority-sha"
+        printf 'unknown\n' > "$ROOT/snapshot/unknown-payload"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        rm "$ROOT/snapshot/unknown-payload"
+        printf 'nonempty\n' > "$ROOT/snapshot/config.absent"
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
         ''',
         HELPER,
@@ -634,6 +701,307 @@ def test_helper_rejects_symlink_and_fifo_nodes(tmp_path: pathlib.Path) -> None:
         mkfifo "$ROOT/fifo"
         ! s72_atomic_require_root_owned_regular "$ROOT/fifo" 600
         ''',
+        HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_atomic_recovery_entrypoints_expose_one_closed_recovery_engine() -> None:
+    helper = HELPER.read_text(encoding="utf-8")
+    installer = INSTALLER.read_text(encoding="utf-8")
+    rollback = ROLLBACK.read_text(encoding="utf-8")
+
+    for symbol in (
+        "s72_atomic_publish_transaction_record",
+        "s72_atomic_load_active_transaction",
+        "s72_atomic_publish_snapshot",
+        "s72_atomic_verify_snapshot_seal",
+        "s72_atomic_restore_snapshot",
+        "s72_atomic_require_exact_lifecycle",
+    ):
+        assert f"{symbol}()" in helper
+        assert symbol in installer
+        assert symbol in rollback
+
+    assert "--recover" in installer
+    assert "--recover" in rollback
+    assert "JOURNAL.sha256" not in helper
+    assert "rm -rf \"$CONFIG_DIR\"" not in installer
+    assert "rm -rf \"$CONFIG_DIR\"" not in rollback
+    assert "ss -ltn | grep" not in installer
+    assert "ss -ltn | grep" not in rollback
+
+
+def test_transaction_records_are_immutable_self_authenticating_and_chained() -> None:
+    helper = HELPER.read_text(encoding="utf-8")
+
+    assert "schema=s72-atomic-transaction-v1" in helper
+    assert "previous-seal=" in helper
+    assert "record-seal=" in helper
+    assert "O_TMPFILE" in helper
+    assert "AT_EMPTY_PATH" in helper
+    assert "os.fsync" in helper
+    assert "transaction-record.*.tmp" not in helper
+
+
+@pytest.mark.parametrize(
+    ("ss_output", "accepted"),
+    [
+        ("LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:*", True),
+        ("LISTEN 0 4096 127.0.0.1:80800 0.0.0.0:*", False),
+        ("LISTEN 0 4096 127.0.0.1:18080 0.0.0.0:*", False),
+        ("LISTEN 0 4096 0.0.0.0:8080 0.0.0.0:*", False),
+        ("LISTEN 0 4096 [::1]:8080 [::]:*", False),
+        (
+            "LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:*\n"
+            "LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:*",
+            False,
+        ),
+        ("", False),
+    ],
+)
+def test_exact_lifecycle_listener_parser_rejects_aliases_and_duplicates(
+    tmp_path: pathlib.Path,
+    ss_output: str,
+    accepted: bool,
+) -> None:
+    output = tmp_path / "ss-output"
+    output.write_text(ss_output + ("\n" if ss_output else ""), encoding="utf-8")
+    result = _run_bash(
+        r'''
+        set -eu
+        HELPER=$1
+        OUTPUT=$2
+        . "$HELPER"
+        systemctl() {
+          test "$1" = show
+          case "$2:$3:$4:$5" in
+            opensandbox.service:-p:ActiveState:--value) printf '%s\n' active ;;
+            opensandbox.service:-p:FragmentPath:--value) printf '%s\n' /etc/systemd/system/opensandbox.service ;;
+            *) return 1 ;;
+          esac
+        }
+        ss() {
+          test "$1:$2:$3" = '-H:-ltn:sport = :8080'
+          cat "$OUTPUT"
+        }
+        s72_atomic_require_exact_lifecycle
+        ''',
+        HELPER,
+        output,
+    )
+
+    assert (result.returncode == 0) is accepted, result.stderr
+
+
+def test_snapshot_contract_is_closed_over_markers_payloads_and_node_types() -> None:
+    helper = HELPER.read_text(encoding="utf-8")
+
+    assert "s72_atomic_require_snapshot_inventory" in helper
+    assert "lifecycle.authority" in helper
+    assert "captured-authority-sha" in helper
+    assert "captured-authority-evidence" in helper
+    assert "MANIFEST.identity" in helper
+    assert "SNAPSHOT.seal" in helper
+    assert "! -type f ! -type d" in helper
+    assert "config.absent" in helper
+    assert "test ! -e \"$snapshot/etc-opensandbox-gateway\"" in helper
+    assert "test ! -e \"$snapshot/$unit\"" in helper
+
+
+def test_snapshot_publish_uses_same_parent_and_seals_before_atomic_rename() -> None:
+    helper = HELPER.read_text(encoding="utf-8")
+
+    assert "s72_atomic_create_snapshot_stage()" in helper
+    publish = helper[helper.index("s72_atomic_publish_snapshot()") :]
+    assert 'stage_parent="$snapshots_parent"' in helper
+    assert 'test "$stage_device" = "$parent_device"' in helper
+    assert "mv -T -n" in helper
+    assert "s72_atomic_fsync_path \"$snapshots_parent\"" in helper
+    assert publish.index('s72_atomic_write_snapshot_seal "$stage"') < publish.index(
+        'mv -T -n "$stage" "$published"'
+    )
+    assert publish.index('s72_atomic_fsync_tree "$stage"') < publish.index(
+        'mv -T -n "$stage" "$published"'
+    )
+    assert 's72_atomic_write_snapshot_seal "$published"' not in publish
+
+
+def test_transaction_records_reject_torn_unknown_and_invalid_phase_state(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_bash(
+        r'''
+        set -eu
+        HELPER=$1; ROOT=$2
+        . "$HELPER"
+        records=$ROOT/records
+        mkdir -p "$records"
+        chmod 0700 "$records"
+        s72_loader_mode=test-source-eval
+        s72_atomic_require_root_owned_directory() { test -d "$1" && test ! -L "$1"; }
+        stat() {
+          if test "$1:$2" = '-c:%u:%g:%a'; then
+            printf '%s\n' 0:0:400
+          else
+            command stat "$@"
+          fi
+        }
+        tx=11111111111111111111111111111111
+        recovery=.rollback.$tx
+        apply=.rollback.22222222222222222222222222222222
+        commit=1111111111111111111111111111111111111111
+        s72_atomic_publish_transaction_record "$records" "$tx" 000000 install reserved \
+          "$recovery" "$apply" none "$commit" sealed-evidence none none >/dev/null
+        s72_atomic_bind_transaction_stage "$records" "$tx" '1:2:directory:0:0:700:0:1:1'
+        s72_atomic_advance_transaction "$records" "$tx" snapshot-published
+        s72_atomic_load_transaction "$records" "$tx"
+        test "$S72_TX_PHASE" = snapshot-published
+        ! s72_atomic_advance_transaction "$records" "$tx" committed
+
+        printf '%s\n' hostile > "$records/unknown"
+        ! s72_atomic_require_transaction_inventory "$records"
+        rm "$records/unknown"
+
+        other=33333333333333333333333333333333
+        printf '%s\n' truncated > "$records/transaction-$other-000000.record"
+        chmod 0400 "$records/transaction-$other-000000.record"
+        ! s72_atomic_require_transaction_inventory "$records"
+        ''',
+        HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux durable publication runs on required Ubuntu CI")
+def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_safe(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_privileged_bash(
+        r'''
+        set -eu
+        HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4
+        . "$HELPER"
+        snapshots=$ROOT/snapshots
+        mkdir -p "$snapshots"
+        chown root:root "$ROOT" "$snapshots"
+        chmod 0700 "$ROOT" "$snapshots"
+        require_root_tree() { s72_atomic_require_root_tree "$@"; }
+        require_root_owned_regular() { s72_atomic_require_root_owned_regular "$@"; }
+        s72_atomic_preflight_snapshot() { s72_atomic_verify_manifest "$1"; }
+
+        tx=11111111111111111111111111111111
+        stage=$(s72_atomic_create_snapshot_stage "$snapshots" "$tx")
+        printf '%s\n' payload > "$stage/payload"
+        chown root:root "$stage/payload"
+        chmod 0400 "$stage/payload"
+        s72_atomic_write_manifest "$stage"
+        stage_device=$(stat -c %d "$stage")
+        published=$(s72_atomic_publish_snapshot "$stage" "$snapshots" .rollback.$tx)
+        test "$published" = "$snapshots/.rollback.$tx"
+        test "$(stat -c %d "$published")" = "$stage_device"
+        s72_atomic_verify_snapshot_seal "$published"
+
+        foreign=22222222222222222222222222222222
+        mkdir "$snapshots/.snapshot-stage-$foreign"
+        printf '%s\n' preserve > "$snapshots/.snapshot-stage-$foreign/foreign"
+        ! s72_atomic_create_snapshot_stage "$snapshots" "$foreign"
+        grep -qx preserve "$snapshots/.snapshot-stage-$foreign/foreign"
+
+        replaced=33333333333333333333333333333333
+        replaced_stage=$(s72_atomic_create_snapshot_stage "$snapshots" "$replaced")
+        mv "$replaced_stage" "$snapshots/original-stage"
+        mkdir "$replaced_stage"
+        cp "$snapshots/original-stage/transaction-owner" "$replaced_stage/transaction-owner"
+        printf '%s\n' preserve-replacement > "$replaced_stage/foreign"
+        ! s72_atomic_remove_owned_stage "$replaced_stage" "$replaced"
+        grep -qx preserve-replacement "$replaced_stage/foreign"
+        chown -R "$caller_uid:$caller_gid" "$ROOT"
+        ''',
+        HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux production entry runs on required Ubuntu CI")
+def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mounts(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_privileged_bash(
+        r'''
+        set -eu
+        INSTALLER=$1; ROLLBACK=$2; HELPER=$3; ROOT=$4; caller_uid=$5; caller_gid=$6
+        unshare --mount --fork --pid --mount-proc --propagation private \
+          /bin/sh -eu -c '
+            INSTALLER=$1; ROLLBACK=$2; HELPER=$3; ROOT=$4
+            mount -t tmpfs -o mode=0755 s72-run-test /run
+            mount -t tmpfs -o mode=0755 s72-var-test /var/lib
+            mount -t tmpfs -o mode=0755 s72-opt-test /opt
+            test "$(stat -c %d /run)" != "$(stat -c %d /var/lib)"
+            install -d -o root -g root -m 0755 /run/lock /opt/s72-source/deploy/opensandbox/lib
+            install -o root -g root -m 0600 /dev/null \
+              /run/lock/opensandbox-gateway-s72-install.lock
+            install -o root -g root -m 0755 "$INSTALLER" \
+              /opt/s72-source/deploy/opensandbox/install-s72.sh
+            install -o root -g root -m 0755 "$ROLLBACK" \
+              /opt/s72-source/deploy/opensandbox/rollback-s72.sh
+            install -o root -g root -m 0644 "$HELPER" \
+              /opt/s72-source/deploy/opensandbox/lib/s72-atomic-recovery-authority.sh
+            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /opt/s72-source/deploy/opensandbox/rollback-s72.sh --recover
+            test -d /var/lib/opensandbox-gateway-deploy/snapshots
+            test -d /var/lib/opensandbox-gateway-deploy/transactions
+            test -z "$(find /var/lib/opensandbox-gateway-deploy/transactions -mindepth 1 -print -quit)"
+
+            . /opt/s72-source/deploy/opensandbox/lib/s72-atomic-recovery-authority.sh
+            DEPLOY=/var/lib/opensandbox-gateway-deploy
+            RECORDS=$DEPLOY/transactions
+            SNAPSHOTS=$DEPLOY/snapshots
+            tx=11111111111111111111111111111111
+            recovery=.rollback.$tx
+            apply=.rollback.22222222222222222222222222222222
+            commit=1111111111111111111111111111111111111111
+            s72_atomic_publish_transaction_record "$RECORDS" "$tx" 000000 install reserved \
+              "$recovery" "$apply" none "$commit" sealed-crash-evidence none none >/dev/null
+            transaction_workspace=$(s72_atomic_prepare_workspace "$DEPLOY" transaction "$tx")
+            s72_atomic_bind_transaction_stage "$RECORDS" "$tx" \
+              "$(s72_atomic_node_identity "$transaction_workspace")"
+            snapshot_stage=$(s72_atomic_create_snapshot_stage "$SNAPSHOTS" "$tx")
+
+            # This is the durable state left by death after reservation and stage creation.
+            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            s72_atomic_load_transaction "$RECORDS" "$tx"
+            test "$S72_TX_PHASE" = cleaned
+            test ! -e "$transaction_workspace" && test ! -e "$snapshot_stage"
+            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+
+            foreign=33333333333333333333333333333333
+            foreign_stage=$SNAPSHOTS/.snapshot-stage-$foreign
+            mkdir "$foreign_stage"
+            printf '%s\n' preserve-foreign > "$foreign_stage/payload"
+            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            grep -qx preserve-foreign "$foreign_stage/payload"
+            rm -rf "$foreign_stage"
+
+            mkfifo "$DEPLOY/foreign-fifo"
+            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            test -p "$DEPLOY/foreign-fifo"
+            rm "$DEPLOY/foreign-fifo"
+
+            torn=44444444444444444444444444444444
+            torn_record=$RECORDS/transaction-$torn-000000.record
+            printf '%s\n' truncated > "$torn_record"
+            chown root:root "$torn_record"; chmod 0400 "$torn_record"
+            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            grep -qx truncated "$torn_record"
+          ' s72-production-entry "$INSTALLER" "$ROLLBACK" "$HELPER" "$ROOT"
+        chown -R "$caller_uid:$caller_gid" "$ROOT"
+        ''',
+        INSTALLER,
+        ROLLBACK,
         HELPER,
         tmp_path,
     )

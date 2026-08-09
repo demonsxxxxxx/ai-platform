@@ -13,8 +13,11 @@ AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
 SYSTEMD_DIR=/etc/systemd/system
 CONFIG_DIR=/etc/opensandbox-gateway
 WORKSPACE_ROOT=/data/opensandbox/workspaces
+TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+SNAPSHOTS=$DEPLOY_STATE/snapshots
+LOCK_FILE=/run/lock/opensandbox-gateway-s72-install.lock
 
-S72_ATOMIC_RECOVERY_HELPER_SHA256=1154d476f349298212dc63312a48f2da21e1318750749b61f569bd03761fbb49
+S72_ATOMIC_RECOVERY_HELPER_SHA256=ec76affc74a7b88bf3a66934bdb9eb4a63d9d8f08aac5cddc06f4f2ba76770e1
 
 s72_loader_reject() {
   printf '%s\n' 'OpenSandbox s72 loader authority rejected' >&2
@@ -161,7 +164,13 @@ for s72_loader_symbol in \
   s72_atomic_verify_manifest \
   s72_atomic_require_marker_pair \
   s72_atomic_preflight_snapshot \
-  s72_atomic_record_authority_state; do
+  s72_atomic_record_authority_state \
+  s72_atomic_publish_transaction_record \
+  s72_atomic_load_active_transaction \
+  s72_atomic_publish_snapshot \
+  s72_atomic_verify_snapshot_seal \
+  s72_atomic_restore_snapshot \
+  s72_atomic_require_exact_lifecycle; do
   command -v "$s72_loader_symbol" >/dev/null 2>&1 || s72_loader_reject
 done
 
@@ -175,6 +184,58 @@ is_authority_evidence_id() {
 
 require_root_tree() {
   s72_atomic_require_root_tree "$@"
+}
+
+require_root_owned_regular() {
+  s72_atomic_require_root_owned_regular "$@"
+}
+
+require_root_owned_directory() {
+  s72_atomic_require_root_owned_directory "$@"
+}
+
+require_gateway_config_contract_at() {
+  contract_root=$1
+  s72_atomic_require_root_owned_directory "$contract_root" 750 || return 1
+  s72_atomic_require_root_owned_directory "$contract_root/secrets" 750 || return 1
+  s72_atomic_require_root_owned_directory "$contract_root/tls" 750 || return 1
+  test -z "$(find "$contract_root" -mindepth 1 -maxdepth 1 \
+    ! -name gateway.env ! -name egress-policy.v1.json ! -name secrets ! -name tls -print -quit)" || return 1
+  test -z "$(find "$contract_root/secrets" -mindepth 1 -maxdepth 1 \
+    ! -name lifecycle-api-key ! -name capability-token ! -name record-signing-key -print -quit)" || return 1
+  test -z "$(find "$contract_root/tls" -mindepth 1 -maxdepth 1 \
+    ! -name fullchain.pem ! -name privkey.pem ! -name upstream-ca.pem -print -quit)" || return 1
+  s72_atomic_require_root_owned_regular "$contract_root/gateway.env" 640 || return 1
+  s72_atomic_require_root_owned_regular "$contract_root/egress-policy.v1.json" 640 || return 1
+  s72_atomic_require_root_owned_regular "$contract_root/tls/fullchain.pem" 640 || return 1
+  s72_atomic_require_root_owned_regular "$contract_root/tls/upstream-ca.pem" 640 || return 1
+  s72_atomic_require_root_owned_regular "$contract_root/tls/privkey.pem" 440 || return 1
+  for secret in lifecycle-api-key capability-token record-signing-key; do
+    s72_atomic_require_root_owned_regular "$contract_root/secrets/$secret" 440 || return 1
+  done
+  test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=/etc/opensandbox-gateway/tls/upstream-ca.pem' "$contract_root/gateway.env")" -eq 1
+}
+
+capture_config_metadata() (
+  tree=$1
+  require_gateway_config_contract_at "$tree" || return 1
+  cd "$tree" || return 1
+  find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r relative; do
+    test -f "$relative" && test ! -L "$relative" && kind=f || {
+      test -d "$relative" && test ! -L "$relative" && kind=d || exit 1
+    }
+    digest=-
+    test "$kind" = d || digest=$(sha256sum "$relative" | awk '{ print $1 }') || exit 1
+    printf '%s\t%s\t%s\t%s\n' "$relative" "$kind" \
+      "$(stat -c %u:%g:%a:%s:%Y:%Z "$relative")" "$digest" || exit 1
+  done
+)
+
+verify_config_metadata() {
+  tree=$1
+  metadata=$2
+  s72_atomic_require_root_owned_regular "$metadata" 400 || return 1
+  test "$(cat "$metadata")" = "$(capture_config_metadata "$tree")"
 }
 
 verify_manifest() {
@@ -226,80 +287,24 @@ preflight_snapshot() {
 }
 
 rollback_main() {
-test "$(id -u)" -eq 0
-case "$AUTHORITY_REF" in ""|*[!A-Za-z0-9._/-]*|*..*) exit 1 ;; esac
-is_commit "$EXPECTED_AUTHORITY_SHA"
-is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID"
-test "$(stat -c %u:%g:%a "$DEPLOY_STATE")" = 0:0:700
-test -f "$ROLLBACK_POINTER" && test ! -L "$ROLLBACK_POINTER"
-test "$(stat -c %u:%g:%a "$ROLLBACK_POINTER")" = 0:0:600
-exec 9>"$DEPLOY_STATE/install.lock"
-flock -n 9
-test -L "$CURRENT_LINK"
-CURRENT_TARGET=$(readlink "$CURRENT_LINK")
-case "$CURRENT_TARGET" in releases/*) CURRENT_COMMIT=${CURRENT_TARGET#releases/} ;; *) exit 1 ;; esac
-validate_release "$CURRENT_COMMIT" rollback
-SNAPSHOT_ID=$(cat "$ROLLBACK_POINTER")
-case "$SNAPSHOT_ID" in .rollback.[A-Za-z0-9]*) ;; *) exit 1 ;; esac
-SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
-test "$(readlink -f "$SNAPSHOT")" = "$(readlink -f "$DEPLOY_STATE/snapshots")/$SNAPSHOT_ID"
-require_root_tree "$SNAPSHOT"
-verify_manifest "$SNAPSHOT"
-preflight_snapshot "$SNAPSHOT"
-
-PREVIOUS=
-if test -f "$SNAPSHOT/current"; then
-  PREVIOUS=$(cat "$SNAPSHOT/current")
-  previous_commit=${PREVIOUS#releases/}
-fi
-
-for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
-  if test -f "$SNAPSHOT/$unit.present"; then
-    install -o root -g root -m 0644 "$SNAPSHOT/$unit" "$SYSTEMD_DIR/$unit"
+  test "$(id -u)" -eq 0
+  case "${1:-}" in
+    "") test "$#" -eq 0; action=--rollback ;;
+    --recover) test "$#" -eq 1; action=--recover ;;
+    *) return 1 ;;
+  esac
+  installer=${s72_loader_entrypoint%/*}/install-s72.sh
+  s72_loader_require_canonical_regular "$installer" || return 1
+  s72_loader_require_privileged_chain "$installer" "$s72_loader_helper" || return 1
+  installer_identity=$(s72_loader_identity "$installer") || return 1
+  if test "$s72_loader_mode" = test-source-eval; then
+    command -v s72_test_exec_installer >/dev/null 2>&1 || return 1
+    s72_test_exec_installer "$installer" "$action" || return 1
   else
-    rm -f "$SYSTEMD_DIR/$unit"
+    test "$(s72_loader_identity "$installer")" = "$installer_identity" || return 1
+    exec "$installer" "$action"
   fi
-done
-if test -f "$SNAPSHOT/config.present"; then
-  rm -rf "$CONFIG_DIR"
-  cp -a "$SNAPSHOT/etc-opensandbox-gateway" "$CONFIG_DIR"
-else
-  rm -rf "$CONFIG_DIR"
-fi
-setfacl --restore="$SNAPSHOT/workspaces.acl"
-if test -f "$SNAPSHOT/authority-sha"; then
-  authority_sha=$(cat "$SNAPSHOT/authority-sha")
-  is_commit "$authority_sha"
-  install -o root -g root -m 0600 "$SNAPSHOT/authority-sha" "$AUTHORITY_SHA_STATE"
-  install -o root -g root -m 0600 "$SNAPSHOT/authority-evidence" "$AUTHORITY_EVIDENCE_STATE"
-elif test -f "$SNAPSHOT/authority-sha.absent"; then
-  rm -f "$AUTHORITY_SHA_STATE" "$AUTHORITY_EVIDENCE_STATE"
-else
-  exit 1
-fi
-systemctl daemon-reload
-for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do
-  if test -f "$SNAPSHOT/$unit.enabled"; then
-    systemctl enable "$unit" >/dev/null 2>&1
-  else
-    systemctl disable "$unit" >/dev/null 2>&1 || true
-  fi
-  if test -f "$SNAPSHOT/$unit.active"; then
-    systemctl restart "$unit"
-  else
-    systemctl stop "$unit" >/dev/null 2>&1 || true
-  fi
-done
-if test -n "$PREVIOUS"; then
-  ln -s "$PREVIOUS" "$CURRENT_LINK.next"
-  mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
-  test "$(readlink -f "$CURRENT_LINK")" = "$RELEASES/$previous_commit"
-  record_authority_state "$previous_commit" "$AUTHORITY_EVIDENCE_ID"
-else
-  rm -f "$CURRENT_LINK"
-fi
-systemctl is-active --quiet opensandbox.service
-ss -ltn | grep -q '127.0.0.1:8080'
+  test "$(s72_loader_identity "$installer")" = "$installer_identity"
 }
 
 rollback_main "$@"

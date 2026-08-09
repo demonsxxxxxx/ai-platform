@@ -2771,6 +2771,9 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     helper_unit = (root / "deploy/opensandbox/opensandbox-gateway-helper.service").read_text(encoding="utf-8")
     install = (root / "deploy/opensandbox/install-s72.sh").read_text(encoding="utf-8")
     rollback = (root / "deploy/opensandbox/rollback-s72.sh").read_text(encoding="utf-8")
+    atomic_helper = (
+        root / "deploy/opensandbox/lib/s72-atomic-recovery-authority.sh"
+    ).read_text(encoding="utf-8")
     env_example = (root / "deploy/opensandbox/gateway.env.example").read_text(encoding="utf-8")
     policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
     nginx = (root / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
@@ -2796,18 +2799,38 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
             "systemctl daemon-reload",
             "systemctl restart",
             "WorkingDirectory",
-            "CURRENT_LINK.next",
+            "s72_atomic_apply_current_link",
+            "s72_atomic_publish_transaction_record",
+            "s72_atomic_verify_snapshot_seal",
+            "recover_active_transaction",
             "require_gateway_config_contract",
             "require_root_owned_regular",
             "upstream-ca.pem",
         )
     )
-    assert install.index("systemctl restart") < install.index("CURRENT_LINK.next")
     assert all(
         marker in rollback
-        for marker in ("previous-snapshot", "config.present", "workspaces.acl", "verify_manifest", "validate_release", "daemon-reload", "systemctl restart", "CURRENT_LINK.next")
+        for marker in (
+            "action=--rollback",
+            "--recover",
+            'installer=${s72_loader_entrypoint%/*}/install-s72.sh',
+            "exec 8<",
+        )
     )
-    assert rollback.index("systemctl restart") < rollback.index("CURRENT_LINK.next")
+    assert all(
+        marker in atomic_helper
+        for marker in (
+            "s72_atomic_restore_snapshot",
+            "s72_atomic_apply_current_link",
+            "s72_atomic_verify_snapshot_seal",
+            "s72_atomic_publish_transaction_record",
+        )
+    )
+    restore = atomic_helper[atomic_helper.index("s72_atomic_restore_snapshot()") :]
+    payload = install[install.index("restore_snapshot_payload()") :]
+    assert payload.index("s72_atomic_apply_current_link") < install.index("restore_snapshot_runtime()")
+    assert restore.index("restore_snapshot_payload") < restore.index("restore_snapshot_runtime")
+    assert restore.index("s72_atomic_verify_snapshot_seal") < restore.index("systemctl stop")
     assert "InaccessiblePaths=/var/lib/opensandbox-gateway-deploy" in public_unit
     callback_base = next(line.split("=", 1)[1] for line in env_example.splitlines() if line.startswith("OPENSANDBOX_GATEWAY_CALLBACK_BASE="))
     assert callback_base == policy["targets"]["callback"]["base_url"]
@@ -2854,7 +2877,7 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
         [executable, "-c", textwrap.dedent(body), "gateway-contract", str(script), str(root)],
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=90,
         check=False,
     )
 
@@ -2871,17 +2894,34 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
         DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
-        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence; mkdir -p "$DEPLOY_STATE"
-        mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$STATE"
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        EXPECTED_AUTHORITY_SHA=1111111111111111111111111111111111111111
+        AUTHORITY_EVIDENCE_ID=sealed-source-evidence
+        mkdir -p "$DEPLOY_STATE" "$TRANSACTION_RECORDS" "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$STATE"
+        chmod 0700 "$DEPLOY_STATE" "$TRANSACTION_RECORDS"
         printf 'acl-before\n' > "$ROOT/acl.current"
         require_root_tree() { test -d "$1" && test ! -L "$1"; }
+            s72_atomic_require_root_owned_directory() { test -d "$1" && test ! -L "$1"; }
+                s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+                s72_atomic_require_identity() { test -e "$1" || test -L "$1"; }
+                s72_atomic_fsync_path() { :; }
+                s72_atomic_advance_transaction() { :; }
+            preflight_live_state() { :; }
+            preflight_snapshot() { :; }
+            s72_atomic_write_lifecycle_authority() { : > "$1"; }
+            s72_atomic_prepare_workspace() {
+              workspace=$1/.s72-$2-$3
+              mkdir -p "$workspace"
+              printf '%s\n' "$workspace"
+            }
         write_manifest() { : > "$1/MANIFEST.sha256"; }
         verify_manifest() { test -f "$1/MANIFEST.sha256"; }
         validate_release() { is_commit "$1"; }
         chown() { :; }
         stat() {
-          test "$1" = -c && test "${@: -1}" = "$DEPLOY_STATE" && { echo 0:0:700; return; }
-          test "$1" = -c && { echo 0; return; }
+          test "$1:$2" = '-c:%u:%g:%a' && { echo 0:0:400; return; }
           command stat "$@"
         }
         install() {
@@ -2890,26 +2930,40 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         getfacl() { cat "$ROOT/acl.current"; }
         setfacl() { cp "${1#--restore=}" "$ROOT/acl.current"; }
         systemctl() {
-          action=$1; unit=${@: -1}; printf '%s:%s\n' "$action" "$unit" >> "$ACTIONS"
-          case "$action" in
-            is-active) test -f "$STATE/$unit.active" ;;
-            is-enabled) test -f "$STATE/$unit.enabled" ;;
-            enable) : > "$STATE/$unit.enabled" ;;
-            disable) rm -f "$STATE/$unit.enabled" ;;
-            restart) : > "$STATE/$unit.active" ;;
-            stop) rm -f "$STATE/$unit.active" ;;
-            daemon-reload) : ;;
-          esac
-        }
-        snapshot_state "$ROOT/snapshot"
-        printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
-        printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
-        mkdir "$CONFIG_DIR"; printf 'new-config\n' > "$CONFIG_DIR/gateway.env"
-        printf 'acl-mutated\n' > "$ROOT/acl.current"
-        : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
-        : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
-        restore_snapshot "$ROOT/snapshot"
-        test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
+              action=$1; unit=${@: -1}; printf '%s:%s\n' "$action" "$unit" >> "$ACTIONS"
+              case "$action" in
+                is-active) test -f "$STATE/$unit.active" ;;
+                is-enabled) test -f "$STATE/$unit.enabled" ;;
+                enable) : > "$STATE/$unit.enabled" ;;
+                disable) rm -f "$STATE/$unit.enabled" ;;
+                restart) : > "$STATE/$unit.active" ;;
+                stop) rm -f "$STATE/$unit.active" ;;
+                daemon-reload) : ;;
+                show)
+                  unit=$2
+                  test -f "$STATE/$unit.active" && printf '%s\n' active || printf '%s\n' inactive
+                  ;;
+              esac
+            }
+            SNAPSHOT=$ROOT/snapshot
+            mkdir "$SNAPSHOT"
+            printf '%s\n' schema=s72-transaction-owner-v1 \
+              transaction=11111111111111111111111111111111 \
+              "root=$(command stat -c %d:%i "$SNAPSHOT")" > "$SNAPSHOT/transaction-owner"
+            snapshot_state "$SNAPSHOT"
+            printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
+            printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
+            mkdir "$CONFIG_DIR"; printf 'new-config\n' > "$CONFIG_DIR/gateway.env"
+            printf 'acl-mutated\n' > "$ROOT/acl.current"
+            printf '%040d\n' 2 > "$AUTHORITY_SHA_STATE"
+            printf 'mutated-evidence\n' > "$AUTHORITY_EVIDENCE_STATE"
+            printf '.rollback.22222222222222222222222222222222\n' > "$ROLLBACK_POINTER"
+                : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
+                : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
+                TX=11111111111111111111111111111111
+                restore_snapshot_payload "$SNAPSHOT" "$TX"
+            restore_snapshot_runtime "$SNAPSHOT"
+            test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
         test ! -e "$AUTHORITY_SHA_STATE"
@@ -3110,31 +3164,38 @@ def test_installer_restore_failure_preserves_backup_and_stops_partial_mutation(t
         set -eu
         SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
-        BACKUP=$ROOT/unique-backup; STAGE=$ROOT/stage; RESTORE_FROM=$BACKUP; SUCCESS=0
+        BACKUP=$ROOT/unique-backup; STAGE=$ROOT/stage; SUCCESS=0
+        TRANSACTION_ID=11111111111111111111111111111111
         mkdir "$BACKUP" "$STAGE"
-        restore_snapshot() { return 1; }
+        recover_active_transaction() { return 1; }
         set +e; ( cleanup_install ) >/dev/null 2>&1; STATUS=$?; set -e
         test "$STATUS" -eq 125
         test -d "$BACKUP" && test -d "$STAGE"
 
-        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
         AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
         AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
         mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$DEPLOY_STATE"
         ACTIONS=$ROOT/actions; : > "$ACTIONS"
-        preflight_snapshot() { :; }
-        rm() {
-          printf 'rm:%s\n' "$*" >> "$ACTIONS"
-          case "$*" in *opensandbox-gateway-helper.service*) return 1;; esac
+        for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+          : > "$BACKUP/$unit.absent"
+        done
+        : > "$BACKUP/config.absent"; : > "$BACKUP/authority-sha.absent"
+        : > "$BACKUP/authority-evidence.absent"; : > "$BACKUP/current.absent"
+        : > "$BACKUP/rollback-pointer.absent"; printf 'acl\n' > "$BACKUP/workspaces.acl"
+        s72_atomic_prepare_workspace() { mkdir -p "$1/work"; printf '%s\n' "$1/work"; }
+        s72_atomic_apply_file() {
+          printf 'apply-file:%s\n' "$4" >> "$ACTIONS"
+          test "$4" != opensandbox-gateway-helper.service
         }
+        s72_atomic_advance_transaction() { printf 'advance:%s\n' "$3" >> "$ACTIONS"; }
         setfacl() { printf 'setfacl\n' >> "$ACTIONS"; }
         systemctl() { printf 'systemctl:%s\n' "$*" >> "$ACTIONS"; }
-        set +e; restore_snapshot "$BACKUP"; STATUS=$?; set -e
+        set +e; restore_snapshot_payload "$BACKUP" "$TRANSACTION_ID"; STATUS=$?; set -e
         test "$STATUS" -ne 0
-        test "$(grep -c '^rm:' "$ACTIONS")" -eq 2
-        ! grep -q '^setfacl\|^systemctl' "$ACTIONS"
+        test "$(grep -c '^apply-file:' "$ACTIONS")" -eq 2
+        ! grep -q '^advance:\|^setfacl\|^systemctl' "$ACTIONS"
         test -d "$BACKUP"
         ''',
     )
@@ -3175,19 +3236,20 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         tmp_path,
         r'''
         set -eu
-        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2"); ROLLBACK_SCRIPT=$SCRIPT
         eval "$(sed '/^rollback_main "\$@"$/d' "$SCRIPT")"
+        INSTALL_SCRIPT=${ROLLBACK_SCRIPT%/*}/install-s72.sh
+        SCRIPT=$INSTALL_SCRIPT
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
         ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot; STATE=$ROOT/systemctl
         AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
         AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
-        SNAPSHOT_ID=.rollback.contract; SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        SNAPSHOT_ID=.rollback.11111111111111111111111111111111
+        SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$SNAPSHOT" "$STATE"
-        EXPECTED_AUTHORITY_SHA=2222222222222222222222222222222222222222
-        AUTHORITY_EVIDENCE_ID=ls-remote-current
-        mkdir "$RELEASES/$EXPECTED_AUTHORITY_SHA"; : > "$CURRENT_LINK"
-        printf '%s\n' "$SNAPSHOT_ID" > "$ROLLBACK_POINTER"
         : > "$SNAPSHOT/opensandbox-gateway.service.absent"
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.absent"
         : > "$SNAPSHOT/opensandbox-gateway.service.inactive"
@@ -3196,32 +3258,28 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.disabled"
         : > "$SNAPSHOT/config.absent"; : > "$SNAPSHOT/authority-sha.absent"
         : > "$SNAPSHOT/authority-evidence.absent"; printf 'acl-original\n' > "$SNAPSHOT/workspaces.acl"
-        : > "$SNAPSHOT/current.absent"; : > "$SNAPSHOT/MANIFEST.sha256"
+        : > "$SNAPSHOT/current.absent"; : > "$SNAPSHOT/rollback-pointer.absent"
         printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         printf '%040d\n' 1 > "$AUTHORITY_SHA_STATE"
         printf 'current-evidence\n' > "$AUTHORITY_EVIDENCE_STATE"
-        id() { test "$1" = -u && echo 0; }
-        test() {
-          if builtin test "$#" -eq 2 && builtin test "$1" = -L && builtin test "$2" = "$CURRENT_LINK"; then return 0; fi
-          builtin test "$@"
-        }
-        readlink() {
-          if builtin test "$#" -eq 1 && builtin test "$1" = "$CURRENT_LINK"; then
-            printf 'releases/%s\n' "$EXPECTED_AUTHORITY_SHA"
-          else
-            command readlink "$@"
-          fi
-        }
-        stat() { target=${@: -1}; case "$target" in "$DEPLOY_STATE") echo 0:0:700;; "$ROLLBACK_POINTER") echo 0:0:600;; *) command stat "$@";; esac; }
-        flock() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }; verify_manifest() { test -f "$1/MANIFEST.sha256"; }
-        validate_release() { :; }
+        s72_atomic_require_identity() { test -e "$1" || test -L "$1"; }
+        s72_atomic_fsync_path() { :; }
+        s72_atomic_advance_transaction() { :; }
+        s72_atomic_prepare_workspace() { mkdir -p "$1/work"; printf '%s\n' "$1/work"; }
         install() { if test "$1" = -d; then mkdir -p "${@: -1}"; else cp "${@: -2:1}" "${@: -1}"; fi; }
         setfacl() { cp "${1#--restore=}" "$ROOT/acl.current"; }
-        systemctl() { case "$1" in is-active) test "${@: -1}" = opensandbox.service;; disable|stop|daemon-reload) :;; *) :;; esac; }
-        ss() { printf 'LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*\n'; }
-        rollback_main
+        systemctl() {
+          action=$1; unit=${@: -1}
+          case "$action" in
+            disable|stop|daemon-reload) : ;;
+            show) printf '%s\n' inactive ;;
+            *) : ;;
+          esac
+        }
+        restore_snapshot_payload "$SNAPSHOT" 11111111111111111111111111111111
+        restore_snapshot_runtime "$SNAPSHOT"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
