@@ -5,6 +5,8 @@ import shlex
 import shutil
 import subprocess
 import textwrap
+import threading
+import time
 
 import pytest
 
@@ -394,7 +396,7 @@ def test_production_loader_rejects_foreign_writable_ancestor_before_source(
         (ROLLBACK, "rollback_main", "rollback-s72.sh"),
     ],
 )
-def test_loader_revalidates_helper_identity_after_source(
+def test_loader_never_evaluates_a_helper_replaced_after_validation(
     tmp_path: pathlib.Path,
     script: pathlib.Path,
     entrypoint: str,
@@ -407,7 +409,9 @@ def test_loader_revalidates_helper_identity_after_source(
     staged_script = staged / script_name
     staged_helper = helper_dir / HELPER.name
     replacement = helper_dir / "replacement"
-    replacement.write_text("replacement\n", encoding="utf-8")
+    ready = tmp_path / "loader-ready"
+    proceed = tmp_path / "loader-proceed"
+    signal = "BENIGN_REPLACEMENT_HELPER_EVALUATED"
     function_names = (
         "s72_atomic_is_commit",
         "s72_atomic_is_authority_evidence_id",
@@ -419,20 +423,43 @@ def test_loader_revalidates_helper_identity_after_source(
         "s72_atomic_preflight_snapshot",
         "s72_atomic_record_authority_state",
     )
-    helper_text = "S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA=s72-atomic-recovery-authority-v1\n"
-    helper_text += "\n".join(f"{name}() {{ :; }}" for name in function_names) + "\n"
-    helper_text += (
-        f"/usr/bin/mv -f {shlex.quote(replacement.as_posix())} "
-        f"{shlex.quote(staged_helper.as_posix())}\n"
+    replacement.write_text(
+        f"printf '%s\\n' {signal}\n"
+        "S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA=s72-atomic-recovery-authority-v1\n"
+        + "\n".join(f"{name}() {{ :; }}" for name in function_names)
+        + "\n",
+        encoding="utf-8",
     )
-    staged_helper.write_text(helper_text, encoding="utf-8")
-    staged_digest = hashlib.sha256(staged_helper.read_bytes()).hexdigest()
+    shutil.copy2(HELPER, staged_helper)
     script_text = script.read_text(encoding="utf-8")
-    expected_digest = hashlib.sha256(HELPER.read_bytes()).hexdigest()
-    assert script_text.count(expected_digest) == 1
-    staged_script.write_text(script_text.replace(expected_digest, staged_digest), encoding="utf-8")
+    source_anchor = '. "$S72_LIB_DIR/s72-atomic-recovery-authority.sh"'
+    bound_anchor = 'eval "$s72_loader_helper_content"'
+    anchors = [anchor for anchor in (source_anchor, bound_anchor) if script_text.count(anchor) == 1]
+    assert len(anchors) == 1
+    hook = (
+        f"printf '%s\\n' ready > {shlex.quote(ready.as_posix())}\n"
+        f"while test ! -e {shlex.quote(proceed.as_posix())}; do /usr/bin/sleep 0.01; done\n"
+    )
+    staged_script.write_text(script_text.replace(anchors[0], hook + anchors[0]), encoding="utf-8")
     _track_staged_entrypoint(repo, staged_script)
 
+    replacement_errors: list[BaseException] = []
+
+    def replace_after_validation() -> None:
+        try:
+            for _ in range(500):
+                if ready.exists():
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("loader did not reach the pre-evaluation synchronization point")
+            os.replace(replacement, staged_helper)
+            proceed.write_text("continue\n", encoding="utf-8")
+        except BaseException as error:
+            replacement_errors.append(error)
+
+    replacement_thread = threading.Thread(target=replace_after_validation)
+    replacement_thread.start()
     result = _run_bash_with_argv0(
         rf'''
         set -eu
@@ -442,9 +469,14 @@ def test_loader_revalidates_helper_identity_after_source(
         "s72-atomic-contract",
         staged_script,
     )
+    replacement_thread.join(timeout=5)
 
+    assert not replacement_thread.is_alive()
+    assert not replacement_errors
     assert result.returncode == 126
     assert "loader authority rejected" in result.stderr
+    assert signal not in result.stdout
+    assert signal not in result.stderr
 
 
 def test_loader_seals_the_exact_shared_helper_digest_and_schema() -> None:
@@ -475,7 +507,11 @@ def test_shared_helper_is_the_single_active_primitive_authority() -> None:
 
     for script_path in (INSTALLER, ROLLBACK):
         script = script_path.read_text(encoding="utf-8")
-        assert '. "$S72_LIB_DIR/s72-atomic-recovery-authority.sh"' in script
+        assert '. "$S72_LIB_DIR/s72-atomic-recovery-authority.sh"' not in script
+        assert 'exec 8<"$s72_loader_capture_path"' in script
+        assert "/usr/bin/stat -Lc '%d:%i:%f:%u:%g:%a:%s:%Y:%Z' -- /dev/fd/8" in script
+        assert "/usr/bin/cat <&8" in script
+        assert 'eval "$s72_loader_helper_content"' in script
         assert 'is_commit() {\n  s72_atomic_is_commit "$@"\n}' in script
         assert 'is_authority_evidence_id() {\n  s72_atomic_is_authority_evidence_id "$@"\n}' in script
         assert 'require_root_tree() {\n  s72_atomic_require_root_tree "$@"\n}' in script

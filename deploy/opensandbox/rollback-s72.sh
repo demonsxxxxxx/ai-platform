@@ -33,6 +33,35 @@ s72_loader_identity() {
   /usr/bin/stat -c '%d:%i:%f:%u:%g:%a:%s:%Y:%Z' -- "$1"
 }
 
+s72_loader_capture_helper_content() {
+  s72_loader_capture_path=$1
+  s72_loader_capture_identity=$2
+  s72_loader_capture_digest=$3
+  exec 8<"$s72_loader_capture_path" || return 1
+  s72_loader_descriptor_identity=$(
+    /usr/bin/stat -Lc '%d:%i:%f:%u:%g:%a:%s:%Y:%Z' -- /dev/fd/8
+  ) || {
+    exec 8<&-
+    return 1
+  }
+  if test "$s72_loader_descriptor_identity" != "$s72_loader_capture_identity"; then
+    exec 8<&-
+    return 1
+  fi
+  s72_loader_helper_content=$(
+    /usr/bin/cat <&8 || exit $?
+    printf '%s' __S72_ATOMIC_RECOVERY_HELPER_EOF__
+  ) || {
+    exec 8<&-
+    return 1
+  }
+  exec 8<&-
+  s72_loader_helper_content=${s72_loader_helper_content%__S72_ATOMIC_RECOVERY_HELPER_EOF__}
+  s72_loader_content_digest=$(printf '%s' "$s72_loader_helper_content" | /usr/bin/sha256sum) || return 1
+  s72_loader_content_digest=${s72_loader_content_digest%% *}
+  test "$s72_loader_content_digest" = "$s72_loader_capture_digest"
+}
+
 s72_loader_require_root_nonwritable() {
   s72_loader_node=$1
   test ! -L "$s72_loader_node" || return 1
@@ -112,7 +141,11 @@ s72_loader_helper_identity=$(s72_loader_identity "$s72_loader_helper") || s72_lo
 s72_loader_helper_digest=$(/usr/bin/sha256sum -- "$s72_loader_helper") || s72_loader_reject
 s72_loader_helper_digest=${s72_loader_helper_digest%% *}
 test "$s72_loader_helper_digest" = "$S72_ATOMIC_RECOVERY_HELPER_SHA256" || s72_loader_reject
-. "$S72_LIB_DIR/s72-atomic-recovery-authority.sh"
+s72_loader_capture_helper_content \
+  "$s72_loader_helper" "$s72_loader_helper_identity" "$S72_ATOMIC_RECOVERY_HELPER_SHA256" || s72_loader_reject
+test "$(s72_loader_identity "$s72_loader_helper")" = "$s72_loader_helper_identity" || s72_loader_reject
+eval "$s72_loader_helper_content"
+unset s72_loader_helper_content
 test "$(s72_loader_identity "$s72_loader_entrypoint")" = "$s72_loader_entry_identity" || s72_loader_reject
 test "$(s72_loader_identity "$s72_loader_helper")" = "$s72_loader_helper_identity" || s72_loader_reject
 s72_loader_helper_digest=$(/usr/bin/sha256sum -- "$s72_loader_helper") || s72_loader_reject
