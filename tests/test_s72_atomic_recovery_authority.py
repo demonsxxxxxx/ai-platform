@@ -1022,7 +1022,7 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
             foreign=33333333333333333333333333333333
             foreign_stage=$SNAPSHOTS/.snapshot-stage-$foreign
             mkdir "$foreign_stage"
-            printf '%s\n' preserve-foreign > "$foreign_stage/payload"
+            printf "%s\n" preserve-foreign > "$foreign_stage/payload"
             ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx preserve-foreign "$foreign_stage/payload"
             rm -rf "$foreign_stage"
@@ -1034,7 +1034,7 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
 
             torn=44444444444444444444444444444444
             torn_record=$RECORDS/transaction-$torn-000000.record
-            printf '%s\n' truncated > "$torn_record"
+            printf "%s\n" truncated > "$torn_record"
             chown root:root "$torn_record"; chmod 0400 "$torn_record"
             ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx truncated "$torn_record"
