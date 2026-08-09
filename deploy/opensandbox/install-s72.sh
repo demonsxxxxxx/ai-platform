@@ -15,18 +15,123 @@ CONFIG_DIR=/etc/opensandbox-gateway
 WORKSPACE_ROOT=/data/opensandbox/workspaces
 RUNTIME_STATE=/var/lib/opensandbox-gateway
 
-s72_entrypoint_source=$0
-case "$(basename -- "$s72_entrypoint_source")" in
-  install-s72.sh) ;;
-  *)
-    test ! -e "$s72_entrypoint_source" || exit 1
-    test -n "${SCRIPT:-}" && test -f "$SCRIPT" || exit 1
-    s72_entrypoint_source=$SCRIPT
+S72_ATOMIC_RECOVERY_HELPER_SHA256=1154d476f349298212dc63312a48f2da21e1318750749b61f569bd03761fbb49
+
+s72_loader_reject() {
+  printf '%s\n' 'OpenSandbox s72 loader authority rejected' >&2
+  exit 126
+}
+
+s72_loader_require_canonical_regular() {
+  s72_loader_path=$1
+  case "$s72_loader_path" in /*) ;; *) return 1 ;; esac
+  test -f "$s72_loader_path" && test ! -L "$s72_loader_path" || return 1
+  s72_loader_canonical=$(/usr/bin/readlink -f -- "$s72_loader_path") || return 1
+  test "$s72_loader_canonical" = "$s72_loader_path"
+}
+
+s72_loader_identity() {
+  /usr/bin/stat -c '%d:%i:%f:%u:%g:%a:%s:%Y:%Z' -- "$1"
+}
+
+s72_loader_require_root_nonwritable() {
+  s72_loader_node=$1
+  test ! -L "$s72_loader_node" || return 1
+  test "$(/usr/bin/stat -c %u -- "$s72_loader_node")" -eq 0 || return 1
+  s72_loader_mode=$(/usr/bin/stat -c %a -- "$s72_loader_node") || return 1
+  case "$s72_loader_mode" in ""|*[!0-7]*) return 1 ;; esac
+  test $((0$s72_loader_mode & 0022)) -eq 0
+}
+
+s72_loader_require_privileged_chain() {
+  s72_loader_entry=$1
+  s72_loader_helper=$2
+  s72_loader_require_root_nonwritable "$s72_loader_entry" || return 1
+  s72_loader_require_root_nonwritable "$s72_loader_helper" || return 1
+  s72_loader_node=${s72_loader_helper%/*}
+  while :; do
+    test -d "$s72_loader_node" && test ! -L "$s72_loader_node" || return 1
+    s72_loader_require_root_nonwritable "$s72_loader_node" || return 1
+    test "$s72_loader_node" = / && break
+    s72_loader_node=${s72_loader_node%/*}
+    test -n "$s72_loader_node" || s72_loader_node=/
+  done
+}
+
+s72_loader_script_is_exported() {
+  /usr/bin/env | /usr/bin/grep -q '^SCRIPT='
+}
+
+s72_loader_require_test_checkout_entry() {
+  s72_loader_test_entry=$1
+  s72_loader_test_relative=$2
+  if test -x /usr/bin/git; then
+    s72_loader_git=/usr/bin/git
+  elif test -x /mingw64/bin/git.exe; then
+    s72_loader_git=/mingw64/bin/git.exe
+  else
+    return 1
+  fi
+  s72_loader_repo=$($s72_loader_git -C "${s72_loader_test_entry%/*}" rev-parse --show-toplevel) || return 1
+  if test -x /usr/bin/cygpath.exe; then
+    s72_loader_repo=$(/usr/bin/cygpath.exe -u "$s72_loader_repo") || return 1
+  fi
+  s72_loader_repo=$(/usr/bin/readlink -f -- "$s72_loader_repo") || return 1
+  test "$s72_loader_test_entry" = "$s72_loader_repo/$s72_loader_test_relative" || return 1
+  $s72_loader_git -C "$s72_loader_repo" ls-files --error-unmatch -- "$s72_loader_test_relative" >/dev/null 2>&1
+}
+
+s72_loader_mode=production
+case "$0" in
+  /*)
+    test "${SCRIPT+x}" != x || s72_loader_reject
+    s72_loader_entrypoint=$0
     ;;
+  gateway-contract|s72-atomic-contract)
+    test "${SCRIPT+x}" = x || s72_loader_reject
+    s72_loader_script_is_exported && s72_loader_reject
+    s72_loader_mode=test-source-eval
+    s72_loader_entrypoint=$SCRIPT
+    ;;
+  *) s72_loader_reject ;;
 esac
-S72_LIB_DIR=$(dirname -- "$s72_entrypoint_source")/lib
+
+s72_loader_require_canonical_regular "$s72_loader_entrypoint" || s72_loader_reject
+test "${s72_loader_entrypoint##*/}" = install-s72.sh || s72_loader_reject
+if test "$s72_loader_mode" = test-source-eval; then
+  s72_loader_require_test_checkout_entry \
+    "$s72_loader_entrypoint" deploy/opensandbox/install-s72.sh || s72_loader_reject
+fi
+S72_LIB_DIR=${s72_loader_entrypoint%/*}/lib
+s72_loader_helper=$S72_LIB_DIR/s72-atomic-recovery-authority.sh
+s72_loader_require_canonical_regular "$s72_loader_helper" || s72_loader_reject
+if test "$s72_loader_mode" = production; then
+  s72_loader_require_privileged_chain "$s72_loader_entrypoint" "$s72_loader_helper" || s72_loader_reject
+fi
+s72_loader_entry_identity=$(s72_loader_identity "$s72_loader_entrypoint") || s72_loader_reject
+s72_loader_helper_identity=$(s72_loader_identity "$s72_loader_helper") || s72_loader_reject
+s72_loader_helper_digest=$(/usr/bin/sha256sum -- "$s72_loader_helper") || s72_loader_reject
+s72_loader_helper_digest=${s72_loader_helper_digest%% *}
+test "$s72_loader_helper_digest" = "$S72_ATOMIC_RECOVERY_HELPER_SHA256" || s72_loader_reject
 . "$S72_LIB_DIR/s72-atomic-recovery-authority.sh"
-unset s72_entrypoint_source
+test "$(s72_loader_identity "$s72_loader_entrypoint")" = "$s72_loader_entry_identity" || s72_loader_reject
+test "$(s72_loader_identity "$s72_loader_helper")" = "$s72_loader_helper_identity" || s72_loader_reject
+s72_loader_helper_digest=$(/usr/bin/sha256sum -- "$s72_loader_helper") || s72_loader_reject
+s72_loader_helper_digest=${s72_loader_helper_digest%% *}
+test "$s72_loader_helper_digest" = "$S72_ATOMIC_RECOVERY_HELPER_SHA256" || s72_loader_reject
+test "${S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA:-}" = s72-atomic-recovery-authority-v1 || s72_loader_reject
+for s72_loader_symbol in \
+  s72_atomic_is_commit \
+  s72_atomic_is_authority_evidence_id \
+  s72_atomic_require_root_tree \
+  s72_atomic_require_root_owned_regular \
+  s72_atomic_require_root_owned_directory \
+  s72_atomic_verify_manifest \
+  s72_atomic_require_marker_pair \
+  s72_atomic_preflight_snapshot \
+  s72_atomic_record_authority_state; do
+  command -v "$s72_loader_symbol" >/dev/null 2>&1 || s72_loader_reject
+done
 
 is_commit() {
   s72_atomic_is_commit "$@"

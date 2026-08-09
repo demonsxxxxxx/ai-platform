@@ -1,5 +1,7 @@
 #!/bin/sh
 
+S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA=s72-atomic-recovery-authority-v1
+
 s72_atomic_is_commit() {
   test "${#1}" -eq 40 || return 1
   case "$1" in *[!0-9a-f]*) return 1 ;; esac

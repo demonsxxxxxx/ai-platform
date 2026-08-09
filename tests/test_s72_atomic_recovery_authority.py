@@ -1,5 +1,7 @@
+import hashlib
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -29,6 +31,431 @@ def _run_bash(body: str, *paths: pathlib.Path) -> subprocess.CompletedProcess[st
         timeout=20,
         check=False,
     )
+
+
+def _run_bash_with_argv0(
+    body: str,
+    argv0: str,
+    *arguments: str | pathlib.Path,
+    cwd: pathlib.Path | None = None,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_bash(), "-c", textwrap.dedent(body), argv0, *(str(value) for value in arguments)],
+        cwd=cwd,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+
+
+def _write_hostile_helper(
+    root: pathlib.Path,
+    marker: pathlib.Path,
+    *,
+    exit_code: int,
+    signal: str,
+) -> None:
+    helper = root / "lib" / HELPER.name
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' {shlex.quote(signal)}\n"
+        f"printf '%s\\n' {shlex.quote(signal)} > {shlex.quote(marker.as_posix())}\n"
+        f"exit {exit_code}\n",
+        encoding="utf-8",
+    )
+
+
+def _track_staged_entrypoint(repo: pathlib.Path, entrypoint: pathlib.Path) -> None:
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("Git is required for the explicit source-eval checkout contract")
+    subprocess.run(
+        [git, "init", "--quiet", str(repo)],
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=True,
+    )
+    subprocess.run(
+        [git, "-C", str(repo), "add", entrypoint.relative_to(repo).as_posix()],
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_loader_rejects_spoofed_entrypoint_name_and_cwd_helper_before_source(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    marker = tmp_path / "cwd-helper-executed"
+    signal = "HOSTILE_CWD_HELPER_EXECUTED"
+    _write_hostile_helper(tmp_path, marker, exit_code=73, signal=signal)
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        REAL_SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$REAL_SCRIPT")"
+        ''',
+        script_name,
+        script,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode != 73
+    assert not marker.exists()
+    assert signal not in result.stdout
+    assert signal not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_loader_rejects_relative_script_and_attacker_sibling_before_source(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    attacker = tmp_path / "attacker"
+    foreign_script = attacker / script_name
+    foreign_script.parent.mkdir()
+    foreign_script.write_text("foreign entrypoint\n", encoding="utf-8")
+    marker = tmp_path / "script-helper-executed"
+    signal = "HOSTILE_SCRIPT_HELPER_EXECUTED"
+    _write_hostile_helper(attacker, marker, exit_code=74, signal=signal)
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        REAL_SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        SCRIPT=attacker/{script_name}
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$REAL_SCRIPT")"
+        ''',
+        "s72-atomic-contract",
+        script,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode != 74
+    assert not marker.exists()
+    assert signal not in result.stdout
+    assert signal not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint"),
+    [(INSTALLER, "install_main"), (ROLLBACK, "rollback_main")],
+)
+def test_loader_rejects_exported_script_authority(
+    script: pathlib.Path,
+    entrypoint: str,
+) -> None:
+    environment = os.environ.copy()
+    environment["SCRIPT"] = str(script)
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        REAL_SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$REAL_SCRIPT")"
+        ''',
+        "s72-atomic-contract",
+        script,
+        environment=environment,
+    )
+
+    assert result.returncode == 126
+    assert "loader authority rejected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_loader_rejects_foreign_absolute_script_even_with_exact_sibling_helper(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    foreign = tmp_path / "foreign" / "deploy" / "opensandbox"
+    foreign_script = foreign / script_name
+    helper_dir = foreign / "lib"
+    helper_dir.mkdir(parents=True)
+    shutil.copy2(script, foreign_script)
+    shutil.copy2(HELPER, helper_dir / HELPER.name)
+    signal = "FOREIGN_ABSOLUTE_SCRIPT_ACCEPTED"
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        REAL_SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        SCRIPT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$REAL_SCRIPT")"
+        printf '%s\n' {signal}
+        ''',
+        "s72-atomic-contract",
+        script,
+        foreign_script,
+    )
+
+    assert result.returncode == 126
+    assert signal not in result.stdout
+    assert signal not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_loader_rejects_wrong_helper_digest_before_source(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    repo = tmp_path / "repo"
+    staged = repo / "deploy" / "opensandbox"
+    staged.mkdir(parents=True)
+    staged_script = staged / script_name
+    shutil.copy2(script, staged_script)
+    _track_staged_entrypoint(repo, staged_script)
+    marker = tmp_path / "wrong-helper-executed"
+    signal = "HOSTILE_WRONG_HELPER_EXECUTED"
+    _write_hostile_helper(staged, marker, exit_code=76, signal=signal)
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$SCRIPT")"
+        ''',
+        "s72-atomic-contract",
+        staged_script,
+    )
+
+    assert result.returncode == 126
+    assert not marker.exists()
+    assert signal not in result.stdout
+    assert signal not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+@pytest.mark.parametrize("linked_node", ["entrypoint", "helper"])
+def test_loader_rejects_symlinked_entrypoint_or_helper_before_source(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+    linked_node: str,
+) -> None:
+    repo = tmp_path / "repo"
+    staged = repo / "deploy" / "opensandbox"
+    staged.mkdir(parents=True)
+    staged_script = staged / script_name
+    helper_dir = staged / "lib"
+    helper_dir.mkdir()
+    try:
+        if linked_node == "entrypoint":
+            staged_script.symlink_to(script)
+            shutil.copy2(HELPER, helper_dir / HELPER.name)
+        else:
+            shutil.copy2(script, staged_script)
+            (helper_dir / HELPER.name).symlink_to(HELPER)
+            _track_staged_entrypoint(repo, staged_script)
+    except OSError:
+        pytest.skip("native symlink creation is required for the loader authority contract")
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$SCRIPT")"
+        ''',
+        "s72-atomic-contract",
+        staged_script,
+    )
+
+    assert result.returncode == 126
+    assert "loader authority rejected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_loader_rejects_missing_fixed_sibling_helper(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    repo = tmp_path / "repo"
+    staged_script = repo / "deploy" / "opensandbox" / script_name
+    staged_script.parent.mkdir(parents=True)
+    shutil.copy2(script, staged_script)
+    _track_staged_entrypoint(repo, staged_script)
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$SCRIPT")"
+        ''',
+        "s72-atomic-contract",
+        staged_script,
+    )
+
+    assert result.returncode == 126
+    assert "loader authority rejected" in result.stderr
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="non-root writable-ancestor hostile runs on required Ubuntu CI",
+)
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_production_loader_rejects_foreign_writable_ancestor_before_source(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    staged = tmp_path / "writable" / "deploy" / "opensandbox"
+    helper_dir = staged / "lib"
+    helper_dir.mkdir(parents=True)
+    staged_script = staged / script_name
+    script_text = script.read_text(encoding="utf-8")
+    expected_call = f'{entrypoint} "$@"'
+    assert script_text.count(expected_call) == 1
+    staged_script.write_text(
+        script_text.replace(expected_call, "printf '%s\\n' FOREIGN_ANCESTOR_ACCEPTED"),
+        encoding="utf-8",
+    )
+    shutil.copy2(HELPER, helper_dir / HELPER.name)
+    staged_script.chmod(0o755)
+
+    result = _run_bash_with_argv0(
+        'exec "$1"',
+        "loader-launcher",
+        staged_script,
+    )
+
+    assert result.returncode == 126
+    assert "FOREIGN_ANCESTOR_ACCEPTED" not in result.stdout
+    assert "loader authority rejected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "entrypoint", "script_name"),
+    [
+        (INSTALLER, "install_main", "install-s72.sh"),
+        (ROLLBACK, "rollback_main", "rollback-s72.sh"),
+    ],
+)
+def test_loader_revalidates_helper_identity_after_source(
+    tmp_path: pathlib.Path,
+    script: pathlib.Path,
+    entrypoint: str,
+    script_name: str,
+) -> None:
+    repo = tmp_path / "repo"
+    staged = repo / "deploy" / "opensandbox"
+    helper_dir = staged / "lib"
+    helper_dir.mkdir(parents=True)
+    staged_script = staged / script_name
+    staged_helper = helper_dir / HELPER.name
+    replacement = helper_dir / "replacement"
+    replacement.write_text("replacement\n", encoding="utf-8")
+    function_names = (
+        "s72_atomic_is_commit",
+        "s72_atomic_is_authority_evidence_id",
+        "s72_atomic_require_root_tree",
+        "s72_atomic_require_root_owned_regular",
+        "s72_atomic_require_root_owned_directory",
+        "s72_atomic_verify_manifest",
+        "s72_atomic_require_marker_pair",
+        "s72_atomic_preflight_snapshot",
+        "s72_atomic_record_authority_state",
+    )
+    helper_text = "S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA=s72-atomic-recovery-authority-v1\n"
+    helper_text += "\n".join(f"{name}() {{ :; }}" for name in function_names) + "\n"
+    helper_text += (
+        f"/usr/bin/mv -f {shlex.quote(replacement.as_posix())} "
+        f"{shlex.quote(staged_helper.as_posix())}\n"
+    )
+    staged_helper.write_text(helper_text, encoding="utf-8")
+    staged_digest = hashlib.sha256(staged_helper.read_bytes()).hexdigest()
+    script_text = script.read_text(encoding="utf-8")
+    expected_digest = hashlib.sha256(HELPER.read_bytes()).hexdigest()
+    assert script_text.count(expected_digest) == 1
+    staged_script.write_text(script_text.replace(expected_digest, staged_digest), encoding="utf-8")
+    _track_staged_entrypoint(repo, staged_script)
+
+    result = _run_bash_with_argv0(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        eval "$(sed '/^{entrypoint} "\$@"$/d' "$SCRIPT")"
+        ''',
+        "s72-atomic-contract",
+        staged_script,
+    )
+
+    assert result.returncode == 126
+    assert "loader authority rejected" in result.stderr
+
+
+def test_loader_seals_the_exact_shared_helper_digest_and_schema() -> None:
+    helper_digest = hashlib.sha256(HELPER.read_bytes()).hexdigest()
+    helper = HELPER.read_text(encoding="utf-8")
+    assert "S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA=s72-atomic-recovery-authority-v1" in helper
+    for script_path in (INSTALLER, ROLLBACK):
+        script = script_path.read_text(encoding="utf-8")
+        assert f"S72_ATOMIC_RECOVERY_HELPER_SHA256={helper_digest}" in script
+        assert script.count("s72_loader_entry_identity") >= 2
+        assert script.count("s72_loader_helper_identity") >= 2
 
 
 def test_shared_helper_is_the_single_active_primitive_authority() -> None:
@@ -69,7 +496,7 @@ def test_existing_source_harness_loads_the_deterministic_sibling_helper(
     result = _run_bash(
         rf'''
         set -eu
-        SCRIPT=$1
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
         eval "$(sed '/^{entrypoint} "\$@"$/d' "$SCRIPT")"
         test "$S72_LIB_DIR" = "$(dirname "$SCRIPT")/lib"
         type s72_atomic_is_commit >/dev/null 2>&1
