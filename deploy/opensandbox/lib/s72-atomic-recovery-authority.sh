@@ -28,12 +28,66 @@ s72_atomic_is_sha256() {
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
 }
 
+s72_atomic_is_service_uid() {
+  case "$1" in ""|0|0[0-9]*|*[!0-9]*) return 1 ;; esac
+  test "${#1}" -le 10 || return 1
+  test "${#1}" -lt 10 || test "$1" -le 4294967294
+}
+
 s72_atomic_node_identity() {
   stat -c '%d:%i:%F:%u:%g:%a:%s:%Y:%Z' -- "$1"
 }
 
 s72_atomic_require_identity() {
   test "$(s72_atomic_node_identity "$1")" = "$2"
+}
+
+s72_atomic_directory_identity() {
+  stat -c '%d:%i:%u:%g:%a' -- "$1"
+}
+
+s72_atomic_remove_empty_directory() {
+  path=$1
+  expected=$2
+  test "$(s72_atomic_directory_identity "$path")" = "$expected" || return 1
+  if test "${s72_loader_mode:-}" = test-source-eval || test "$(uname -s)" != Linux; then
+    rmdir -- "$path" || return 1
+  else
+    python3 - "$path" "$expected" <<'PY'
+import os
+import stat
+import sys
+
+path, expected_text = sys.argv[1:]
+expected = tuple(int(value) for value in expected_text.split(":"))
+parent = os.path.dirname(path)
+name = os.path.basename(path)
+flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+parent_fd = os.open(parent, flags)
+directory_fd = -1
+try:
+    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    actual = (before.st_dev, before.st_ino, before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode))
+    if not stat.S_ISDIR(before.st_mode) or actual != expected:
+        raise SystemExit(1)
+    directory_fd = os.open(name, flags, dir_fd=parent_fd)
+    opened = os.fstat(directory_fd)
+    if (opened.st_dev, opened.st_ino) != actual[:2] or os.listdir(directory_fd):
+        raise SystemExit(1)
+    os.close(directory_fd)
+    directory_fd = -1
+    after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if (after.st_dev, after.st_ino, after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) != expected:
+        raise SystemExit(1)
+    os.rmdir(name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+finally:
+    if directory_fd >= 0:
+        os.close(directory_fd)
+    os.close(parent_fd)
+PY
+  fi
+  test ! -e "$path" && test ! -L "$path"
 }
 
 s72_atomic_require_root_tree() {
@@ -420,6 +474,44 @@ s72_atomic_require_marker_pair() {
   fi
 }
 
+s72_atomic_preflight_gateway_identity_snapshot() (
+  snapshot=$1
+  s72_atomic_require_root_owned_regular "$snapshot/gateway-service-uid" 400 || return 1
+  test "$(wc -l < "$snapshot/gateway-service-uid")" -eq 1 || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  s72_atomic_is_service_uid "$gateway_uid" || return 1
+  expected_group=opensandbox-gateway:x:$gateway_uid:
+  expected_user=opensandbox-gateway:x:$gateway_uid:$gateway_uid::/nonexistent:/usr/sbin/nologin
+
+  s72_atomic_require_marker_pair "$snapshot/gateway-group.present" \
+    "$snapshot/gateway-group.absent" || return 1
+  s72_atomic_require_marker_pair "$snapshot/gateway-user.present" \
+    "$snapshot/gateway-user.absent" || return 1
+  if test -f "$snapshot/gateway-group.present"; then
+    test -f "$snapshot/gateway-user.present" || return 1
+    s72_atomic_require_root_owned_regular "$snapshot/gateway-group.entry" 400 || return 1
+    s72_atomic_require_root_owned_regular "$snapshot/gateway-user.entry" 400 || return 1
+    test "$(cat "$snapshot/gateway-group.entry")" = "$expected_group" || return 1
+    test "$(cat "$snapshot/gateway-user.entry")" = "$expected_user" || return 1
+  else
+    test -f "$snapshot/gateway-user.absent" || return 1
+    test ! -e "$snapshot/gateway-group.entry" && test ! -L "$snapshot/gateway-group.entry" || return 1
+    test ! -e "$snapshot/gateway-user.entry" && test ! -L "$snapshot/gateway-user.entry" || return 1
+  fi
+
+  s72_atomic_require_marker_pair "$snapshot/runtime-state.present" \
+    "$snapshot/runtime-state.absent" || return 1
+  if test -f "$snapshot/runtime-state.present"; then
+    s72_atomic_require_root_owned_regular "$snapshot/runtime-state.identity" 400 || return 1
+    IFS=: read -r device inode owner group mode extra < "$snapshot/runtime-state.identity" || return 1
+    test -z "${extra:-}" || return 1
+    case "$device:$inode:$owner:$group:$mode" in *[!0-9:]*) return 1 ;; esac
+    test "$owner:$group:$mode" = "$gateway_uid:$gateway_uid:700" || return 1
+  else
+    test ! -e "$snapshot/runtime-state.identity" && test ! -L "$snapshot/runtime-state.identity" || return 1
+  fi
+)
+
 s72_atomic_require_transaction_owner() {
   root=$1
   owner=$root/transaction-owner
@@ -488,6 +580,9 @@ s72_atomic_require_snapshot_inventory() (
       config.present|config.absent|config.metadata|etc-opensandbox-gateway|\
       authority-sha|authority-sha.absent|authority-evidence|authority-evidence.absent|\
       current|current.absent|rollback-pointer|rollback-pointer.absent|\
+      gateway-service-uid|gateway-user.present|gateway-user.absent|gateway-user.entry|\
+      gateway-group.present|gateway-group.absent|gateway-group.entry|\
+      runtime-state.present|runtime-state.absent|runtime-state.identity|\
       opensandbox-gateway.service|opensandbox-gateway.service.present|opensandbox-gateway.service.absent|\
       opensandbox-gateway.service.active|opensandbox-gateway.service.inactive|\
       opensandbox-gateway.service.enabled|opensandbox-gateway.service.disabled|\
@@ -509,6 +604,7 @@ s72_atomic_preflight_snapshot() (
   fi
   s72_atomic_require_lifecycle_authority_file "$snapshot/lifecycle.authority" || return 1
   s72_atomic_require_transaction_owner "$snapshot" || return 1
+  s72_atomic_preflight_gateway_identity_snapshot "$snapshot" || return 1
   require_root_owned_regular "$snapshot/captured-authority-sha" 400 || return 1
   require_root_owned_regular "$snapshot/captured-authority-evidence" 400 || return 1
   s72_atomic_is_commit "$(cat "$snapshot/captured-authority-sha")" || return 1
@@ -615,9 +711,13 @@ s72_atomic_phase_transition_allowed() (
   fi
   case "$from:$to" in
     reserved:reserved|reserved:snapshot-published|reserved:committed|\
-    snapshot-published:release-published|snapshot-published:staged|\
+    snapshot-published:identity-group-intent|identity-group-intent:identity-group-ready|\
+    identity-group-ready:identity-user-intent|identity-user-intent:identity-user-ready|\
+    identity-user-ready:identity-runtime-intent|identity-runtime-intent:identity-ready|\
+    identity-ready:release-published|snapshot-published:release-published|snapshot-published:staged|\
     release-published:staged|staged:stop-intent|stop-intent:stopped|\
-    stopped:units-applied|units-applied:config-applied|config-applied:acl-applied|\
+    stopped:identity-applied|identity-applied:units-applied|stopped:units-applied|\
+    units-applied:config-applied|config-applied:acl-applied|\
     acl-applied:authority-applied|authority-applied:pointer-applied|\
     pointer-applied:current-applied|current-applied:revalidated|\
     revalidated:runtime-restored|runtime-restored:committed|committed:cleaned|\
@@ -642,7 +742,9 @@ s72_atomic_validate_transaction_fields() (
   s72_atomic_is_transaction_id "$transaction_id" || return 1
   case "$sequence" in [0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) return 1 ;; esac
   case "$operation" in install|rollback) ;; *) return 1 ;; esac
-  case "$phase" in reserved|snapshot-published|release-published|staged|stop-intent|stopped|\
+  case "$phase" in reserved|snapshot-published|identity-group-intent|identity-group-ready|\
+    identity-user-intent|identity-user-ready|identity-runtime-intent|identity-ready|\
+    release-published|staged|stop-intent|stopped|identity-applied|\
     units-applied|config-applied|acl-applied|authority-applied|current-applied|\
     revalidated|runtime-restored|pointer-applied|recovering|committed|cleaned) ;; *) return 1 ;; esac
   s72_atomic_is_snapshot_id "$recovery_snapshot" || return 1
@@ -749,6 +851,7 @@ s72_atomic_load_transaction() {
   s72_atomic_require_transaction_inventory "$records" || return 1
   previous=none
   previous_phase=
+  latest_previous_phase=
   expected_operation=
   expected_recovery=
   expected_apply=
@@ -797,6 +900,7 @@ s72_atomic_load_transaction() {
       fi
     fi
     previous=$(sed -n '13s/^record-seal=//p' "$record") || return 1
+    latest_previous_phase=$previous_phase
     previous_phase=$phase
     latest=$record
     expected=$((expected + 1))
@@ -806,6 +910,7 @@ s72_atomic_load_transaction() {
   S72_TX_SEQUENCE=$(sed -n '3s/^sequence=//p' "$latest")
   S72_TX_OPERATION=$(sed -n '4s/^operation=//p' "$latest")
   S72_TX_PHASE=$(sed -n '5s/^phase=//p' "$latest")
+  S72_TX_PREVIOUS_PHASE=$latest_previous_phase
   S72_TX_RECOVERY_SNAPSHOT=$(sed -n '6s/^recovery-snapshot=//p' "$latest")
   S72_TX_APPLY_SNAPSHOT=$(sed -n '7s/^apply-snapshot=//p' "$latest")
   S72_TX_FROM=$(sed -n '8s/^from=//p' "$latest")
@@ -877,7 +982,7 @@ s72_atomic_remove_owned_stage() {
   transaction_id=$2
   s72_atomic_is_transaction_id "$transaction_id" || return 1
   case "${stage##*/}" in
-    .snapshot-stage-$transaction_id|.s72-release-$transaction_id|\
+    .snapshot-stage-$transaction_id|.s72-release-$transaction_id|.s72-runtime-$transaction_id|\
     .s72-transaction-$transaction_id|.s72-units-apply-$transaction_id|\
     .s72-units-recovery-$transaction_id|.s72-config-apply-$transaction_id|\
     .s72-config-recovery-$transaction_id|.s72-state-apply-$transaction_id|\
@@ -1189,6 +1294,14 @@ s72_atomic_restore_snapshot() {
   s72_atomic_load_transaction "$records" "$transaction_id" || return 1
   if test "$S72_TX_PHASE" = recovering; then
     S72_RESTORE_SCOPE=recovery
+    S72_RECOVERY_APPLY_OPTIONAL=0
+    case "$S72_TX_OPERATION:$S72_TX_PREVIOUS_PHASE" in
+      install:reserved|install:snapshot-published|install:identity-group-intent|\
+      install:identity-group-ready|install:identity-user-intent|install:identity-user-ready|\
+      install:identity-runtime-intent|install:identity-ready|install:release-published)
+        S72_RECOVERY_APPLY_OPTIONAL=1
+        ;;
+    esac
     preflight_recoverable_live "$S72_TX_RECOVERY_SNAPSHOT" "$S72_TX_APPLY_SNAPSHOT" || return 1
   else
     S72_RESTORE_SCOPE=apply

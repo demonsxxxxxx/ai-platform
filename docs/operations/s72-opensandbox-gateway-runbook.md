@@ -98,12 +98,15 @@ chain under `/var/lib/opensandbox-gateway-deploy/transactions`. Records bind the
 operation, sequence, phase, source and destination commits, non-secret evidence,
 recovery and apply snapshots, stage identity, and prior record seal. The supported
 phases cover reservation, snapshot and release publication, staging, stop intent,
-each restore mutation, revalidation, runtime restore, commit, and cleanup. A torn,
+the gateway account/group/runtime-directory identity intents, each restore mutation,
+revalidation, runtime restore, commit, and cleanup. A torn,
 unknown, out-of-order, replaced, or corrupt record is preserved and rejected; it
 is never repaired by deleting or editing state.
 
 The normal install chain is `reserved -> snapshot-published ->
-release-published -> staged -> stop-intent -> stopped -> units-applied ->
+identity-group-intent -> identity-group-ready -> identity-user-intent ->
+identity-user-ready -> identity-runtime-intent -> identity-ready ->
+release-published -> staged -> stop-intent -> stopped -> identity-applied -> units-applied ->
 config-applied -> acl-applied -> authority-applied -> pointer-applied ->
 current-applied -> revalidated -> runtime-restored -> committed -> cleaned`.
 Rollback omits `release-published`; crash recovery records `recovering` before it
@@ -147,7 +150,15 @@ before mutation.
 The transaction restores the prior units, configuration, ACL, authority state,
 enable/active state, and release pointer (or their prior absence), revalidates the
 complete filesystem state before restart, and verifies lifecycle/listener state
-again before commit. Absent unit/config snapshots are accepted only with their
+again before commit. Unit restore requires the exact recorded `UnitFileState`,
+`LoadState`, and `ActiveState`; enable or disable failure and post-command drift
+leave the transaction uncommitted. The configured gateway UID binds the exact
+system group, account, home, shell, empty membership, and `0700` runtime directory.
+Creation intent is sealed before account mutation, and a new runtime directory is
+published from a transaction-owned private stage only after its device/inode is
+recorded. Recovery removes only exact objects created by that transaction; a
+pre-existing mismatch or later foreign replacement is preserved and fails closed.
+Absent unit/config snapshots are accepted only with their
 sealed lifecycle authority; otherwise they fail closed. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces
 the separate 211 release/rollback authority. Suspected secret exposure requires

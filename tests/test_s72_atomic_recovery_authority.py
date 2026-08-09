@@ -611,6 +611,10 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
           listener=127.0.0.1:8080 \
           listener-count=1 > "$ROOT/snapshot/lifecycle.authority"
         : > "$ROOT/snapshot/config.absent"
+        printf '%s\n' 62001 > "$ROOT/snapshot/gateway-service-uid"
+        : > "$ROOT/snapshot/gateway-group.absent"
+        : > "$ROOT/snapshot/gateway-user.absent"
+        : > "$ROOT/snapshot/runtime-state.absent"
         : > "$ROOT/snapshot/workspaces.acl"
         : > "$ROOT/snapshot/authority-sha.absent"
         : > "$ROOT/snapshot/authority-evidence.absent"
@@ -619,7 +623,8 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
         chmod 0600 "$ROOT/snapshot"/*.absent "$ROOT/snapshot"/*.inactive \
           "$ROOT/snapshot"/*.disabled "$ROOT/snapshot/workspaces.acl"
         chmod 0400 "$ROOT/snapshot/transaction-owner" "$ROOT/snapshot/captured-authority-sha" \
-          "$ROOT/snapshot/captured-authority-evidence" "$ROOT/snapshot/lifecycle.authority"
+          "$ROOT/snapshot/captured-authority-evidence" "$ROOT/snapshot/lifecycle.authority" \
+          "$ROOT/snapshot/gateway-service-uid"
         s72_atomic_write_manifest "$ROOT/snapshot"
         s72_atomic_preflight_snapshot "$ROOT/snapshot"
         : > "$ROOT/snapshot/config.present"
@@ -858,6 +863,7 @@ def test_transaction_records_reject_torn_unknown_and_invalid_phase_state(
         s72_atomic_advance_transaction "$records" "$tx" snapshot-published
         s72_atomic_load_transaction "$records" "$tx"
         test "$S72_TX_PHASE" = snapshot-published
+        test "$S72_TX_PREVIOUS_PHASE" = reserved
         ! s72_atomic_advance_transaction "$records" "$tx" committed
 
         printf '%s\n' hostile > "$records/unknown"
@@ -1003,6 +1009,296 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
         INSTALLER,
         ROLLBACK,
         HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize("failure_mode", ["disable-failure", "enabled-drift"])
+def test_restore_runtime_fails_closed_before_state_advance(
+    tmp_path: pathlib.Path,
+    failure_mode: str,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        mkdir -p "$ROOT/snapshot"
+        for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+          : > "$ROOT/snapshot/$unit.present"
+          : > "$ROOT/snapshot/$unit.inactive"
+          : > "$ROOT/snapshot/$unit.disabled"
+        done
+        systemctl() {{
+          case "$1" in
+            daemon-reload|stop) return 0 ;;
+            disable)
+              test {shlex.quote(failure_mode)} != disable-failure
+              ;;
+            show)
+              case "$4" in
+                ActiveState) printf '%s\n' inactive ;;
+                UnitFileState) printf '%s\n' enabled ;;
+                LoadState) printf '%s\n' loaded ;;
+                *) return 1 ;;
+              esac
+              ;;
+            *) return 1 ;;
+          esac
+        }}
+        ! restore_snapshot_runtime "$ROOT/snapshot"
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize(
+    ("user_entry", "group_entry", "runtime_identity"),
+    [
+        (
+            "opensandbox-gateway:x:62002:62001::/nonexistent:/usr/sbin/nologin",
+            "opensandbox-gateway:x:62001:",
+            "1:2:62001:62001:700",
+        ),
+        (
+            "opensandbox-gateway:x:62001:62002::/nonexistent:/usr/sbin/nologin",
+            "opensandbox-gateway:x:62001:",
+            "1:2:62001:62001:700",
+        ),
+        (
+            "opensandbox-gateway:x:62001:62001::/var/lib/opensandbox-gateway:/usr/sbin/nologin",
+            "opensandbox-gateway:x:62001:",
+            "1:2:62001:62001:700",
+        ),
+        (
+            "opensandbox-gateway:x:62001:62001::/nonexistent:/bin/sh",
+            "opensandbox-gateway:x:62001:",
+            "1:2:62001:62001:700",
+        ),
+        (
+            "opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin",
+            "opensandbox-gateway:x:62001:foreign-member",
+            "1:2:62001:62001:700",
+        ),
+        (
+            "opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin",
+            "opensandbox-gateway:x:62001:",
+            "1:2:62002:62001:700",
+        ),
+    ],
+)
+def test_gateway_identity_preflight_rejects_drifted_existing_subjects(
+    tmp_path: pathlib.Path,
+    user_entry: str,
+    group_entry: str,
+    runtime_identity: str,
+) -> None:
+    config = tmp_path / "config"
+    runtime = tmp_path / "runtime"
+    config.mkdir()
+    runtime.mkdir()
+    (config / "gateway.env").write_text(
+        "OPENSANDBOX_GATEWAY_ALLOWED_UID=62001\n",
+        encoding="utf-8",
+    )
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        CONFIG=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        RUNTIME=$(cygpath -u "$3" 2>/dev/null || printf '%s\n' "$3")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        RUNTIME_STATE=$RUNTIME
+        USER_ENTRY={shlex.quote(user_entry)}
+        GROUP_ENTRY={shlex.quote(group_entry)}
+        RUNTIME_IDENTITY={shlex.quote(runtime_identity)}
+        getent() {{
+          database=$1; key=$2
+          case "$database:$key" in
+            passwd:opensandbox-gateway|passwd:62001|passwd:62002)
+              printf '%s\n' "$USER_ENTRY"
+              ;;
+            group:opensandbox-gateway|group:62001|group:62002)
+              printf '%s\n' "$GROUP_ENTRY"
+              ;;
+            *) return 2 ;;
+          esac
+        }}
+        gateway_runtime_identity() {{ printf '%s\n' "$RUNTIME_IDENTITY"; }}
+        uid=$(gateway_service_uid_from_config_at "$CONFIG")
+        test "$uid" = 62001
+        ! require_gateway_identity_contract "$uid"
+        ''',
+        INSTALLER,
+        config,
+        runtime,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize("boundary", ["group", "user", "runtime"])
+def test_gateway_identity_recovery_is_idempotent_after_each_create_boundary(
+    tmp_path: pathlib.Path,
+    boundary: str,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        DEPLOY_STATE=$ROOT/deploy
+        RUNTIME_STATE=$ROOT/runtime
+        tx=11111111111111111111111111111111
+        workspace=$DEPLOY_STATE/.s72-transaction-$tx
+        snapshot=$ROOT/snapshot
+        mkdir -p "$workspace" "$snapshot"
+        printf '%s\n' schema=s72-transaction-owner-v1 "transaction=$tx" \
+          "root=$(command stat -c %d:%i "$workspace")" > "$workspace/transaction-owner"
+        printf '%s\n' 62001 > "$snapshot/gateway-service-uid"
+        : > "$snapshot/gateway-user.absent"
+        : > "$snapshot/gateway-group.absent"
+        : > "$snapshot/runtime-state.absent"
+        chmod 0400 "$snapshot/gateway-service-uid"
+        chmod 0600 "$snapshot"/*.absent
+        printf '%s\n' 'opensandbox-gateway:x:62001:' > "$workspace/gateway-group.intent"
+        printf '%s\n' 'opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin' \
+          > "$workspace/gateway-user.intent"
+        chmod 0400 "$workspace/transaction-owner" "$workspace/gateway-group.intent" \
+          "$workspace/gateway-user.intent"
+        s72_atomic_require_root_owned_regular() {{ test -f "$1" && test ! -L "$1"; }}
+        s72_atomic_fsync_path() {{ :; }}
+        USER_ENTRY=; GROUP_ENTRY=
+        case {shlex.quote(boundary)} in
+          group) GROUP_ENTRY=$(cat "$workspace/gateway-group.intent") ;;
+          user)
+            GROUP_ENTRY=$(cat "$workspace/gateway-group.intent")
+            USER_ENTRY=$(cat "$workspace/gateway-user.intent")
+            ;;
+          runtime)
+            GROUP_ENTRY=$(cat "$workspace/gateway-group.intent")
+            USER_ENTRY=$(cat "$workspace/gateway-user.intent")
+            mkdir "$RUNTIME_STATE"
+            runtime_identity=$(s72_atomic_directory_identity "$RUNTIME_STATE")
+            printf '%s\n' "$runtime_identity" > "$workspace/runtime-state.created-identity"
+            chmod 0400 "$workspace/runtime-state.created-identity"
+            ;;
+        esac
+        getent() {{
+          database=$1; key=$2
+          case "$database:$key" in
+            passwd:opensandbox-gateway|passwd:62001)
+              test -n "$USER_ENTRY" || return 2
+              printf '%s\n' "$USER_ENTRY"
+              ;;
+            group:opensandbox-gateway|group:62001)
+              test -n "$GROUP_ENTRY" || return 2
+              printf '%s\n' "$GROUP_ENTRY"
+              ;;
+            *) return 2 ;;
+          esac
+        }}
+        userdel() {{ USER_ENTRY=; }}
+        groupdel() {{ GROUP_ENTRY=; }}
+        require_gateway_identity_matches_transaction "$snapshot" "$tx"
+        restore_gateway_identity "$snapshot" "$tx"
+        test -z "$USER_ENTRY" && test -z "$GROUP_ENTRY"
+        test ! -e "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE"
+        restore_gateway_identity "$snapshot" "$tx"
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_gateway_identity_creation_is_journaled_and_uses_a_private_runtime_stage(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_bash(
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        DEPLOY_STATE=$ROOT/deploy
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        RUNTIME_STATE=$ROOT/var/lib/opensandbox-gateway
+        tx=11111111111111111111111111111111
+        workspace=$DEPLOY_STATE/.s72-transaction-$tx
+        snapshot=$ROOT/snapshot
+        mkdir -p "$workspace" "$snapshot" "$TRANSACTION_RECORDS" "${RUNTIME_STATE%/*}"
+        printf '%s\n' schema=s72-transaction-owner-v1 "transaction=$tx" \
+          "root=$(command stat -c %d:%i "$workspace")" > "$workspace/transaction-owner"
+        printf '%s\n' 62001 > "$snapshot/gateway-service-uid"
+        : > "$snapshot/gateway-user.absent"
+        : > "$snapshot/gateway-group.absent"
+        : > "$snapshot/runtime-state.absent"
+        chmod 0400 "$workspace/transaction-owner" "$snapshot/gateway-service-uid"
+        chmod 0600 "$snapshot"/*.absent
+        s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        s72_atomic_require_root_tree() { test -d "$1" && test ! -L "$1"; }
+        s72_atomic_require_root_owned_directory() { test -d "$1" && test ! -L "$1"; }
+        s72_atomic_fsync_path() { :; }
+        s72_atomic_directory_identity() {
+          value=$(command stat -c %d:%i -- "$1")
+          printf '%s:%s\n' "$value" 62001:62001:700
+        }
+        s72_atomic_prepare_workspace() {
+          parent=$1; label=$2; transaction=$3
+          prepared=$parent/.s72-$label-$transaction
+          if test ! -d "$prepared"; then
+            mkdir "$prepared"
+            printf '%s\n' schema=s72-transaction-owner-v1 "transaction=$transaction" \
+              "root=$(command stat -c %d:%i "$prepared")" > "$prepared/transaction-owner"
+            chmod 0400 "$prepared/transaction-owner"
+          fi
+          printf '%s\n' "$prepared"
+        }
+        install() {
+          test "$1" = -d || return 1
+          mkdir "${@: -1}"
+        }
+        USER_ENTRY=; GROUP_ENTRY=
+        getent() {
+          database=$1; key=$2
+          case "$database:$key" in
+            passwd:opensandbox-gateway|passwd:62001)
+              test -n "$USER_ENTRY" || return 2
+              printf '%s\n' "$USER_ENTRY"
+              ;;
+            group:opensandbox-gateway|group:62001)
+              test -n "$GROUP_ENTRY" || return 2
+              printf '%s\n' "$GROUP_ENTRY"
+              ;;
+            *) return 2 ;;
+          esac
+        }
+        groupadd() { GROUP_ENTRY=opensandbox-gateway:x:62001:; }
+        useradd() { USER_ENTRY=opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin; }
+        userdel() { USER_ENTRY=; }
+        groupdel() { GROUP_ENTRY=; }
+        : > "$ROOT/phases"
+        s72_atomic_advance_transaction() { printf '%s\n' "$3" >> "$ROOT/phases"; }
+
+        ensure_gateway_identity "$snapshot" "$tx"
+        test "$GROUP_ENTRY" = opensandbox-gateway:x:62001:
+        test "$USER_ENTRY" = opensandbox-gateway:x:62001:62001::/nonexistent:/usr/sbin/nologin
+        test -d "$RUNTIME_STATE"
+        test ! -e "${RUNTIME_STATE%/*}/.s72-runtime-$tx/runtime.new"
+        test "$(cat "$ROOT/phases")" = "$(printf '%s\n' \
+          identity-group-intent identity-group-ready identity-user-intent \
+          identity-user-ready identity-runtime-intent identity-ready)"
+
+        restore_gateway_identity "$snapshot" "$tx"
+        test -z "$USER_ENTRY" && test -z "$GROUP_ENTRY"
+        test ! -e "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE"
+        ''',
+        INSTALLER,
         tmp_path,
     )
     assert result.returncode == 0, result.stderr or result.stdout

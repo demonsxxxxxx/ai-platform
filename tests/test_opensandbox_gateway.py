@@ -2941,7 +2941,18 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
                 daemon-reload) : ;;
                 show)
                   unit=$2
-                  test -f "$STATE/$unit.active" && printf '%s\n' active || printf '%s\n' inactive
+                  case "$4" in
+                    ActiveState)
+                      test -f "$STATE/$unit.active" && printf '%s\n' active || printf '%s\n' inactive
+                      ;;
+                    UnitFileState)
+                      test -f "$STATE/$unit.enabled" && printf '%s\n' enabled || printf '%s\n'
+                      ;;
+                    LoadState)
+                      test -f "$SYSTEMD_DIR/$unit" && printf '%s\n' loaded || printf '%s\n' not-found
+                      ;;
+                    *) return 1 ;;
+                  esac
                   ;;
               esac
             }
@@ -2998,7 +3009,10 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
         DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
-        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence; mkdir -p "$DEPLOY_STATE"
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        mkdir -p "$DEPLOY_STATE" "$TRANSACTION_RECORDS"
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$STATE"
         printf 'old-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'old-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
@@ -3009,6 +3023,23 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
         : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
         require_root_tree() {{ test -d "$1" && test ! -L "$1"; }}
+        s72_atomic_require_root_owned_directory() {{ test -d "$1" && test ! -L "$1"; }}
+        s72_atomic_require_root_owned_regular() {{ test -f "$1" && test ! -L "$1"; }}
+        s72_atomic_require_identity() {{ test -e "$1" || test -L "$1"; }}
+        s72_atomic_fsync_path() {{ :; }}
+        s72_atomic_advance_transaction() {{ :; }}
+        s72_atomic_write_lifecycle_authority() {{ : > "$1"; }}
+        s72_atomic_prepare_workspace() {{
+          workspace=$1/.s72-$2-$3
+          mkdir -p "$workspace"
+          printf '%s\n' "$workspace"
+        }}
+        s72_atomic_directory_matches() {{ diff -r "$1" "$2" >/dev/null; }}
+        preflight_live_state() {{ :; }}
+        preflight_snapshot() {{ :; }}
+        require_gateway_config_contract() {{ :; }}
+        write_config_metadata() {{ : > "$2"; }}
+        verify_config_metadata() {{ :; }}
         write_manifest() {{ : > "$1/MANIFEST.sha256"; }}
         verify_manifest() {{ test -f "$1/MANIFEST.sha256"; }}
         validate_release() {{ is_commit "$1"; }}
@@ -3029,14 +3060,41 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         setfacl() {{ cp "${{1#--restore=}}" "$ROOT/acl.current"; }}
         systemctl() {{
           action=$1; unit=${{@: -1}}; printf '%s:%s:%s\n' "$action" "$unit" "$(readlink "$CURRENT_LINK" 2>/dev/null || true)" >> "$ACTIONS"
-          case "$action" in is-active) test -f "$STATE/$unit.active";; is-enabled) test -f "$STATE/$unit.enabled";; enable) : > "$STATE/$unit.enabled";; disable) rm -f "$STATE/$unit.enabled";; restart) : > "$STATE/$unit.active";; stop) rm -f "$STATE/$unit.active";; daemon-reload) :;; esac
+          case "$action" in
+            is-active) test -f "$STATE/$unit.active" ;;
+            is-enabled) test -f "$STATE/$unit.enabled" ;;
+            enable) : > "$STATE/$unit.enabled" ;;
+            disable) rm -f "$STATE/$unit.enabled" ;;
+            restart) : > "$STATE/$unit.active" ;;
+            stop) rm -f "$STATE/$unit.active" ;;
+            daemon-reload) : ;;
+            show)
+              unit=$2
+              case "$4" in
+                ActiveState)
+                  test -f "$STATE/$unit.active" && printf '%s\n' active || printf '%s\n' inactive
+                  ;;
+                UnitFileState)
+                  test -f "$STATE/$unit.enabled" && printf '%s\n' enabled || printf '%s\n' disabled
+                  ;;
+                LoadState) printf '%s\n' loaded ;;
+                *) return 1 ;;
+              esac
+              ;;
+          esac
         }}
-        snapshot_state "$ROOT/snapshot"
+        SNAPSHOT=$ROOT/snapshot
+        mkdir "$SNAPSHOT"
+        printf '%s\n' schema=s72-transaction-owner-v1 \
+          transaction=11111111111111111111111111111111 \
+          "root=$(command stat -c %d:%i "$SNAPSHOT")" > "$SNAPSHOT/transaction-owner"
+        snapshot_state "$SNAPSHOT"
         printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         rm "$CURRENT_LINK"; ln -s releases/{new} "$CURRENT_LINK"
-        restore_snapshot "$ROOT/snapshot"
+        restore_snapshot_payload "$SNAPSHOT" 11111111111111111111111111111111
+        restore_snapshot_runtime "$SNAPSHOT"
         grep -qx old-public "$SYSTEMD_DIR/opensandbox-gateway.service"
         grep -qx old-helper "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         grep -qx old-config "$CONFIG_DIR/gateway.env"; grep -qx acl-old "$ROOT/acl.current"
@@ -3274,7 +3332,14 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
           action=$1; unit=${@: -1}
           case "$action" in
             disable|stop|daemon-reload) : ;;
-            show) printf '%s\n' inactive ;;
+            show)
+              case "$4" in
+                ActiveState) printf '%s\n' inactive ;;
+                UnitFileState) printf '%s\n' ;;
+                LoadState) printf '%s\n' not-found ;;
+                *) return 1 ;;
+              esac
+              ;;
             *) : ;;
           esac
         }

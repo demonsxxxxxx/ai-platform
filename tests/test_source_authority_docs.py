@@ -78,8 +78,14 @@ def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
     assert "same-parent rename" in runbook
     assert "MANIFEST.identity" in runbook and "SNAPSHOT.seal" in runbook
     assert "self-authenticating transaction-record chain" in runbook
-    assert "reserved -> snapshot-published -> release-published -> staged" in runbook
+    assert "reserved -> snapshot-published" in runbook
+    assert "release-published -> staged" in runbook
     assert "runtime-restored -> committed -> cleaned" in runbook
+    assert "identity-group-intent -> identity-group-ready" in runbook
+    assert "`UnitFileState`, `LoadState`, and `ActiveState`" in runbook
+    assert "gateway UID binds the exact system group, account, home, shell" in runbook
+    assert "published from a transaction-owned private stage" in runbook
+    assert "foreign replacement is preserved and fails closed" in runbook
     assert "device/inode" in runbook
     assert "exactly one `LISTEN` `127.0.0.1:8080`" in runbook
     assert "left untouched and recovery fails closed" in runbook

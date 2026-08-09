@@ -17,7 +17,7 @@ TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
 SNAPSHOTS=$DEPLOY_STATE/snapshots
 LOCK_FILE=/run/lock/opensandbox-gateway-s72-install.lock
 
-S72_ATOMIC_RECOVERY_HELPER_SHA256=ec76affc74a7b88bf3a66934bdb9eb4a63d9d8f08aac5cddc06f4f2ba76770e1
+S72_ATOMIC_RECOVERY_HELPER_SHA256=d5ec58e66e36166dddd38f7efdd82fc0ae7e0bd13501d1f30574b356624033a4
 
 s72_loader_reject() {
   printf '%s\n' 'OpenSandbox s72 loader authority rejected' >&2
@@ -158,6 +158,8 @@ test "${S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA:-}" = s72-atomic-recovery-authority
 for s72_loader_symbol in \
   s72_atomic_is_commit \
   s72_atomic_is_authority_evidence_id \
+  s72_atomic_is_service_uid \
+  s72_atomic_directory_identity \
   s72_atomic_require_root_tree \
   s72_atomic_require_root_owned_regular \
   s72_atomic_require_root_owned_directory \

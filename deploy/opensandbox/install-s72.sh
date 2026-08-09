@@ -14,11 +14,15 @@ SYSTEMD_DIR=/etc/systemd/system
 CONFIG_DIR=/etc/opensandbox-gateway
 WORKSPACE_ROOT=/data/opensandbox/workspaces
 RUNTIME_STATE=/var/lib/opensandbox-gateway
+SERVICE_USER=opensandbox-gateway
+SERVICE_GROUP=opensandbox-gateway
+SERVICE_HOME=/nonexistent
+SERVICE_SHELL=/usr/sbin/nologin
 TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
 SNAPSHOTS=$DEPLOY_STATE/snapshots
 LOCK_FILE=/run/lock/opensandbox-gateway-s72-install.lock
 
-S72_ATOMIC_RECOVERY_HELPER_SHA256=ec76affc74a7b88bf3a66934bdb9eb4a63d9d8f08aac5cddc06f4f2ba76770e1
+S72_ATOMIC_RECOVERY_HELPER_SHA256=d5ec58e66e36166dddd38f7efdd82fc0ae7e0bd13501d1f30574b356624033a4
 
 s72_loader_reject() {
   printf '%s\n' 'OpenSandbox s72 loader authority rejected' >&2
@@ -159,6 +163,8 @@ test "${S72_ATOMIC_RECOVERY_AUTHORITY_SCHEMA:-}" = s72-atomic-recovery-authority
 for s72_loader_symbol in \
   s72_atomic_is_commit \
   s72_atomic_is_authority_evidence_id \
+  s72_atomic_is_service_uid \
+  s72_atomic_directory_identity \
   s72_atomic_require_root_tree \
   s72_atomic_require_root_owned_regular \
   s72_atomic_require_root_owned_directory \
@@ -195,6 +201,300 @@ require_root_owned_directory() {
   s72_atomic_require_root_owned_directory "$@"
 }
 
+gateway_service_uid_from_config_at() {
+  contract_root=$1
+  gateway_env=$contract_root/gateway.env
+  test -f "$gateway_env" && test ! -L "$gateway_env" || return 1
+  uid_lines=$(grep -Ec '^OPENSANDBOX_GATEWAY_ALLOWED_UID=' "$gateway_env") || return 1
+  test "$uid_lines" -eq 1 || return 1
+  gateway_uid=$(sed -n 's/^OPENSANDBOX_GATEWAY_ALLOWED_UID=//p' "$gateway_env") || return 1
+  s72_atomic_is_service_uid "$gateway_uid" || return 1
+  test "$(grep -Fxc "OPENSANDBOX_GATEWAY_ALLOWED_UID=$gateway_uid" "$gateway_env")" -eq 1 || return 1
+  printf '%s\n' "$gateway_uid"
+}
+
+gateway_group_entry() {
+  printf '%s\n' "$SERVICE_GROUP:x:$1:"
+}
+
+gateway_user_entry() {
+  printf '%s\n' "$SERVICE_USER:x:$1:$1::$SERVICE_HOME:$SERVICE_SHELL"
+}
+
+require_account_lookup_absent() {
+  if getent "$1" "$2" >/dev/null 2>&1; then
+    return 1
+  else
+    test "$?" -eq 2
+  fi
+}
+
+gateway_runtime_identity() {
+  s72_atomic_directory_identity "$RUNTIME_STATE"
+}
+
+require_gateway_identity_contract() {
+  gateway_uid=$1
+  s72_atomic_is_service_uid "$gateway_uid" || return 1
+  expected_group=$(gateway_group_entry "$gateway_uid") || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid") || return 1
+  if actual_group=$(getent group "$SERVICE_GROUP"); then
+    test "$actual_group" = "$expected_group" || return 1
+    test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
+    group_present=1
+  else
+    test "$?" -eq 2 || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+    group_present=0
+  fi
+  if actual_user=$(getent passwd "$SERVICE_USER"); then
+    test "$actual_user" = "$expected_user" || return 1
+    test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
+    user_present=1
+  else
+    test "$?" -eq 2 || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+    user_present=0
+  fi
+  test "$group_present" -eq "$user_present" || return 1
+  if test -e "$RUNTIME_STATE" || test -L "$RUNTIME_STATE"; then
+    test -d "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE" || return 1
+    test "$group_present" -eq 1 || return 1
+    runtime_identity=$(gateway_runtime_identity) || return 1
+    IFS=: read -r _ _ owner group mode extra <<EOF
+$runtime_identity
+EOF
+    test -z "${extra:-}" && test "$owner:$group:$mode" = "$gateway_uid:$gateway_uid:700" || return 1
+  fi
+}
+
+require_gateway_identity_matches_snapshot() {
+  snapshot=$1
+  s72_atomic_preflight_gateway_identity_snapshot "$snapshot" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  expected_group=$(gateway_group_entry "$gateway_uid") || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid") || return 1
+  if test -f "$snapshot/gateway-group.present"; then
+    test "$(getent group "$SERVICE_GROUP")" = "$expected_group" || return 1
+    test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
+    test "$(getent passwd "$SERVICE_USER")" = "$expected_user" || return 1
+    test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
+  else
+    require_account_lookup_absent passwd "$SERVICE_USER" || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+    require_account_lookup_absent group "$SERVICE_GROUP" || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+  fi
+  if test -f "$snapshot/runtime-state.present"; then
+    test -d "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE" || return 1
+    test "$(gateway_runtime_identity)" = "$(cat "$snapshot/runtime-state.identity")" || return 1
+  else
+    test ! -e "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE" || return 1
+  fi
+}
+
+require_gateway_identity_matches_transaction() {
+  snapshot=$1
+  transaction_id=$2
+  s72_atomic_preflight_gateway_identity_snapshot "$snapshot" || return 1
+  test -f "$snapshot/gateway-group.absent" && test -f "$snapshot/gateway-user.absent" \
+    && test -f "$snapshot/runtime-state.absent" || return 1
+  workspace=$DEPLOY_STATE/.s72-transaction-$transaction_id
+  s72_atomic_require_transaction_owner "$workspace" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  expected_group=$(gateway_group_entry "$gateway_uid") || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid") || return 1
+
+  if group_entry=$(getent group "$SERVICE_GROUP"); then
+    s72_atomic_require_root_owned_regular "$workspace/gateway-group.intent" 400 || return 1
+    test "$group_entry" = "$expected_group" || return 1
+    test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
+    test "$(cat "$workspace/gateway-group.intent")" = "$expected_group" || return 1
+    group_present=1
+  else
+    test "$?" -eq 2 || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+    group_present=0
+  fi
+  if user_entry=$(getent passwd "$SERVICE_USER"); then
+    test "$group_present" -eq 1 || return 1
+    s72_atomic_require_root_owned_regular "$workspace/gateway-user.intent" 400 || return 1
+    test "$user_entry" = "$expected_user" || return 1
+    test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
+    test "$(cat "$workspace/gateway-user.intent")" = "$expected_user" || return 1
+  else
+    test "$?" -eq 2 || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+  fi
+  if test -e "$RUNTIME_STATE" || test -L "$RUNTIME_STATE"; then
+    test "$group_present" -eq 1 || return 1
+    s72_atomic_require_root_owned_regular "$workspace/runtime-state.created-identity" 400 || return 1
+    test "$(gateway_runtime_identity)" = \
+      "$(cat "$workspace/runtime-state.created-identity")" || return 1
+  fi
+}
+
+snapshot_gateway_identity() {
+  snapshot=$1
+  gateway_uid=$2
+  require_gateway_identity_contract "$gateway_uid" || return 1
+  printf '%s\n' "$gateway_uid" > "$snapshot/gateway-service-uid"
+  if group_entry=$(getent group "$SERVICE_GROUP"); then
+    printf '%s\n' "$group_entry" > "$snapshot/gateway-group.entry"
+    user_entry=$(getent passwd "$SERVICE_USER") || return 1
+    printf '%s\n' "$user_entry" > "$snapshot/gateway-user.entry"
+    : > "$snapshot/gateway-group.present"
+    : > "$snapshot/gateway-user.present"
+  else
+    test "$?" -eq 2 || return 1
+    : > "$snapshot/gateway-group.absent"
+    : > "$snapshot/gateway-user.absent"
+  fi
+  if test -d "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE"; then
+    gateway_runtime_identity > "$snapshot/runtime-state.identity" || return 1
+    : > "$snapshot/runtime-state.present"
+  else
+    test ! -e "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE" || return 1
+    : > "$snapshot/runtime-state.absent"
+  fi
+  chmod 0400 "$snapshot/gateway-service-uid" || return 1
+  test ! -e "$snapshot/gateway-group.entry" || chmod 0400 \
+    "$snapshot/gateway-group.entry" "$snapshot/gateway-user.entry" || return 1
+  test ! -e "$snapshot/runtime-state.identity" || chmod 0400 "$snapshot/runtime-state.identity" || return 1
+  find "$snapshot" -maxdepth 1 -type f \( \
+    -name 'gateway-*.present' -o -name 'gateway-*.absent' -o \
+    -name 'runtime-state.present' -o -name 'runtime-state.absent' \
+    \) -exec chmod 0600 {} + || return 1
+  s72_atomic_preflight_gateway_identity_snapshot "$snapshot"
+}
+
+publish_identity_intent() {
+  target=$1
+  contents=$2
+  if test -e "$target" || test -L "$target"; then
+    s72_atomic_require_root_owned_regular "$target" 400 || return 1
+    test "$(cat "$target")" = "$contents"
+  else
+    s72_atomic_publish_new_file "$target" 0400 "$contents"
+  fi
+}
+
+ensure_gateway_identity() {
+  snapshot=$1
+  transaction_id=$2
+  s72_atomic_preflight_gateway_identity_snapshot "$snapshot" || return 1
+  workspace=$DEPLOY_STATE/.s72-transaction-$transaction_id
+  s72_atomic_require_transaction_owner "$workspace" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  expected_group=$(gateway_group_entry "$gateway_uid") || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid") || return 1
+
+  if test -f "$snapshot/gateway-group.absent"; then
+    require_account_lookup_absent group "$SERVICE_GROUP" || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+    publish_identity_intent "$workspace/gateway-group.intent" "$expected_group" || return 1
+  fi
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-group-intent || return 1
+  if test -f "$snapshot/gateway-group.absent"; then
+    groupadd --system --gid "$gateway_uid" "$SERVICE_GROUP" || return 1
+  fi
+  test "$(getent group "$SERVICE_GROUP")" = "$expected_group" || return 1
+  test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-group-ready || return 1
+
+  if test -f "$snapshot/gateway-user.absent"; then
+    require_account_lookup_absent passwd "$SERVICE_USER" || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+    publish_identity_intent "$workspace/gateway-user.intent" "$expected_user" || return 1
+  fi
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-user-intent || return 1
+  if test -f "$snapshot/gateway-user.absent"; then
+    useradd --system --uid "$gateway_uid" --gid "$SERVICE_GROUP" --home-dir "$SERVICE_HOME" \
+      --shell "$SERVICE_SHELL" --no-create-home --comment "" "$SERVICE_USER" || return 1
+  fi
+  test "$(getent passwd "$SERVICE_USER")" = "$expected_user" || return 1
+  test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-user-ready || return 1
+
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-runtime-intent || return 1
+  if test -f "$snapshot/runtime-state.absent"; then
+    test ! -e "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE" || return 1
+    runtime_workspace=$(s72_atomic_prepare_workspace \
+      "${RUNTIME_STATE%/*}" runtime "$transaction_id") || return 1
+    runtime_stage=$runtime_workspace/runtime.new
+    if test -e "$workspace/runtime-state.created-identity"; then
+      s72_atomic_require_root_owned_regular "$workspace/runtime-state.created-identity" 400 || return 1
+      created_identity=$(cat "$workspace/runtime-state.created-identity") || return 1
+      test -d "$runtime_stage" && test ! -L "$runtime_stage" || return 1
+      test "$(s72_atomic_directory_identity "$runtime_stage")" = "$created_identity" || return 1
+    else
+      test ! -e "$runtime_stage" && test ! -L "$runtime_stage" || return 1
+      install -d -o "$gateway_uid" -g "$gateway_uid" -m 0700 "$runtime_stage" || return 1
+      created_identity=$(s72_atomic_directory_identity "$runtime_stage") || return 1
+      s72_atomic_publish_new_file "$workspace/runtime-state.created-identity" 0400 \
+        "$created_identity" || return 1
+      s72_atomic_fsync_path "$runtime_workspace" || return 1
+    fi
+    mv -T -n "$runtime_stage" "$RUNTIME_STATE" || return 1
+    test "$(gateway_runtime_identity)" = "$created_identity" || return 1
+    s72_atomic_fsync_path "${RUNTIME_STATE%/*}" || return 1
+  fi
+  test -d "$RUNTIME_STATE" && test ! -L "$RUNTIME_STATE" || return 1
+  runtime_identity=$(gateway_runtime_identity) || return 1
+  IFS=: read -r _ _ owner group mode extra <<EOF
+$runtime_identity
+EOF
+  test -z "${extra:-}" && test "$owner:$group:$mode" = "$gateway_uid:$gateway_uid:700" || return 1
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-ready
+}
+
+restore_gateway_identity() {
+  snapshot=$1
+  transaction_id=$2
+  s72_atomic_preflight_gateway_identity_snapshot "$snapshot" || return 1
+  workspace=$DEPLOY_STATE/.s72-transaction-$transaction_id
+  s72_atomic_require_transaction_owner "$workspace" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  expected_group=$(gateway_group_entry "$gateway_uid") || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid") || return 1
+
+  if test -f "$snapshot/runtime-state.present"; then
+    test "$(gateway_runtime_identity)" = "$(cat "$snapshot/runtime-state.identity")" || return 1
+  elif test -e "$RUNTIME_STATE" || test -L "$RUNTIME_STATE"; then
+    s72_atomic_require_root_owned_regular "$workspace/runtime-state.created-identity" 400 || return 1
+    runtime_identity=$(cat "$workspace/runtime-state.created-identity") || return 1
+    s72_atomic_remove_empty_directory "$RUNTIME_STATE" "$runtime_identity" || return 1
+    s72_atomic_fsync_path "${RUNTIME_STATE%/*}" || return 1
+  fi
+  if test -f "$snapshot/gateway-user.present"; then
+    test "$(getent passwd "$SERVICE_USER")" = "$(cat "$snapshot/gateway-user.entry")" || return 1
+  elif user_entry=$(getent passwd "$SERVICE_USER"); then
+    s72_atomic_require_root_owned_regular "$workspace/gateway-user.intent" 400 || return 1
+    test "$user_entry" = "$expected_user" || return 1
+    test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
+    test "$(cat "$workspace/gateway-user.intent")" = "$expected_user" || return 1
+    userdel "$SERVICE_USER" || return 1
+    require_account_lookup_absent passwd "$SERVICE_USER" || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+  else
+    test "$?" -eq 2 || return 1
+  fi
+  if test -f "$snapshot/gateway-group.present"; then
+    test "$(getent group "$SERVICE_GROUP")" = "$(cat "$snapshot/gateway-group.entry")" || return 1
+  elif group_entry=$(getent group "$SERVICE_GROUP"); then
+    s72_atomic_require_root_owned_regular "$workspace/gateway-group.intent" 400 || return 1
+    test "$group_entry" = "$expected_group" || return 1
+    test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
+    test "$(cat "$workspace/gateway-group.intent")" = "$expected_group" || return 1
+    groupdel "$SERVICE_GROUP" || return 1
+    require_account_lookup_absent group "$SERVICE_GROUP" || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+  else
+    test "$?" -eq 2 || return 1
+  fi
+  require_gateway_identity_matches_snapshot "$snapshot"
+}
+
 require_gateway_config_contract() {
   require_gateway_config_contract_at "$CONFIG_DIR"
 }
@@ -219,6 +519,7 @@ require_gateway_config_contract_at() {
     require_root_owned_regular "$contract_root/secrets/$secret" 440 || return 1
   done
   test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=/etc/opensandbox-gateway/tls/upstream-ca.pem' "$contract_root/gateway.env")" -eq 1
+  gateway_service_uid_from_config_at "$contract_root" >/dev/null
 }
 
 normalize_runtime_config_permissions() {
@@ -339,6 +640,8 @@ preflight_live_state() {
   done
   if test -e "$CONFIG_DIR"; then
     require_gateway_config_contract || return 1
+    live_gateway_uid=$(gateway_service_uid_from_config_at "$CONFIG_DIR") || return 1
+    require_gateway_identity_contract "$live_gateway_uid" || return 1
   fi
   current_commit=
   if test -L "$CURRENT_LINK"; then
@@ -413,8 +716,14 @@ preflight_recoverable_live() {
   apply=
   if test "$apply_id" != none; then
     apply=$SNAPSHOTS/$apply_id
-    s72_atomic_preflight_snapshot "$apply" || return 1
-    s72_atomic_verify_snapshot_seal "$apply" || return 1
+    if test -d "$apply" && test ! -L "$apply"; then
+      s72_atomic_preflight_snapshot "$apply" || return 1
+      s72_atomic_verify_snapshot_seal "$apply" || return 1
+    else
+      test "${S72_RECOVERY_APPLY_OPTIONAL:-0}" -eq 1 || return 1
+      test ! -e "$apply" && test ! -L "$apply" || return 1
+      apply=
+    fi
   fi
   for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
     live_file_matches_snapshot "$SYSTEMD_DIR/$unit" "$recovery" "$unit" "$unit.present" 644 \
@@ -432,6 +741,10 @@ preflight_recoverable_live() {
   fi
   live_current_matches_snapshot "$recovery" \
     || { test -n "$apply" && live_current_matches_snapshot "$apply"; } || return 1
+  require_gateway_identity_matches_snapshot "$recovery" \
+    || { test -n "$apply" && require_gateway_identity_matches_snapshot "$apply"; } \
+    || require_gateway_identity_matches_transaction "$recovery" "${S72_TX_ID:-}" \
+    || return 1
   s72_atomic_require_exact_lifecycle
 }
 
@@ -448,6 +761,11 @@ snapshot_state() {
   preflight_live_state
   test -d "$snapshot" && test ! -L "$snapshot" || return 1
   test -f "$snapshot/transaction-owner" && test ! -L "$snapshot/transaction-owner" || return 1
+  if test -n "${SERVICE_UID:-}"; then
+    snapshot_gateway_identity "$snapshot" "$SERVICE_UID" || return 1
+  else
+    test "${s72_loader_mode:-}" = test-source-eval || return 1
+  fi
   for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
     if test -e "$SYSTEMD_DIR/$unit"; then
       test -f "$SYSTEMD_DIR/$unit" && test ! -L "$SYSTEMD_DIR/$unit"
@@ -526,6 +844,12 @@ restore_snapshot_payload() {
   snapshot=$1
   transaction_id=$2
   scope=${S72_RESTORE_SCOPE:-apply}
+  if test -f "$snapshot/gateway-service-uid"; then
+    restore_gateway_identity "$snapshot" "$transaction_id" || return 1
+  else
+    test "${s72_loader_mode:-}" = test-source-eval || return 1
+  fi
+  s72_atomic_advance_transaction "$TRANSACTION_RECORDS" "$transaction_id" identity-applied || return 1
   unit_workspace=$(s72_atomic_prepare_workspace "$SYSTEMD_DIR" units-$scope "$transaction_id") || return 1
   for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
     source=absent
@@ -566,17 +890,34 @@ restore_snapshot_runtime() {
   snapshot=$1
   systemctl daemon-reload || return 1
   for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do
-    if test -f "$snapshot/$unit.enabled"; then
-      systemctl enable "$unit" >/dev/null 2>&1 || return 1
+    if test -f "$snapshot/$unit.present"; then
+      if test -f "$snapshot/$unit.enabled"; then
+        systemctl enable "$unit" >/dev/null 2>&1 || return 1
+        expected_unit_state=enabled
+      else
+        systemctl disable "$unit" >/dev/null 2>&1 || return 1
+        expected_unit_state=disabled
+      fi
+      test "$(systemctl show "$unit" -p UnitFileState --value)" = "$expected_unit_state" || return 1
+      test "$(systemctl show "$unit" -p LoadState --value)" = loaded || return 1
     else
-      systemctl disable "$unit" >/dev/null 2>&1 || true
+      current_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+      if test -n "$current_unit_state"; then
+        systemctl disable "$unit" >/dev/null 2>&1 || return 1
+      fi
+      test -z "$(systemctl show "$unit" -p UnitFileState --value)" || return 1
+      test "$(systemctl show "$unit" -p LoadState --value)" = not-found || return 1
     fi
     if test -f "$snapshot/$unit.active"; then
       systemctl restart "$unit" || return 1
       test "$(systemctl show "$unit" -p ActiveState --value)" = active || return 1
     else
-      systemctl stop "$unit" >/dev/null 2>&1 || true
-      test "$(systemctl show "$unit" -p ActiveState --value)" != active || return 1
+      if test -f "$snapshot/$unit.present"; then
+        systemctl stop "$unit" >/dev/null 2>&1 || return 1
+      else
+        systemctl stop "$unit" >/dev/null 2>&1 || :
+      fi
+      test "$(systemctl show "$unit" -p ActiveState --value)" = inactive || return 1
     fi
   done
 }
@@ -708,6 +1049,7 @@ cleanup_transaction_workspaces() {
   for workspace in \
     "$SNAPSHOTS/.snapshot-stage-$transaction_id" \
     "$RELEASES/.s72-release-$transaction_id" \
+    "${RUNTIME_STATE%/*}/.s72-runtime-$transaction_id" \
     "$SYSTEMD_DIR/.s72-units-apply-$transaction_id" \
     "$SYSTEMD_DIR/.s72-units-recovery-$transaction_id" \
     "${CONFIG_DIR%/*}/.s72-config-apply-$transaction_id" \
@@ -769,6 +1111,7 @@ build_desired_snapshot() {
   commit=$4
   release=$RELEASES/$commit
   stage=$(s72_atomic_create_snapshot_stage "$SNAPSHOTS" "$transaction_id") || return 1
+  snapshot_gateway_identity "$stage" "$SERVICE_UID" || return 1
   for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
     install -o root -g root -m 0644 "$release/config/$unit" "$stage/$unit" || return 1
     : > "$stage/$unit.present"
@@ -806,6 +1149,9 @@ rollback_action() {
   is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID" || return 1
   acquire_install_lock || return 1
   initialize_deploy_state || return 1
+  require_gateway_config_contract || return 1
+  SERVICE_UID=$(gateway_service_uid_from_config_at "$CONFIG_DIR") || return 1
+  require_gateway_identity_contract "$SERVICE_UID" || return 1
   if s72_atomic_load_active_transaction "$TRANSACTION_RECORDS" >/dev/null 2>&1; then
     printf '%s\n' 'OpenSandbox gateway recovery is required before rollback; run --recover' >&2
     return 1
@@ -901,6 +1247,9 @@ AUTHORITY_COMMIT=$(require_exact_authority_head "$SOURCE_REAL" "$AUTHORITY_REF" 
 test "$SOURCE_COMMIT" = "$AUTHORITY_COMMIT"
 require_root_tree "$CONFIG_DIR"
 require_gateway_config_contract
+s72_atomic_service_uid=$(gateway_service_uid_from_config_at "$CONFIG_DIR")
+SERVICE_UID=$s72_atomic_service_uid
+require_gateway_identity_contract "$SERVICE_UID"
 s72_atomic_require_exact_lifecycle
 preflight_live_state
 initialize_deploy_state
@@ -923,9 +1272,7 @@ SUCCESS=0
 trap 'cleanup_install' EXIT HUP INT TERM
 
 create_recovery_snapshot "$TRANSACTION_ID" "$RECOVERY_SNAPSHOT_ID"
-getent group opensandbox-gateway >/dev/null 2>&1 || groupadd --system opensandbox-gateway
-id opensandbox-gateway >/dev/null 2>&1 || useradd --system --gid opensandbox-gateway --home-dir /nonexistent --shell /usr/sbin/nologin opensandbox-gateway
-install -d -o opensandbox-gateway -g opensandbox-gateway -m 0700 "$RUNTIME_STATE"
+ensure_gateway_identity "$SNAPSHOTS/$RECOVERY_SNAPSHOT_ID" "$TRANSACTION_ID"
 if test -e "$RELEASE_ROOT" || test -L "$RELEASE_ROOT"; then
   test -d "$RELEASE_ROOT" && test ! -L "$RELEASE_ROOT"
   validate_release "$SOURCE_COMMIT" exact
