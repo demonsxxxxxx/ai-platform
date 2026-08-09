@@ -3015,6 +3015,39 @@ def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes
     assert result.returncode == 0, result.stderr
 
 
+def test_installer_config_metadata_survives_recoverable_ctime_change(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        TREE=$ROOT/config; METADATA=$ROOT/config.metadata
+        mkdir "$TREE"; chmod 0750 "$TREE"
+        printf 'sealed-config\n' > "$TREE/gateway.env"; chmod 0640 "$TREE/gateway.env"
+        require_gateway_config_contract_at() { :; }
+        s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        capture_config_metadata "$TREE" > "$METADATA"; chmod 0400 "$METADATA"
+
+        verify_config_metadata "$TREE" "$METADATA"
+        awk -F '\t' 'BEGIN { OFS = "\t" }
+          { split($3, fields, ":"); $3 = fields[1] ":" fields[2] ":" fields[3] ":" fields[4] ":" fields[5] ":123"; print }' \
+          "$METADATA" > "$ROOT/legacy.metadata"
+        chmod 0400 "$ROOT/legacy.metadata"
+        verify_config_metadata "$TREE" "$ROOT/legacy.metadata"
+
+        chmod 0600 "$TREE/gateway.env"
+        ! verify_config_metadata "$TREE" "$METADATA"
+        chmod 0640 "$TREE/gateway.env"
+        printf 'tampered-config\n' > "$TREE/gateway.env"
+        ! verify_config_metadata "$TREE" "$METADATA"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
     script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
     result = _run_gateway_bash_contract(
