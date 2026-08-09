@@ -38,6 +38,18 @@ def _transaction_factory(dsn: str, schema_name: str):
     return factory
 
 
+def _index_connection_factory(dsn: str, schema_name: str):
+    async def factory():
+        return await psycopg.AsyncConnection.connect(
+            dsn,
+            autocommit=True,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+
+    return factory
+
+
 @pytest.mark.asyncio
 async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledger_row():
     dsn = _postgres_dsn()
@@ -46,10 +58,17 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
     try:
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
 
         first, second = await asyncio.gather(
-            schema_migrations.apply_migrations(transaction_factory=factory),
-            schema_migrations.apply_migrations(transaction_factory=factory),
+            schema_migrations.apply_migrations(
+                transaction_factory=factory,
+                index_connection_factory=index_factory,
+            ),
+            schema_migrations.apply_migrations(
+                transaction_factory=factory,
+                index_connection_factory=index_factory,
+            ),
         )
 
         assert {first["status"], second["status"]} == {"applied", "current"}
@@ -64,6 +83,166 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
                 "checksum_sha256": schema_migrations.schema_checksum(),
             }
         ]
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
     finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "damage_sql",
+    [
+        "alter table runs drop column authz_policy_version",
+        "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
+        "drop index idx_messages_tenant_session_created",
+    ],
+)
+async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_sql):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_contract_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(damage_sql)
+
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+
+        assert status["ready"] is False
+        assert status["contracts_current"] is False
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_concurrent_index_phase_recovers_after_ledger_interruption():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_index_resume_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            """
+            update schema_index_migrations
+            set state = 'building', completed_at = null
+            where index_name = 'idx_messages_tenant_session_created'
+            """
+        )
+
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+
+        assert result["status"] == "applied"
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+        assert status["ready"] is True
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_concurrent_index_build_does_not_block_message_writes():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_index_writer_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    blocker = None
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute("insert into users(id, tenant_id, display_name) values ('writer-user', 'default', 'Writer')")
+        await admin.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('writer-agent', 'default', 'Writer', 'chat')"
+        )
+        await admin.execute(
+            """
+            insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
+            values ('writer-session', 'default', 'default', 'writer-user', 'writer-agent', 'Writer', 'active')
+            """
+        )
+        await admin.execute("drop index idx_messages_tenant_session_created")
+        await admin.execute(
+            """
+            update schema_index_migrations
+            set state = 'building', completed_at = null
+            where index_name = 'idx_messages_tenant_session_created'
+            """
+        )
+
+        blocker = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        blocker_tx = blocker.transaction()
+        await blocker_tx.__aenter__()
+        await blocker.execute(
+            """
+            insert into messages(id, tenant_id, session_id, role, content)
+            values ('message-blocker', 'default', 'writer-session', 'user', 'blocker')
+            """
+        )
+        migration_task = asyncio.create_task(
+            schema_migrations.apply_migrations(
+                transaction_factory=factory,
+                index_connection_factory=index_factory,
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert not migration_task.done()
+
+        writer = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        try:
+            async with writer.transaction():
+                await asyncio.wait_for(
+                    writer.execute(
+                        """
+                        insert into messages(id, tenant_id, session_id, role, content)
+                        values ('message-writer', 'default', 'writer-session', 'user', 'writer')
+                        """
+                    ),
+                    timeout=1,
+                )
+        finally:
+            await writer.close()
+
+        await blocker_tx.__aexit__(None, None, None)
+        await blocker.close()
+        blocker = None
+        await asyncio.wait_for(migration_task, timeout=5)
+        cursor = await admin.execute("select count(*) as count from messages")
+        assert (await cursor.fetchone())["count"] == 2
+    finally:
+        if blocker is not None:
+            await blocker.close()
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await admin.close()

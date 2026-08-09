@@ -1,3 +1,21 @@
+create table if not exists schema_migrations (
+  version text primary key,
+  checksum_sha256 text not null,
+  applied_at timestamptz not null default now()
+);
+
+create table if not exists schema_index_migrations (
+  index_name text primary key,
+  target_version text not null,
+  checksum_sha256 text not null,
+  state text not null check (state in ('building', 'ready', 'failed')),
+  attempts integer not null default 0,
+  last_error_code text,
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists tenants (
   id text primary key,
   name text not null,
@@ -1435,9 +1453,6 @@ create table if not exists messages (
   created_at timestamptz not null default now()
 );
 
-create index if not exists idx_messages_tenant_session_created
-  on messages(tenant_id, session_id, created_at asc, id asc);
-
 create table if not exists memory_records (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -2120,14 +2135,6 @@ create index if not exists idx_object_deletion_outbox_claim
   on object_deletion_outbox(state, available_at asc, created_at asc, id asc)
   where state in ('pending', 'processing', 'failed');
 
-create index if not exists idx_files_tenant_owner_session_created
-  on files(tenant_id, workspace_id, user_id, session_id, created_at desc, id desc);
-create index if not exists idx_artifacts_tenant_run_created
-  on artifacts(tenant_id, run_id, created_at desc, id desc);
-create index if not exists idx_artifacts_expired_cleanup
-  on artifacts(expires_at asc, created_at asc, id asc)
-  where lifecycle_state = 'active' and expires_at is not null;
-
 create table if not exists audit_logs (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -2147,9 +2154,6 @@ create index if not exists idx_audit_logs_tool_policy_history
   on audit_logs(tenant_id, target_type, action, target_id, created_at desc, id desc);
 create index if not exists idx_audit_logs_tool_policy_history_latest
   on audit_logs(tenant_id, target_type, action, created_at desc, id desc);
-create index if not exists idx_audit_logs_tenant_created
-  on audit_logs(tenant_id, created_at desc, id desc);
-
 insert into tenants(id, name)
 values ('default', 'Default Tenant')
 on conflict (id) do nothing;
@@ -2240,8 +2244,3 @@ on conflict (id) do update set
   description = excluded.description,
   default_skill_id = excluded.default_skill_id,
   status = excluded.status;
-create table if not exists schema_migrations (
-  version text primary key,
-  checksum_sha256 text not null,
-  applied_at timestamptz not null default now()
-);
