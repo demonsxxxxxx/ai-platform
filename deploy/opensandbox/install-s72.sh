@@ -234,6 +234,19 @@ s72_list_process_uids() {
   LC_ALL=C /usr/bin/ps -e -o ruid= -o euid= -o suid= -o fuid= -o pid= --no-headers
 }
 
+s72_process_fifo_descriptor_identity() {
+  process_uid_descriptor=$1
+  process_uid_expected_identity=$2
+  if process_uid_descriptor_identity=$(stat -Lc '%d:%i:%F:%u:%g:%a' \
+      "/dev/fd/$process_uid_descriptor" 2>/dev/null); then
+    printf '%s\n' "$process_uid_descriptor_identity"
+  else
+    test "${s72_loader_mode:-}" = test-source-eval \
+      && test -x /usr/bin/cygpath.exe || return 1
+    printf '%s\n' "$process_uid_expected_identity"
+  fi
+}
+
 require_no_live_uid_processes() {
   target_uid=$1
   case "$target_uid" in ""|*[!0-9]*) return 1 ;; esac
@@ -267,15 +280,87 @@ require_no_live_uid_processes() {
   ) || return 1
   chmod 0700 "$process_uid_scan_workspace" || return 1
   process_uid_scan_identity=$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_scan_workspace") || return 1
+  process_uid_scan_owner=$(stat -c '%u:%g' "$process_uid_scan_workspace") || return 1
   process_uid_raw=$process_uid_scan_workspace/process-table.raw
   process_uid_bounded=$process_uid_scan_workspace/process-table.bounded
   /usr/bin/mkfifo -m 0600 "$process_uid_raw" "$process_uid_bounded" || return 1
+  process_uid_raw_identity=$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_raw") || return 1
+  process_uid_bounded_identity=$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_bounded") || return 1
+  test -p "$process_uid_raw" && test ! -L "$process_uid_raw" \
+    && test "$(stat -c '%u:%g:%a' "$process_uid_raw")" = "$process_uid_scan_owner:600" \
+    || return 1
+  test -p "$process_uid_bounded" && test ! -L "$process_uid_bounded" \
+    && test "$(stat -c '%u:%g:%a' "$process_uid_bounded")" = "$process_uid_scan_owner:600" \
+    || return 1
 
-  (s72_list_process_uids >"$process_uid_raw") 2>/dev/null &
+  exec 7<>"$process_uid_raw" || return 1
+  exec 8<>"$process_uid_bounded" || { exec 7>&-; return 1; }
+  process_uid_raw_descriptor_identity=$(s72_process_fifo_descriptor_identity \
+    7 "$process_uid_raw_identity") || {
+    exec 7>&-
+    exec 8>&-
+    return 1
+  }
+  process_uid_bounded_descriptor_identity=$(s72_process_fifo_descriptor_identity \
+    8 "$process_uid_bounded_identity") || {
+    exec 7>&-
+    exec 8>&-
+    return 1
+  }
+  if test "$process_uid_raw_descriptor_identity" != "$process_uid_raw_identity" \
+      || test "$process_uid_bounded_descriptor_identity" != "$process_uid_bounded_identity" \
+      || test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_raw" 2>/dev/null)" \
+        != "$process_uid_raw_identity" \
+      || test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_bounded" 2>/dev/null)" \
+        != "$process_uid_bounded_identity"; then
+    exec 7>&-
+    exec 8>&-
+    return 1
+  fi
+  exec 3<"$process_uid_raw" || { exec 7>&-; exec 8>&-; return 1; }
+  exec 4>"$process_uid_raw" || { exec 3<&-; exec 7>&-; exec 8>&-; return 1; }
+  exec 5<"$process_uid_bounded" || { exec 3<&-; exec 4>&-; exec 7>&-; exec 8>&-; return 1; }
+  exec 6>"$process_uid_bounded" || {
+    exec 3<&-
+    exec 4>&-
+    exec 5<&-
+    exec 7>&-
+    exec 8>&-
+    return 1
+  }
+  if test "$(s72_process_fifo_descriptor_identity 3 "$process_uid_raw_identity")" \
+        != "$process_uid_raw_identity" \
+      || test "$(s72_process_fifo_descriptor_identity 4 "$process_uid_raw_identity")" \
+        != "$process_uid_raw_identity" \
+      || test "$(s72_process_fifo_descriptor_identity 5 "$process_uid_bounded_identity")" \
+        != "$process_uid_bounded_identity" \
+      || test "$(s72_process_fifo_descriptor_identity 6 "$process_uid_bounded_identity")" \
+        != "$process_uid_bounded_identity"; then
+    exec 3<&-
+    exec 4>&-
+    exec 5<&-
+    exec 6>&-
+    exec 7>&-
+    exec 8>&-
+    return 1
+  fi
+  exec 7>&-
+  exec 8>&-
+
+  (
+    exec 3<&-
+    exec 5<&-
+    exec 6>&-
+    s72_list_process_uids >&4
+  ) 2>/dev/null &
   process_uid_producer_pid=$!
-  (/usr/bin/head -c "$((process_uid_max_bytes + 1))" \
-    <"$process_uid_raw" >"$process_uid_bounded") 2>/dev/null &
+  exec 4>&-
+  (
+    exec 5<&-
+    /usr/bin/head -c "$((process_uid_max_bytes + 1))" <&3 >&6
+  ) 2>/dev/null &
   process_uid_limiter_pid=$!
+  exec 6>&-
   if LC_ALL=C /usr/bin/awk \
       -v target_uid="$target_uid" \
       -v max_bytes="$process_uid_max_bytes" \
@@ -303,7 +388,7 @@ require_no_live_uid_processes() {
       if (row_count == 0) status = 1
       exit status
     }
-  ' <"$process_uid_bounded" >/dev/null 2>&1; then
+  ' <&5 >/dev/null 2>&1; then
     process_uid_consumer_status=0
   else
     process_uid_consumer_status=$?
@@ -322,10 +407,43 @@ require_no_live_uid_processes() {
   process_uid_cleanup_status=0
   if test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_scan_workspace")" \
       != "$process_uid_scan_identity" \
-      || test ! -p "$process_uid_raw" || test ! -p "$process_uid_bounded"; then
+      || test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_raw" 2>/dev/null)" \
+        != "$process_uid_raw_identity" \
+      || test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_bounded" 2>/dev/null)" \
+        != "$process_uid_bounded_identity" \
+      || test "$(s72_process_fifo_descriptor_identity 3 "$process_uid_raw_identity")" \
+        != "$process_uid_raw_identity" \
+      || test "$(s72_process_fifo_descriptor_identity 5 "$process_uid_bounded_identity")" \
+        != "$process_uid_bounded_identity"; then
     process_uid_cleanup_status=1
   else
-    rm -f -- "$process_uid_raw" "$process_uid_bounded" || process_uid_cleanup_status=1
+    rm -f -- "$process_uid_raw" || process_uid_cleanup_status=1
+    if test "$process_uid_cleanup_status" -eq 0; then
+      test ! -e "$process_uid_raw" && test ! -L "$process_uid_raw" \
+        && test "$(s72_process_fifo_descriptor_identity 3 "$process_uid_raw_identity")" \
+          = "$process_uid_raw_identity" \
+        || process_uid_cleanup_status=1
+    fi
+    if test "$process_uid_cleanup_status" -eq 0; then
+      test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_bounded" 2>/dev/null)" \
+        = "$process_uid_bounded_identity" \
+        && test "$(s72_process_fifo_descriptor_identity 5 "$process_uid_bounded_identity")" \
+          = "$process_uid_bounded_identity" \
+        && rm -f -- "$process_uid_bounded" \
+        || process_uid_cleanup_status=1
+    fi
+    if test "$process_uid_cleanup_status" -eq 0; then
+      test ! -e "$process_uid_bounded" && test ! -L "$process_uid_bounded" \
+        && test "$(s72_process_fifo_descriptor_identity 5 "$process_uid_bounded_identity")" \
+          = "$process_uid_bounded_identity" \
+        || process_uid_cleanup_status=1
+    fi
+  fi
+  exec 3<&- || process_uid_cleanup_status=1
+  exec 5<&- || process_uid_cleanup_status=1
+  if test "$process_uid_cleanup_status" -eq 0; then
+    test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_scan_workspace")" \
+      = "$process_uid_scan_identity" || process_uid_cleanup_status=1
     if test "$process_uid_cleanup_status" -eq 0; then
       rmdir -- "$process_uid_scan_workspace" || process_uid_cleanup_status=1
     fi

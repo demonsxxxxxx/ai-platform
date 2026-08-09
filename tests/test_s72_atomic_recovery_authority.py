@@ -1488,6 +1488,18 @@ def test_uid_process_enumerator_is_streamed_and_read_bounded() -> None:
     assert "1048576" in body
     assert "131072" in body
 
+    assert "process_uid_raw_identity=" in body
+    assert "process_uid_bounded_identity=" in body
+    assert "process_uid_raw_descriptor_identity=" in body
+    assert "process_uid_bounded_descriptor_identity=" in body
+    assert 's72_list_process_uids >&4' in body
+    assert '<&3 >&6' in body
+    assert "<&5" in body
+    assert 'exec 3<"$process_uid_raw"' in body
+    assert 'exec 4>"$process_uid_raw"' in body
+    assert 'exec 5<"$process_uid_bounded"' in body
+    assert 'exec 6>"$process_uid_bounded"' in body
+
 
 @pytest.mark.parametrize(
     ("process_contour", "expected_success"),
@@ -1540,6 +1552,64 @@ def test_uid_process_enumerator_rejects_bounded_and_producer_failures(
         else
           test "$result_status" -ne 0
         fi
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="FIFO replacement identity hostile runs on required Ubuntu CI",
+)
+def test_uid_process_enumerator_preserves_replaced_foreign_fifo(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_bash(
+        r'''
+        set -eu
+        SCRIPT=$1
+        ROOT=$2
+        export TMPDIR=$ROOT
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        ready=$ROOT/producer-ready
+        proceed=$ROOT/producer-proceed
+        foreign_identity_file=$ROOT/foreign-identity
+        s72_list_process_uids() {
+          : > "$ready"
+          while test ! -e "$proceed"; do sleep 0.01; done
+          printf '%s\n' '0 0 0 0 1'
+        }
+        (
+          attempt=0
+          while test ! -e "$ready"; do
+            attempt=$((attempt + 1))
+            test "$attempt" -lt 1000 || exit 91
+            sleep 0.01
+          done
+          raw=$(find "$ROOT" -type p -name process-table.raw -print -quit)
+          test -n "$raw"
+          foreign=${raw%/*}/foreign.raw
+          /usr/bin/mkfifo -m 0600 "$foreign"
+          foreign_identity=$(stat -c '%d:%i:%F:%u:%g:%a' "$foreign")
+          printf '%s\n' "$foreign_identity" > "$foreign_identity_file"
+          mv -f -- "$foreign" "$raw"
+          : > "$proceed"
+        ) &
+        replacer_pid=$!
+        if require_no_live_uid_processes 62001 >"$ROOT/stdout" 2>"$ROOT/stderr"; then
+          result_status=0
+        else
+          result_status=$?
+        fi
+        wait "$replacer_pid"
+        test "$result_status" -ne 0
+        test ! -s "$ROOT/stdout"
+        test ! -s "$ROOT/stderr"
+        raw=$(find "$ROOT" -type p -name process-table.raw -print -quit)
+        test -n "$raw"
+        test "$(stat -c '%d:%i:%F:%u:%g:%a' "$raw")" = "$(cat "$foreign_identity_file")"
         ''',
         INSTALLER,
         tmp_path,
