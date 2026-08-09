@@ -60,6 +60,14 @@ Secrets are files, never `gateway.env` values or command output. Report only
 redacted metadata and non-secret authority evidence; do not print, copy, export,
 or retain secret, certificate-key, configuration, or private payload contents.
 
+`OPENSANDBOX_GATEWAY_BROKER_ENABLED` accepts only `true` or `false` and defaults
+to `true`. Set it to `false` only for an explicitly capability-only deployment:
+the authenticated lifecycle and external-egress capability routes remain active,
+but the mailbox/model broker is not started and model credential files are not
+read. Enabling the broker continues to require both model credential files and
+fails closed when either is absent or invalid. A capability-only deployment does
+not prove model egress or the remote smoke gates below.
+
 ## Mandatory Remote Smoke Before Provider Switch
 
 Installation alone is not authority to select the OpenSandbox provider on
