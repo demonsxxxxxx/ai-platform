@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "f02ff18d5f9b5e9e85a4bfe9003c0f718b4d5054",
+    "scope_sha256": "43cfb33611f02b8abe5003638d0c27c29a8ad40c9f682dfd04308f4bf5f4e46e"
+  },
+  "expires_on": "2026-08-23",
+  "owner": "demonsxxxxxx",
+  "reason": "Issue #843 requires one coherent crash-recovery state machine across the shared installer, rollback entrypoint, atomic authority helper, and their exact hostile recovery contracts. This exception covers only the emitted production net LOC limit; security, Ruff, test, review, CI, readiness, publication, rollback, and runtime gates remain mandatory.",
+  "violations": [
+    {
+      "code": "production_net_loc",
+      "path": null
+    }
+  ]
+}
