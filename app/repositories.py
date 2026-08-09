@@ -5172,6 +5172,21 @@ async def create_context_snapshot(
             and artifacts.lifecycle_state = 'active'
             and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
           for update of artifacts
+        ), locked_memory_records as materialized (
+          select memory_records.id
+          from scoped_run
+          cross join requested_members
+          cross join lateral jsonb_array_elements_text(requested_members.memory_record_ids) requested(id)
+          join memory_records on memory_records.id = requested.id
+            and memory_records.tenant_id = scoped_run.tenant_id
+          where memory_records.workspace_id = scoped_run.workspace_id
+            and memory_records.user_id = scoped_run.user_id
+            and memory_records.session_id = scoped_run.session_id
+            and memory_records.agent_id = scoped_run.agent_id
+            and memory_records.status = 'active'
+            and memory_records.deleted_at is null
+            and (memory_records.expires_at is null or memory_records.expires_at > statement_timestamp())
+          for update of memory_records
         ), eligible_members as (
           select scoped_run.*, requested_members.*,
             (
@@ -5218,16 +5233,7 @@ async def create_context_snapshot(
             ) as eligible_artifact_count,
             (
               select count(*)
-              from jsonb_array_elements_text(requested_members.memory_record_ids) requested(id)
-              join memory_records on memory_records.id = requested.id
-              where memory_records.tenant_id = scoped_run.tenant_id
-                and memory_records.workspace_id = scoped_run.workspace_id
-                and memory_records.user_id = scoped_run.user_id
-                and memory_records.session_id = scoped_run.session_id
-                and memory_records.agent_id = scoped_run.agent_id
-                and memory_records.status = 'active'
-                and memory_records.deleted_at is null
-                and (memory_records.expires_at is null or memory_records.expires_at > statement_timestamp())
+              from locked_memory_records
             ) as eligible_memory_record_count
           from scoped_run
           cross join requested_members

@@ -30,7 +30,7 @@ async def _scoped_connection(dsn: str, schema_name: str) -> psycopg.AsyncConnect
 
 
 @pytest.mark.asyncio
-async def test_snapshot_artifact_lock_prevents_concurrent_retention_tombstone():
+async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
     dsn = _postgres_dsn()
     schema_name = f"retention_race_{uuid.uuid4().hex}"
     admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
@@ -77,10 +77,15 @@ async def test_snapshot_artifact_lock_prevents_concurrent_retention_tombstone():
             insert into memory_records(
               id, tenant_id, workspace_id, user_id, agent_id, session_id,
               record_type, content, status, deleted_at
-            ) values (
-              'memory-deleted', 'tenant-a', 'workspace-a', 'user-a', 'agent-a', 'session-a',
-              'note', 'deleted', 'deleted', clock_timestamp() - interval '8 days'
-            )
+            ) values
+              (
+                'memory-deleted', 'tenant-a', 'workspace-a', 'user-a', 'agent-a', 'session-a',
+                'note', 'deleted', 'deleted', clock_timestamp() - interval '8 days'
+              ),
+              (
+                'memory-active', 'tenant-a', 'workspace-a', 'user-a', 'agent-a', 'session-a',
+                'note', 'active', 'active', null
+              )
             """
         )
 
@@ -114,20 +119,63 @@ async def test_snapshot_artifact_lock_prevents_concurrent_retention_tombstone():
                 grace_days=7,
             )
             assert [row["id"] for row in purged] == ["memory-deleted"]
+
+        retention_started = asyncio.Event()
+
+        async def soft_delete_and_purge_memory() -> list[dict]:
+            async with retention_conn.transaction():
+                retention_started.set()
+                await retention_conn.execute(
+                    """
+                    update memory_records
+                    set status = 'deleted', deleted_at = clock_timestamp() - interval '8 days'
+                    where id = 'memory-active'
+                    """
+                )
+                return await repositories.purge_deleted_memory_records(
+                    retention_conn,
+                    grace_days=7,
+                )
+
+        async with snapshot_conn.transaction():
+            await repositories.create_context_snapshot(
+                snapshot_conn,
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id="user-a",
+                session_id="session-a",
+                run_id="run-a",
+                trace_id="trace-memory",
+                context_kind="executor",
+                included_message_ids=[],
+                included_file_ids=[],
+                included_artifact_ids=[],
+                included_memory_record_ids=["memory-active"],
+                redaction_summary_json={},
+                payload_json={},
+            )
+            retention_task = asyncio.create_task(soft_delete_and_purge_memory())
+            await retention_started.wait()
+            await asyncio.sleep(0.1)
+            assert not retention_task.done()
+
+        assert await retention_task == []
         cursor = await retention_conn.execute(
             """
             select artifacts.lifecycle_state,
                    (select count(*) from object_deletion_outbox) as outbox_count,
                    (select count(*) from run_context_snapshots) as snapshot_count,
-                   (select count(*) from memory_records) as memory_count
+                   (select count(*) from memory_records) as memory_count,
+                   (select status from memory_records where id = 'memory-active') as memory_status
             from artifacts where id = 'artifact-a'
             """
         )
         assert await cursor.fetchone() == {
             "lifecycle_state": "active",
             "outbox_count": 0,
-            "snapshot_count": 1,
-            "memory_count": 0,
+            "snapshot_count": 2,
+            "memory_count": 1,
+            "memory_status": "deleted",
         }
     finally:
         if snapshot_conn is not None:
