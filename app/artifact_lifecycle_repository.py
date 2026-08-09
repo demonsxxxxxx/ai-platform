@@ -211,7 +211,7 @@ async def purge_deleted_memory_records(
             and not exists (
               select 1 from run_context_snapshots snapshots
               where snapshots.tenant_id = memory_records.tenant_id
-                and snapshots.included_memory_ids ? memory_records.id
+                and snapshots.included_memory_record_ids ? memory_records.id
             )
             and not exists (
               select 1 from audit_logs audit

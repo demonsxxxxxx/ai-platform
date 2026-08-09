@@ -72,6 +72,17 @@ async def test_snapshot_artifact_lock_prevents_concurrent_retention_tombstone():
             )
             """
         )
+        await admin.execute(
+            """
+            insert into memory_records(
+              id, tenant_id, workspace_id, user_id, agent_id, session_id,
+              record_type, content, status, deleted_at
+            ) values (
+              'memory-deleted', 'tenant-a', 'workspace-a', 'user-a', 'agent-a', 'session-a',
+              'note', 'deleted', 'deleted', clock_timestamp() - interval '8 days'
+            )
+            """
+        )
 
         snapshot_conn = await _scoped_connection(dsn, schema_name)
         retention_conn = await _scoped_connection(dsn, schema_name)
@@ -98,11 +109,17 @@ async def test_snapshot_artifact_lock_prevents_concurrent_retention_tombstone():
 
         async with retention_conn.transaction():
             assert await repositories.queue_expired_artifacts_for_deletion(retention_conn) == []
+            purged = await repositories.purge_deleted_memory_records(
+                retention_conn,
+                grace_days=7,
+            )
+            assert [row["id"] for row in purged] == ["memory-deleted"]
         cursor = await retention_conn.execute(
             """
             select artifacts.lifecycle_state,
                    (select count(*) from object_deletion_outbox) as outbox_count,
-                   (select count(*) from run_context_snapshots) as snapshot_count
+                   (select count(*) from run_context_snapshots) as snapshot_count,
+                   (select count(*) from memory_records) as memory_count
             from artifacts where id = 'artifact-a'
             """
         )
@@ -110,6 +127,7 @@ async def test_snapshot_artifact_lock_prevents_concurrent_retention_tombstone():
             "lifecycle_state": "active",
             "outbox_count": 0,
             "snapshot_count": 1,
+            "memory_count": 0,
         }
     finally:
         if snapshot_conn is not None:

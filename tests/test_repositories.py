@@ -1015,7 +1015,7 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
     await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
     sql, params = conn.calls[-1]
     assert "for update of memory_records skip locked" in sql
-    assert "snapshots.included_memory_ids ? memory_records.id" in sql
+    assert "snapshots.included_memory_record_ids ? memory_records.id" in sql
     assert "sessions.status = 'active'" in sql
     assert "delete from memory_records" in sql
     assert params == (7, 25)
