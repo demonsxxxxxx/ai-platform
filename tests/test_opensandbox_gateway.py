@@ -982,13 +982,43 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     crashed_store = SQLiteStateStore(str(crash_path))
     crashed = GatewayApplication(config, crash_lifecycle, InMemoryRuntimeAdapter(), crashed_store)
     assert call(crashed, "POST", "/v1/sandboxes", create_payload(config, "crash")).status == 500
-    assert len(crashed_store.list({"state": "uncertain_create"})) == 1
+    assert len(crashed_store.list({"state": "reconciling"})) == 1
     recovered_runtime = InMemoryRuntimeAdapter()
     recovered_store = SQLiteStateStore(str(crash_path))
     GatewayApplication(config, crash_lifecycle, recovered_runtime, recovered_store)
     active = recovered_store.list({"state": "active"})
     assert len(active) == len(crash_lifecycle.sandboxes) == 1
     assert active[0].sandbox_id in recovered_runtime.relays
+
+
+def test_same_process_retry_reconciles_timeout_after_upstream_create() -> None:
+    class TimeoutAfterCreate(InMemoryLifecycleTransport):
+        timeout_once = True
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            response = super().request(method, path, body)
+            if method == "POST" and path == "/v1/sandboxes" and self.timeout_once:
+                self.timeout_once = False
+                raise RuntimeError("simulated response timeout after create")
+            return response
+
+    config = gateway_config()
+    lifecycle = TimeoutAfterCreate()
+    runtime = InMemoryRuntimeAdapter()
+    store = InMemoryStateStore()
+    app = GatewayApplication(config, lifecycle, runtime, store)
+    payload = create_payload(config, "same-process-retry")
+
+    assert call(app, "POST", "/v1/sandboxes", payload).status == 500
+    recovered = call(app, "POST", "/v1/sandboxes", payload)
+
+    assert recovered.status == 201
+    sandbox_id = decoded(recovered)["id"]
+    assert len(lifecycle.sandboxes) == 1
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+    assert store.list({"state": "uncertain_create"}) == []
+    assert store.get(sandbox_id) is not None
+    assert sandbox_id in runtime.relays
 
 
 def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(tmp_path) -> None:
@@ -1010,7 +1040,7 @@ def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(t
     first = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), store)
 
     assert call(first, "POST", "/v1/sandboxes", payload).status == 500
-    intent = store.list({"state": "uncertain_create"})[0]
+    intent = store.list({"state": "reconciling"})[0]
     restarted_store = SQLiteStateStore(str(state_path))
     restarted = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), restarted_store)
     tombstone = restarted_store.get(intent.sandbox_id)

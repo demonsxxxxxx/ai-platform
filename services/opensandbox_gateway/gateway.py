@@ -561,17 +561,49 @@ class GatewayApplication:
             if reserved.record.state == "active" and hmac.compare_digest(reserved.record.canonical_request_hash, accepted["request_hash"]):
                 self._verify_runtime(reserved.record.sandbox_id)
                 return Response.json(201, {"id": reserved.record.sandbox_id})
-            raise GatewayError(409, "reservation_in_progress")
+            if reserved.record.state != "reconciling":
+                raise GatewayError(409, "reservation_in_progress")
+            self._reconcile_intent(reserved.record)
+            recovered = self.store.find_scope(intent.scope)
+            if recovered is not None:
+                if recovered.state != "active" or not hmac.compare_digest(
+                    recovered.canonical_request_hash,
+                    accepted["request_hash"],
+                ):
+                    raise GatewayError(409, "reservation_state_drift")
+                self._verify_runtime(recovered.sandbox_id)
+                return Response.json(201, {"id": recovered.sandbox_id})
+            tombstone = self.store.get(intent_id)
+            if tombstone is None or tombstone.state != "deleted":
+                raise GatewayError(409, "reservation_state_drift")
+            self._verify_record(tombstone)
+            reserved = self.store.reserve(intent, tombstone.signature)
         if reserved.outcome != "winner" or reserved.owner_token != intent.reservation_owner_token:
             raise GatewayError(409, "scope_conflict")
         upstream_body = _canonical(accepted["upstream"])
-        upstream = self.lifecycle.request("POST", "/v1/sandboxes", upstream_body)
-        if upstream.status not in (200, 201, 202):
-            raise GatewayError(502, "upstream_create_failed")
-        result = _bounded_json(upstream, self.config.max_response_bytes)
-        sandbox_id = result.get("id")
-        if not isinstance(sandbox_id, str) or not SANDBOX_ID.fullmatch(sandbox_id):
-            raise GatewayError(502, "upstream_invalid_response")
+        try:
+            upstream = self.lifecycle.request("POST", "/v1/sandboxes", upstream_body)
+            if upstream.status not in (200, 201, 202):
+                raise GatewayError(502, "upstream_create_failed")
+            result = _bounded_json(upstream, self.config.max_response_bytes)
+            sandbox_id = result.get("id")
+            if not isinstance(sandbox_id, str) or not SANDBOX_ID.fullmatch(sandbox_id):
+                raise GatewayError(502, "upstream_invalid_response")
+        except Exception:
+            current = self.store.get(intent_id)
+            if (
+                current is not None
+                and current.state == "uncertain_create"
+                and hmac.compare_digest(
+                    current.reservation_owner_token,
+                    reserved.owner_token,
+                )
+            ):
+                self._verify_record(current)
+                current.state = "reconciling"
+                current.signature = self._sign_record(current)
+                self.store.save(current)
+            raise
         record = LeaseRecord(
             sandbox_id=sandbox_id,
             scope=accepted["scope"],
