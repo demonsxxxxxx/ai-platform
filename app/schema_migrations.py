@@ -25,6 +25,7 @@ CRITICAL_RELATIONS = (
     "messages",
     "files",
     "artifacts",
+    "object_deletion_outbox",
     "audit_logs",
 )
 CRITICAL_COLUMNS = (
@@ -36,12 +37,16 @@ CRITICAL_COLUMNS = (
     ("files", "storage_key", "text", True),
     ("artifacts", "lifecycle_state", "text", True),
     ("artifacts", "expires_at", "timestamptz", False),
+    ("object_deletion_outbox", "state", "text", True),
+    ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
+    ("object_deletion_outbox", "reconcile_required", "bool", True),
     ("audit_logs", "payload_json", "jsonb", True),
 )
 CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
+    ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
 )
 
 

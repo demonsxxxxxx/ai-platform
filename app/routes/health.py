@@ -109,7 +109,32 @@ async def admin_retention_status(
         "status": "ok",
         "policy": policy,
         "backlog": backlog,
+        "alerts": {
+            "object_delete_dead_letter": backlog["object_delete_dead_letter"] > 0,
+            "object_delete_reconcile_required": backlog[
+                "object_delete_reconcile_required"
+            ]
+            > 0,
+        },
     }
+
+
+@router.post("/admin/retention/object-deletions/{outbox_id}/requeue")
+async def admin_requeue_object_deletion(
+    outbox_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    async with transaction() as conn:
+        requeued = await repositories.requeue_dead_letter_object_deletion(
+            conn,
+            outbox_id=outbox_id,
+            tenant_id=principal.tenant_id,
+        )
+    if not requeued:
+        raise HTTPException(status_code=409, detail="object_deletion_not_requeueable")
+    return {"status": "requeued", "outbox_id": outbox_id}
 
 
 @router.post("/admin/apply-schema")

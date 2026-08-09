@@ -2120,17 +2120,24 @@ create table if not exists object_deletion_outbox (
   tenant_id text not null references tenants(id),
   artifact_id text not null references artifacts(id),
   storage_key text not null,
-  state text not null default 'pending'
-    check (state in ('pending', 'processing', 'failed', 'deleted')),
+  state text not null default 'pending',
   attempts integer not null default 0,
   available_at timestamptz not null default now(),
   leased_at timestamptz,
   receipt_at timestamptz,
+  dead_letter_at timestamptz,
+  reconcile_required boolean not null default false,
   last_error_code text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (tenant_id, artifact_id)
 );
+alter table object_deletion_outbox add column if not exists dead_letter_at timestamptz;
+alter table object_deletion_outbox add column if not exists reconcile_required boolean not null default false;
+alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_state_check;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_state;
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
+  check (state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted'));
 create index if not exists idx_object_deletion_outbox_claim
   on object_deletion_outbox(state, available_at asc, created_at asc, id asc)
   where state in ('pending', 'processing', 'failed');

@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     data_retention_worker_cleanup_enabled: bool = Field(default=True)
     data_retention_worker_cleanup_interval_seconds: float = Field(default=300.0, ge=1.0)
     artifact_retention_cleanup_limit: int = Field(default=50, ge=1, le=200)
+    artifact_object_delete_max_attempts: int = Field(default=5, ge=1, le=100)
+    artifact_object_delete_retry_base_seconds: int = Field(default=60, ge=1, le=3600)
+    artifact_object_delete_retry_cap_seconds: int = Field(default=3600, ge=1, le=86400)
     memory_physical_purge_limit: int = Field(default=50, ge=1, le=200)
     memory_physical_purge_grace_days: int = Field(default=7, ge=1, le=3650)
     run_event_retention_days: int = Field(default=0, ge=0)
@@ -152,6 +155,11 @@ class Settings(BaseSettings):
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
         if self.default_tenant_id != "default":
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
+        if (
+            self.artifact_object_delete_retry_cap_seconds
+            < self.artifact_object_delete_retry_base_seconds
+        ):
+            raise ValueError("artifact_object_delete_retry_cap_below_base")
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")

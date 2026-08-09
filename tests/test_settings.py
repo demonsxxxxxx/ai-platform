@@ -105,6 +105,15 @@ def test_default_tenant_is_fixed_deployment_scope():
         Settings(_env_file=None, default_tenant_id="customer-a")
 
 
+def test_object_delete_retry_cap_cannot_be_lower_than_base():
+    with pytest.raises(ValidationError, match="artifact_object_delete_retry_cap_below_base"):
+        Settings(
+            _env_file=None,
+            artifact_object_delete_retry_base_seconds=120,
+            artifact_object_delete_retry_cap_seconds=60,
+        )
+
+
 @pytest.mark.parametrize(
     "field",
     [

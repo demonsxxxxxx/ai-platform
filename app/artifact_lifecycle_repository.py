@@ -91,9 +91,12 @@ async def queue_expired_artifacts_for_deletion(
         set storage_key = excluded.storage_key,
             state = case
               when object_deletion_outbox.state = 'deleted' then 'deleted'
-              else 'pending'
+              else object_deletion_outbox.state
             end,
-            available_at = now(),
+            available_at = case
+              when object_deletion_outbox.state = 'pending' then now()
+              else object_deletion_outbox.available_at
+            end,
             updated_at = now()
         returning id, tenant_id, artifact_id, state, attempts, created_at
         """,
@@ -107,17 +110,37 @@ async def claim_object_deletions(
     conn: AsyncConnection,
     *,
     limit: int = 50,
+    max_attempts: int = 5,
 ) -> list[dict[str, Any]]:
     resolved_limit = max(1, min(int(limit), 200))
+    resolved_max_attempts = max(1, min(int(max_attempts), 100))
+    await conn.execute(
+        """
+        update object_deletion_outbox
+        set state = 'dead_letter',
+            dead_letter_at = coalesce(dead_letter_at, now()),
+            reconcile_required = true,
+            leased_at = null,
+            updated_at = now()
+        where attempts >= %s
+          and (
+            (state in ('pending', 'failed') and available_at <= now())
+            or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+          )
+        """,
+        (resolved_max_attempts,),
+    )
     cursor = await conn.execute(
         """
         with candidates as (
           select id
           from object_deletion_outbox
           where (
-              state in ('pending', 'failed') and available_at <= now()
+              state in ('pending', 'failed') and available_at <= now() and attempts < %s
             ) or (
-              state = 'processing' and leased_at <= now() - interval '5 minutes'
+              state = 'processing'
+              and leased_at <= now() - interval '5 minutes'
+              and attempts < %s
             )
           order by available_at asc, created_at asc, id asc
           limit %s
@@ -131,7 +154,7 @@ async def claim_object_deletions(
         where id in (select id from candidates)
         returning id, tenant_id, artifact_id, storage_key, attempts
         """,
-        (resolved_limit,),
+        (resolved_max_attempts, resolved_max_attempts, resolved_limit),
     )
     return list(await cursor.fetchall())
 
@@ -146,7 +169,12 @@ async def complete_object_deletion(
     cursor = await conn.execute(
         """
         update object_deletion_outbox
-        set state = 'deleted', receipt_at = now(), last_error_code = null, updated_at = now()
+        set state = 'deleted',
+            receipt_at = now(),
+            dead_letter_at = null,
+            reconcile_required = false,
+            last_error_code = null,
+            updated_at = now()
         where id = %s and tenant_id = %s and artifact_id = %s and state = 'processing'
         returning id
         """,
@@ -171,19 +199,80 @@ async def fail_object_deletion(
     *,
     outbox_id: str,
     error_code: str,
-) -> None:
-    await conn.execute(
+    max_attempts: int = 5,
+    retry_base_seconds: int = 60,
+    retry_cap_seconds: int = 3600,
+) -> str | None:
+    resolved_max_attempts = max(1, min(int(max_attempts), 100))
+    resolved_base_seconds = max(1, min(int(retry_base_seconds), 3600))
+    resolved_cap_seconds = max(resolved_base_seconds, min(int(retry_cap_seconds), 86400))
+    cursor = await conn.execute(
         """
         update object_deletion_outbox
-        set state = 'failed',
+        set state = case when attempts >= %s then 'dead_letter' else 'failed' end,
             last_error_code = %s,
-            available_at = now() + interval '1 minute',
+            available_at = case
+              when attempts >= %s then available_at
+              else now() + make_interval(
+                secs => least(%s, %s * power(2, greatest(attempts - 1, 0)))::integer
+              )
+            end,
+            dead_letter_at = case
+              when attempts >= %s then coalesce(dead_letter_at, now())
+              else null
+            end,
+            reconcile_required = attempts >= %s,
             leased_at = null,
             updated_at = now()
         where id = %s and state = 'processing'
+        returning state
         """,
-        (error_code[:120], outbox_id),
+        (
+            resolved_max_attempts,
+            error_code[:120],
+            resolved_max_attempts,
+            resolved_cap_seconds,
+            resolved_base_seconds,
+            resolved_max_attempts,
+            resolved_max_attempts,
+            outbox_id,
+        ),
     )
+    row = await cursor.fetchone()
+    return str(row["state"]) if row is not None else None
+
+
+async def requeue_dead_letter_object_deletion(
+    conn: AsyncConnection,
+    *,
+    outbox_id: str,
+    tenant_id: str,
+) -> bool:
+    """Explicit operator reconciliation; physical deletion remains idempotent on retry."""
+
+    cursor = await conn.execute(
+        """
+        update object_deletion_outbox outbox
+        set state = 'pending',
+            attempts = 0,
+            available_at = now(),
+            leased_at = null,
+            dead_letter_at = null,
+            reconcile_required = false,
+            last_error_code = null,
+            updated_at = now()
+        from artifacts
+        where outbox.id = %s
+          and outbox.tenant_id = %s
+          and outbox.state = 'dead_letter'
+          and artifacts.id = outbox.artifact_id
+          and artifacts.tenant_id = outbox.tenant_id
+          and artifacts.lifecycle_state = 'delete_pending'
+        returning outbox.id
+        """,
+        (outbox_id, tenant_id),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def purge_deleted_memory_records(
@@ -249,6 +338,14 @@ async def get_data_retention_backlog(
            where lifecycle_state = 'active' and expires_at is not null and expires_at <= now()) as expired_artifacts,
           (select count(*) from artifacts where lifecycle_state = 'delete_pending') as artifact_delete_pending,
           (select count(*) from object_deletion_outbox where state <> 'deleted') as object_delete_backlog,
+          (select count(*) from object_deletion_outbox where state = 'pending') as object_delete_pending,
+          (select count(*) from object_deletion_outbox where state = 'processing') as object_delete_processing,
+          (select count(*) from object_deletion_outbox where state = 'failed') as object_delete_retry_waiting,
+          (select count(*) from object_deletion_outbox where state = 'dead_letter') as object_delete_dead_letter,
+          (select count(*) from object_deletion_outbox where reconcile_required) as object_delete_reconcile_required,
+          (select coalesce(max(attempts), 0) from object_deletion_outbox where state <> 'deleted') as object_delete_max_attempts_observed,
+          (select coalesce(extract(epoch from now() - min(created_at))::bigint, 0)
+           from object_deletion_outbox where state = 'dead_letter') as object_delete_oldest_dead_letter_age_seconds,
           (select count(*) from memory_records where status = 'deleted' and deleted_at is not null) as memory_soft_deleted,
           (select count(*) from run_events
            where %s > 0 and created_at <= now() - (%s * interval '1 day')) as run_events_age_eligible,
@@ -283,6 +380,13 @@ async def get_data_retention_backlog(
         "expired_artifacts",
         "artifact_delete_pending",
         "object_delete_backlog",
+        "object_delete_pending",
+        "object_delete_processing",
+        "object_delete_retry_waiting",
+        "object_delete_dead_letter",
+        "object_delete_reconcile_required",
+        "object_delete_max_attempts_observed",
+        "object_delete_oldest_dead_letter_age_seconds",
         "memory_soft_deleted",
         "run_events_age_eligible",
         "run_event_batches_age_eligible",

@@ -16,7 +16,11 @@ user-info authority. Ordinary clients cannot choose them. A trusted gateway may
 inject principal headers only when it presents the configured shared secret.
 Production configuration fails during startup when the secret is absent or the
 frontend POC header path is enabled. Company principals are revalidated against
-the current authority before worker dispatch.
+the current authority before worker dispatch. Browser and bearer principal
+snapshots preserve the policy version, authority source, and check timestamp;
+policy mismatch or authority facts older than the configured short freshness
+window (15 minutes by default) fail closed and require login refresh. This is
+intentionally shorter than the browser context's maximum lifetime.
 
 Successful login and run admission retain only the non-sensitive facts needed
 to explain an authorization decision: `department_id`, authorization policy
@@ -49,18 +53,23 @@ python -m app.schema_migrations apply
 
 The runner takes one PostgreSQL transaction-scoped advisory lock, creates the
 `schema_migrations` ledger when bootstrapping, applies the additive idempotent
-schema, and records the target version plus SHA-256 checksum in the same
-transaction. Concurrent API, worker, or operator attempts therefore serialize;
-a failed transaction remains unapplied and can be retried. Every committed
-schema change must advance `TARGET_SCHEMA_VERSION`; reusing a version with
-different SQL fails closed on checksum mismatch.
+core schema, and records the target version plus SHA-256 checksum in the same
+transaction. New hot-table indexes are a separate resumable phase recorded in
+`schema_index_migrations`: each is built with `CREATE INDEX CONCURRENTLY`
+outside the core transaction, catalog validity is checked before it is marked
+ready, and an interrupted or invalid build is safely retried. Concurrent API,
+worker, or operator attempts serialize without holding a transaction open
+across the concurrent index build. Every committed schema change must advance
+`TARGET_SCHEMA_VERSION`; reusing a version with different SQL fails closed on
+checksum mismatch.
 
 Compose runs this command as a one-shot `migrate` service before API and worker
 startup. The legacy authenticated `POST /admin/apply-schema` endpoint delegates
 to the same runner for compatibility; it is not the normal release path.
 `python -m app.schema_migrations status`, API readiness, and worker startup all
-verify the target ledger entry, checksum, and critical relations. Connectivity
-alone is insufficient.
+verify the target ledger and index-ledger entries, checksum, critical column
+types/nullability, named constraints, and valid/ready indexes. Connectivity or
+relation existence alone is insufficient.
 
 Upgrade procedure:
 
@@ -97,9 +106,13 @@ Cleanup runs in small worker batches and is retryable:
   active run/session, context snapshot, or audit target still references them.
   PostgreSQL first marks the row `delete_pending` and creates one unique object
   deletion outbox record. MinIO deletion is then attempted outside the database
-  transaction. Success writes the receipt and tombstone; failure records a safe
-  error code and is reclaimed after its lease. Artifact reads exclude expired
-  or non-active rows throughout the process.
+  transaction. Success writes the receipt and tombstone. Failure records only a
+  safe error class and retries with capped exponential backoff. After the
+  configured maximum attempts it moves to `dead_letter`, is excluded from
+  automatic claims, raises an admin status alert, and requires an explicit
+  tenant-scoped operator requeue. A stale processing lease represents an
+  unknown outcome and is retried idempotently before a receipt is committed.
+  Artifact reads exclude expired or non-active rows throughout the process.
 - Soft-deleted memory is physically purged only after the configured grace
   period and only when no active session, context snapshot, or audit target
   still references it. Selection is bounded and uses `SKIP LOCKED`.
@@ -111,9 +124,11 @@ Cleanup runs in small worker batches and is retryable:
   reported as `unsupported_not_implemented` and maintenance performs no delete.
   Production settings reject those non-zero values during startup.
 
-`GET /admin/retention/status` exposes the policy projection, artifact/object
-states, and age-eligible row counts for unsupported classes. Those counts are
-observability only, not deletion eligibility or a claim that cleanup exists.
+`GET /admin/retention/status` exposes the policy projection, object-outbox state
+counts (including dead-letter/reconcile-required alerts), and age-eligible row
+counts for unsupported classes. A dead-letter item can only be requeued through
+the admin reconcile endpoint after operator review. Unsupported-class counts
+are observability only, not deletion eligibility or a claim that cleanup exists.
 Disabling cleanup never turns into implicit deletion. The worker's artifact and
 memory maintenance may be paused independently through the documented
 environment settings.
@@ -121,12 +136,16 @@ environment settings.
 ## PostgreSQL payload bounds
 
 Limits are measured as UTF-8 bytes; JSON uses its compact serialized form.
-Oversized values fail before their write with a stable `*_too_large` error.
+Copied-run execution snapshots and accumulated run-step patches are validated
+against the final merged value while the row is locked, so concurrent updates
+cannot bypass the bound. Oversized values fail before their write with a stable
+`*_too_large` error and leave the prior value unchanged.
 
 | Value | Maximum |
 | --- | ---: |
 | Run input or result | 256 KiB |
 | Run-event payload | 64 KiB |
+| Accumulated run-step payload | 64 KiB |
 | Run-event message | 16 KiB |
 | Context snapshot payload | 256 KiB |
 | Artifact manifest | 64 KiB |

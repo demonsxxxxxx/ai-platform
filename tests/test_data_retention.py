@@ -27,6 +27,9 @@ def settings():
         data_retention_worker_cleanup_enabled=True,
         data_retention_worker_cleanup_interval_seconds=300,
         artifact_retention_cleanup_limit=10,
+        artifact_object_delete_max_attempts=5,
+        artifact_object_delete_retry_base_seconds=60,
+        artifact_object_delete_retry_cap_seconds=3600,
         memory_physical_purge_limit=11,
         memory_physical_purge_grace_days=7,
         run_event_retention_days=0,
@@ -51,7 +54,8 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
         calls.append(("purge", grace_days, limit))
         return [{"tenant_id": "default", "id": "mem-a"}]
 
-    async def claim(_conn, *, limit):
+    async def claim(_conn, *, limit, max_attempts):
+        calls.append(("claim", limit, max_attempts))
         return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
 
     async def complete(_conn, **kwargs):
@@ -90,7 +94,7 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
     async def empty(*_args, **_kwargs):
         return []
 
-    async def claim(_conn, *, limit):
+    async def claim(_conn, *, limit, max_attempts):
         return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
 
     async def fail(_conn, **kwargs):
@@ -107,7 +111,60 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
     )
 
     assert result["failed_objects"] == 1
-    assert failures == [{"outbox_id": "out-a", "error_code": "object_delete_runtimeerror"}]
+    assert failures == [
+        {
+            "outbox_id": "out-a",
+            "error_code": "object_delete_runtimeerror",
+            "max_attempts": 5,
+            "retry_base_seconds": 60,
+            "retry_cap_seconds": 3600,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_permanent_failure_does_not_starve_later_object(monkeypatch):
+    completed = []
+    failures = []
+    data_retention._next_cleanup_at = 0
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def claim(_conn, *, limit, max_attempts):
+        return [
+            {"id": "out-bad", "tenant_id": "default", "artifact_id": "art-bad", "storage_key": "bad"},
+            {"id": "out-good", "tenant_id": "default", "artifact_id": "art-good", "storage_key": "good"},
+        ]
+
+    async def fail(_conn, **kwargs):
+        failures.append(kwargs["outbox_id"])
+        return "dead_letter"
+
+    async def complete(_conn, **kwargs):
+        completed.append(kwargs["outbox_id"])
+        return True
+
+    class SelectiveStorage:
+        def delete_object(self, *, storage_key):
+            if storage_key == "bad":
+                raise RuntimeError("permanent")
+
+    monkeypatch.setattr(data_retention, "transaction", fake_transaction)
+    monkeypatch.setattr(data_retention.repositories, "queue_expired_artifacts_for_deletion", empty)
+    monkeypatch.setattr(data_retention.repositories, "purge_deleted_memory_records", empty)
+    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
+    monkeypatch.setattr(data_retention.repositories, "fail_object_deletion", fail)
+    monkeypatch.setattr(data_retention.repositories, "complete_object_deletion", complete)
+
+    result = await data_retention.run_data_retention_maintenance(
+        settings(), now=10, storage=SelectiveStorage()
+    )
+
+    assert failures == ["out-bad"]
+    assert completed == ["out-good"]
+    assert result["failed_objects"] == 1
+    assert result["deleted_objects"] == 1
 
 
 def test_undecided_retention_classes_are_explicitly_fail_safe():

@@ -88,6 +88,9 @@ list_revealed_artifact_sessions = _artifact_lifecycle_repository.list_revealed_a
 list_revealed_artifacts = _artifact_lifecycle_repository.list_revealed_artifacts
 purge_deleted_memory_records = _artifact_lifecycle_repository.purge_deleted_memory_records
 queue_expired_artifacts_for_deletion = _artifact_lifecycle_repository.queue_expired_artifacts_for_deletion
+requeue_dead_letter_object_deletion = (
+    _artifact_lifecycle_repository.requeue_dead_letter_object_deletion
+)
 
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.

@@ -62,6 +62,15 @@ async def run_data_retention_maintenance(
         return {"status": "disabled" if not enabled else "not_due", "deleted_objects": 0}
 
     artifact_limit = int(getattr(settings, "artifact_retention_cleanup_limit", 50))
+    object_delete_max_attempts = int(
+        getattr(settings, "artifact_object_delete_max_attempts", 5)
+    )
+    object_delete_retry_base_seconds = int(
+        getattr(settings, "artifact_object_delete_retry_base_seconds", 60)
+    )
+    object_delete_retry_cap_seconds = int(
+        getattr(settings, "artifact_object_delete_retry_cap_seconds", 3600)
+    )
     memory_limit = int(getattr(settings, "memory_physical_purge_limit", 50))
     grace_days = int(getattr(settings, "memory_physical_purge_grace_days", 7))
     async with transaction() as conn:
@@ -93,7 +102,11 @@ async def run_data_retention_maintenance(
             )
 
     async with transaction() as conn:
-        claimed = await repositories.claim_object_deletions(conn, limit=artifact_limit)
+        claimed = await repositories.claim_object_deletions(
+            conn,
+            limit=artifact_limit,
+            max_attempts=object_delete_max_attempts,
+        )
 
     object_storage = storage or (ObjectStorage() if claimed else None)
     deleted_objects = 0
@@ -108,6 +121,9 @@ async def run_data_retention_maintenance(
                     conn,
                     outbox_id=str(item["id"]),
                     error_code=f"object_delete_{type(exc).__name__}".lower(),
+                    max_attempts=object_delete_max_attempts,
+                    retry_base_seconds=object_delete_retry_base_seconds,
+                    retry_cap_seconds=object_delete_retry_cap_seconds,
                 )
             failed_objects += 1
             continue
