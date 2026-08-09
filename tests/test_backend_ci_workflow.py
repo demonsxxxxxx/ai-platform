@@ -59,11 +59,29 @@ def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_modu
     sandbox_job = workflow.split("  sandbox-provider:", 1)[1].split("  backend-image:", 1)[0]
     pytest_step = sandbox_job.split("- name: Run sandbox provider targeted tests", 1)[1]
     required_job = workflow.split("  required:", 1)[1]
+    sse_selectors = (
+        "tests/test_sse_runtime_cutover.py",
+        "tests/test_streaming_redis.py",
+        "tests/test_streaming_control.py",
+        "tests/test_streaming_postgres.py",
+        "tests/test_streaming_repository.py",
+        "tests/test_runtime_callbacks.py",
+        "tests/test_worker.py",
+        "tests/test_lambchat_sse_v21.py",
+        "tests/test_runtime_launch_script.py",
+    )
 
     assert "runs-on: ubuntu-latest" in sandbox_job
+    assert sandbox_job.count("- name: Enforce SSE v2.1 release-atomic cutover") == 1
+    assert sandbox_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
     assert "uv run --locked --extra test python -m pytest" in pytest_step
     assert "tests/test_trivy_failure_evidence.py \\" in pytest_step
     assert pytest_step.index("tests/test_trivy_failure_evidence.py") < pytest_step.index("-q \\")
+    assert "tests/test_s72_atomic_recovery_authority.py \\" in pytest_step
+    assert pytest_step.index("tests/test_s72_atomic_recovery_authority.py") < pytest_step.index("-q \\")
+    for selector in sse_selectors:
+        assert pytest_step.count(selector) == 1
+        assert pytest_step.index(selector) < pytest_step.index("-q \\")
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
     assert " -k " not in pytest_step
