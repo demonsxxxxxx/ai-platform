@@ -1272,49 +1272,6 @@ class OpenSandboxExternalEgressCapability:
             ),
         )
 
-    def lease_labels(
-        self,
-        *,
-        signing_key: object,
-        key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
-        request: SandboxRuntimeRequest,
-        lease_identity: str,
-        now: datetime | None = None,
-    ) -> dict[str, str]:
-        proof = self.governed_egress_proof(
-            signing_key=signing_key,
-            key_id=key_id,
-            request=request,
-            lease_identity=lease_identity,
-            now=now,
-        )
-        return {
-            "ai-platform.external_egress.profile_version": "v1",
-            "ai-platform.external_egress.profile_id": self.profile_id,
-            "ai-platform.external_egress.runtime_identity": self.runtime_identity,
-            "ai-platform.external_egress.network_mode": self.network_mode,
-            "ai-platform.runtime_subject": self.runtime_subject,
-            "ai-platform.external_egress.gateway_policy_subject": self.gateway_policy_subject,
-            "ai-platform.external_egress.callback_boundary_subject": self.callback_boundary_subject,
-            "ai-platform.external_egress.deny_audit_subject": self.deny_audit_subject,
-            "ai-platform.external_egress.deny_counter_subject": self.deny_counter_subject,
-            "ai-platform.external_egress.profile_requested_image": self.requested_image,
-            "ai-platform.external_egress.profile_requested_image_digest": self.requested_image_digest,
-            "ai-platform.external_egress.upstream_bridge_version": self.upstream_bridge_version,
-            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
-                self.callback_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
-                self.openai_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
-                self.anthropic_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.profile_expires_at": self.expires_at,
-            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
-        }
-
-
 def _required_capability_value(value: object, *, field: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:
