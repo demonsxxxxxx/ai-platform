@@ -338,6 +338,7 @@ def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path
     applied_evaluation = _evaluate(REPO_ROOT, base, head)
     expected = {
         ("hot_file_growth", "deploy/opensandbox/install-s72.sh"),
+        ("production_file_count", None),
         ("production_net_loc", None),
         ("test_hot_file_growth", "tests/test_opensandbox_gateway.py"),
     }
