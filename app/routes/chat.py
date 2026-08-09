@@ -1995,6 +1995,9 @@ async def chat_stream(
                 "principal_roles": principal.roles,
                 "principal_department_id": principal.department_id,
                 "auth_source": principal.source,
+                "authz_policy_version": principal.authz_policy_version,
+                "authority_source": principal.authority_source or principal.source,
+                "authority_checked_at": principal.authority_checked_at or None,
             }
             if admitted_agent_profile is not None:
                 run_create_kwargs.update(

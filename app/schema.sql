@@ -505,6 +505,9 @@ create table if not exists runs (
   principal_roles jsonb not null default '[]'::jsonb,
   principal_department_id text not null default '',
   auth_source text,
+  authz_policy_version integer not null default 1,
+  authority_source text not null default '',
+  authority_checked_at timestamptz,
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   status text not null,
@@ -549,6 +552,9 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
+alter table runs add column if not exists authz_policy_version integer not null default 1;
+alter table runs add column if not exists authority_source text not null default '';
+alter table runs add column if not exists authority_checked_at timestamptz;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
 alter table sessions add column if not exists purpose text not null default 'conversation';
@@ -2192,3 +2198,8 @@ on conflict (id) do update set
   description = excluded.description,
   default_skill_id = excluded.default_skill_id,
   status = excluded.status;
+create table if not exists schema_migrations (
+  version text primary key,
+  checksum_sha256 text not null,
+  applied_at timestamptz not null default now()
+);

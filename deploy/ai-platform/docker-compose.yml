@@ -74,6 +74,21 @@ services:
     volumes:
       - ai_platform_sandbox_workspaces:/runtime-workspaces
 
+  migrate:
+    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
+    container_name: ai-platform-migrate
+    user: "10001:10001"
+    command: ["python", "-m", "app.schema_migrations", "apply"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
+      DATABASE_POOL_MIN_SIZE: "1"
+      DATABASE_POOL_MAX_SIZE: "2"
+      DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-api
@@ -86,6 +101,7 @@ services:
     restart: unless-stopped
     environment:
       AI_PLATFORM_RUNTIME_COMMIT: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      DEPLOYMENT_ENVIRONMENT: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
       DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
       DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
@@ -197,6 +213,8 @@ services:
     depends_on:
       workspace-init:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -217,6 +235,7 @@ services:
     command: ["python", "-m", "app.worker_main"]
     environment:
       AI_PLATFORM_RUNTIME_COMMIT: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      DEPLOYMENT_ENVIRONMENT: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
       DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
       DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
@@ -315,6 +334,8 @@ services:
       - ai_platform_sandbox_workspaces:/tmp/ai-platform-sandbox-workspaces
     depends_on:
       workspace-init:
+        condition: service_completed_successfully
+      migrate:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy

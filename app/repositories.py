@@ -4259,6 +4259,9 @@ async def create_run(
     principal_roles: list[str] | None = None,
     principal_department_id: str = "",
     auth_source: str | None = None,
+    authz_policy_version: int = 1,
+    authority_source: str = "",
+    authority_checked_at: str | None = None,
     run_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
@@ -4280,12 +4283,13 @@ async def create_run(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at,
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -4308,6 +4312,9 @@ async def create_run(
             dumps_json(normalize_roles(principal_roles or [])),
             str(principal_department_id or ""),
             auth_source,
+            int(authz_policy_version),
+            str(authority_source or auth_source or ""),
+            authority_checked_at or None,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
             dumps_json(input_json),

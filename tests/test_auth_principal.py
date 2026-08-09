@@ -231,6 +231,7 @@ def test_require_principal_rejects_cross_deployment_tenant_from_trusted_gateway(
             trusted_principal_secret="secret",
             frontend_poc_auth_enabled=False,
             default_tenant_id="default",
+            deployment_environment="production",
         ),
     )
     app = FastAPI()
