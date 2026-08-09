@@ -1014,6 +1014,83 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+@pytest.mark.parametrize(
+    ("active_contour", "expected_success"),
+    [
+        ("inactive", True),
+        ("active", True),
+        ("stop-error", False),
+        ("show-error", False),
+        ("empty", False),
+        ("failed", False),
+        ("activating", False),
+        ("deactivating", False),
+        ("reloading", False),
+        ("unknown", False),
+    ],
+)
+def test_restore_snapshot_requires_exact_inactive_state_before_stopped_phase(
+    tmp_path: pathlib.Path,
+    active_contour: str,
+    expected_success: bool,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        phases=$ROOT/phases
+        state=$ROOT/active-state
+        case {shlex.quote(active_contour)} in
+          active|stop-error) printf '%s\n' active > "$state" ;;
+          show-error) printf '%s\n' inactive > "$state" ;;
+          *) printf '%s\n' {shlex.quote(active_contour)} > "$state" ;;
+        esac
+        s72_atomic_preflight_snapshot() {{ :; }}
+        s72_atomic_verify_snapshot_seal() {{ :; }}
+        s72_atomic_load_transaction() {{
+          S72_TX_PHASE=reserved
+          S72_TX_OPERATION=rollback
+          S72_TX_PREVIOUS_PHASE=reserved
+        }}
+        preflight_live_state() {{ :; }}
+        s72_atomic_require_exact_lifecycle() {{ :; }}
+        s72_atomic_advance_transaction() {{
+          printf '%s\n' "$3" >> "$phases"
+          S72_TX_PHASE=$3
+        }}
+        restore_snapshot_payload() {{ :; }}
+        restore_snapshot_runtime() {{ :; }}
+        systemctl() {{
+          case "$1" in
+            stop)
+              printf '%s\n' inactive > "$state"
+              test {shlex.quote(active_contour)} != stop-error
+              ;;
+            show)
+              test {shlex.quote(active_contour)} != show-error || return 73
+              cat "$state"
+              ;;
+            *) return 1 ;;
+          esac
+        }}
+        if test {str(expected_success).lower()} = true; then
+          s72_atomic_restore_snapshot "$ROOT/snapshot" \
+            11111111111111111111111111111111 "$ROOT/records"
+          grep -qx stopped "$phases"
+        else
+          ! s72_atomic_restore_snapshot "$ROOT/snapshot" \
+            11111111111111111111111111111111 "$ROOT/records"
+          ! grep -qx stopped "$phases"
+        fi
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 @pytest.mark.parametrize("failure_mode", ["disable-failure", "enabled-drift"])
 def test_restore_runtime_fails_closed_before_state_advance(
     tmp_path: pathlib.Path,
@@ -1049,6 +1126,72 @@ def test_restore_runtime_fails_closed_before_state_advance(
           esac
         }}
         ! restore_snapshot_runtime "$ROOT/snapshot"
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize(
+    ("post_disable_contour", "expected_success"),
+    [
+        ("exact-absent", True),
+        ("loaded-drift", False),
+        ("load-query-error", False),
+    ],
+)
+def test_absent_unit_restore_revalidates_all_systemd_states_after_disable(
+    tmp_path: pathlib.Path,
+    post_disable_contour: str,
+    expected_success: bool,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        snapshot=$ROOT/snapshot
+        mkdir -p "$snapshot" "$ROOT/state"
+        systemctl() {{
+          command_name=$1
+          unit=${{2:-}}
+          case "$command_name" in
+            daemon-reload|stop) return 0 ;;
+            disable) : > "$ROOT/state/$unit.disabled" ;;
+            show)
+              property=$4
+              if test -f "$ROOT/state/$unit.disabled"; then
+                case "$property" in
+                  UnitFileState) printf '%s' '' ;;
+                  ActiveState) printf '%s\n' inactive ;;
+                  LoadState)
+                    case {shlex.quote(post_disable_contour)} in
+                      exact-absent) printf '%s\n' not-found ;;
+                      loaded-drift) printf '%s\n' loaded ;;
+                      load-query-error) return 74 ;;
+                    esac
+                    ;;
+                  *) return 1 ;;
+                esac
+              else
+                case "$property" in
+                  UnitFileState) printf '%s\n' enabled ;;
+                  ActiveState) printf '%s\n' inactive ;;
+                  LoadState) printf '%s\n' not-found ;;
+                  *) return 1 ;;
+                esac
+              fi
+              ;;
+            *) return 1 ;;
+          esac
+        }}
+        if test {str(expected_success).lower()} = true; then
+          restore_snapshot_runtime "$snapshot"
+        else
+          ! restore_snapshot_runtime "$snapshot"
+        fi
         ''',
         INSTALLER,
         tmp_path,
@@ -1232,7 +1375,10 @@ def test_snapshot_state_preserves_each_supported_exact_systemd_baseline(
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-@pytest.mark.parametrize("process_contour", ["live-before", "enumeration-error", "live-after"])
+@pytest.mark.parametrize(
+    "process_contour",
+    ["live-before", "enumeration-error", "live-after", "post-group-live"],
+)
 def test_gateway_identity_restore_refuses_live_uid_or_enumeration_drift(
     tmp_path: pathlib.Path,
     process_contour: str,
@@ -1291,17 +1437,30 @@ def test_gateway_identity_restore_refuses_live_uid_or_enumeration_drift(
           printf '%s\n' "$count" > "$PROCESS_SCAN_COUNT"
           case {shlex.quote(process_contour)}:$count in
             enumeration-error:1) return 1 ;;
-            live-before:1|live-after:2) printf '%s\n' '62001 62001 62001 62001 4242' ;;
+            live-before:1|live-after:2|post-group-live:4)
+              printf '%s\n' '62001 62001 62001 62001 4242'
+              ;;
             *) printf '%s\n' '0 0 0 0 1' ;;
           esac
         }}
-        ! restore_gateway_identity "$snapshot" "$tx"
+        if restore_gateway_identity "$snapshot" "$tx"; then
+          restore_status=0
+        else
+          restore_status=$?
+        fi
+        test "$restore_status" -ne 0
         case {shlex.quote(process_contour)} in
           live-after)
             test "$USERDEL_COUNT" -eq 1
             test "$GROUPDEL_COUNT" -eq 0
             test -z "$USER_ENTRY"
             test -n "$GROUP_ENTRY"
+            ;;
+          post-group-live)
+            test "$USERDEL_COUNT" -eq 1
+            test "$GROUPDEL_COUNT" -eq 1
+            test -z "$USER_ENTRY"
+            test -z "$GROUP_ENTRY"
             ;;
           *)
             test "$USERDEL_COUNT" -eq 0
@@ -1310,6 +1469,77 @@ def test_gateway_identity_restore_refuses_live_uid_or_enumeration_drift(
             test -n "$GROUP_ENTRY"
             ;;
         esac
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_uid_process_enumerator_is_streamed_and_read_bounded() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+    body = source.split("require_no_live_uid_processes() {", 1)[1].split(
+        "\ngateway_runtime_identity() {", 1
+    )[0]
+
+    assert "process_rows=$(s72_list_process_uids)" not in body
+    assert "mkfifo" in body
+    assert "wait \"$process_uid_producer_pid\"" in body
+    assert "1048576" in body
+    assert "131072" in body
+
+
+@pytest.mark.parametrize(
+    ("process_contour", "expected_success"),
+    [
+        ("valid", True),
+        ("live", False),
+        ("producer-error", False),
+        ("malformed", False),
+        ("over-bytes", False),
+        ("over-rows", False),
+    ],
+)
+def test_uid_process_enumerator_rejects_bounded_and_producer_failures(
+    tmp_path: pathlib.Path,
+    process_contour: str,
+    expected_success: bool,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        s72_list_process_uids() {{
+          case {shlex.quote(process_contour)} in
+            valid) printf '%s\n' '0 0 0 0 1' ;;
+            live) printf '%s\n' '62001 62001 62001 62001 4242' ;;
+            producer-error) printf '%s\n' '0 0 0 0 1'; return 73 ;;
+            malformed) printf '%s\n' '0 0 0 1' ;;
+            over-bytes) awk 'BEGIN {{ for (i = 0; i < 7; i++) print "0 0 0 0 1" }}' ;;
+            over-rows)
+              awk 'BEGIN {{ for (i = 0; i < 17; i++) print "0 0 0 0 1" }}'
+              ;;
+          esac
+        }}
+        case {shlex.quote(process_contour)} in
+          over-bytes) process_max_bytes=64; process_max_rows=16 ;;
+          *) process_max_bytes=1024; process_max_rows=16 ;;
+        esac
+        if require_no_live_uid_processes 62001 "$process_max_bytes" "$process_max_rows" \
+            >"$ROOT/stdout" 2>"$ROOT/stderr"; then
+          result_status=0
+        else
+          result_status=$?
+        fi
+        test ! -s "$ROOT/stdout"
+        test ! -s "$ROOT/stderr"
+        if test {str(expected_success).lower()} = true; then
+          test "$result_status" -eq 0
+        else
+          test "$result_status" -ne 0
+        fi
         ''',
         INSTALLER,
         tmp_path,

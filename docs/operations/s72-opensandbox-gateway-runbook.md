@@ -157,17 +157,25 @@ units whose active state is `active` or `inactive` and whose unit-file state is
 `enabled` or `disabled`, plus exact absent units reported as `not-found`,
 `inactive`, and an empty unit-file state. Query errors and states such as
 `failed`, `activating`, `static`, `masked`, `linked`, or `enabled-runtime` fail
-before mutation. The configured gateway UID binds the exact
+before mutation. Before the transaction records `stopped`, each managed unit
+must either already report exact `inactive` or move from exact `active` through
+a successful stop to exact `inactive`; stop or query errors and every other
+active state retain the transaction. An absent unit is hard-queried again after
+disable and immediately before runtime restoration, and must still be exact
+`not-found`, `inactive`, with an empty unit-file state. The configured gateway UID binds the exact
 system group, account, home, shell, empty membership, and `0700` runtime directory.
 Creation intent is sealed before account mutation, and a new runtime directory is
 published from a transaction-owned private stage only after its device/inode is
 recorded. Recovery removes only exact objects created by that transaction; a
 pre-existing mismatch or later foreign replacement is preserved and fails closed.
-Immediately before and after a non-force account deletion, and again before group
-deletion, the installer strictly enumerates real, effective, saved, and filesystem
-UIDs for the bounded Linux process table. Any matching live process, malformed
-row, enumeration error, or empty enumeration refuses deletion or further
-transaction advancement; it never kills a process.
+Immediately before and after a non-force account deletion, before group deletion,
+and once more after group cleanup immediately before identity advancement, the
+installer strictly enumerates real, effective, saved, and filesystem UIDs. A
+private producer/consumer stream enforces byte and row limits while reading and
+preserves the process-table producer exit status; it never buffers the complete
+process table. Any matching live process, malformed five-field row, limit breach,
+enumeration error, or empty enumeration refuses deletion or further transaction
+advancement; it never kills a process or emits process command data.
 Absent unit/config snapshots are accepted only with their
 sealed lifecycle authority; otherwise they fail closed. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces

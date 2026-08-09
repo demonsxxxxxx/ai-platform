@@ -22,7 +22,7 @@ TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
 SNAPSHOTS=$DEPLOY_STATE/snapshots
 LOCK_FILE=/run/lock/opensandbox-gateway-s72-install.lock
 
-S72_ATOMIC_RECOVERY_HELPER_SHA256=d5ec58e66e36166dddd38f7efdd82fc0ae7e0bd13501d1f30574b356624033a4
+S72_ATOMIC_RECOVERY_HELPER_SHA256=4a0e90430567562754a53df8d1ca690fb98c0d6743bcd391606fe47ef6d08e23
 
 s72_loader_reject() {
   printf '%s\n' 'OpenSandbox s72 loader authority rejected' >&2
@@ -237,26 +237,103 @@ s72_list_process_uids() {
 require_no_live_uid_processes() {
   target_uid=$1
   case "$target_uid" in ""|*[!0-9]*) return 1 ;; esac
-  process_rows=$(s72_list_process_uids) || return 1
-  process_count=0
-  while IFS=' ' read -r real_uid effective_uid saved_uid filesystem_uid process_id extra; do
-    test -n "${real_uid:-}${effective_uid:-}${saved_uid:-}${filesystem_uid:-}${process_id:-}" \
-      || continue
-    test -z "${extra:-}" || return 1
-    for process_value in "$real_uid" "$effective_uid" "$saved_uid" "$filesystem_uid" "$process_id"; do
-      case "$process_value" in ""|*[!0-9]*) return 1 ;; esac
+  process_uid_max_bytes=1048576
+  process_uid_max_rows=131072
+  if test "$#" -ne 1; then
+    test "${s72_loader_mode:-}" = test-source-eval && test "$#" -eq 3 || return 1
+    process_uid_max_bytes=$2
+    process_uid_max_rows=$3
+    for process_uid_limit in "$process_uid_max_bytes" "$process_uid_max_rows"; do
+      case "$process_uid_limit" in ""|*[!0-9]*) return 1 ;; esac
+      test "$process_uid_limit" -gt 0 || return 1
     done
-    test "$process_id" -gt 0 || return 1
-    process_count=$((process_count + 1))
-    test "$process_count" -le 131072 || return 1
-    test "$real_uid" != "$target_uid" || return 1
-    test "$effective_uid" != "$target_uid" || return 1
-    test "$saved_uid" != "$target_uid" || return 1
-    test "$filesystem_uid" != "$target_uid" || return 1
-  done <<EOF
-$process_rows
-EOF
-  test "$process_count" -gt 0
+    test "$process_uid_max_bytes" -le 1048576 || return 1
+    test "$process_uid_max_rows" -le 131072 || return 1
+  fi
+  for process_uid_command in /usr/bin/awk /usr/bin/head /usr/bin/mkfifo /usr/bin/mktemp; do
+    test -x "$process_uid_command" || return 1
+  done
+  if test "${s72_loader_mode:-}" = test-source-eval; then
+    process_uid_scan_parent=${TMPDIR:-/tmp}
+  else
+    process_uid_scan_parent=/run
+    test -d "$process_uid_scan_parent" && test ! -L "$process_uid_scan_parent" || return 1
+    test "$(stat -c %u "$process_uid_scan_parent")" -eq 0 || return 1
+    process_uid_scan_parent_mode=$(stat -c %a "$process_uid_scan_parent") || return 1
+    test $((0$process_uid_scan_parent_mode & 0022)) -eq 0 || return 1
+  fi
+  process_uid_scan_workspace=$(
+    /usr/bin/mktemp -d "$process_uid_scan_parent/.opensandbox-uid-scan.XXXXXX"
+  ) || return 1
+  chmod 0700 "$process_uid_scan_workspace" || return 1
+  process_uid_scan_identity=$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_scan_workspace") || return 1
+  process_uid_raw=$process_uid_scan_workspace/process-table.raw
+  process_uid_bounded=$process_uid_scan_workspace/process-table.bounded
+  /usr/bin/mkfifo -m 0600 "$process_uid_raw" "$process_uid_bounded" || return 1
+
+  (s72_list_process_uids >"$process_uid_raw") 2>/dev/null &
+  process_uid_producer_pid=$!
+  (/usr/bin/head -c "$((process_uid_max_bytes + 1))" \
+    <"$process_uid_raw" >"$process_uid_bounded") 2>/dev/null &
+  process_uid_limiter_pid=$!
+  if LC_ALL=C /usr/bin/awk \
+      -v target_uid="$target_uid" \
+      -v max_bytes="$process_uid_max_bytes" \
+      -v max_rows="$process_uid_max_rows" '
+    BEGIN { status = 0; byte_count = 0; row_count = 0 }
+    {
+      byte_count += length($0) + 1
+      if (byte_count > max_bytes) { status = 1; next }
+      if ($0 !~ /^ *(0|[1-9][0-9]*) +(0|[1-9][0-9]*) +(0|[1-9][0-9]*) +(0|[1-9][0-9]*) +([1-9][0-9]*) *$/) {
+        status = 1
+        next
+      }
+      row = $0
+      sub(/^ +/, "", row)
+      sub(/ +$/, "", row)
+      if (split(row, fields, / +/) != 5) { status = 1; next }
+      row_count += 1
+      if (row_count > max_rows) { status = 1; next }
+      if (fields[1] + 0 == target_uid + 0 || fields[2] + 0 == target_uid + 0 ||
+          fields[3] + 0 == target_uid + 0 || fields[4] + 0 == target_uid + 0) {
+        status = 1
+      }
+    }
+    END {
+      if (row_count == 0) status = 1
+      exit status
+    }
+  ' <"$process_uid_bounded" >/dev/null 2>&1; then
+    process_uid_consumer_status=0
+  else
+    process_uid_consumer_status=$?
+  fi
+  if wait "$process_uid_limiter_pid"; then
+    process_uid_limiter_status=0
+  else
+    process_uid_limiter_status=$?
+  fi
+  if wait "$process_uid_producer_pid"; then
+    process_uid_producer_status=0
+  else
+    process_uid_producer_status=$?
+  fi
+
+  process_uid_cleanup_status=0
+  if test "$(stat -c '%d:%i:%F:%u:%g:%a' "$process_uid_scan_workspace")" \
+      != "$process_uid_scan_identity" \
+      || test ! -p "$process_uid_raw" || test ! -p "$process_uid_bounded"; then
+    process_uid_cleanup_status=1
+  else
+    rm -f -- "$process_uid_raw" "$process_uid_bounded" || process_uid_cleanup_status=1
+    if test "$process_uid_cleanup_status" -eq 0; then
+      rmdir -- "$process_uid_scan_workspace" || process_uid_cleanup_status=1
+    fi
+  fi
+  test "$process_uid_consumer_status" -eq 0 \
+    && test "$process_uid_limiter_status" -eq 0 \
+    && test "$process_uid_producer_status" -eq 0 \
+    && test "$process_uid_cleanup_status" -eq 0
 }
 
 gateway_runtime_identity() {
@@ -525,7 +602,8 @@ restore_gateway_identity() {
   else
     test "$?" -eq 2 || return 1
   fi
-  require_gateway_identity_matches_snapshot "$snapshot"
+  require_gateway_identity_matches_snapshot "$snapshot" || return 1
+  require_no_live_uid_processes "$gateway_uid"
 }
 
 require_gateway_config_contract() {
@@ -968,6 +1046,7 @@ restore_snapshot_runtime() {
         test -z "$actual_unit_state" || return 1
       fi
       actual_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+      actual_load_state=$(systemctl show "$unit" -p LoadState --value) || return 1
       test -z "$actual_unit_state" || return 1
       test "$actual_load_state" = not-found || return 1
     fi
@@ -985,6 +1064,15 @@ restore_snapshot_runtime() {
       actual_active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
       test "$actual_active_state" = inactive || return 1
     fi
+  done
+  for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do
+    test ! -f "$snapshot/$unit.present" || continue
+    actual_unit_state=$(systemctl show "$unit" -p UnitFileState --value) || return 1
+    actual_load_state=$(systemctl show "$unit" -p LoadState --value) || return 1
+    actual_active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+    test -z "$actual_unit_state" || return 1
+    test "$actual_load_state" = not-found || return 1
+    test "$actual_active_state" = inactive || return 1
   done
 }
 

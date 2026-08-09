@@ -1317,8 +1317,14 @@ s72_atomic_restore_snapshot() {
   s72_atomic_verify_snapshot_seal "$snapshot" || return 1
   s72_atomic_advance_transaction "$records" "$transaction_id" stop-intent || return 1
   for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do
-    systemctl stop "$unit" >/dev/null 2>&1 || true
-    test "$(systemctl show "$unit" -p ActiveState --value)" != active || return 1
+    active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+    case "$active_state" in
+      active) systemctl stop "$unit" >/dev/null 2>&1 || return 1 ;;
+      inactive) ;;
+      *) return 1 ;;
+    esac
+    active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+    test "$active_state" = inactive || return 1
   done
   s72_atomic_advance_transaction "$records" "$transaction_id" stopped || return 1
   restore_snapshot_payload "$snapshot" "$transaction_id" || return 1
