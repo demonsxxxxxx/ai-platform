@@ -10037,6 +10037,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
+    _require_json_size(copied_input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
     session_generation = await allocate_session_run_generation(
         conn,
         tenant_id=tenant_id,

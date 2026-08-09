@@ -13,6 +13,7 @@ import pytest
 
 from app import agent_conversation_repository, repositories
 from app import run_event_repository
+from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
@@ -1720,6 +1721,46 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
     assert copied["skill_manifests"] == [source_manifest]
+
+
+@pytest.mark.asyncio
+async def test_copy_run_rejects_expanded_resume_input_before_generation_write(monkeypatch):
+    async def get_source(*_args, **_kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "workspace-a",
+            "session_id": "session-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "principal_roles": ["user"],
+            "principal_department_id": "qa",
+            "auth_source": "company-login",
+            "input_json": {"input": {"message": "retry"}},
+        }
+
+    async def allow(*_args, **_kwargs):
+        return None
+
+    async def oversized_resume(*_args, **_kwargs):
+        return {"step-a": {"value": "x" * RUN_INPUT_MAX_BYTES}}, {}
+
+    async def forbidden_generation(*_args, **_kwargs):
+        raise AssertionError("oversized copied input must fail before session generation allocation")
+
+    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
+    monkeypatch.setattr(repositories, "require_replay_source_identity", lambda **_kwargs: None)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", allow)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", allow)
+    monkeypatch.setattr(repositories, "_completed_steps_for_resume", oversized_resume)
+    monkeypatch.setattr(repositories, "allocate_session_run_generation", forbidden_generation)
+
+    with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
+        )
 
 
 @pytest.mark.asyncio
