@@ -1,0 +1,24 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "2b91eabf4a6a4f19898e9dbef0657025b4ba8120",
+    "scope_sha256": "8de825fbcb41eee9747ceb629a27538dcccbbcfa3cfd49dbb29d6b20789dddcc"
+  },
+  "expires_on": "2026-08-17",
+  "owner": "issue-843-internal-test-delivery",
+  "reason": "Bounded user-authorized internal-test direct OpenSandbox path; avoid a pre-acceptance hot-file refactor that would expand product risk.",
+  "violations": [
+    {
+      "code": "functional_hot_file_growth",
+      "path": "app/runtime/sandbox/container_provider.py"
+    },
+    {
+      "code": "hot_file_growth",
+      "path": "app/runtime/sandbox/container_provider.py"
+    },
+    {
+      "code": "test_hot_file_growth",
+      "path": "tests/test_sandbox_container_provider.py"
+    }
+  ]
+}
