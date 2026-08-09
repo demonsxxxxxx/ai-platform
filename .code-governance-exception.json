@@ -1,7 +1,7 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
-    "base_ref": "cb11256309075ef58a813fcd51f49a0763f56834",
+    "base_ref": "ec50b996de9f57f82463448640729d7087a241b7",
     "scope_sha256": "cf7c34f654cab512ecd94943bd53f028e76e4801fdef10281799db79bc35a480"
   },
   "expires_on": "2026-08-16",
