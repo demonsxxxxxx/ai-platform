@@ -261,7 +261,7 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker._MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES",
+        "app.context.file_continuity._MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES",
         3,
     )
     monkeypatch.setattr(

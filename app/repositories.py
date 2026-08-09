@@ -21,7 +21,11 @@ from app.capability_distribution import (
     is_valid_archive_actor,
     resolve_capability_access,
 )
-from app.context.file_continuity import compatible_reusable_file_ids, has_file_input_mode
+from app.context.file_continuity import (
+    compatible_reusable_file_ids,
+    has_file_input_mode,
+    list_authorized_session_input_files as list_authorized_session_input_files,
+)
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     AUDIT_EVENT_SCHEMA_VERSION,
@@ -38,9 +42,6 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.error_taxonomy import summarize_error_categories
-from app.file_repository import (
-    list_authorized_session_input_files as list_authorized_session_input_files,
-)
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.persistence import RepositoryNotFoundError
 from app.persistence import chat_submissions
