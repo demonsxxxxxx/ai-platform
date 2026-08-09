@@ -891,7 +891,7 @@ def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_saf
 ) -> None:
     result = _run_privileged_bash(
         r'''
-        set -eu
+        set -eux
         HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4
         . "$HELPER"
         snapshots=$ROOT/snapshots
@@ -961,8 +961,8 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
               /opt/s72-source/deploy/opensandbox/rollback-s72.sh
             install -o root -g root -m 0644 "$HELPER" \
               /opt/s72-source/deploy/opensandbox/lib/s72-atomic-recovery-authority.sh
-            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
-            /opt/s72-source/deploy/opensandbox/rollback-s72.sh --recover
+            /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /bin/sh -x /opt/s72-source/deploy/opensandbox/rollback-s72.sh --recover
             test -d /var/lib/opensandbox-gateway-deploy/snapshots
             test -d /var/lib/opensandbox-gateway-deploy/transactions
             test -z "$(find /var/lib/opensandbox-gateway-deploy/transactions -mindepth 1 -print -quit)"
@@ -983,22 +983,22 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
             snapshot_stage=$(s72_atomic_create_snapshot_stage "$SNAPSHOTS" "$tx")
 
             # This is the durable state left by death after reservation and stage creation.
-            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             s72_atomic_load_transaction "$RECORDS" "$tx"
             test "$S72_TX_PHASE" = cleaned
             test ! -e "$transaction_workspace" && test ! -e "$snapshot_stage"
-            /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
 
             foreign=33333333333333333333333333333333
             foreign_stage=$SNAPSHOTS/.snapshot-stage-$foreign
             mkdir "$foreign_stage"
             printf '%s\n' preserve-foreign > "$foreign_stage/payload"
-            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            ! /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx preserve-foreign "$foreign_stage/payload"
             rm -rf "$foreign_stage"
 
             mkfifo "$DEPLOY/foreign-fifo"
-            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            ! /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             test -p "$DEPLOY/foreign-fifo"
             rm "$DEPLOY/foreign-fifo"
 
@@ -1006,7 +1006,7 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
             torn_record=$RECORDS/transaction-$torn-000000.record
             printf '%s\n' truncated > "$torn_record"
             chown root:root "$torn_record"; chmod 0400 "$torn_record"
-            ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
+            ! /bin/sh -x /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx truncated "$torn_record"
           ' s72-production-entry "$INSTALLER" "$ROLLBACK" "$HELPER" "$ROOT"
         ''',
