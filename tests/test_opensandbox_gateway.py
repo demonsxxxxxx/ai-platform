@@ -74,6 +74,7 @@ API_KEY = "lifecycle-" + "a" * 32
 CAPABILITY_TOKEN = "capability-" + "b" * 32
 PUBLIC_AUTHORITY = "10.56.1.72:8443"
 BRIDGE_ORIGIN = "https://bridge.internal.example:18443"
+LOOPBACK_BRIDGE_ORIGIN = "http://127.0.0.1:18043"
 
 
 def _test_tls_context() -> ssl.SSLContext:
@@ -100,6 +101,15 @@ def gateway_config() -> GatewayConfig:
         callback_upstream_base=BRIDGE_ORIGIN,
         openai_upstream_base=BRIDGE_ORIGIN + "/openai/v1",
         anthropic_upstream_base=BRIDGE_ORIGIN + "/anthropic",
+    )
+
+
+def loopback_gateway_config() -> GatewayConfig:
+    return replace(
+        gateway_config(),
+        callback_upstream_base=LOOPBACK_BRIDGE_ORIGIN,
+        openai_upstream_base=LOOPBACK_BRIDGE_ORIGIN + "/openai/v1",
+        anthropic_upstream_base=LOOPBACK_BRIDGE_ORIGIN + "/anthropic",
     )
 
 
@@ -372,6 +382,96 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
         replace(config, anthropic_upstream_base=BRIDGE_ORIGIN + "/anthropic/v1").validate()
     with pytest.raises(ValueError, match="one origin"):
         replace(config, openai_upstream_base="https://other.internal.example:18443/openai/v1").validate()
+
+
+@pytest.mark.parametrize(
+    ("callback", "openai", "anthropic"),
+    tuple(
+        (
+            f"http://{host}:18043",
+            f"http://{host}:18043/openai/v1",
+            f"http://{host}:18043/anthropic",
+        )
+        for host in ("localhost", "0.0.0.0", "host.docker.internal", "10.56.1.72")
+    )
+    + tuple(
+        (
+            f"http://127.0.0.1:{port}",
+            f"http://127.0.0.1:{port}/openai/v1",
+            f"http://127.0.0.1:{port}/anthropic",
+        )
+        for port in (80, 18042, 18044)
+    )
+    + (
+        (
+            LOOPBACK_BRIDGE_ORIGIN,
+            "https://127.0.0.1:18043/openai/v1",
+            LOOPBACK_BRIDGE_ORIGIN + "/anthropic",
+        ),
+    ),
+)
+def test_loopback_bridge_rejects_non_loopback_and_mixed_transport(
+    callback: str,
+    openai: str,
+    anthropic: str,
+) -> None:
+    with pytest.raises(ValueError, match="upstream bridge"):
+        replace(
+            gateway_config(),
+            callback_upstream_base=callback,
+            openai_upstream_base=openai,
+            anthropic_upstream_base=anthropic,
+        ).validate()
+
+
+def test_loopback_gateway_policy_is_closed_and_needs_no_cross_host_trust(tmp_path) -> None:
+    config = loopback_gateway_config()
+    config.validate()
+    assert config.upstream_transport == "loopback_http"
+
+    policy = gateway_server._load_broker_policy(config, "")
+    assert policy.transport == "loopback_http"
+    assert {target[1] for target in policy.targets.values()} == {("127.0.0.1",)}
+    assert _app_scoped_upstream_ca_path({}, required=False) == ""
+
+    with pytest.raises(ValueError, match="must not configure upstream CA"):
+        _app_scoped_upstream_ca_path(
+            {"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE": UPSTREAM_CA_BUNDLE_PATH},
+            required=False,
+        )
+    retired_policy = tmp_path / "retired-policy.json"
+    retired_policy.write_text('{"version":1,"targets":{}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="must not configure an external egress policy"):
+        gateway_server._load_broker_policy(config, str(retired_policy))
+
+
+def test_loopback_mailbox_uses_plain_pinned_http_without_tls(monkeypatch) -> None:
+    policy = gateway_server._load_broker_policy(loopback_gateway_config(), "")
+    broker = MailboxBroker(SimpleNamespace(), policy, 1.0, 1024)
+    observed: list[tuple[str, int, float]] = []
+
+    class PlainConnection:
+        sock = None
+
+        def __init__(self, host: str, port: int, timeout: float) -> None:
+            observed.append((host, port, timeout))
+
+    monkeypatch.setattr(gateway_adapters.http.client, "HTTPConnection", PlainConnection)
+    connection = broker._upstream_connection(
+        urllib.parse.urlsplit(LOOPBACK_BRIDGE_ORIGIN),
+        ("127.0.0.1",),
+        MonotonicDeadline.after(1.0),
+    )
+    assert isinstance(connection, PlainConnection)
+    assert observed and observed[0][:2] == ("127.0.0.1", 18043)
+    with pytest.raises(ValueError, match="must not load upstream TLS"):
+        MailboxBroker(
+            SimpleNamespace(),
+            policy,
+            1.0,
+            1024,
+            upstream_tls_context=_test_tls_context(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -2775,7 +2875,7 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
         root / "deploy/opensandbox/lib/s72-atomic-recovery-authority.sh"
     ).read_text(encoding="utf-8")
     env_example = (root / "deploy/opensandbox/gateway.env.example").read_text(encoding="utf-8")
-    policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
+    retired_policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
     nginx = (root / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     frontend_dockerfile = (root / "frontend/web/Dockerfile").read_text(encoding="utf-8")
     compose = (root / "deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
@@ -2833,13 +2933,12 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     assert restore.index("s72_atomic_verify_snapshot_seal") < restore.index("systemctl stop")
     assert "InaccessiblePaths=/var/lib/opensandbox-gateway-deploy" in public_unit
     callback_base = next(line.split("=", 1)[1] for line in env_example.splitlines() if line.startswith("OPENSANDBOX_GATEWAY_CALLBACK_BASE="))
-    assert callback_base == policy["targets"]["callback"]["base_url"]
+    assert callback_base == LOOPBACK_BRIDGE_ORIGIN
     assert urllib.parse.urlsplit(callback_base).path == ""
-    assert env_example.count(f"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE={UPSTREAM_CA_BUNDLE_PATH}") == 1
-    assert {tuple(value["expected_ips"]) for value in policy["targets"].values()} == {("10.56.0.211",)}
-    assert {urllib.parse.urlsplit(value["base_url"]).netloc for value in policy["targets"].values()} == {
-        "REQUIRED_FIXED_EGRESS_HOSTNAME:18443"
-    }
+    assert "OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=" not in env_example
+    assert "OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE=" not in env_example
+    assert "OPENSANDBOX_GATEWAY_UPSTREAM_TRANSPORT=" not in env_example
+    assert callback_base != retired_policy["targets"]["callback"]["base_url"]
     assert nginx.count("listen 8080;") == 1
     assert nginx.count("listen 8443 ssl;") == 1
     assert nginx.count("listen 8443 ssl default_server;") == 1
