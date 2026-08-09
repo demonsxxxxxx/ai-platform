@@ -428,8 +428,6 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
             "OPENSANDBOX_DOMAIN",
             "OPENSANDBOX_PROTOCOL",
             "OPENSANDBOX_API_KEY",
-            "OPENSANDBOX_ATTESTATION_PATH",
-            "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
             "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",

@@ -902,6 +902,7 @@ class FakeOpenSandbox:
         self.killed = False
         self.kill_calls = 0
         self.closed = False
+        self.info_calls = 0
         self.kill_error: Exception | None = None
         self.close_error: Exception | None = None
 
@@ -934,6 +935,7 @@ class FakeOpenSandbox:
         return FakeOpenSandboxEndpoint(self.endpoint, headers=self.endpoint_headers)
 
     def get_info(self) -> object:
+        self.info_calls += 1
         return {
             "id": self.id,
             "metadata": dict(self.metadata),
@@ -996,9 +998,6 @@ class OpenSandboxSettings:
     opensandbox_api_key = "opensandbox-secret"
     opensandbox_use_server_proxy = False
     opensandbox_request_timeout_seconds = 30
-    opensandbox_attestation_path = "/v1/sandboxes/{sandbox_id}/attestation"
-    opensandbox_attestation_contract_version = "ai-platform.opensandbox.topology-attestation.v1"
-    opensandbox_attestation_timeout_seconds = 2.0
     opensandbox_timeout_seconds = 1800
     opensandbox_executor_image = ""
     opensandbox_executor_entrypoint = "/app/docker-entrypoint.sh uvicorn"
@@ -1092,13 +1091,6 @@ def opensandbox_provider(
         identity_probe=identity_probe
         or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
         capability_profile_fetcher=capability_profile_fetcher or (lambda *_args: external_egress_capability_profile()),
-        authoritative_attestation_probe=lambda _capability, runtime_request, sandbox_id, info: (
-            isinstance(info, dict)
-            and info.get("id") == sandbox_id
-            and info.get("metadata", {}).get("ai-platform.tenant_id") == runtime_request.tenant_id
-            and info.get("metadata", {}).get("ai-platform.run_id") == runtime_request.run_id
-            and info.get("metadata", {}).get("ai-platform.attempt_id") == runtime_request.attempt_id
-        ),
         utcnow=utcnow or (lambda: TEST_CAPABILITY_NOW),
     )
 
@@ -1615,18 +1607,35 @@ def test_opensandbox_workspace_file_read_rejects_ancestor_directory_drift(monkey
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_governed_egress_fails_closed_without_authoritative_topology_attestation(monkeypatch):
+async def test_opensandbox_real_create_path_does_not_require_custom_attestation(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
-    provider = opensandbox_provider()
-    provider._authoritative_attestation_probe = None
+    health_calls = []
+    provider = container_provider.OpenSandboxContainerProvider(
+        sandbox_class=FakeOpenSandbox,
+        sandbox_manager_class=FakeOpenSandboxManager,
+        connection_config_class=FakeConnectionConfig,
+        file_class=FakeOpenSandboxFile,
+        directory_entry_class=FakeOpenSandboxDirectoryListEntry,
+        host_class=FakeOpenSandboxHost,
+        volume_class=FakeOpenSandboxVolume,
+        network_policy_class=FakeOpenSandboxNetworkPolicy,
+        network_rule_class=FakeOpenSandboxNetworkRule,
+        health_probe=lambda *args: health_calls.append(args) or True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+        capability_profile_fetcher=lambda *_args: external_egress_capability_profile(),
+        utcnow=lambda: TEST_CAPABILITY_NOW,
+    )
 
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="unsupported"):
-        await provider.create_or_reuse(request(), workspace())
+    lease = await provider.create_or_reuse(request(), workspace())
 
-    assert FakeOpenSandbox.instances == {}
+    assert lease.provider == "opensandbox"
+    assert lease.container_id == "osb-run-a"
+    assert FakeOpenSandbox.created
+    assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
+    assert health_calls
 
 
 @pytest.mark.asyncio
@@ -2868,7 +2877,6 @@ def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown
     provider = container_provider.create_container_provider()
 
     assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
-    assert provider._authoritative_attestation_probe is not None
     assert container_provider.create_container_provider("opensandbox") is provider
     with pytest.raises(ValueError, match="Unknown sandbox container provider"):
         container_provider.create_container_provider("opensandbox://token@internal")
@@ -2876,32 +2884,9 @@ def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown
     container_provider.reset_container_provider_cache()
 
 
-@pytest.mark.asyncio
-async def test_create_container_provider_opensandbox_fails_closed_without_factory_attestor(monkeypatch):
+def test_create_container_provider_selects_docker():
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     container_provider.reset_container_provider_cache()
-    settings = OpenSandboxSettings()
-    settings.opensandbox_api_key = ""
-    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-
-    provider = container_provider.create_container_provider()
-
-    assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
-    assert provider._authoritative_attestation_probe is None
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="unsupported"):
-        await provider.create_or_reuse(request(), workspace())
-
-    container_provider.reset_container_provider_cache()
-
-
-def test_create_container_provider_docker_does_not_construct_opensandbox_attestor(monkeypatch):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    container_provider.reset_container_provider_cache()
-    monkeypatch.setattr(
-        container_provider,
-        "build_opensandbox_attestation_probe",
-        lambda _settings: pytest.fail("Docker factory must not construct an OpenSandbox attestor"),
-    )
 
     provider = container_provider.create_container_provider("docker")
 
@@ -4796,7 +4781,6 @@ def _paged_opensandbox_provider(manager_class):
         health_probe=lambda *_args: True,
         identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
         capability_profile_fetcher=lambda *_args: external_egress_capability_profile(),
-        authoritative_attestation_probe=lambda *_args: True,
         utcnow=lambda: TEST_CAPABILITY_NOW,
     )
 
@@ -5261,28 +5245,6 @@ async def test_opensandbox_provider_errors_do_not_leak_secret_or_host_path(monke
     assert str(exc_info.value) == "OpenSandbox sandbox start failed"
     assert "opensandbox-secret" not in str(exc_info.value)
     assert workspace().workspace_host_path not in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_opensandbox_attestation_failure_redacts_private_transport_payload(monkeypatch):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    private_detail = f"opensandbox-secret {workspace().workspace_host_path} private-attestation-payload"
-
-    def leaking_probe(*_args):
-        raise RuntimeError(private_detail)
-
-    provider = opensandbox_provider()
-    provider._authoritative_attestation_probe = leaking_probe
-
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError) as exc_info:
-        await provider.create_or_reuse(request(), workspace())
-
-    assert str(exc_info.value) == "OpenSandbox governed egress authoritative attestation failed"
-    assert "opensandbox-secret" not in str(exc_info.value)
-    assert workspace().workspace_host_path not in str(exc_info.value)
-    assert "private-attestation-payload" not in str(exc_info.value)
 
 
 @pytest.mark.asyncio

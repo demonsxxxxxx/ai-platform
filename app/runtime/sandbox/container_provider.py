@@ -57,7 +57,6 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.filesystem_contract import encode_execd_mode
-from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidence,
     OpenSandboxStartupEvidenceCarrier,
@@ -4407,7 +4406,6 @@ class OpenSandboxContainerProvider:
         health_probe: Callable[..., bool] | None = None,
         identity_probe: Callable[..., dict[str, int]] | None = None,
         capability_profile_fetcher: CapabilityProfileFetcher | None = None,
-        authoritative_attestation_probe: Callable[[Any, SandboxRuntimeRequest, str, Any], bool] | None = None,
         utcnow: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
@@ -4424,7 +4422,6 @@ class OpenSandboxContainerProvider:
         self._health_probe = health_probe or default_executor_health_probe
         self._identity_probe = identity_probe or default_executor_identity_probe
         self._capability_profile_fetcher = capability_profile_fetcher or _default_opensandbox_capability_profile_fetcher
-        self._authoritative_attestation_probe = authoritative_attestation_probe
         self._utcnow = utcnow or _utcnow
         self._monotonic = monotonic or time.monotonic
         self._sandboxes: dict[str, Any] = {}
@@ -4608,30 +4605,6 @@ class OpenSandboxContainerProvider:
         self._sandboxes.pop(cached.container_id, None)
         self._leases.pop(cache_key, None)
 
-    async def _require_authoritative_governed_attestation(
-        self,
-        capability: OpenSandboxExternalEgressCapability,
-        request: SandboxRuntimeRequest,
-        sandbox_id: str,
-        info: Any,
-    ) -> None:
-        """Require a provider-supplied post-create topology attestation before sealing proof."""
-        probe = self._authoritative_attestation_probe
-        if probe is None:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress is unsupported without authoritative topology attestation"
-            )
-        try:
-            attested = probe(capability, request, sandbox_id, info)
-            if inspect.isawaitable(attested):
-                attested = await attested
-        except Exception:
-            attested = False
-        if attested is not True:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress authoritative attestation failed"
-            )
-
     async def create_or_reuse(
         self,
         request: SandboxRuntimeRequest,
@@ -4642,10 +4615,6 @@ class OpenSandboxContainerProvider:
         _require_governed_security_profile(settings)
         if not has_governed_egress_signing_key(getattr(settings, "sandbox_egress_proof_signing_key", "")):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed-egress proof key is unavailable") from None
-        if self._authoritative_attestation_probe is None:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress is unsupported without authoritative topology attestation"
-            ) from None
         self._ensure_symbols()
         try:
             capability = await _admit_opensandbox_external_egress_capability(
@@ -4726,12 +4695,6 @@ class OpenSandboxContainerProvider:
                     )
                 ):
                     raise ContainerStartFailedError("cached sandbox metadata mismatch")
-                await self._require_authoritative_governed_attestation(
-                    capability,
-                    request,
-                    cached.container_id,
-                    info,
-                )
                 labels_match = _governed_egress_labels_match(
                     "opensandbox",
                     cached.labels,
@@ -4943,12 +4906,6 @@ class OpenSandboxContainerProvider:
                 or not _status_matches_lease(remote_status, expected_unsealed)
             ):
                 raise ContainerStartFailedError("OpenSandbox post-create metadata mismatch")
-            await self._require_authoritative_governed_attestation(
-                capability,
-                request,
-                sandbox_id,
-                info,
-            )
             return sandbox_id
 
         async def check_executor_health(executor_url: str, endpoint_headers: dict[str, str]) -> int:
@@ -5087,20 +5044,19 @@ class OpenSandboxContainerProvider:
                     skip_health_check=True,
                 )
             info = await _maybe_await(sandbox.get_info())
-            if self._authoritative_attestation_probe is None:
+            remote_status = _opensandbox_status_from_info(info)
+            if (
+                remote_status is None
+                or remote_status.container_id != lease.container_id
+                or not _status_matches_lease(remote_status, lease)
+            ):
                 raise OpenSandboxCapabilityAdmissionError(
-                    "OpenSandbox governed egress is unsupported without authoritative topology attestation"
+                    "OpenSandbox dispatch metadata mismatch"
                 )
             capability = await _admit_opensandbox_external_egress_capability(
                 settings=settings,
                 fetcher=self._capability_profile_fetcher,
                 now=self._utcnow(),
-            )
-            await self._require_authoritative_governed_attestation(
-                capability,
-                request,
-                lease.container_id,
-                info,
             )
             _ensure_capability_still_valid(capability, now=self._utcnow())
             expected_binding = capability._governed_egress_binding(
@@ -5123,7 +5079,7 @@ class OpenSandboxContainerProvider:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            stop_result = await self.stop(lease, reason="dispatch_attestation_failed")
+            stop_result = await self.stop(lease, reason="dispatch_validation_failed")
             if stop_result.status == "failed":
                 raise ContainerCleanupFailedError("OpenSandbox dispatch cleanup could not be confirmed") from exc
             if isinstance(exc, SandboxRuntimeError):
@@ -5815,9 +5771,7 @@ def create_container_provider(provider_name: str | None = None) -> ContainerProv
         _PROVIDER_CACHE[selected] = provider
         return provider
     if selected == "opensandbox":
-        provider = OpenSandboxContainerProvider(
-            authoritative_attestation_probe=build_opensandbox_attestation_probe(settings)
-        )
+        provider = OpenSandboxContainerProvider()
         _PROVIDER_CACHE[selected] = provider
         return provider
     raise ValueError(f"Unknown sandbox container provider: {selected}")

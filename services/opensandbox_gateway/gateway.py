@@ -27,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
 
-CONTRACT_VERSION = "ai-platform.opensandbox.topology-attestation.v1"
 CAPABILITY_VERSION = "ai-platform.opensandbox.external-egress-capability.v1"
 UPSTREAM_BRIDGE_VERSION = "v1"
 API_KEY_HEADER = "OPEN-SANDBOX-API-KEY"
@@ -371,7 +370,7 @@ class LeaseRecord:
 
 @dataclass(frozen=True)
 class RuntimeEvidence:
-    """Verified live s72 container evidence used to create attestation."""
+    """Verified live s72 container evidence used for lifecycle admission."""
 
     sandbox_id: str
     runtime: str
@@ -458,7 +457,7 @@ class GatewayError(Exception):
 
 
 class GatewayApplication:
-    """Authenticate, validate, attest, and broker the fixed lifecycle surface."""
+    """Authenticate, validate, and broker the fixed lifecycle surface."""
 
     def __init__(self, config: GatewayConfig, lifecycle: LifecycleTransport, runtime: RuntimeAdapter, store: StateStore):
         config.validate()
@@ -518,9 +517,6 @@ class GatewayApplication:
             return self._delete(sandbox_id)
         if suffix == "cancel" and method == "POST":
             return self._delete(sandbox_id)
-        if suffix == "attestation" and method == "GET":
-            record, _ = self._attest(sandbox_id)
-            return Response.json(200, self._attestation_payload(record))
         endpoint = re.fullmatch(r"endpoints/([0-9]{1,5})", suffix)
         if endpoint and method == "GET":
             return self._endpoint(sandbox_id, int(endpoint.group(1)), query)
@@ -563,7 +559,7 @@ class GatewayApplication:
         reserved = self.store.reserve(intent, deleted_signature)
         if reserved.outcome == "resume":
             if reserved.record.state == "active" and hmac.compare_digest(reserved.record.canonical_request_hash, accepted["request_hash"]):
-                self._attest(reserved.record.sandbox_id)
+                self._verify_runtime(reserved.record.sandbox_id)
                 return Response.json(201, {"id": reserved.record.sandbox_id})
             raise GatewayError(409, "reservation_in_progress")
         if reserved.outcome != "winner" or reserved.owner_token != intent.reservation_owner_token:
@@ -591,7 +587,7 @@ class GatewayApplication:
         record.signature = self._sign_record(record)
         self.store.activate(intent_id, reserved.owner_token, record)
         try:
-            self._attest(sandbox_id)
+            self._verify_runtime(sandbox_id)
             self.runtime.start_relay(record)
         except Exception:
             record.state = "cleanup_pending"
@@ -658,7 +654,7 @@ class GatewayApplication:
             "ai-platform.executor.requested_image_digest": match.group("digest"),
         }
         if any(metadata.get(k) != v for k, v in expected_subjects.items()):
-            raise GatewayError(400, "attestation_subject_mismatch")
+            raise GatewayError(400, "runtime_subject_mismatch")
         if (
             metadata.get("ai-platform.executor.user") != "1000:1000"
             or metadata.get("ai-platform.executor.uid") != "1000"
@@ -828,7 +824,7 @@ class GatewayApplication:
         record = LeaseRecord(**{**intent.unsigned(), "sandbox_id": sandbox_id, "state": "active"})
         record.signature = self._sign_record(record)
         self.store.activate(intent.sandbox_id, intent.reservation_owner_token, record)
-        self._attest(sandbox_id)
+        self._verify_runtime(sandbox_id)
         self.runtime.start_relay(record)
 
     def _reconcile_online(self, filters: Mapping[str, str]) -> None:
@@ -935,7 +931,7 @@ class GatewayApplication:
         return True
 
     def _get(self, sandbox_id: str) -> Response:
-        record, upstream = self._attest(sandbox_id)
+        record, upstream = self._verify_runtime(sandbox_id)
         del record
         return upstream
 
@@ -971,7 +967,7 @@ class GatewayApplication:
         items = []
         for record in records[start : start + page_size]:
             try:
-                _, response = self._attest(record.sandbox_id)
+                _, response = self._verify_runtime(record.sandbox_id)
                 item = _bounded_json(response, self.config.max_response_bytes)
                 items.append(item)
             except GatewayError:
@@ -1009,7 +1005,7 @@ class GatewayApplication:
         params = urllib.parse.parse_qs(query, strict_parsing=True)
         if params != {"use_server_proxy": ["true"]}:
             raise GatewayError(400, "server_proxy_required")
-        record, _ = self._attest(sandbox_id)
+        record, _ = self._verify_runtime(sandbox_id)
         token = self._route_token(record, port)
         endpoint = f"{self.config.public_authority}/v1/sandboxes/{sandbox_id}/proxy/{port}"
         return Response.json(200, {"endpoint": endpoint, "headers": {ROUTE_HEADER: token}})
@@ -1017,7 +1013,7 @@ class GatewayApplication:
     def _proxy(self, sandbox_id: str, port: int, path: str, query: str, request: Request) -> Response:
         if query:
             path = f"{path}?{query}"
-        record, _ = self._attest(sandbox_id)
+        record, _ = self._verify_runtime(sandbox_id)
         provided = _header(request.headers, ROUTE_HEADER)
         if not hmac.compare_digest(provided.encode(), self._route_token(record, port).encode()):
             raise GatewayError(401, "route_auth_failed")
@@ -1105,7 +1101,7 @@ class GatewayApplication:
         ):
             raise GatewayError(409, "dispatch_callback_mismatch")
 
-    def _attest(self, sandbox_id: str) -> tuple[LeaseRecord, Response]:
+    def _verify_runtime(self, sandbox_id: str) -> tuple[LeaseRecord, Response]:
         record = self.store.get(sandbox_id)
         if record is None or record.state != "active":
             raise GatewayError(404, "sandbox_not_found")
@@ -1138,52 +1134,7 @@ class GatewayApplication:
             or evidence.skill_mount_fingerprint != expected_skill_fingerprint
             or not _metadata_matches(evidence.labels, record.metadata)
         ):
-            raise GatewayError(409, "runtime_attestation_drift")
-
-    def _attestation_payload(self, record: LeaseRecord) -> dict[str, Any]:
-        evidence = self.runtime.verify(record)
-        self._validate_evidence(record, evidence)
-        payload = {
-            "contract_version": CONTRACT_VERSION,
-            "provider": "opensandbox",
-            "sandbox_id": record.sandbox_id,
-            "scope_labels": {
-                **record.scope,
-                "lease_id": (
-                    f"opensandbox:opensandbox-{record.scope['run_id']}-{record.scope['attempt_id']}:{record.sandbox_id}"
-                ),
-            },
-            "runtime": {"identity": "runsc", "subject": self.config.runtime_subject},
-            "network": {"mode": "none", "default_deny": True},
-            "security": {
-                "no_new_privileges": True,
-                "user": evidence.user,
-                "uid": evidence.uid,
-                "gid": evidence.gid,
-            },
-            "image": {"subject": record.image, "digest": record.image_digest},
-            "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
-            "upstream_bridge": {
-                "version": UPSTREAM_BRIDGE_VERSION,
-                "callback_base_url": self.config.callback_upstream_base,
-                "openai_base_url": self.config.openai_upstream_base,
-                "anthropic_base_url": self.config.anthropic_upstream_base,
-            },
-            "subjects": {
-                "gateway_policy": self.config.gateway_policy_subject,
-                "callback_boundary": self.config.callback_boundary_subject,
-                "capability": self.config.profile_id,
-                "deny_audit": self.config.deny_audit_subject,
-                "deny_counter": self.config.deny_counter_subject,
-            },
-            "signed_profile": {"id": self.config.profile_id, "version": "v1", "proof_key_id": self.config.proof_key_id},
-        }
-        payload["signed_profile"]["profile_signature"] = hmac.new(
-            self.config.record_signing_key,
-            _canonical(payload),
-            hashlib.sha256,
-        ).hexdigest()
-        return payload
+            raise GatewayError(409, "runtime_evidence_drift")
 
     def _capability(self) -> Response:
         now = datetime.now(timezone.utc)

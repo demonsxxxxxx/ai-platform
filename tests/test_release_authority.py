@@ -619,8 +619,6 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
         "CLAUDE_AGENT_DISALLOWED_TOOLS",
         "CLAUDE_AGENT_PERMISSION_MODE",
         "OPENSANDBOX_API_KEY",
-        "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
-        "OPENSANDBOX_ATTESTATION_PATH",
         "OPENSANDBOX_DOMAIN",
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",

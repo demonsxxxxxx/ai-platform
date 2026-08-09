@@ -68,9 +68,9 @@ smoke from s72 using the configured CA and a disposable scope. It must prove the
 fixed 211 hostname/IP and TLS validation, denial for wrong hostname/CA/pinned IP
 or source, callback and both model prefixes with the expected rewritten paths,
 and the OpenSandbox runtime boundary: runsc, `network_mode=none`,
-no-new-privileges, scoped mounts, attestation, cancellation, and bounded orphan
-cleanup. Keep Docker selected when any check fails or is unavailable; do not add
-sandbox egress or bypass attestation to make a smoke pass.
+no-new-privileges, scoped mounts, runtime validation, cancellation, and bounded
+orphan cleanup. Keep Docker selected when any check fails or is unavailable; do
+not add sandbox egress or bypass runtime validation to make a smoke pass.
 
 The separate 211 release authority owns any provider transition. Record only
 redacted, subject-bound remote evidence through that authorized procedure.
