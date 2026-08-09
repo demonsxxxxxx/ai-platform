@@ -1,11 +1,18 @@
 ---
-status: accepted
+status: superseded
 supersedes: 0002-redis-streams-sse-event-channel.md
+superseded_by: 0004-redis-streams-sse-event-channel-v2-1-correction.md
+amended_by: 0004-redis-streams-sse-event-channel-v2-1-correction.md
 ---
 
 # Correct Redis Streams SSE staging, revocation fencing, and degraded transport
 
 Design ID: `ai-platform.redis-streams-sse-event-channel.v2`
+
+> Historical decision only. ADR 0004 and the v2.1 contract index supersede this
+> implementation plan. In particular, the staged merge/deploy model, revocation
+> completion guarantee, callback identity, TTL, terminal intent, and speculative
+> execution-ledger ownership below are not current implementation authority.
 
 Source baseline: `046d4b8a91d70dac51fe31d517d8d09c907a3f9f`
 
@@ -251,7 +258,8 @@ V2 retains these v1 decisions unchanged:
 
 ADR 0002 is superseded and amended by this ADR. Its v1 text remains decision
 history only; it is not a runnable parser, backend, feature flag, or fallback.
-ADR 0003 and the architecture document are the only implementation target.
+This sentence recorded the former v2 implementation target. ADR 0004 and the
+v2.1 contract index now supersede it; this section is retained as audit history.
 
 The final source has one live SSE mechanism: `redis_streams_v2`,
 `ai-platform.stream-event.v2`, `ai-platform.stream-gap.v2`, and the
@@ -289,5 +297,5 @@ revocation race, outage, browser, capacity, and cleanup evidence remain separate
 gates. Nothing here authorizes merge, deployment, 72/211 mutation, or a runtime
 claim.
 
-The complete contract and stage RED requirements are in
+The current contract index is
 [`../architecture/redis-streams-sse-event-channel.md`](../architecture/redis-streams-sse-event-channel.md).

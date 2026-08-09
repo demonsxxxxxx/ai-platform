@@ -92,6 +92,9 @@ jobs:
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
 
+      - name: Enforce SSE v2.1 release-atomic cutover
+        run: python tools/check_sse_runtime_cutover.py
+
       - name: Run sandbox provider targeted tests
         run: |
           uv run --locked --extra test python -m pytest \
@@ -111,6 +114,7 @@ jobs:
             tests/test_release_authority.py \
             tests/test_contract.py \
             tests/test_worker_main.py \
+            tests/test_sse_runtime_cutover.py tests/test_streaming_redis.py tests/test_streaming_control.py tests/test_streaming_postgres.py tests/test_streaming_repository.py tests/test_runtime_callbacks.py tests/test_worker.py tests/test_lambchat_sse_v21.py tests/test_runtime_launch_script.py \
             -q \
             --basetemp .pytest-tmp
 

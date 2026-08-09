@@ -57,6 +57,12 @@ from app.required_tool_contract import (
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.settings import get_settings
+from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
+from app.streaming.worker_projection import (
+    finalize_parent_and_publish,
+    persist_and_publish_worker_event,
+    publish_pending_run_terminal,
+)
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -460,33 +466,6 @@ AGENT_STEP_EVENT_STATUS = {
     "agent_step_blocked": "failed",
     "agent_step_failed": "failed",
 }
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
-
-
-def _canonical_assistant_delta_event(
-    *,
-    stage: str,
-    payload: dict[str, Any] | None,
-) -> tuple[str, str, dict[str, Any]] | None:
-    """Return the sole persisted answer-delta shape accepted from executors."""
-    if stage not in _ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, dict):
-        return None
-    delta = payload.get("delta")
-    if not isinstance(delta, str) or not delta:
-        return None
-    return (
-        "answer",
-        "",
-        {
-            "delta": delta,
-            "source": CHAT_ASSISTANT_DELTA_SOURCE,
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    )
-
 
 def _sanitize_artifact_manifest(value: Any) -> Any:
     if isinstance(value, dict):
@@ -2363,6 +2342,11 @@ async def process_run_payload(
                 terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
+            await publish_pending_run_terminal(
+                transaction,
+                tenant_id=terminal_after_transaction.payload.tenant_id,
+                run_id=terminal_after_transaction.payload.run_id,
+            )
 
     run_payload = RunPayload(
         tenant_id=run_identity["tenant_id"],
@@ -2386,6 +2370,12 @@ async def process_run_payload(
         model_value=payload.model_value or "",
         agent_profile=payload.agent_profile or {},
     )
+    stream_publisher = RunStreamPublisher(
+        run_payload.tenant_id,
+        run_payload.run_id,
+        run_payload.attempt_id,
+        get_settings().ai_session_secret,
+    )
 
     async def event_sink(
         *,
@@ -2398,8 +2388,9 @@ async def process_run_payload(
         event_message = message
         event_payload = payload
         persist_event = True
+        public_delta = None
         if event_type == "assistant_delta":
-            canonical_delta = _canonical_assistant_delta_event(
+            canonical_delta = canonical_assistant_delta_event(
                 stage=stage,
                 payload=payload,
             )
@@ -2407,31 +2398,22 @@ async def process_run_payload(
                 persist_event = False
             else:
                 event_stage, event_message, event_payload = canonical_delta
-        async with transaction() as conn:
-            if persist_event:
-                await append_user_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    stage=event_stage,
-                    message=event_message,
-                    payload=event_payload,
-                )
-                await _record_run_step_from_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    message=event_message,
-                    payload=event_payload,
-                )
-            if await repositories.is_cancel_requested(
-                conn,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-            ):
-                raise WorkerRunCancelled
+                persist_event = False
+                public_delta = str(event_payload["delta"])
+        if public_delta is not None:
+            await stream_publisher.publish_assistant_delta(public_delta)
+        if await persist_and_publish_worker_event(
+            transaction,
+            stream_publisher=stream_publisher,
+            run_payload=run_payload,
+            persist_event=persist_event,
+            event_type=event_type,
+            stage=event_stage,
+            message=event_message,
+            payload=event_payload,
+            record_run_step=_record_run_step_from_event,
+        ):
+            raise WorkerRunCancelled
 
     async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
         nonlocal runtime_sandbox_lease_released
@@ -2450,6 +2432,11 @@ async def process_run_payload(
             return
 
     try:
+        async with transaction() as conn:
+            await stream_publisher.prepare(conn)
+        await stream_publisher.open()
+        async with transaction() as conn:
+            await stream_publisher.confirm(conn)
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
@@ -2468,6 +2455,7 @@ async def process_run_payload(
             event_sink=event_sink,
             cancel_requested=cancel_requested,
         )
+        await stream_publisher.aclose()
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         if capability_authorization is None:
@@ -2514,6 +2502,7 @@ async def process_run_payload(
                 },
             )
     except WorkerRunCancelled:
+        await stream_publisher.aclose()
         reconciled_parent = None
         async with transaction() as conn:
             cancel_result = {"message": "任务已取消"}
@@ -2537,9 +2526,10 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
+        await stream_publisher.aclose()
         reconciled_parent = None
         failure_code, failure_message = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
@@ -2601,7 +2591,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -3113,5 +3103,5 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome

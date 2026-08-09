@@ -29,8 +29,30 @@ class _Connection:
         return _Cursor()
 
 
+class _ScriptedCursor:
+    def __init__(self, *, row=None, rows=None):
+        self._row = row
+        self._rows = list(rows or [])
+
+    async def fetchone(self):
+        return self._row
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _ScriptedConnection:
+    def __init__(self, results):
+        self.results = list(results)
+
+    async def execute(self, statement, params=()):
+        return self.results.pop(0)
+
+
 @pytest.mark.asyncio
-async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(monkeypatch):
+async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
+    monkeypatch,
+):
     conn = _Connection()
     observed = []
 
@@ -65,11 +87,45 @@ async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
             ),
         )
     ]
-    assert repositories.RepositoryConflictError is not ledger.RunEventLedgerConflictError
+    assert (
+        repositories.RepositoryConflictError is not ledger.RunEventLedgerConflictError
+    )
 
 
 @pytest.mark.asyncio
-async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(monkeypatch):
+async def test_append_event_record_returns_exact_post_commit_projection_facts(
+    monkeypatch,
+):
+    async def append_one(_conn, *, tenant_id, run_id, event):
+        assert tenant_id == "tenant-a"
+        return ledger.EventReceipt(
+            "evt-committed",
+            RunCursor(run_id, 9),
+            "2026-08-09T00:00:00Z",
+        )
+
+    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
+
+    record = await repositories.append_event(
+        _Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        event_type="execution_step",
+        stage="execution",
+        message="",
+        payload={"visible_to_user": True},
+        return_record=True,
+    )
+
+    assert record["id"] == "evt-committed"
+    assert record["sequence"] == 9
+    assert record["created_at"] == "2026-08-09T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(
+    monkeypatch,
+):
     conn = _Connection()
 
     async def append_batch(_conn, **_kwargs):
@@ -79,13 +135,19 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(monk
             first_cursor=RunCursor("run-a", 4),
             through_cursor=RunCursor("run-a", 5),
             duplicate=True,
+            payload_digest="digest-a",
+            projection_version="callback-receipt-v2.1",
+            item_count=2,
+            callback_received_at="2026-08-09T00:00:00Z",
         )
 
     async def fence(_conn, **_kwargs):
         return ledger.TerminalDrainReceipt(duplicate=False)
 
     monkeypatch.setattr(run_event_repository._ledger, "append_batch", append_batch)
-    monkeypatch.setattr(run_event_repository._ledger, "acquire_terminal_drain_fence", fence)
+    monkeypatch.setattr(
+        run_event_repository._ledger, "acquire_terminal_drain_fence", fence
+    )
 
     receipt = await repositories.append_event_batch(
         conn,
@@ -93,7 +155,14 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(monk
         run_id="run-a",
         attempt_id="attempt-a",
         batch_id="batch-a",
-        events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "hello", "payload": {}}],
+        events=[
+            {
+                "event_type": "assistant_delta",
+                "stage": "streaming",
+                "message": "hello",
+                "payload": {},
+            }
+        ],
     )
     terminal = await repositories.acquire_run_event_terminal_drain_fence(
         conn,
@@ -110,12 +179,86 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(monk
         "event_ids_json": ["evt_1", "evt_2"],
         "first_sequence": 4,
         "through_sequence": 5,
+        "callback_received_at": "2026-08-09T00:00:00Z",
     }
     assert terminal == {"accepted": True, "duplicate": False}
 
 
 @pytest.mark.asyncio
-async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_translated(monkeypatch):
+async def test_legacy_receipt_upgrades_only_when_every_persisted_field_matches():
+    event = ledger.LedgerEvent(
+        event_type="execution_step",
+        stage="execution",
+        message="",
+        payload={"visible_to_user": True, "safe": "bounded"},
+    )
+    legacy = {"id": "legacy-batch", "event_ids_json": ["evt-legacy"]}
+    persisted = {
+        "id": "evt-legacy",
+        **ledger._persisted_event_shape(event, run_id="run-a"),
+    }
+    upgraded = {
+        "id": "legacy-batch",
+        "event_ids_json": ["evt-legacy"],
+        "first_sequence": 4,
+        "through_sequence": 4,
+        "payload_digest": "new-digest",
+        "projection_version": "callback-receipt-v2.1",
+        "item_count": 1,
+        "callback_received_at": "2026-08-09T00:00:00Z",
+    }
+    conn = _ScriptedConnection(
+        [
+            _ScriptedCursor(rows=[persisted]),
+            _ScriptedCursor(row=upgraded),
+        ]
+    )
+
+    result = await ledger._upgrade_matching_legacy_batch_receipt(
+        conn,
+        row=legacy,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        events=[event],
+        payload_digest="new-digest",
+        projection_version="callback-receipt-v2.1",
+    )
+
+    assert result == upgraded
+
+
+@pytest.mark.asyncio
+async def test_legacy_receipt_rejects_one_persisted_field_mismatch():
+    event = ledger.LedgerEvent(
+        event_type="execution_step",
+        stage="execution",
+        payload={"visible_to_user": True, "safe": "bounded"},
+    )
+    persisted = {
+        "id": "evt-legacy",
+        **ledger._persisted_event_shape(event, run_id="run-a"),
+        "payload_json": {"visible_to_user": True, "safe": "changed"},
+    }
+    conn = _ScriptedConnection([_ScriptedCursor(rows=[persisted])])
+
+    with pytest.raises(
+        ledger.RunEventLedgerConflictError, match="run_event_batch_conflict"
+    ):
+        await ledger._upgrade_matching_legacy_batch_receipt(
+            conn,
+            row={"id": "legacy-batch", "event_ids_json": ["evt-legacy"]},
+            tenant_id="tenant-a",
+            run_id="run-a",
+            events=[event],
+            payload_digest="new-digest",
+            projection_version="callback-receipt-v2.1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_translated(
+    monkeypatch,
+):
     conn = _Connection()
     called = False
 
@@ -133,18 +276,34 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
             run_id="run-a",
             attempt_id="attempt-a",
             batch_id="batch-a",
-            events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "hello", "payload": ["bad"]}],
+            events=[
+                {
+                    "event_type": "assistant_delta",
+                    "stage": "streaming",
+                    "message": "hello",
+                    "payload": ["bad"],
+                }
+            ],
         )
     assert called is False
 
-    with pytest.raises(repositories.RepositoryConflictError, match="terminal_drain_already_consumed"):
+    with pytest.raises(
+        repositories.RepositoryConflictError, match="terminal_drain_already_consumed"
+    ):
         await repositories.append_event_batch(
             conn,
             tenant_id="tenant-a",
             run_id="run-a",
             attempt_id="attempt-a",
             batch_id="batch-a",
-            events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "hello", "payload": {}}],
+            events=[
+                {
+                    "event_type": "assistant_delta",
+                    "stage": "streaming",
+                    "message": "hello",
+                    "payload": {},
+                }
+            ],
         )
 
 
@@ -168,15 +327,25 @@ async def test_terminal_lease_lookup_is_exactly_scoped_and_locked():
 
 
 @pytest.mark.asyncio
-async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sql(monkeypatch):
+async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sql(
+    monkeypatch,
+):
     conn = _Connection()
     observed = []
     adapter_rows = {
         0: (
-            MappingProxyType({"id": "evt-1", "sequence": 1, "event_type": "run_started"}),
-            MappingProxyType({"id": "evt-2", "sequence": 2, "event_type": "assistant_delta"}),
+            MappingProxyType(
+                {"id": "evt-1", "sequence": 1, "event_type": "run_started"}
+            ),
+            MappingProxyType(
+                {"id": "evt-2", "sequence": 2, "event_type": "assistant_delta"}
+            ),
         ),
-        7: (MappingProxyType({"id": "evt-8", "sequence": 8, "event_type": "assistant_delta"}),),
+        7: (
+            MappingProxyType(
+                {"id": "evt-8", "sequence": 8, "event_type": "assistant_delta"}
+            ),
+        ),
     }
 
     async def read_rows(received_conn, *, tenant_id, cursor, limit):
@@ -185,7 +354,9 @@ async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sq
 
     monkeypatch.setattr(run_event_repository._ledger, "read_event_rows", read_rows)
 
-    unbounded = await repositories.list_run_events(conn, tenant_id="tenant-a", run_id="run-a")
+    unbounded = await repositories.list_run_events(
+        conn, tenant_id="tenant-a", run_id="run-a"
+    )
     incremental = await repositories.list_run_events(
         conn,
         tenant_id="tenant-a",
@@ -202,19 +373,25 @@ async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sq
         {"id": "evt-1", "sequence": 1, "event_type": "run_started"},
         {"id": "evt-2", "sequence": 2, "event_type": "assistant_delta"},
     ]
-    assert incremental == [{"id": "evt-8", "sequence": 8, "event_type": "assistant_delta"}]
+    assert incremental == [
+        {"id": "evt-8", "sequence": 8, "event_type": "assistant_delta"}
+    ]
     assert all(isinstance(row, dict) for row in [*unbounded, *incremental])
     assert conn.calls == []
 
 
 def test_run_event_schema_declares_repairable_composite_ledger_authority():
-    content = Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    content = (
+        Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    )
 
     assert "unique (tenant_id, id)" in content
     assert "create table if not exists run_event_cursors" in content
     assert "create table if not exists run_event_batches" in content
     assert "create table if not exists run_event_terminal_drains" in content
-    assert "create unique index if not exists uq_run_events_tenant_run_sequence" in content
+    assert (
+        "create unique index if not exists uq_run_events_tenant_run_sequence" in content
+    )
     assert "foreign key (tenant_id, run_id) references runs(tenant_id, id)" in content
     assert "unique (tenant_id, run_id, attempt_id, batch_id)" in content
     assert "primary key (tenant_id, run_id, attempt_id)" in content
@@ -224,26 +401,45 @@ def test_run_event_schema_declares_repairable_composite_ledger_authority():
 
 
 def test_run_event_schema_locks_for_missing_current_schema_unique_index_before_repair():
-    schema = Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
-    migration = schema[schema.index("declare\n  unique_index_present boolean;"):schema.index("create table if not exists run_tool_permission_requests")]
+    schema = (
+        Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    )
+    migration = schema[
+        schema.index("declare\n  unique_index_present boolean;") : schema.index(
+            "create table if not exists run_tool_permission_requests"
+        )
+    ]
 
-    assert "to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))" in migration
+    assert (
+        "to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))"
+        in migration
+    )
     assert "indexes.indisunique" in migration
     assert "indexes.indisvalid" in migration
     assert migration.count("not unique_index_present or exists") == 2
-    assert migration.index("not unique_index_present or exists") < migration.index("lock table run_events in share row exclusive mode")
-    assert migration.index("lock table run_events in share row exclusive mode") < migration.index("with affected_groups as")
-    assert migration.index("lock table run_events in share row exclusive mode") < migration.index(
+    assert migration.index("not unique_index_present or exists") < migration.index(
+        "lock table run_events in share row exclusive mode"
+    )
+    assert migration.index(
+        "lock table run_events in share row exclusive mode"
+    ) < migration.index("with affected_groups as")
+    assert migration.index(
+        "lock table run_events in share row exclusive mode"
+    ) < migration.index(
         "create unique index if not exists uq_run_events_tenant_run_sequence"
     )
-    assert migration.index("create unique index if not exists uq_run_events_tenant_run_sequence") < migration.index(
-        "insert into run_event_cursors"
-    )
+    assert migration.index(
+        "create unique index if not exists uq_run_events_tenant_run_sequence"
+    ) < migration.index("insert into run_event_cursors")
 
 
 def test_run_event_schema_retains_every_a1_ledger_written_column():
-    schema = Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
-    ledger_source = Path(run_event_repository._ledger.__file__).read_text(encoding="utf-8")
+    schema = (
+        Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    )
+    ledger_source = Path(run_event_repository._ledger.__file__).read_text(
+        encoding="utf-8"
+    )
     required_columns = {
         "run_events": (
             "id",
