@@ -626,7 +626,8 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
     for name, value in expected_loopback.items():
         assert f"{name}={value}" in env_example
     assert "AI_PLATFORM_S72_BRIDGE_" not in env_example
-    assert "10.56." not in env_example and "211" not in env_example
+    assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_example
+    assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_example
     for safe_selection in (
         "WORKER_CLAUDE_AGENT_SDK_ENABLED=true",
         "CLAUDE_AGENT_PERMISSION_MODE=dontAsk",

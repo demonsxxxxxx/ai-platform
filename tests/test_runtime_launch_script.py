@@ -40,8 +40,8 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
         assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
         assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
     assert "10.56.0.25" not in compose_text
-    assert env_values["EXISTING_AUTH_BASE_URL"] == ""
-    assert env_values["EXISTING_USER_INFO_BASE_URL"] == ""
+    assert env_values["EXISTING_AUTH_BASE_URL"] == "http://10.56.0.25:7263"
+    assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
 
 
 def test_cors_defaults_include_current_211_frontend_origin():

@@ -665,8 +665,8 @@ def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_au
     main, colocation = _write_required_provider_compose_files(tmp_path)
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "EXISTING_AUTH_BASE_URL=https://auth.internal.example\n"
-        "EXISTING_USER_INFO_BASE_URL=https://identity.internal.example\n",
+        "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263\n"
+        "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166\n",
         encoding="utf-8",
     )
     selection = release_authority.resolve_compose_files(
@@ -679,8 +679,8 @@ def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_au
                 "postgres": {},
                 "redis": {},
                 "minio": {},
-                "api": {"environment": {"EXISTING_AUTH_BASE_URL": "https://auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}},
-                "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "https://auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}},
+                "api": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}},
+                "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}},
             }
         }
     )
@@ -724,12 +724,12 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
 @pytest.mark.parametrize(
     "rendered",
     [
-        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}}, "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}}}},
+        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}}, "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "https://different-auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}}}},
         {"services": {"postgres": {"ports": [{"published": "54329", "target": 5432}]}, "redis": {}, "minio": {}, "api": {"environment": {"EXISTING_AUTH_BASE_URL": "https://auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}}, "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "https://auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}}}},
     ],
-    ids=("retired-auth-host", "reset-not-applied"),
+    ids=("api-worker-authority-drift", "reset-not-applied"),
 )
-def test_s72_semantic_preflight_rejects_retired_auth_or_unreset_ports(monkeypatch, tmp_path, rendered):
+def test_s72_semantic_preflight_rejects_authority_drift_or_unreset_ports(monkeypatch, tmp_path, rendered):
     _write_required_provider_compose_files(tmp_path)
     env_file = tmp_path / ".env"
     env_file.write_text("SAFE_TEST_FIXTURE=present\n", encoding="utf-8")

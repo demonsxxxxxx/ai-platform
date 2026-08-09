@@ -1924,7 +1924,14 @@ def _validate_s72_colocation_config(rendered: str | bytes) -> None:
         invalid_authority = any(
             any(not isinstance(value, str) or not value.strip() for value in values)
             or values[0] != values[1]
-            or urlsplit(values[0]).hostname == "10.56.0.25"
+            or any(
+                (parsed := urlsplit(value)).scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or bool(parsed.query or parsed.fragment)
+                for value in values
+            )
             for values in authorities
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
