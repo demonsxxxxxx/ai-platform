@@ -234,7 +234,7 @@ export function AgentBuilderWorkbench({
     return (
       <main
         data-agent-builder-access-denied
-        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-6 text-[var(--theme-text)]"
+        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-[var(--theme-text)] sm:px-6"
       >
         <div className="flex max-w-md items-start gap-3 border-l-2 border-l-[var(--theme-danger)] py-2 pl-4">
           <ShieldAlert size={20} className="mt-0.5 shrink-0 text-[var(--theme-danger)]" aria-hidden="true" />

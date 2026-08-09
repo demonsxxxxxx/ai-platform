@@ -12,7 +12,11 @@ import {
   type DepartmentDirectoryNode,
 } from "../../services/api/capabilityDistribution";
 import { ApiRequestError } from "../../services/api/fetch";
-import { skillApi, type AdminSkillCatalogItem } from "../../services/api/skill";
+import type { AdminSkillCatalogItem } from "../../services/api/skill";
+import {
+  buildControlledSkillDistributionUpdate,
+  type DepartmentScopeMode,
+} from "./skillDistributionDraft";
 
 function createDraft(
   distribution?: CapabilityDistribution,
@@ -28,7 +32,7 @@ function createDraft(
 }
 
 function safeDirectoryError(): string {
-  return "权威部门目录暂时不可用；可清除现有部门范围，但不能提交非空范围。";
+  return "权威部门目录暂时不可用；在目录恢复前不能提交任何范围变更。";
 }
 
 function safeDistributionError(error: unknown): string {
@@ -46,16 +50,20 @@ function safeDistributionError(error: unknown): string {
   return "暂时无法保存 Skill 可见范围，请稍后重试。";
 }
 
-function statusLabel(status: CapabilityDistributionStatus): string {
-  return status === "active" ? "启用" : "停用";
+interface SkillDistributionGovernancePanelProps {
+  selectedSkill: AdminSkillCatalogItem | null;
+  selectedSkillId: string | null;
 }
 
-/** Server-backed admin editor for Skill distribution; it never grants client-side access. */
-export function SkillDistributionGovernancePanel() {
-  const [skills, setSkills] = useState<AdminSkillCatalogItem[]>([]);
+/** Controlled editor for the Skill selected by the page's one canonical catalog. */
+export function SkillDistributionGovernancePanel({
+  selectedSkill,
+  selectedSkillId,
+}: SkillDistributionGovernancePanelProps) {
   const [distributions, setDistributions] = useState<CapabilityDistribution[]>([]);
-  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [draft, setDraft] = useState<CapabilityDistributionUpdate | null>(null);
+  const [departmentScope, setDepartmentScope] =
+    useState<DepartmentScopeMode>("all");
   const [directory, setDirectory] = useState<DepartmentDirectoryNode[] | null>(null);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,9 +79,6 @@ export function SkillDistributionGovernancePanel() {
   const selectedDistribution = selectedSkillId
     ? distributionBySkillId.get(selectedSkillId)
     : undefined;
-  const selectedSkill = selectedSkillId
-    ? skills.find((skill) => skill.skillId === selectedSkillId)
-    : undefined;
   const departmentSelection = useMemo(
     () => resolveDepartmentSelection(draft?.departmentIds ?? [], directory),
     [directory, draft?.departmentIds],
@@ -84,22 +89,14 @@ export function SkillDistributionGovernancePanel() {
     setLoadError(null);
     setDirectoryError(null);
     try {
-      const [catalogResult, directoryResult] = await Promise.allSettled([
-        Promise.all([
-          skillApi.adminListSkills(),
-          capabilityDistributionApi.list("skill"),
-        ]),
+      const [distributionResult, directoryResult] = await Promise.allSettled([
+        capabilityDistributionApi.list("skill"),
         capabilityDistributionApi.departmentDirectory(),
       ]);
-      if (catalogResult.status === "rejected") throw catalogResult.reason;
-      const [nextSkills, nextDistributions] = catalogResult.value;
-      setSkills(nextSkills);
-      setDistributions(nextDistributions);
-      setSelectedSkillId((current) =>
-        current && nextSkills.some((skill) => skill.skillId === current)
-          ? current
-          : nextSkills[0]?.skillId ?? null,
-      );
+      if (distributionResult.status === "rejected") {
+        throw distributionResult.reason;
+      }
+      setDistributions(distributionResult.value);
       if (directoryResult.status === "fulfilled") {
         setDirectory(directoryResult.value);
       } else {
@@ -108,9 +105,7 @@ export function SkillDistributionGovernancePanel() {
       }
     } catch (error) {
       setLoadError(safeDistributionError(error));
-      setSkills([]);
       setDistributions([]);
-      setSelectedSkillId(null);
       setDraft(null);
       setDirectory(null);
     } finally {
@@ -124,28 +119,30 @@ export function SkillDistributionGovernancePanel() {
 
   useEffect(() => {
     setDraft(selectedSkillId ? createDraft(selectedDistribution) : null);
+    setDepartmentScope(
+      selectedDistribution?.departmentIds.length ? "restricted" : "all",
+    );
     setSaveError(null);
     setSaved(false);
   }, [selectedDistribution, selectedSkillId]);
 
-  const selectSkill = (skillId: string) => {
-    setSelectedSkillId(skillId);
-  };
-
   const save = async () => {
     if (!selectedSkillId || !draft || saving) return;
-    if (!departmentSelection.authoritative) {
+    if (
+      directory === null ||
+      !departmentSelection.authoritative ||
+      (departmentScope === "restricted" && draft.departmentIds.length === 0)
+    ) {
       setSaveError("当前部门范围尚未通过权威目录确认，不能保存。");
       return;
     }
     setSaving(true);
     setSaveError(null);
     setSaved(false);
-    const update: CapabilityDistributionUpdate = {
-      ...draft,
-      departmentIds: [...draft.departmentIds],
-      metadata: { ...draft.metadata },
-    };
+    const update = buildControlledSkillDistributionUpdate(
+      draft,
+      departmentScope,
+    );
     try {
       const savedDistribution = await capabilityDistributionApi.update(
         "skill",
@@ -219,46 +216,7 @@ export function SkillDistributionGovernancePanel() {
       ) : null}
 
       {!loadError && !loading ? (
-        <div className="mt-4 grid min-h-0 gap-4 lg:grid-cols-[minmax(14rem,0.8fr)_minmax(0,1.2fr)]">
-          <div className="border-r border-[var(--theme-border)] pr-4">
-            <div className="space-y-1" role="list" aria-label="Skill 列表">
-              {skills.map((skill) => {
-                const distribution = distributionBySkillId.get(skill.skillId);
-                const active = skill.skillId === selectedSkillId;
-                return (
-                  <button
-                    aria-pressed={active}
-                    className={`flex w-full items-center justify-between gap-3 border-l-2 px-2 py-2 text-left text-sm transition-colors ${
-                      active
-                        ? "border-[var(--theme-primary)] bg-[var(--theme-bg-sidebar)]"
-                        : "border-transparent hover:bg-[var(--theme-bg-sidebar)]"
-                    }`}
-                    key={skill.skillId}
-                    onClick={() => selectSkill(skill.skillId)}
-                    type="button"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate font-medium text-[var(--theme-text)]">
-                        {skill.name}
-                      </span>
-                      <span className="mt-0.5 block truncate text-xs text-[var(--theme-text-secondary)]">
-                        {skill.description || "未提供说明"}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">
-                      {distribution ? statusLabel(distribution.status) : "未配置"}
-                    </span>
-                  </button>
-                );
-              })}
-              {skills.length === 0 ? (
-                <p className="px-2 py-4 text-sm text-[var(--theme-text-secondary)]">
-                  当前没有可配置的 Skill。
-                </p>
-              ) : null}
-            </div>
-          </div>
-
+        <div className="mt-4 min-h-0">
           {selectedSkillId && draft ? (
             <div className="min-w-0">
               {selectedSkill ? (
@@ -293,8 +251,8 @@ export function SkillDistributionGovernancePanel() {
                           : "已停用"}
                     </strong>
                     <small>
-                      {(selectedDistribution?.departmentIds.length ?? 0) > 0
-                        ? `${selectedDistribution?.departmentIds.length} 个部门范围`
+                      {draft.departmentIds.length > 0
+                        ? `${draft.departmentIds.length} 个部门范围`
                         : "不限制部门"}
                     </small>
                   </div>
@@ -341,6 +299,33 @@ export function SkillDistributionGovernancePanel() {
                 </label>
               </div>
 
+              <fieldset className="es-field mt-4">
+                <legend className="es-label">部门范围</legend>
+                <div className="mt-2 flex flex-wrap gap-2" data-skill-distribution-department-mode>
+                  <label className="inline-flex items-center gap-2 text-sm text-[var(--theme-text)]">
+                    <input
+                      checked={departmentScope === "all"}
+                      disabled={saving}
+                      name="skill-department-scope"
+                      onChange={() => setDepartmentScope("all")}
+                      type="radio"
+                    />
+                    全部部门
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-sm text-[var(--theme-text)]">
+                    <input
+                      checked={departmentScope === "restricted"}
+                      disabled={saving}
+                      name="skill-department-scope"
+                      onChange={() => setDepartmentScope("restricted")}
+                      type="radio"
+                    />
+                    指定部门
+                  </label>
+                </div>
+              </fieldset>
+
+              {departmentScope === "restricted" ? (
               <div className="es-field mt-4">
                 <span className="es-label">允许部门</span>
                 <span className="es-hint">
@@ -360,6 +345,7 @@ export function SkillDistributionGovernancePanel() {
                   selectedAuthorityIds={draft.departmentIds}
                 />
               </div>
+              ) : null}
 
               <div className="es-field mt-4">
                 <span className="es-label">允许角色</span>
@@ -379,7 +365,13 @@ export function SkillDistributionGovernancePanel() {
               <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button
                   className="btn-primary inline-flex items-center gap-2 disabled:opacity-60"
-                  disabled={saving || !departmentSelection.authoritative}
+                  disabled={
+                    saving ||
+                    directory === null ||
+                    !departmentSelection.authoritative ||
+                    (departmentScope === "restricted" &&
+                      draft.departmentIds.length === 0)
+                  }
                   onClick={() => void save()}
                   type="button"
                 >
@@ -402,7 +394,11 @@ export function SkillDistributionGovernancePanel() {
                 ) : null}
               </div>
             </div>
-          ) : null}
+          ) : (
+            <p className="py-8 text-center text-sm text-[var(--theme-text-secondary)]">
+              请从 Skill 目录选择一项查看详情。
+            </p>
+          )}
         </div>
       ) : null}
     </section>

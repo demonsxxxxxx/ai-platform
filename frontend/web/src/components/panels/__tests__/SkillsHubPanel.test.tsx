@@ -48,6 +48,29 @@ test("keeps Skill visibility administration server-governed and ordinary catalog
   );
 
   const source = readFileSync(new URL("../SkillsHubPanel.tsx", import.meta.url), "utf8");
-  assert.match(source, /if \(!isAiAdminUser\(user\)\) \{[\s\S]*?<AvailableSkillsPanel/);
-  assert.match(source, /<SkillDistributionGovernancePanel\s*\/>/);
+  assert.doesNotMatch(source, /<AvailableSkillsPanel|<SkillDistributionGovernancePanel/);
+  assert.match(source, /<SkillsPanel[\s\S]*allAuthorizedCatalog=\{!isAdmin\}/);
+  assert.match(source, /showDistributionEditor=\{isAdmin\}/);
+  assert.match(source, /data-primary-page-scroller/);
+});
+
+test("canonical Skill page owns one catalog selection and one selected detail", () => {
+  const panel = readFileSync(
+    new URL("../SkillsPanel/index.tsx", import.meta.url),
+    "utf8",
+  );
+  const list = readFileSync(
+    new URL("../SkillsPanel/SkillsList.tsx", import.meta.url),
+    "utf8",
+  );
+  const editor = readFileSync(
+    new URL("../SkillDistributionGovernancePanel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal((panel.match(/useState<string \| null>/g) ?? []).length, 1);
+  assert.match(panel, /data-selected-skill-detail/);
+  assert.match(list, /data-skills-master-detail/);
+  assert.match(list, /data-selected-skill-detail-shell/);
+  assert.doesNotMatch(editor, /role="list"|aria-label="Skill 列表"/);
 });

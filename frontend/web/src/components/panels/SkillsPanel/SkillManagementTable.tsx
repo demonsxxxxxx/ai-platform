@@ -19,9 +19,11 @@ interface SkillManagementTableProps {
   onDelete: (name: string) => void;
   onEdit: (skill: SkillResponse) => void;
   onExportZip: (name: string) => void;
+  onSelectDetail: (skillId: string) => void;
   onSelectSkill: (name: string) => void;
   onToggle: (name: string) => void;
   selectedNames: Set<string>;
+  selectedSkillId: string | null;
   skills: SkillResponse[];
 }
 
@@ -46,9 +48,11 @@ export function SkillManagementTable({
   onDelete,
   onEdit,
   onExportZip,
+  onSelectDetail,
   onSelectSkill,
   onToggle,
   selectedNames,
+  selectedSkillId,
   skills,
 }: SkillManagementTableProps) {
   const { t } = useTranslation();
@@ -57,7 +61,7 @@ export function SkillManagementTable({
   return (
     <div
       aria-label={t("skills.managementTable.listLabel")}
-      className="skill-management-table"
+      className="skill-management-table skill-management-table--master"
       data-skill-management-table
       role="table"
     >
@@ -67,25 +71,36 @@ export function SkillManagementTable({
       >
         {canBatch ? <span aria-hidden="true" /> : null}
         <span role="columnheader">{t("skills.managementTable.skill")}</span>
-        <span role="columnheader">{t("skills.managementTable.package")}</span>
+        <span className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</span>
         <span role="columnheader">{t("skills.managementTable.runtimeStatus")}</span>
-        <span role="columnheader">{t("skills.managementTable.tenantDistribution")}</span>
-        <span role="columnheader">{t("skills.managementTable.updatedAt")}</span>
+        <span className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.tenantDistribution")}</span>
+        <span className="skill-management-table__updated" role="columnheader">{t("skills.managementTable.updatedAt")}</span>
         <span aria-label={t("skills.managementTable.actions")} role="columnheader" />
       </div>
 
       <div role="rowgroup">
         {skills.map((skill) => (
           <div
-            className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""}`}
+            aria-selected={skill.name === selectedSkillId}
+            className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""} ${skill.name === selectedSkillId ? "skill-management-table__row--selected" : ""}`}
+            data-skill-catalog-item={skill.name}
             key={skill.name}
+            onClick={() => onSelectDetail(skill.name)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelectDetail(skill.name);
+              }
+            }}
             role="row"
+            tabIndex={0}
           >
             {canBatch ? (
               <div className="skill-management-table__select" role="cell">
                 <input
                   aria-label={t("skills.managementTable.selectSkill", { name: skill.name })}
                   checked={selectedNames.has(skill.name)}
+                  onClick={(event) => event.stopPropagation()}
                   onChange={() => onSelectSkill(skill.name)}
                   type="checkbox"
                 />
@@ -148,7 +163,7 @@ export function SkillManagementTable({
               </span>
             </div>
 
-            <div data-label={t("skills.managementTable.runtimeStatus")} role="cell">
+            <div className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
               <span
                 className={`skill-management-table__status ${skill.enabled ? "skill-management-table__status--active" : ""}`}
               >
@@ -160,7 +175,7 @@ export function SkillManagementTable({
             </div>
 
             <div
-              className="min-w-0"
+              className="skill-management-table__distribution min-w-0"
               data-label={t("skills.managementTable.tenantDistribution")}
               role="cell"
             >
@@ -181,7 +196,7 @@ export function SkillManagementTable({
             </div>
 
             <div
-              className="text-xs text-[var(--theme-text-secondary)]"
+              className="skill-management-table__updated text-xs text-[var(--theme-text-secondary)]"
               data-label={t("skills.managementTable.updatedAt")}
               role="cell"
             >
@@ -202,7 +217,10 @@ export function SkillManagementTable({
                     { name: skill.name },
                   )}
                   className="btn-icon"
-                  onClick={() => onToggle(skill.name)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggle(skill.name);
+                  }}
                   title={t(
                     skill.enabled
                       ? "skills.managementTable.disable"
@@ -217,7 +235,10 @@ export function SkillManagementTable({
                 <button
                   aria-label={t("skills.managementTable.editSkill", { name: skill.name })}
                   className="btn-icon"
-                  onClick={() => onEdit(skill)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEdit(skill);
+                  }}
                   title={t("skills.managementTable.edit")}
                   type="button"
                 >
@@ -228,7 +249,10 @@ export function SkillManagementTable({
                 <button
                   aria-label={t("skills.managementTable.exportSkill", { name: skill.name })}
                   className="btn-icon"
-                  onClick={() => onExportZip(skill.name)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onExportZip(skill.name);
+                  }}
                   title={t("skills.exportZip")}
                   type="button"
                 >
@@ -239,7 +263,10 @@ export function SkillManagementTable({
                 <button
                   aria-label={t("skills.managementTable.deleteSkill", { name: skill.name })}
                   className="btn-icon text-[var(--theme-danger)]"
-                  onClick={() => onDelete(skill.name)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDelete(skill.name);
+                  }}
                   title={t("skills.managementTable.delete")}
                   type="button"
                 >

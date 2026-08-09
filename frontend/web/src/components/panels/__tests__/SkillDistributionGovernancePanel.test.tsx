@@ -5,6 +5,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { DepartmentDirectorySelector } from "../DepartmentDirectorySelector.tsx";
+import { buildControlledSkillDistributionUpdate } from "../skillDistributionDraft.ts";
 
 test("Skill distribution editor uses server-backed ACL controls and safe errors", () => {
   const source = readFileSync(
@@ -49,11 +50,45 @@ test("non-empty unverified department scopes cannot reach the writer", () => {
     "utf8",
   );
 
-  assert.match(source, /if \(!departmentSelection\.authoritative\)/);
-  assert.match(source, /disabled=\{saving \|\| !departmentSelection\.authoritative\}/);
-  assert.match(source, /departmentIds: \[\.\.\.draft\.departmentIds\]/);
+  assert.match(source, /!departmentSelection\.authoritative/);
+  assert.match(source, /directory === null/);
+  const draftSource = readFileSync(
+    join(process.cwd(), "src/components/panels/skillDistributionDraft.ts"),
+    "utf8",
+  );
+  assert.match(draftSource, /\[\.\.\.draft\.departmentIds\]/);
   assert.match(source, /Promise\.allSettled/);
   assert.match(source, /setDirectory\(null\)/);
+  assert.match(source, /directory === null/);
+  assert.match(source, /departmentScope === "restricted"/);
+});
+
+test("controlled selected-Skill editor sends the exact all/restricted payload", () => {
+  const draft = {
+    status: "disabled" as const,
+    visibleToUser: false,
+    scopeMode: "allowlist" as const,
+    departmentIds: ["工程部", "质量部"],
+    allowedRoles: ["reviewer"],
+    metadata: { source: "admin" },
+  };
+
+  assert.deepEqual(buildControlledSkillDistributionUpdate(draft, "restricted"), draft);
+  assert.deepEqual(buildControlledSkillDistributionUpdate(draft, "all"), {
+    ...draft,
+    departmentIds: [],
+  });
+
+  const source = readFileSync(
+    join(process.cwd(), "src/components/panels/SkillDistributionGovernancePanel.tsx"),
+    "utf8",
+  );
+  assert.match(source, /selectedSkillId: string \| null/);
+  assert.doesNotMatch(source, /adminListSkills|setSelectedSkillId|setSkills\(/);
+  assert.match(source, /data-skill-distribution-department-mode/);
+  assert.match(source, /data-skill-distribution-status/);
+  assert.match(source, /data-skill-distribution-visible/);
+  assert.match(source, /<RoleSelector/);
 });
 
 test("department selector renders authoritative multiselect semantics", () => {

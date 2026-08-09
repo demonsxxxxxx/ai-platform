@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -31,7 +31,11 @@ interface GitHubSkill {
   description: string;
 }
 
-export function useSkillsActions(options?: { enabled?: boolean }) {
+export function useSkillsActions(options?: {
+  allAuthorizedCatalog?: boolean;
+  enabled?: boolean;
+  loadAdminCatalog?: boolean;
+}) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const location = useLocation();
@@ -83,7 +87,11 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     installGitHubSkills,
     clearError,
     fetchSkills,
-  } = useSkills({ enabled, listParams });
+  } = useSkills({
+    enabled,
+    listParams,
+    allAuthorizedCatalog: options?.allAuthorizedCatalog,
+  });
   const filteredSkills = skills;
   const canAdminUploadSkills = isAiAdminUser(user);
 
@@ -145,13 +153,19 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const refreshAdminSkillCatalog = async (): Promise<
+  const refreshAdminSkillCatalog = useCallback(async (): Promise<
     AdminSkillCatalogItem[] | null
   > => {
     const items = await adminListSkills();
     if (items) setAdminCatalogItems(items);
     return items;
-  };
+  }, [adminListSkills]);
+
+  useEffect(() => {
+    if (options?.loadAdminCatalog && canAdminUploadSkills) {
+      void refreshAdminSkillCatalog();
+    }
+  }, [canAdminUploadSkills, options?.loadAdminCatalog, refreshAdminSkillCatalog]);
 
   // GitHub import state
   const [showGithubModal, setShowGithubModal] = useState(false);

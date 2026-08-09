@@ -49,6 +49,8 @@ export function redactedValue(value, privateValues = []) {
 export function findChrome(explicitPath = process.env.AI_PLATFORM_CHROME_PATH) {
   const candidates = [
     explicitPath,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     join(process.env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),
     join(process.env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
     join(process.env.PROGRAMFILES || "", "Microsoft/Edge/Application/msedge.exe"),

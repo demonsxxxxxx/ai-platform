@@ -46,12 +46,15 @@ interface SkillsListProps {
   canDelete: boolean;
   adminRelease: boolean;
   selectedNames: Set<string>;
+  selectedDetail: React.ReactNode;
+  selectedSkillId: string | null;
   onToggle: (name: string) => void;
   onEdit: (skill: SkillResponse) => void;
   onDelete: (name: string) => void;
   onExportZip: (name: string) => void;
   onSelectSkill: (name: string) => void;
   onSelectAll: () => void;
+  onSelectDetail: (skillId: string) => void;
   onGithubClick: () => void;
   onZipClick: () => void;
 }
@@ -84,12 +87,15 @@ export function SkillsList({
   canDelete,
   adminRelease,
   selectedNames,
+  selectedDetail,
+  selectedSkillId,
   onToggle,
   onEdit,
   onDelete,
   onExportZip,
   onSelectSkill,
   onSelectAll,
+  onSelectDetail,
   onGithubClick,
   onZipClick,
 }: SkillsListProps) {
@@ -256,7 +262,7 @@ export function SkillsList({
       {embedded && (
         <div
           data-skills-catalog-toolbar
-          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar}`}
+          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar} px-0`}
         >
           <div
             className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell}`}
@@ -324,7 +330,10 @@ export function SkillsList({
       )}
 
       {/* Skills List */}
-      <div className={workbenchSurface.catalog.content}>
+      <div
+        className={`min-h-0 flex-1 py-3 ${embedded ? "px-0" : "px-4"}`}
+        data-skills-master-detail
+      >
         {filteredSkills.length === 0 ? (
           <div className={workbenchSurface.catalog.emptyState}>
             <div className={workbenchSurface.catalog.emptyIcon}>
@@ -353,20 +362,30 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <SkillManagementTable
-            canBatch={canBatchSkills}
-            canDelete={canDelete}
-            canEdit={canEditSkills}
-            canExport={canExport && !governedUnavailable}
-            canToggle={canToggleSkills}
-            onDelete={onDelete}
-            onEdit={onEdit}
-            onExportZip={onExportZip}
-            onSelectSkill={onSelectSkill}
-            onToggle={onToggle}
-            selectedNames={selectedNames}
-            skills={paginatedSkills}
-          />
+          <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(30rem,1.1fr)_minmax(24rem,0.9fr)] xl:items-start">
+            <SkillManagementTable
+              canBatch={canBatchSkills}
+              canDelete={canDelete}
+              canEdit={canEditSkills}
+              canExport={canExport && !governedUnavailable}
+              canToggle={canToggleSkills}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onExportZip={onExportZip}
+              onSelectDetail={onSelectDetail}
+              onSelectSkill={onSelectSkill}
+              onToggle={onToggle}
+              selectedNames={selectedNames}
+              selectedSkillId={selectedSkillId}
+              skills={paginatedSkills}
+            />
+            <div
+              className="min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]"
+              data-selected-skill-detail-shell
+            >
+              {selectedDetail}
+            </div>
+          </div>
         )}
       </div>
 
