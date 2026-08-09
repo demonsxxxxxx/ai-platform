@@ -10,6 +10,7 @@ from app.context_manifest import (
     ContextPlanner,
     public_context_manifest_projection,
 )
+from app.context.file_continuity import snapshot_file_ids
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
 from app.office_execution_tier import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
@@ -24,7 +25,6 @@ from app.public_context_keys import (
     PUBLIC_CONTEXT_SUMMARY_PREFIX_ALIASES,
     has_public_context_forbidden_id_tokens,
     normalized_public_context_key_candidates,
-    public_context_input_key_findings,
     public_context_key_token_candidates,
     safe_public_context_input_keys,
     safe_public_context_pack_version,
@@ -627,16 +627,14 @@ async def record_initial_context_snapshot(
             run_id=run_id,
             limit=8,
         )
-        included_file_ids = list(
-            dict.fromkeys(
-                [
-                    str(row.get("id") or "")
-                    for row in session_files
-                    if isinstance(row, dict) and row.get("id")
-                ]
-                + included_file_ids
-            )
-        )[-8:]
+        included_file_ids = snapshot_file_ids(
+            current_file_ids=included_file_ids,
+            historical_file_ids=[
+                str(row.get("id") or "")
+                for row in session_files
+                if isinstance(row, dict) and row.get("id")
+            ],
+        )
         session_artifacts = await repositories.list_session_context_artifacts(
             conn,
             tenant_id=tenant_id,
@@ -662,13 +660,28 @@ async def record_initial_context_snapshot(
             user_id=user_id,
             run_id=source_run_id,
         )
-        if (
+        source_scope_matches = (
             authorized_source_run is not None
             and authorized_source_run.get("tenant_id") == tenant_id
             and authorized_source_run.get("user_id") == user_id
             and authorized_source_run.get("workspace_id") == workspace_id
             and authorized_source_run.get("session_id") == session_id
-        ):
+        )
+        if included_file_ids and not source_scope_matches:
+            raise repositories.RepositoryConflictError("context_file_unavailable")
+        if source_scope_matches:
+            for file_id in included_file_ids:
+                source_file = await repositories.get_scoped_context_file(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    run_id=source_run_id,
+                    file_id=file_id,
+                )
+                if source_file is None:
+                    raise repositories.RepositoryConflictError("context_file_unavailable")
             explicit_source_artifacts = await repositories.list_run_artifacts(
                 conn,
                 tenant_id=tenant_id,

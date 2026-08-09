@@ -29,6 +29,7 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
+from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.intent_router import (
@@ -1395,7 +1396,7 @@ async def chat_stream(
         raise
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
-    resolved_file_ids = _file_ids_from_request(request)
+    requested_file_ids = _file_ids_from_request(request)
     if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
         await _persist_pre_persistence_rejection(
@@ -1876,7 +1877,22 @@ async def chat_stream(
                         capability_id=repositories.extract_run_mcp_tool_ids(run_input)[0],
                     ),
                 )
-            if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
+            input_modes = list(skill.get("input_modes") or [])
+            reusable_file_rows = []
+            if request.session_id and not requested_file_ids and has_file_input_mode(input_modes):
+                reusable_file_rows = await repositories.list_authorized_session_input_files(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    workspace_id=effective_workspace_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                )
+            primary_file_ids = primary_file_ids_for_run(
+                requested_file_ids=requested_file_ids,
+                reusable_rows=[dict(row) for row in reusable_file_rows],
+                input_modes=input_modes,
+            )
+            if has_file_input_mode(input_modes) and not primary_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
                 conn,
@@ -1954,7 +1970,7 @@ async def chat_stream(
                     "run_id": run_id,
                     "agent_id": resolved_agent_id,
                     "skill_id": resolved_skill_id,
-                    "file_ids": resolved_file_ids,
+                    "file_ids": primary_file_ids,
                     "input": run_input,
                     "executor_type": skill["executor_type"],
                     "skill_version": skill_version,
@@ -1981,7 +1997,8 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=resolved_file_ids,
+                file_ids=requested_file_ids,
+                input_modes=input_modes,
             )
             if admitted_agent_profile is not None and submission_id is None:
                 # Canonical clients claim their own key before routing. A
@@ -2027,7 +2044,7 @@ async def chat_stream(
                 "skill_id": resolved_skill_id,
                 "input_json": {
                     "input": run_input,
-                    "file_ids": resolved_file_ids,
+                    "file_ids": primary_file_ids,
                     "executor_type": skill["executor_type"],
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
@@ -2073,7 +2090,7 @@ async def chat_stream(
                 metadata_json=sanitize_user_control_input(
                     {
                         "skill_id": resolved_skill_id,
-                        "file_ids": resolved_file_ids,
+                        "file_ids": primary_file_ids,
                         "attachments": request.attachments,
                         "intent": decision_payload,
                         **(
@@ -2086,7 +2103,7 @@ async def chat_stream(
                 if not is_ai_admin(principal)
                 else {
                     "skill_id": resolved_skill_id,
-                    "file_ids": resolved_file_ids,
+                    "file_ids": primary_file_ids,
                     "attachments": request.attachments,
                     "intent": decision_payload,
                     **(
@@ -2103,7 +2120,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=resolved_file_ids,
+                file_ids=requested_file_ids,
             )
             context_ref = await record_initial_context_snapshot(
                 conn,
@@ -2117,7 +2134,7 @@ async def chat_stream(
                 skill_id=resolved_skill_id,
                 input_payload=run_input,
                 message_ids=[message_id] if message_id else [],
-                file_ids=resolved_file_ids,
+                file_ids=primary_file_ids,
                 source="chat_stream",
                 include_session_history=True,
             )
@@ -2136,7 +2153,7 @@ async def chat_stream(
                 skill_id=resolved_skill_id,
                 skill_version=skill_version,
                 executor_type=str(skill["executor_type"]),
-                file_ids=resolved_file_ids,
+                file_ids=primary_file_ids,
                 source="chat_stream",
             ):
                 await repositories.append_event(

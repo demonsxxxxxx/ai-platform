@@ -1679,7 +1679,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "auth_source": "session-token",
         "input_json": {
             "input": {"message": "retry"},
-            "file_ids": [],
+            "file_ids": ["file-prior"],
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-v1",
             "release_decision": source_release,
@@ -1715,8 +1715,9 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     monkeypatch.setattr(repositories, "append_message", no_write)
     monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", insert_snapshots)
 
+    conn = RecordingConnection()
     copied = await repositories.copy_run_as_new_task(
-        RecordingConnection(),
+        conn,
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-source",
@@ -1731,6 +1732,8 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
     assert copied["skill_manifests"] == [source_manifest]
+    assert copied["file_ids"] == ["file-prior"]
+    assert not any(sql.startswith("update files") for sql, _params in conn.calls)
 
 
 @pytest.mark.asyncio
@@ -3458,6 +3461,9 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
     files_sql, files_params = conn.calls[-1]
     assert "sessions.status = 'active'" in files_sql
     assert "runs.session_id = files.session_id" in files_sql
+    assert "authorized_snapshot.included_file_ids ? files.id" in files_sql
+    assert "runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id" in files_sql
+    assert "runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id" in files_sql
     assert "runs.session_generation <" in files_sql
     assert "order by runs.session_generation desc" in files_sql
     assert "order by session_generation asc" in files_sql
@@ -10024,6 +10030,10 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
                 "user_id": "user-a",
                 "session_id": None,
                 "run_id": None,
+                "original_name": "source.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
             }
 
     class FileConnection(RecordingConnection):
@@ -10044,10 +10054,45 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
 
     assert len(conn.calls) == 1
     sql, params = conn.calls[0]
-    assert "select id, tenant_id, workspace_id, user_id, session_id, run_id" in sql
+    assert "select id, tenant_id, workspace_id, user_id, session_id, run_id," in sql
     assert "for update" in sql
     assert "update files" not in sql
     assert params == ("file-a",)
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_skill_file_with_mismatched_mime():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+                "original_name": "source.docx",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="file_required_for_skill"):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_ids=["file-a"],
+            input_modes=["docx"],
+        )
 
 
 @pytest.mark.asyncio

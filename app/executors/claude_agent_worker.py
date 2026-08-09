@@ -1,6 +1,5 @@
 import base64
 import binascii
-import hashlib
 import inspect
 import posixpath
 import shutil
@@ -13,6 +12,7 @@ from xml.etree import ElementTree
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
+from app.context.file_continuity import materialize_run_context_files
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     available_context_retrieval_tools,
@@ -2160,65 +2160,32 @@ class ClaudeAgentWorkerAdapter:
         if workspace.exists() and workspace.is_symlink():
             raise ValueError("run workspace must not be a symlink")
         typed_preprocessing = _requires_typed_attachment_preprocessing(payload)
-        storage = ObjectStorage() if typed_preprocessing else None
-        inputs_dir = workspace / "inputs"
-        file_names: list[str] = []
-        materialized_file_names: list[str] = []
-        attachment_facts: list[MaterializedAttachmentFact] = []
-        attachment_metadata: list[_AuthorizedAttachmentMetadata] = []
-        async with transaction() as conn:
-            for file_id in payload.file_ids:
-                row = await repositories.get_run_file(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    file_id=file_id,
-                )
-                if row is None:
-                    continue
-                filename = Path(str(row["original_name"] or file_id)).name
-                content_type = str(row.get("content_type") or "")
-                size_bytes = max(0, int(row.get("size_bytes") or 0))
-                attachment_metadata.append(
-                    _AuthorizedAttachmentMetadata(
-                        file_id=file_id,
-                        file_name=filename,
-                        content_type=content_type,
-                        size_bytes=size_bytes,
-                    )
-                )
-                file_names.append(filename)
-                if not typed_preprocessing:
-                    continue
-                target = workspace / filename
-                ensure_creatable_inside(workspace, target, "uploaded file target must stay inside the run workspace")
-                inputs_dir.mkdir(parents=True, exist_ok=True)
-                canonical_target = inputs_dir / filename
-                ensure_creatable_inside(
-                    inputs_dir,
-                    canonical_target,
-                    "uploaded file target must stay inside the run inputs directory",
-                )
-                if storage is None:
-                    raise RuntimeError("typed attachment storage is unavailable")
-                content = storage.get_bytes(storage_key=row["storage_key"])
-                attachment_facts.append(
-                    MaterializedAttachmentFact(
-                        file_id=file_id,
-                        file_name=filename,
-                        content_type=content_type,
-                        byte_count=len(content),
-                        sha256=hashlib.sha256(content).hexdigest(),
-                    )
-                )
-                target.write_bytes(content)
-                canonical_target.write_bytes(content)
-                materialized_file_names.append(filename)
+        result = await materialize_run_context_files(
+            transaction_factory=transaction,
+            repository=repositories,
+            storage=ObjectStorage() if typed_preprocessing else None,
+            workspace=workspace,
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            file_ids=payload.file_ids,
+            typed_preprocessing=typed_preprocessing,
+        )
         return _MaterializedFileNames(
-            file_names,
-            attachment_facts=attachment_facts,
-            attachment_metadata=attachment_metadata,
-            materialized_file_names=materialized_file_names,
+            list(result.file_names),
+            attachment_facts=list(result.attachment_facts),
+            attachment_metadata=[
+                _AuthorizedAttachmentMetadata(
+                    item.file_id,
+                    item.file_name,
+                    item.content_type,
+                    item.size_bytes,
+                )
+                for item in result.attachment_metadata
+            ],
+            materialized_file_names=list(result.materialized_file_names),
         )
 
     def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
