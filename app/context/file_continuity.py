@@ -278,6 +278,13 @@ async def materialize_run_context_files(
             canonical_target,
             "uploaded file target must stay inside the run inputs directory",
         )
+        if (
+            target.exists()
+            or target.is_symlink()
+            or canonical_target.exists()
+            or canonical_target.is_symlink()
+        ):
+            raise ContextFileContentError("context_file_name_conflict")
         if size_bytes > MAX_CONTEXT_FILE_STAGE_BYTES:
             raise ContextFileContentError("context_file_too_large")
         storage_key = str(row.get("storage_key") or "")

@@ -446,3 +446,45 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
         )
 
     assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_files_preserves_preexisting_target_and_fails_before_object_read(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    existing = workspace / "file-a.docx"
+    existing.write_bytes(b"preexisting-content")
+
+    class FakeStorage:
+        def get_bytes_bounded(self, **_kwargs):
+            raise AssertionError("target collision must fail before object reads")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **_kwargs):
+        return {
+            "original_name": "file-a.docx",
+            "content_type": DOCX_CONTENT_TYPE,
+            "size_bytes": 1,
+            "sha256": hashlib.sha256(b"x").hexdigest(),
+            "storage_key": "files/file-a.docx",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(ValueError, match="context_file_name_conflict"):
+        await adapter._materialize_files(payload(file_ids=["file-a"]), workspace)
+
+    assert existing.read_bytes() == b"preexisting-content"
+    assert list(workspace.iterdir()) == [existing]
