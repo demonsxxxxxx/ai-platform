@@ -64,6 +64,8 @@ def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_modu
     assert "uv run --locked --extra test python -m pytest" in pytest_step
     assert "tests/test_trivy_failure_evidence.py \\" in pytest_step
     assert pytest_step.index("tests/test_trivy_failure_evidence.py") < pytest_step.index("-q \\")
+    assert "tests/test_s72_atomic_recovery_authority.py \\" in pytest_step
+    assert pytest_step.index("tests/test_s72_atomic_recovery_authority.py") < pytest_step.index("-q \\")
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
     assert " -k " not in pytest_step
