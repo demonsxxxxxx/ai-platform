@@ -218,10 +218,10 @@ export function SkillsHubPanel() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 px-4 pb-4 pt-2">
+      <div className="flex min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-2">
         <section
           data-skills-catalog-main
-          className="min-h-0 min-w-0 flex-1 overflow-hidden"
+          className="min-h-0 min-w-0 flex-1"
         >
           {visibleTab === "skills" ? (
             <div data-skill-catalog-shell className="h-full min-h-0">
@@ -240,9 +240,13 @@ export function SkillsHubPanel() {
               />
             </div>
           )}
+          {visibleTab === "skills" ? (
+            <div className="mt-3 min-h-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
+              <SkillDistributionGovernancePanel />
+            </div>
+          ) : null}
         </section>
       </div>
-      <SkillDistributionGovernancePanel />
     </div>
   );
 }
