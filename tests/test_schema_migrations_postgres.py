@@ -125,6 +125,75 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_readiness_rejects_index_ledger_checksum_drift():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_index_ledger_drift_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            """
+            update schema_index_migrations
+            set checksum_sha256 = repeat('0', 64)
+            where index_name = 'idx_messages_tenant_session_created'
+            """
+        )
+
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+
+        assert status["ready"] is False
+        assert status["index_ledger_current"] is False
+        assert status["concurrent_index_definitions_current"] is True
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_readiness_rejects_and_migration_repairs_wrong_index_definition():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_index_definition_drift_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute("drop index idx_messages_tenant_session_created")
+        await admin.execute("create index idx_messages_tenant_session_created on messages(id)")
+
+        async with factory() as conn:
+            damaged = await schema_migrations.schema_status(conn)
+
+        assert damaged["ready"] is False
+        assert damaged["indexes_current"] is True
+        assert damaged["concurrent_index_definitions_current"] is False
+
+        repaired = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert repaired["status"] == "applied"
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
 async def test_real_postgres_concurrent_index_phase_recovers_after_ledger_interruption():
     dsn = _postgres_dsn()
     schema_name = f"schema_index_resume_{uuid.uuid4().hex}"

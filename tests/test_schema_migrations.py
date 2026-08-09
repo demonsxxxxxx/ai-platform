@@ -77,8 +77,20 @@ class FakeIndexConnection:
         if normalized.startswith("select target_version, checksum_sha256, state"):
             return FakeCursor(self.state.index_ledger.get(params[0]))
         if "from pg_index indexes" in normalized:
+            migration = next(
+                item
+                for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+                if item.name == params[0]
+            )
             return FakeCursor(
-                {"ready": params[0] in self.state.indexes, "is_unique": False}
+                {
+                    "ready": True,
+                    "is_unique": migration.unique,
+                    "table_name": migration.table_name,
+                    "column_names": list(migration.column_names),
+                    "descending": list(migration.descending),
+                    "predicate": " and ".join(migration.predicate_fragments) or None,
+                }
                 if params[0] in self.state.indexes
                 else None
             )

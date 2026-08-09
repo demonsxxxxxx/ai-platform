@@ -54,6 +54,10 @@ CRITICAL_CONSTRAINTS = (
 class ConcurrentIndexMigration:
     name: str
     sql: str
+    table_name: str
+    column_names: tuple[str, ...]
+    descending: tuple[bool, ...]
+    predicate_fragments: tuple[str, ...] = ()
     unique: bool = False
 
     @property
@@ -66,27 +70,43 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
         "on messages(tenant_id, session_id, created_at asc, id asc)",
+        "messages",
+        ("tenant_id", "session_id", "created_at", "id"),
+        (False, False, False, False),
     ),
     ConcurrentIndexMigration(
         "idx_files_tenant_owner_session_created",
         "create index concurrently if not exists idx_files_tenant_owner_session_created "
         "on files(tenant_id, workspace_id, user_id, session_id, created_at desc, id desc)",
+        "files",
+        ("tenant_id", "workspace_id", "user_id", "session_id", "created_at", "id"),
+        (False, False, False, False, True, True),
     ),
     ConcurrentIndexMigration(
         "idx_artifacts_tenant_run_created",
         "create index concurrently if not exists idx_artifacts_tenant_run_created "
         "on artifacts(tenant_id, run_id, created_at desc, id desc)",
+        "artifacts",
+        ("tenant_id", "run_id", "created_at", "id"),
+        (False, False, True, True),
     ),
     ConcurrentIndexMigration(
         "idx_artifacts_expired_cleanup",
         "create index concurrently if not exists idx_artifacts_expired_cleanup "
         "on artifacts(expires_at asc, created_at asc, id asc) "
         "where lifecycle_state = 'active' and expires_at is not null",
+        "artifacts",
+        ("expires_at", "created_at", "id"),
+        (False, False, False),
+        ("lifecycle_state = 'active'", "expires_at is not null"),
     ),
     ConcurrentIndexMigration(
         "idx_audit_logs_tenant_created",
         "create index concurrently if not exists idx_audit_logs_tenant_created "
         "on audit_logs(tenant_id, created_at desc, id desc)",
+        "audit_logs",
+        ("tenant_id", "created_at", "id"),
+        (False, True, True),
     ),
 )
 CRITICAL_INDEXES = (
@@ -162,14 +182,52 @@ async def _index_is_ready(conn: Any, migration: ConcurrentIndexMigration) -> boo
     cursor = await conn.execute(
         """
         select coalesce(indexes.indisvalid and indexes.indisready, false) as ready,
-               coalesce(indexes.indisunique, false) as is_unique
+               coalesce(indexes.indisunique, false) as is_unique,
+               relations.relname as table_name,
+               array(
+                 select attributes.attname
+                 from unnest(indexes.indkey::smallint[]) with ordinality keys(attnum, position)
+                 join pg_attribute attributes
+                   on attributes.attrelid = indexes.indrelid
+                  and attributes.attnum = keys.attnum
+                 where keys.position <= indexes.indnkeyatts
+                 order by keys.position
+               ) as column_names,
+               array(
+                 select (options.option_value & 1) = 1
+                 from unnest(indexes.indoption::smallint[])
+                   with ordinality options(option_value, position)
+                 where options.position <= indexes.indnkeyatts
+                 order by options.position
+               ) as descending,
+               pg_get_expr(indexes.indpred, indexes.indrelid) as predicate
         from pg_index indexes
+        join pg_class relations on relations.oid = indexes.indrelid
         where indexes.indexrelid = to_regclass(%s)
         """,
         (migration.name,),
     )
     row = await cursor.fetchone()
-    return bool(row and row.get("ready") and bool(row.get("is_unique")) == migration.unique)
+    if not row or not row.get("ready") or bool(row.get("is_unique")) != migration.unique:
+        return False
+    if row.get("table_name") != migration.table_name:
+        return False
+    if tuple(row.get("column_names") or ()) != migration.column_names:
+        return False
+    if tuple(bool(item) for item in row.get("descending") or ()) != migration.descending:
+        return False
+    predicate = " ".join(
+        str(row.get("predicate") or "")
+        .lower()
+        .replace("::text", "")
+        .replace("(", " ")
+        .replace(")", " ")
+        .split()
+    )
+    return all(
+        " ".join(fragment.lower().split()) in predicate
+        for fragment in migration.predicate_fragments
+    ) and bool(predicate) == bool(migration.predicate_fragments)
 
 
 async def _apply_concurrent_indexes(conn: Any) -> bool:
@@ -294,6 +352,14 @@ def _json_contract(rows: tuple[tuple[Any, ...], ...], names: tuple[str, ...]) ->
 
 async def schema_status(conn: Any) -> dict[str, object]:
     checksum = schema_checksum()
+    index_ledger_contract = tuple(
+        (
+            migration.name,
+            TARGET_SCHEMA_VERSION,
+            migration.checksum_sha256,
+        )
+        for migration in CONCURRENT_INDEX_MIGRATIONS
+    )
     relation_cursor = await conn.execute(
         """
         select coalesce(bool_and(to_regclass(relation_name) is not null), false) as current
@@ -344,19 +410,44 @@ async def schema_status(conn: Any) -> dict[str, object]:
     )
     ledger_cursor = await conn.execute(
         """
+        with expected_indexes as (
+          select *
+          from jsonb_to_recordset(%s::jsonb)
+            as expected(index_name text, target_version text, checksum_sha256 text)
+        )
         select
           exists (
             select 1 from schema_migrations
             where version = %s and checksum_sha256 = %s
           ) as ledger_current,
-          (select count(*) from schema_index_migrations
-           where target_version = %s and state = 'ready') = %s as index_ledger_current
+          (
+            select count(*)
+            from expected_indexes expected
+            join schema_index_migrations installed
+              on installed.index_name = expected.index_name
+             and installed.target_version = expected.target_version
+             and installed.checksum_sha256 = expected.checksum_sha256
+             and installed.state = 'ready'
+          ) = (select count(*) from expected_indexes)
+          and not exists (
+            select 1
+            from schema_index_migrations installed
+            where installed.target_version = %s
+              and installed.state = 'ready'
+              and not exists (
+                select 1 from expected_indexes expected
+                where expected.index_name = installed.index_name
+              )
+          ) as index_ledger_current
         """,
         (
+            _json_contract(
+                index_ledger_contract,
+                ("index_name", "target_version", "checksum_sha256"),
+            ),
             TARGET_SCHEMA_VERSION,
             checksum,
             TARGET_SCHEMA_VERSION,
-            len(CONCURRENT_INDEX_MIGRATIONS),
         ),
     )
     relation_row = await relation_cursor.fetchone() or {}
@@ -368,8 +459,17 @@ async def schema_status(conn: Any) -> dict[str, object]:
     columns_current = bool(column_row.get("current"))
     constraints_current = bool(constraint_row.get("current"))
     indexes_current = bool(index_row.get("current"))
+    concurrent_index_definitions_current = all(
+        [await _index_is_ready(conn, migration) for migration in CONCURRENT_INDEX_MIGRATIONS]
+    )
     contracts_current = all(
-        (relations_current, columns_current, constraints_current, indexes_current)
+        (
+            relations_current,
+            columns_current,
+            constraints_current,
+            indexes_current,
+            concurrent_index_definitions_current,
+        )
     )
     ready = (
         bool(ledger_row.get("ledger_current"))
@@ -387,6 +487,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "columns_current": columns_current,
         "constraints_current": constraints_current,
         "indexes_current": indexes_current,
+        "concurrent_index_definitions_current": concurrent_index_definitions_current,
     }
 
 
