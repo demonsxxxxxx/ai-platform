@@ -801,9 +801,24 @@ capture_config_metadata() (
     digest=-
     test "$kind" = d || digest=$(sha256sum "$relative" | awk '{ print $1 }') || exit 1
     printf '%s\t%s\t%s\t%s\n' "$relative" "$kind" \
-      "$(stat -c %u:%g:%a:%s:%Y:%Z "$relative")" "$digest" || exit 1
+      "$(stat -c %u:%g:%a:%s:%Y "$relative")" "$digest" || exit 1
   done
 )
+
+normalize_config_metadata() {
+  awk -F '\t' 'BEGIN { OFS = "\t" }
+    NF != 4 || ($2 != "f" && $2 != "d") { exit 1 }
+    {
+      count = split($3, fields, ":")
+      if (count != 5 && count != 6) exit 1
+      for (position = 1; position <= count; position++) {
+        if (fields[position] !~ /^[0-9]+$/) exit 1
+      }
+      attributes = fields[1]
+      for (position = 2; position <= 5; position++) attributes = attributes ":" fields[position]
+      print $1, $2, attributes, $4
+    }'
+}
 
 write_config_metadata() {
   tree=$1
@@ -816,7 +831,9 @@ verify_config_metadata() {
   tree=$1
   metadata=$2
   s72_atomic_require_root_owned_regular "$metadata" 400 || return 1
-  test "$(cat "$metadata")" = "$(capture_config_metadata "$tree")"
+  expected=$(normalize_config_metadata < "$metadata") || return 1
+  actual=$(capture_config_metadata "$tree") || return 1
+  test "$expected" = "$actual"
 }
 
 validate_release() {
