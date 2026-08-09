@@ -2,6 +2,7 @@ from app.context.file_continuity import (
     compatible_reusable_file_ids,
     has_file_input_mode,
     primary_file_ids_for_run,
+    snapshot_file_ids,
 )
 
 
@@ -67,3 +68,42 @@ def test_primary_file_ids_selects_newest_compatible_history_with_bound():
         reusable_rows=rows,
         input_modes=["pdf"],
     ) == [f"file-{index}" for index in range(9, 1, -1)]
+
+
+def test_primary_file_ids_reuses_only_newest_version_of_same_basename():
+    rows = [
+        {
+            "id": "file-new",
+            "original_name": "report.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "created_at": "2026-08-02T00:00:00Z",
+        },
+        {
+            "id": "file-old",
+            "original_name": "REPORT.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "created_at": "2026-08-01T00:00:00Z",
+        },
+    ]
+
+    assert primary_file_ids_for_run(
+        requested_file_ids=[],
+        reusable_rows=rows,
+        input_modes=["docx"],
+    ) == ["file-new"]
+
+
+def test_snapshot_file_ids_preserves_all_current_files_and_bounds_only_history():
+    current = [f"file-current-{index}" for index in range(9)]
+
+    assert snapshot_file_ids(
+        current_file_ids=current,
+        historical_file_ids=[f"file-prior-{index}" for index in range(8)],
+    ) == current
+    assert snapshot_file_ids(
+        current_file_ids=["file-current"],
+        historical_file_ids=[f"file-prior-{index}" for index in range(8)],
+    ) == [
+        *(f"file-prior-{index}" for index in range(7)),
+        "file-current",
+    ]

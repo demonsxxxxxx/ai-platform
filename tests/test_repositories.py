@@ -1632,7 +1632,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "auth_source": "session-token",
         "input_json": {
             "input": {"message": "retry"},
-            "file_ids": [],
+            "file_ids": ["file-prior"],
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-v1",
             "release_decision": source_release,
@@ -1668,8 +1668,9 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     monkeypatch.setattr(repositories, "append_message", no_write)
     monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", insert_snapshots)
 
+    conn = RecordingConnection()
     copied = await repositories.copy_run_as_new_task(
-        RecordingConnection(),
+        conn,
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-source",
@@ -1684,6 +1685,8 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
     assert copied["skill_manifests"] == [source_manifest]
+    assert copied["file_ids"] == ["file-prior"]
+    assert not any(sql.startswith("update files") for sql, _params in conn.calls)
 
 
 @pytest.mark.asyncio

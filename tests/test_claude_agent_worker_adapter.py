@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from openpyxl import Workbook
 
 import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.skills.dependencies as dependency_policy
@@ -55,6 +56,15 @@ from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
+
+
+def _materialized_xlsx_bytes() -> bytes:
+    stream = io.BytesIO()
+    workbook = Workbook()
+    workbook.active.append(["name", "value"])
+    workbook.active.append(["alpha", 1])
+    workbook.save(stream)
+    return stream.getvalue()
 
 
 @pytest.mark.asyncio
@@ -1240,17 +1250,18 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_materialize_files_captures_exact_facts_before_duplicate_basename_overwrite(
+async def test_materialize_files_rejects_duplicate_basename_before_object_read_or_write(
     monkeypatch,
     tmp_path,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw_by_key = {"files/a": b"AAAA", "files/b": b"BBBB"}
+    storage_reads = []
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
-            return raw_by_key[storage_key]
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            storage_reads.append((storage_key, max_bytes))
+            raise AssertionError("duplicate basenames must fail before object reads")
 
     @asynccontextmanager
     async def fake_transaction():
@@ -1270,17 +1281,14 @@ async def test_materialize_files_captures_exact_facts_before_duplicate_basename_
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    materialized = await adapter._materialize_files(
-        payload(file_ids=["file-a", "file-b"]),
-        workspace,
-    )
+    with pytest.raises(ValueError, match="context_file_name_conflict"):
+        await adapter._materialize_files(
+            payload(file_ids=["file-a", "file-b"]),
+            workspace,
+        )
 
-    assert list(materialized) == ["book.xlsx", "book.xlsx"]
-    assert [fact.file_id for fact in materialized.attachment_facts] == ["file-a", "file-b"]
-    assert [fact.byte_count for fact in materialized.attachment_facts] == [4, 4]
-    assert materialized.attachment_facts[0].sha256 == hashlib.sha256(b"AAAA").hexdigest()
-    assert materialized.attachment_facts[1].sha256 == hashlib.sha256(b"BBBB").hexdigest()
-    assert materialized.attachment_facts[0].sha256 != materialized.attachment_facts[1].sha256
+    assert storage_reads == []
+    assert list(workspace.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -1337,11 +1345,12 @@ async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materiali
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw = b"typed-workbook"
+    raw = _materialized_xlsx_bytes()
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
             assert storage_key == "files/private-book"
+            assert max_bytes == len(raw)
             return raw
 
     @asynccontextmanager
@@ -1353,6 +1362,7 @@ async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materiali
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
             "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "storage_key": "files/private-book",
         }
 

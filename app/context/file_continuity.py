@@ -23,8 +23,10 @@ def compatible_reusable_file_ids(
     if not normalized_modes:
         return []
     compatible: list[str] = []
+    selected_names: set[str] = set()
     for row in rows:
         name = str(row.get("original_name") or "").replace("\\", "/").casefold()
+        basename = name.rsplit("/", 1)[-1]
         content_type = str(row.get("content_type") or "").split(";", 1)[0].strip().casefold()
         matches = (
             "docx" in normalized_modes
@@ -58,9 +60,39 @@ def compatible_reusable_file_ids(
             and content_type == "application/json"
         )
         file_id = str(row.get("id") or "")
-        if matches and file_id and file_id not in compatible:
+        if (
+            matches
+            and file_id
+            and file_id not in compatible
+            and basename
+            and basename not in selected_names
+        ):
             compatible.append(file_id)
+            selected_names.add(basename)
     return compatible
+
+
+def snapshot_file_ids(
+    *,
+    current_file_ids: list[str],
+    historical_file_ids: list[str],
+    history_limit: int = MAX_PRIMARY_FILE_IDS,
+) -> list[str]:
+    """Keep every current attachment plus the newest bounded historical files."""
+
+    current = list(dict.fromkeys(str(file_id) for file_id in current_file_ids if file_id))
+    current_set = set(current)
+    historical = list(
+        dict.fromkeys(
+            str(file_id)
+            for file_id in historical_file_ids
+            if file_id and str(file_id) not in current_set
+        )
+    )
+    remaining_history_slots = max(0, int(history_limit) - len(current))
+    if remaining_history_slots == 0:
+        return current
+    return historical[:remaining_history_slots] + current
 
 
 def primary_file_ids_for_run(

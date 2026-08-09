@@ -948,6 +948,71 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
 
 
 @pytest.mark.asyncio
+async def test_record_initial_context_snapshot_preserves_more_than_eight_current_files(monkeypatch):
+    captured = {}
+    current_file_ids = [f"file-current-{index}" for index in range(9)]
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def no_history(*_args, **_kwargs):
+        return 0
+
+    async def historical_files(*_args, **_kwargs):
+        return [{"id": f"file-prior-{index}"} for index in range(8)]
+
+    async def no_legacy(*_args, **_kwargs):
+        return False
+
+    async def memory_policy(*_args, **_kwargs):
+        return {
+            "source": "default",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+        }
+
+    async def create_snapshot(_conn, **kwargs):
+        captured.update(kwargs)
+        return {"id": "ctx-current-files"}
+
+    async def ignore(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", no_history)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", empty)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", historical_files)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", empty)
+    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+
+    await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        trace_id="trace-current",
+        agent_id="document-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "review all current files"},
+        file_ids=current_file_ids,
+        source="chat_stream",
+        include_session_history=True,
+    )
+
+    assert captured["included_file_ids"] == current_file_ids
+    assert captured["payload_json"]["context_manifest"]["files"] == [
+        {"file_id": file_id, "requires_retrieval": True}
+        for file_id in current_file_ids
+    ]
+
+
+@pytest.mark.asyncio
 async def test_session_history_manifest_membership_is_clamped_after_eight_message_snapshot_limit(monkeypatch):
     captured = {}
 

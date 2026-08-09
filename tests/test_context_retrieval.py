@@ -10,6 +10,7 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
     InMemoryContextRetrievalRepository,
 )
+from app.storage import ObjectStorageSizeLimitError
 
 
 def _symlink_or_skip(target, link):
@@ -403,7 +404,8 @@ async def test_stage_context_file_to_workspace_accepts_snapshot_authorized_prior
                 "content": b"docx!",
             }
 
-        def read_storage_bytes(self, row):
+        def read_storage_bytes(self, row, *, max_bytes=None):
+            assert max_bytes == len(row["content"])
             return row["content"]
 
     retrieval = ContextRetrieval(SnapshotAuthorizedRepository())
@@ -443,7 +445,8 @@ async def test_stage_run_artifact_to_workspace_uses_snapshot_authorized_reposito
                 "content": b"docx!",
             }
 
-        def read_storage_bytes(self, row):
+        def read_storage_bytes(self, row, *, max_bytes=None):
+            assert max_bytes == len(row["content"])
             return row["content"]
 
     retrieval = ContextRetrieval(SnapshotAuthorizedRepository())
@@ -658,8 +661,8 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
         }
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
-            calls.append(("storage", storage_key))
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            calls.append(("storage", storage_key, max_bytes))
             return b"repository backed file content"
 
     monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
@@ -687,7 +690,7 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
                 "file_id": "file-a",
             },
         ),
-        ("storage", "tenants/tenant-a/private/source.txt"),
+        ("storage", "tenants/tenant-a/private/source.txt", 30),
     ]
     assert result["content"] == "repository"
     assert result["truncated"] is True
@@ -844,6 +847,46 @@ async def test_repository_stage_context_file_requires_declared_size_before_stora
             },
         )
     ]
+    assert not (tmp_path / "context").exists()
+
+
+@pytest.mark.asyncio
+async def test_repository_stage_context_file_bounds_storage_read_by_declared_size(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "source.txt",
+            "content_type": "text/plain",
+            "size_bytes": 4,
+            "storage_key": "tenants/tenant-a/private/source.txt",
+        }
+
+    class FakeStorage:
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            calls.append((storage_key, max_bytes))
+            raise ObjectStorageSizeLimitError("object_size_limit_exceeded")
+
+    monkeypatch.setattr(
+        "app.context.retrieval.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
+
+    with pytest.raises(ContextRetrievalDenied, match="context_file_too_large"):
+        await retrieval.stage_context_file_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_id="file-oversized-object",
+            workspace_root=str(tmp_path),
+            max_bytes=1024,
+        )
+
+    assert calls == [("tenants/tenant-a/private/source.txt", 4)]
     assert not (tmp_path / "context").exists()
 
 

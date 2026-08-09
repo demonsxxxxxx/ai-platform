@@ -10,6 +10,7 @@ from app.context_manifest import (
     ContextPlanner,
     public_context_manifest_projection,
 )
+from app.context.file_continuity import snapshot_file_ids
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
 from app.office_execution_tier import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
@@ -626,16 +627,14 @@ async def record_initial_context_snapshot(
             run_id=run_id,
             limit=8,
         )
-        included_file_ids = list(
-            dict.fromkeys(
-                [
-                    str(row.get("id") or "")
-                    for row in session_files
-                    if isinstance(row, dict) and row.get("id")
-                ]
-                + included_file_ids
-            )
-        )[-8:]
+        included_file_ids = snapshot_file_ids(
+            current_file_ids=included_file_ids,
+            historical_file_ids=[
+                str(row.get("id") or "")
+                for row in session_files
+                if isinstance(row, dict) and row.get("id")
+            ],
+        )
         session_artifacts = await repositories.list_session_context_artifacts(
             conn,
             tenant_id=tenant_id,

@@ -1,11 +1,46 @@
 import hashlib
+import io
 from contextlib import asynccontextmanager
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+from docx import Document
+from pypdf import PdfWriter
 
+from app.context.file_content import DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE
 from app.executors.base import RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.file_parser_contracts import XLSX_CONTENT_TYPE
+from app.storage import ObjectStorageSizeLimitError
+
+
+def _docx_bytes() -> bytes:
+    stream = io.BytesIO()
+    document = Document()
+    document.add_paragraph("snapshot-authorized-content")
+    document.save(stream)
+    return stream.getvalue()
+
+
+def _unsafe_pdf_bytes() -> bytes:
+    stream = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_js("app.alert('no')")
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def _unsafe_docx_bytes() -> bytes:
+    stream = io.BytesIO()
+    with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types />")
+        archive.writestr("word/document.xml", "<document />")
+        archive.writestr(
+            "word/_rels/document.xml.rels",
+            '<Relationships><Relationship TargetMode="External" Target="https://example.test" /></Relationships>',
+        )
+    return stream.getvalue()
 
 
 def payload(*, file_ids: list[str]) -> RunPayload:
@@ -42,11 +77,12 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw = b"snapshot-authorized-content"
+    raw = _docx_bytes()
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
             assert storage_key == "files/prior.docx"
+            assert max_bytes == len(raw)
             return raw
 
     @asynccontextmanager
@@ -65,8 +101,9 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
         return {
             "run_id": "run-prior",
             "original_name": "prior.docx",
-            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "content_type": DOCX_CONTENT_TYPE,
             "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "storage_key": "files/prior.docx",
         }
 
@@ -126,7 +163,7 @@ async def test_materialize_files_fails_when_snapshot_file_identity_mismatches(
     raw = b"stored-content"
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
             return raw
 
     @asynccontextmanager
@@ -154,3 +191,137 @@ async def test_materialize_files_fails_when_snapshot_file_identity_mismatches(
 
     with pytest.raises(ValueError, match="context_file_identity_mismatch"):
         await adapter._materialize_files(payload(file_ids=["file-prior"]), workspace)
+
+
+@pytest.mark.asyncio
+async def test_materialize_files_uses_bounded_object_read_and_rejects_oversized_storage(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = []
+
+    class FakeStorage:
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            calls.append((storage_key, max_bytes))
+            raise ObjectStorageSizeLimitError("object_size_limit_exceeded")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **_kwargs):
+        return {
+            "original_name": "source.docx",
+            "content_type": DOCX_CONTENT_TYPE,
+            "size_bytes": 12,
+            "storage_key": "files/source.docx",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(ValueError, match="context_file_identity_mismatch"):
+        await adapter._materialize_files(payload(file_ids=["file-prior"]), workspace)
+
+    assert calls == [("files/source.docx", 12)]
+    assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_files_rejects_declared_total_before_object_reads(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class FakeStorage:
+        def get_bytes_bounded(self, **_kwargs):
+            raise AssertionError("declared total must fail before object reads")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        return {
+            "original_name": f"{kwargs['file_id']}.docx",
+            "content_type": DOCX_CONTENT_TYPE,
+            "size_bytes": 2,
+            "storage_key": f"files/{kwargs['file_id']}.docx",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker._MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES",
+        3,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(ValueError, match="context_file_too_large"):
+        await adapter._materialize_files(payload(file_ids=["file-a", "file-b"]), workspace)
+
+    assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "content_type", "raw"),
+    [
+        ("unsafe.pdf", PDF_CONTENT_TYPE, _unsafe_pdf_bytes()),
+        ("unsafe.docx", DOCX_CONTENT_TYPE, _unsafe_docx_bytes()),
+    ],
+    ids=("pdf-javascript", "docx-external-relationship"),
+)
+async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
+    monkeypatch,
+    tmp_path,
+    name,
+    content_type,
+    raw,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class FakeStorage:
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            assert max_bytes == len(raw)
+            return raw
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **_kwargs):
+        return {
+            "original_name": name,
+            "content_type": content_type,
+            "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "storage_key": f"files/{name}",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(ValueError, match="context_file_type_unsupported"):
+        await adapter._materialize_files(payload(file_ids=["file-unsafe"]), workspace)
+
+    assert list(workspace.iterdir()) == []

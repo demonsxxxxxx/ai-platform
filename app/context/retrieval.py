@@ -10,12 +10,14 @@ from typing import Any, Literal, Protocol
 from app import repositories
 from app.context.file_content import (
     ContextFileContentError,
+    MAX_CONTEXT_FILE_STAGE_BYTES,
     parse_context_file,
     validate_context_file_for_stage,
 )
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
 from app.path_safety import ensure_creatable_inside
+from app.storage import ObjectStorageSizeLimitError
 
 
 class ContextRetrievalDenied(PermissionError):
@@ -156,7 +158,12 @@ class ContextRetrievalRepository(Protocol):
     ) -> list[dict[str, Any]]:
         ...
 
-    def read_storage_bytes(self, row: dict[str, Any]) -> bytes:
+    def read_storage_bytes(
+        self,
+        row: dict[str, Any],
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
         ...
 
 
@@ -255,10 +262,20 @@ class RepositoryContextRetrievalRepository:
         )
         return [dict(row) for row in rows]
 
-    def read_storage_bytes(self, row: dict[str, Any]) -> bytes:
+    def read_storage_bytes(
+        self,
+        row: dict[str, Any],
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
         storage_key = str(row.get("storage_key") or "")
         if not storage_key:
             return b""
+        if max_bytes is not None:
+            return self._storage.get_bytes_bounded(
+                storage_key=storage_key,
+                max_bytes=max_bytes,
+            )
         return self._storage.get_bytes(storage_key=storage_key)
 
 
@@ -294,10 +311,20 @@ class TransactionalContextRetrievalRepository:
             rows = await repositories.list_scoped_context_memory_records(conn, **kwargs)
         return [dict(row) for row in rows]
 
-    def read_storage_bytes(self, row: dict[str, Any]) -> bytes:
+    def read_storage_bytes(
+        self,
+        row: dict[str, Any],
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
         storage_key = str(row.get("storage_key") or "")
         if not storage_key:
             return b""
+        if max_bytes is not None:
+            return self._storage.get_bytes_bounded(
+                storage_key=storage_key,
+                max_bytes=max_bytes,
+            )
         return self._storage.get_bytes(storage_key=storage_key)
 
 
@@ -664,9 +691,15 @@ class ContextRetrievalAuthority:
             file_id=file_id,
         )
         try:
+            raw_bytes, _byte_cap = self._bounded_export_bytes(
+                row,
+                max_bytes=MAX_CONTEXT_FILE_STAGE_BYTES,
+                size_required_reason="context_file_size_required",
+                too_large_reason="context_file_too_large",
+            )
             parsed = parse_context_file(
                 row,
-                self._raw_content_bytes(row),
+                raw_bytes,
                 max_output_bytes=max_bytes,
             )
         except ContextFileContentError as exc:
@@ -1018,13 +1051,18 @@ class ContextRetrievalAuthority:
             raise ContextRetrievalDenied("context_scope_denied")
         return row
 
-    def _raw_content_bytes(self, row: dict[str, Any]) -> bytes:
+    def _raw_content_bytes(
+        self,
+        row: dict[str, Any],
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
         if isinstance(self._repository, InMemoryContextRetrievalRepository):
             content = row.get("content")
             if isinstance(content, bytes):
                 return content
             return str(content or "").encode("utf-8")
-        return self._repository.read_storage_bytes(row)
+        return self._repository.read_storage_bytes(row, max_bytes=max_bytes)
 
     def _declared_size_bytes(self, row: dict[str, Any]) -> int | None:
         try:
@@ -1047,7 +1085,11 @@ class ContextRetrievalAuthority:
             raise ContextRetrievalDenied(size_required_reason)
         if declared_size is not None and declared_size > byte_cap:
             raise ContextRetrievalDenied(too_large_reason)
-        raw_bytes = self._raw_content_bytes(row)
+        read_cap = declared_size if declared_size is not None else byte_cap
+        try:
+            raw_bytes = self._raw_content_bytes(row, max_bytes=read_cap)
+        except ObjectStorageSizeLimitError as exc:
+            raise ContextRetrievalDenied(too_large_reason) from exc
         if len(raw_bytes) > byte_cap:
             raise ContextRetrievalDenied(too_large_reason)
         return raw_bytes, byte_cap
