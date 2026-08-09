@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -2206,6 +2207,45 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
     assert response.messages[1].content == ""
 
 
+@pytest.mark.asyncio
+async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
+    created_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_messages(conn, **kwargs):
+        assert kwargs["cursor"] is None
+        assert kwargs["limit"] == 3
+        return [
+            {
+                "id": f"msg_{index}",
+                "session_id": "ses_a",
+                "run_id": None,
+                "role": "user",
+                "content": str(index),
+                "metadata_json": {},
+                "created_at": created_at,
+            }
+            for index in (1, 2, 3)
+        ]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_messages", fake_list_authorized_messages)
+
+    response = await list_messages("ses_a", cursor=None, limit=2, principal=principal())
+
+    assert [message.message_id for message in response.messages] == ["msg_1", "msg_2"]
+    assert response.next_cursor is not None
+    padding = "=" * (-len(response.next_cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(f"{response.next_cursor}{padding}"))
+    assert payload == {
+        "created_at": created_at.isoformat(),
+        "message_id": "msg_2",
+        "session_id": "ses_a",
+        "v": 1,
+    }
 @pytest.mark.asyncio
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []

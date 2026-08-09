@@ -891,6 +891,7 @@ async def list_current_published_agent_profiles(
     tenant_id: str,
     query: str | None = None,
     category: str | None = None,
+    limit: int = 200,
 ) -> list[dict[str, Any]]:
     """List aggregate-selected published profiles with bounded server-side search/filtering."""
 
@@ -904,6 +905,7 @@ async def list_current_published_agent_profiles(
     if category:
         category_filter = "and agent_profile_revisions.category = %s"
         params.append(category)
+    params.append(max(1, min(int(limit), 200)))
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
@@ -939,6 +941,7 @@ async def list_current_published_agent_profiles(
           {query_filter}
           {category_filter}
         order by agent_profile_revisions.name asc, agent_profile_revisions.agent_id asc
+        limit %s
         """,
         tuple(params),
     )
@@ -11277,6 +11280,7 @@ async def list_session_messages_for_fork(
     *,
     tenant_id: str,
     session_id: str,
+    limit: int = 201,
 ) -> list[dict[str, Any]]:
     """Load one authorized source session's ordered message prefix candidates."""
 
@@ -11286,8 +11290,9 @@ async def list_session_messages_for_fork(
         from messages
         where tenant_id = %s and session_id = %s
         order by created_at asc, id asc
+        limit %s
         """,
-        (tenant_id, session_id),
+        (tenant_id, session_id, max(1, min(int(limit), 201))),
     )
     return list(await cursor.fetchall())
 
@@ -11415,9 +11420,17 @@ async def list_authorized_messages(
     tenant_id: str,
     user_id: str,
     session_id: str,
+    cursor: tuple[Any, str] | None = None,
+    limit: int = 101,
 ) -> list[dict[str, Any]]:
+    cursor_filter = ""
+    params: list[Any] = [tenant_id, session_id, user_id]
+    if cursor is not None:
+        cursor_filter = "and (messages.created_at, messages.id) > (%s, %s)"
+        params.extend(cursor)
+    params.append(max(1, min(int(limit), 201)))
     cursor = await conn.execute(
-        """
+        f"""
         select messages.id, messages.session_id, messages.run_id, messages.role, messages.content,
                messages.metadata_json, messages.created_at
         from messages
@@ -11425,9 +11438,11 @@ async def list_authorized_messages(
         where messages.tenant_id = %s
           and messages.session_id = %s
           and sessions.user_id = %s
+          {cursor_filter}
         order by messages.created_at asc, messages.id asc
+        limit %s
         """,
-        (tenant_id, session_id, user_id),
+        tuple(params),
     )
     return list(await cursor.fetchall())
 

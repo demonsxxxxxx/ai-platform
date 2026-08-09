@@ -1204,6 +1204,8 @@ async def fork_session_message(
             )
     except session_actions.SessionActionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session_not_found") from exc
+    except session_actions.SessionActionValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "source_session_id": result["source_session_id"],
         "session": _session_payload(result["session"]),

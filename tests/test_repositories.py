@@ -783,7 +783,8 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "from messages" in messages_sql
     assert "tenant_id = %s and session_id = %s" in messages_sql
     assert "order by created_at asc, id asc" in messages_sql
-    assert messages_params == ("tenant-a", "session-a")
+    assert "limit %s" in messages_sql
+    assert messages_params == ("tenant-a", "session-a", 201)
 
 
 @pytest.mark.asyncio
@@ -970,7 +971,21 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
     assert "messages.session_id = %s" in sql
     assert "sessions.user_id = %s" in sql
     assert "order by messages.created_at asc, messages.id asc" in sql
-    assert params == ("tenant-a", "session-a", "user-a")
+    assert "limit %s" in sql
+    assert params == ("tenant-a", "session-a", "user-a", 101)
+
+    boundary = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    await repositories.list_authorized_messages(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        cursor=(boundary, "msg-a"),
+        limit=50,
+    )
+    sql, params = conn.calls[-1]
+    assert "(messages.created_at, messages.id) > (%s, %s)" in sql
+    assert params == ("tenant-a", "session-a", "user-a", boundary, "msg-a", 50)
 
 
 @pytest.mark.asyncio

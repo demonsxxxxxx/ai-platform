@@ -1435,6 +1435,9 @@ create table if not exists messages (
   created_at timestamptz not null default now()
 );
 
+create index if not exists idx_messages_tenant_session_created
+  on messages(tenant_id, session_id, created_at asc, id asc);
+
 create table if not exists memory_records (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -2088,6 +2091,11 @@ alter table artifacts add column if not exists manifest_version text not null de
 alter table artifacts add column if not exists retention_policy text not null default 'standard_90d';
 alter table artifacts add column if not exists expires_at timestamptz;
 
+create index if not exists idx_files_tenant_owner_session_created
+  on files(tenant_id, workspace_id, user_id, session_id, created_at desc, id desc);
+create index if not exists idx_artifacts_tenant_run_created
+  on artifacts(tenant_id, run_id, created_at desc, id desc);
+
 create table if not exists audit_logs (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -2107,6 +2115,8 @@ create index if not exists idx_audit_logs_tool_policy_history
   on audit_logs(tenant_id, target_type, action, target_id, created_at desc, id desc);
 create index if not exists idx_audit_logs_tool_policy_history_latest
   on audit_logs(tenant_id, target_type, action, created_at desc, id desc);
+create index if not exists idx_audit_logs_tenant_created
+  on audit_logs(tenant_id, created_at desc, id desc);
 
 insert into tenants(id, name)
 values ('default', 'Default Tenant')

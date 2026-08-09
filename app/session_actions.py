@@ -14,6 +14,9 @@ class SessionActionValidationError(Exception):
     """Raised when a supported action has an invalid public input."""
 
 
+_MAX_FORK_MESSAGES = 200
+
+
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -112,6 +115,8 @@ async def fork_session_message(
         tenant_id=principal.tenant_id,
         session_id=session_id,
     )
+    if len(messages) > _MAX_FORK_MESSAGES:
+        raise SessionActionValidationError("session_fork_history_too_large")
     selected_index = next((index for index, message in enumerate(messages) if message["id"] == message_id), None)
     if selected_index is None:
         raise SessionActionNotFoundError("session_not_found")

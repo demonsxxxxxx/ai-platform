@@ -1153,6 +1153,7 @@ class ChatMessageResponse(BaseModel):
 
 class ChatMessagesResponse(BaseModel):
     messages: list[ChatMessageResponse]
+    next_cursor: str | None = None
 
 
 class ChatStreamRequest(BaseModel):
