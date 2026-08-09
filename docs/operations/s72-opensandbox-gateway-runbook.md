@@ -68,6 +68,14 @@ read. Enabling the broker continues to require both model credential files and
 fails closed when either is absent or invalid. A capability-only deployment does
 not prove model egress or the remote smoke gates below.
 
+`OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE` defaults to `none`. The only other
+accepted value is `bridge`, and it additionally requires a profile ID containing
+`internal-test`. The gateway signs this value into the capability profile; the
+ai-platform provider must independently configure the same exact value or fail
+closed before sandbox creation. `bridge` is a temporary functional-test posture,
+never production isolation evidence. Production acceptance continues to require
+`none` and the remote smoke below.
+
 ## Mandatory Remote Smoke Before Provider Switch
 
 Installation alone is not authority to select the OpenSandbox provider on

@@ -80,6 +80,7 @@ ALLOWED_METADATA_KEYS = {
     "ai-platform.external_egress.profile_id",
     "ai-platform.external_egress.endpoint_sha256",
     "ai-platform.external_egress.runtime_identity",
+    "ai-platform.external_egress.network_mode",
     "ai-platform.runtime_subject",
     "ai-platform.external_egress.gateway_policy_subject",
     "ai-platform.external_egress.callback_boundary_subject",
@@ -273,6 +274,7 @@ class GatewayConfig:
     callback_upstream_base: str = ""
     openai_upstream_base: str = ""
     anthropic_upstream_base: str = ""
+    expected_network_mode: str = "none"
     executor_entrypoint: tuple[str, ...] = ("/app/docker-entrypoint.sh", "uvicorn")
     request_timeout_seconds: float = 5.0
     dispatch_timeout_seconds: float = 3600.0
@@ -319,6 +321,10 @@ class GatewayConfig:
         ):
             if not isinstance(value, str) or not SAFE_VALUE.fullmatch(value):
                 raise ValueError("gateway subjects must be non-empty safe values")
+        if self.expected_network_mode not in {"none", "bridge"}:
+            raise ValueError("gateway expected network mode is invalid")
+        if self.expected_network_mode == "bridge" and "internal-test" not in self.profile_id:
+            raise ValueError("bridge network mode requires an internal-test profile")
         if self.workspace_root != "/data/opensandbox/workspaces":
             raise ValueError("workspace root must match the s72 scoped root")
         if not self.executor_entrypoint or any(not isinstance(item, str) or not item or len(item) > 256 for item in self.executor_entrypoint):
@@ -657,6 +663,8 @@ class GatewayApplication:
         for key, value in REQUIRED_METADATA.items():
             if metadata.get(key) != value:
                 raise GatewayError(400, "create_metadata_mismatch")
+        if metadata.get("ai-platform.external_egress.network_mode") != self.config.expected_network_mode:
+            raise GatewayError(400, "create_metadata_mismatch")
         scope = {}
         for name, label in SCOPE_LABELS.items():
             value = metadata.get(label)
@@ -1155,7 +1163,7 @@ class GatewayApplication:
             evidence.sandbox_id != record.sandbox_id
             or not evidence.running
             or evidence.runtime != "runsc"
-            or evidence.network_mode != "none"
+            or evidence.network_mode != self.config.expected_network_mode
             or evidence.no_new_privileges is not True
             or evidence.user != "1000:1000"
             or evidence.uid != "1000"
@@ -1177,6 +1185,7 @@ class GatewayApplication:
             "expires_at": (now + timedelta(seconds=self.config.capability_ttl_seconds)).isoformat().replace("+00:00", "Z"),
             "opensandbox_endpoint": self.config.lifecycle_endpoint.replace("http://127.0.0.1:8080", f"https://{self.config.public_authority}"),
             "runtime_identity": "runsc",
+            "network_mode": self.config.expected_network_mode,
             "ai_platform_runtime_subject": self.config.runtime_subject,
             "gateway_policy_subject": self.config.gateway_policy_subject,
             "callback_boundary_subject": self.config.callback_boundary_subject,

@@ -59,6 +59,7 @@ REQUIRED_KEYS = frozenset(
         "OPENSANDBOX_PROTOCOL",
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
@@ -290,6 +291,8 @@ def _validated_contract(values: Mapping[str, str]) -> ValidatedS72ReleaseContrac
     image = values["OPENSANDBOX_EXECUTOR_IMAGE"]
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not IMMUTABLE_IMAGE_RE.fullmatch(image) or not image.endswith(f"@{digest}"):
         raise S72ReleaseContractError("OpenSandbox executor image is not immutable")
+    if values["OPENSANDBOX_EXPECTED_NETWORK_MODE"] not in {"none", "bridge"}:
+        raise S72ReleaseContractError("OpenSandbox expected network mode is invalid")
     if any(not IDENTITY_SUBJECT_RE.fullmatch(values[key]) for key in IDENTITY_SUBJECT_KEYS):
         raise S72ReleaseContractError("identity subject authority is invalid")
     _validate_secret_authority(values)

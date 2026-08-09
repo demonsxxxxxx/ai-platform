@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     opensandbox_external_egress_openai_base_url: str = Field(default="")
     opensandbox_external_egress_anthropic_base_url: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
+    opensandbox_expected_network_mode: Literal["none", "bridge"] = Field(default="none")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
