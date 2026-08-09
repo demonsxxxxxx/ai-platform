@@ -901,8 +901,10 @@ def install_company_login(monkeypatch, *, gate_a: threading.Event | None = None,
             "cnName": username.title(),
         }
 
-    async def fake_user_info(_work_id: str):
-        return {"roles": ["user"]}
+    async def fake_user_info(work_id: str):
+        # Match the production authority contract: role data is accepted only
+        # when the current user-info response binds itself to the login work ID.
+        return {"workId": work_id, "roles": ["user"]}
 
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
