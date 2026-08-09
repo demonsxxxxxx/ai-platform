@@ -2733,6 +2733,43 @@ def test_broker_loop_isolates_iteration_exception_and_continues() -> None:
     assert calls == 2 and not thread.is_alive()
 
 
+def test_capability_only_mode_does_not_load_model_credentials_or_start_broker(monkeypatch) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("capability-only mode touched the model broker")
+
+    monkeypatch.setattr(gateway_server, "_model_provider_credentials", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_broker_policy", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_upstream_tls_context", unexpected)
+    monkeypatch.setattr(gateway_server, "MailboxBroker", unexpected)
+
+    runtime = gateway_server._start_broker_runtime(
+        loopback_gateway_config(),
+        SimpleNamespace(),
+        "",
+        "",
+        {"OPENSANDBOX_GATEWAY_BROKER_ENABLED": "false"},
+    )
+
+    assert runtime is None
+
+
+def test_gateway_broker_defaults_enabled_and_requires_model_credentials() -> None:
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE"):
+        gateway_server._start_broker_runtime(
+            loopback_gateway_config(),
+            SimpleNamespace(),
+            "",
+            "",
+            {},
+        )
+
+
+@pytest.mark.parametrize("value", ("", "0", "False", "yes", " disabled "))
+def test_gateway_broker_mode_rejects_ambiguous_values(value: str) -> None:
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_BROKER_ENABLED"):
+        gateway_server._broker_enabled({"OPENSANDBOX_GATEWAY_BROKER_ENABLED": value})
+
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
     reason="real relay owner/mode and timeout cleanup requires a root-capable POSIX release gate",

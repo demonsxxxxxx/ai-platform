@@ -89,27 +89,18 @@ def build_application(config: GatewayConfig, state_path: str) -> tuple[GatewayAp
 
 
 def run() -> None:
-    """Run the authenticated HTTPS gateway and host mailbox worker."""
+    """Run the authenticated HTTPS gateway and optional host mailbox worker."""
 
     config, state_path, policy_path, cert_path, key_path, upstream_ca_path, port = load_config()
-    provider_credentials = _model_provider_credentials(os.environ)
     _verify_certificate_ip_san(cert_path, config.public_authority)
     application, store = build_application(config, state_path)
-    policy = _load_broker_policy(config, policy_path)
-    upstream_tls_context = _load_upstream_tls_context(upstream_ca_path) if upstream_ca_path else None
-    broker = MailboxBroker(
+    broker_runtime = _start_broker_runtime(
+        config,
         store,
-        policy,
-        config.request_timeout_seconds,
-        config.max_response_bytes,
-        config.workspace_root,
-        config.dispatch_timeout_seconds,
-        upstream_tls_context=upstream_tls_context,
-        provider_credentials=provider_credentials,
+        policy_path,
+        upstream_ca_path,
+        os.environ,
     )
-    stop = threading.Event()
-    worker = threading.Thread(target=_broker_loop, args=(broker, stop), name="opensandbox-mailbox-broker", daemon=True)
-    worker.start()
 
     class Handler(_GatewayHandler):
         app = application
@@ -130,7 +121,8 @@ def run() -> None:
     server.tls_context = context
 
     def shutdown(*_: object) -> None:
-        stop.set()
+        if broker_runtime is not None:
+            broker_runtime[0].set()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
@@ -138,9 +130,52 @@ def run() -> None:
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
-        stop.set()
-        worker.join(timeout=2.0)
+        if broker_runtime is not None:
+            broker_runtime[0].set()
+            broker_runtime[1].join(timeout=2.0)
         server.server_close()
+
+
+def _start_broker_runtime(
+    config: GatewayConfig,
+    store: SQLiteStateStore,
+    policy_path: str,
+    upstream_ca_path: str,
+    environ: Mapping[str, str],
+) -> tuple[threading.Event, threading.Thread] | None:
+    if not _broker_enabled(environ):
+        return None
+    provider_credentials = _model_provider_credentials(environ)
+    policy = _load_broker_policy(config, policy_path)
+    upstream_tls_context = _load_upstream_tls_context(upstream_ca_path) if upstream_ca_path else None
+    broker = MailboxBroker(
+        store,
+        policy,
+        config.request_timeout_seconds,
+        config.max_response_bytes,
+        config.workspace_root,
+        config.dispatch_timeout_seconds,
+        upstream_tls_context=upstream_tls_context,
+        provider_credentials=provider_credentials,
+    )
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=_broker_loop,
+        args=(broker, stop),
+        name="opensandbox-mailbox-broker",
+        daemon=True,
+    )
+    worker.start()
+    return stop, worker
+
+
+def _broker_enabled(environ: Mapping[str, str]) -> bool:
+    value = environ.get("OPENSANDBOX_GATEWAY_BROKER_ENABLED", "true")
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError("OPENSANDBOX_GATEWAY_BROKER_ENABLED must be true or false")
 
 
 class _GatewayHandler(BaseHTTPRequestHandler):
