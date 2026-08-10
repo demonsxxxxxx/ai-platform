@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "98da4979077131e69b74213830d1ab120de93fd6",
-    "scope_sha256": "271d52c7a918fbb240c22a673833f2bfae37a8576a97b9461efe2b76a22d8d85"
+    "scope_sha256": "c8893a73845f002962ecbea41d519db758b62a594f0b446d682e83353a5675ba"
   },
   "expires_on": "2026-08-17",
   "owner": "issue-886-control-plane-ui",
