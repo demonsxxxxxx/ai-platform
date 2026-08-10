@@ -18,6 +18,7 @@ export class ApiRequestError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly submissionDisposition?: "rejected_before_persist",
+    readonly diagnosticId?: string,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -50,11 +51,22 @@ export async function apiRequestErrorFromResponse(
       "rejected_before_persist"
       ? "rejected_before_persist"
       : undefined;
+  const diagnosticId =
+    detail !== null &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    typeof (detail as { diagnostic_id?: unknown }).diagnostic_id === "string" &&
+    /^diag_[a-f0-9]{16}$/.test(
+      (detail as { diagnostic_id: string }).diagnostic_id,
+    )
+      ? (detail as { diagnostic_id: string }).diagnostic_id
+      : undefined;
   return new ApiRequestError(
     projection.message,
     status,
     projection.code,
     submissionDisposition,
+    diagnosticId,
   );
 }
 

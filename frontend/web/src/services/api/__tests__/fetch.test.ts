@@ -101,13 +101,14 @@ function installFetchAuthStubs({
   };
 }
 
-test("retains only the server-controlled submission disposition", async () => {
+test("retains only server-controlled submission recovery fields", async () => {
   const error = await apiRequestErrorFromResponse(
     new Response(
       JSON.stringify({
         detail: {
           code: "session_workspace_mismatch",
           submission_disposition: "rejected_before_persist",
+          diagnostic_id: "diag_0123456789abcdef",
           private_diagnostic: "must not be projected",
         },
       }),
@@ -117,6 +118,25 @@ test("retains only the server-controlled submission disposition", async () => {
 
   assert.equal(error.code, "session_workspace_mismatch");
   assert.equal(error.submissionDisposition, "rejected_before_persist");
+  assert.equal(error.diagnosticId, "diag_0123456789abcdef");
+});
+
+test("rejects malformed diagnostic identifiers", async () => {
+  const error = await apiRequestErrorFromResponse(
+    new Response(
+      JSON.stringify({
+        detail: {
+          code: "chat_submission_internal_error",
+          diagnostic_id: "diag_private-token",
+        },
+      }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    ),
+  );
+
+  assert.equal(error.code, "chat_submission_internal_error");
+  assert.equal(error.diagnosticId, undefined);
+  assert.doesNotMatch(error.message, /private|token/i);
 });
 
 test("authFetch uses cookie credentials without mutating legacy auth storage", async () => {

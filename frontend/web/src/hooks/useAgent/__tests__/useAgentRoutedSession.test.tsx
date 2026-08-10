@@ -935,10 +935,11 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
     submissions += 1;
     if (submissions === 1) {
       throw new ApiRequestError(
-        "invalid selector",
-        400,
-        "skill_selector_conflict",
+        "safe internal projection",
+        500,
+        "chat_submission_internal_error",
         "rejected_before_persist",
+        "diag_0123456789abcdef",
       );
     }
     return {
@@ -954,7 +955,10 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
       });
     });
     assert.equal(harness.hook.messages.length, 0);
-    assert.equal(harness.hook.error, "消息发送失败");
+    assert.equal(
+      harness.hook.error,
+      "任务因内部服务错误未能提交。请刷新后重试；如仍失败，请向管理员提供诊断编号。 [diag_0123456789abcdef]",
+    );
 
     await harness.act(async () => {
       assert.deepEqual(await harness.hook.sendMessage("重新提交"), {

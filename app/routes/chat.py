@@ -3,6 +3,7 @@ import binascii
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -14,7 +15,7 @@ from fastapi.exception_handlers import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse
 
 from app import repositories
 from app.agent_profiles import (
@@ -106,8 +107,52 @@ _ORIGINAL_ENQUEUE_RUN = enqueue_run
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
 _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
+_CHAT_SUBMISSION_INTERNAL_ERROR_CODE = "chat_submission_internal_error"
+_QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
 _SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
+_SAFE_SUBMISSION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MESSAGE_CURSOR_VERSION = 1
+
+
+def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
+    return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
+
+
+def _new_submission_diagnostic_id() -> str:
+    return f"diag_{uuid4().hex[:16]}"
+
+
+def _log_safe_submission_exception(
+    *,
+    phase: str,
+    diagnostic_id: str,
+    exc: BaseException,
+) -> None:
+    frames: list[str] = []
+    traceback_cursor = exc.__traceback__
+    while traceback_cursor is not None:
+        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
+        if module_name == "app" or module_name.startswith("app."):
+            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
+        traceback_cursor = traceback_cursor.tb_next
+    logger.error(
+        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
+        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
+    )
+
+
+def _submission_error_detail(
+    *,
+    code: str,
+    rejected_before_persist: bool,
+    diagnostic_id: str | None = None,
+) -> dict[str, str]:
+    detail = {"code": _safe_submission_code(code)}
+    if rejected_before_persist:
+        detail["submission_disposition"] = "rejected_before_persist"
+    if diagnostic_id is not None:
+        detail["diagnostic_id"] = diagnostic_id
+    return detail
 
 
 def _encode_message_cursor(row: dict[str, Any], *, session_id: str) -> str:
@@ -160,23 +205,40 @@ class _ChatSubmissionNoStoreRoute(APIRoute):
                 response = await http_exception_handler(request, exc)
             except RequestValidationError as exc:
                 response = await request_validation_exception_handler(request, exc)
-            except Exception:
-                logger.exception("chat submission resolver failed unexpectedly")
-                response = PlainTextResponse("Internal Server Error", status_code=500)
+            except Exception as exc:
+                diagnostic_id = _new_submission_diagnostic_id()
+                _log_safe_submission_exception(
+                    phase="resolver",
+                    diagnostic_id=diagnostic_id,
+                    exc=exc,
+                )
+                detail = _submission_error_detail(
+                    code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                    rejected_before_persist=False,
+                    diagnostic_id=diagnostic_id,
+                )
+                response = JSONResponse({"detail": detail}, status_code=500)
             response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
             return response
 
         return no_store_handler
 
 
-def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException:
+def _chat_submission_http_error(
+    *,
+    status_code: int,
+    code: str,
+    diagnostic_id: str | None = None,
+) -> HTTPException:
     """Return the sole server-controlled pre-persistence rejection signal."""
 
-    detail = {
-        "code": code,
-        "submission_disposition": "rejected_before_persist",
-    }
-    if code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE:
+    safe_code = _safe_submission_code(code)
+    detail = _submission_error_detail(
+        code=safe_code,
+        rejected_before_persist=True,
+        diagnostic_id=diagnostic_id,
+    )
+    if safe_code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE:
         detail.update(public_required_tool_detail("unavailable"))
     return HTTPException(
         status_code=status_code,
@@ -186,11 +248,11 @@ def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException
 
 def _submission_code(detail: object, fallback: str = "chat_submission_rejected") -> str:
     if isinstance(detail, dict) and isinstance(detail.get("code"), str):
-        return str(detail["code"])
+        return _safe_submission_code(detail["code"], fallback)
     if isinstance(detail, dict) and detail.get("detail_code") in _SAFE_SUBMISSION_DETAIL_CODES:
-        return str(detail["detail_code"])
-    if isinstance(detail, str) and detail:
-        return detail
+        return _safe_submission_code(detail["detail_code"], fallback)
+    if isinstance(detail, str):
+        return _safe_submission_code(detail, fallback)
     return fallback
 
 
@@ -2190,7 +2252,8 @@ async def chat_stream(
             )
     except HTTPException as exc:
         code = _submission_code(exc.detail)
-        if 400 <= exc.status_code < 500:
+        rejected_before_persist = 400 <= exc.status_code < 500 or code == _QUEUE_PAYLOAD_INVALID_CODE
+        if rejected_before_persist:
             await _persist_pre_persistence_rejection(
                 principal=principal,
                 submission_id=submission_id,
@@ -2200,7 +2263,7 @@ async def chat_stream(
                 session_id=request.session_id,
                 code=code,
             )
-        if submission_id is not None and 400 <= exc.status_code < 500:
+        if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise
     except repositories.RepositoryAuthorizationError as exc:
@@ -2265,6 +2328,43 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
+    except Exception as exc:
+        diagnostic_id = _new_submission_diagnostic_id()
+        _log_safe_submission_exception(
+            phase="admission_transaction",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+        )
+        try:
+            await _persist_pre_persistence_rejection(
+                principal=principal,
+                submission_id=submission_id,
+                request=request,
+                query_agent_id=query_agent_id,
+                workspace_id=effective_workspace_id,
+                session_id=request.session_id,
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+            )
+        except Exception as persistence_exc:
+            _log_safe_submission_exception(
+                phase="rejection_ledger",
+                diagnostic_id=diagnostic_id,
+                exc=persistence_exc,
+            )
+        if submission_id is not None:
+            raise _chat_submission_http_error(
+                status_code=500,
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                diagnostic_id=diagnostic_id,
+            ) from None
+        raise HTTPException(
+            status_code=500,
+            detail=_submission_error_detail(
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                rejected_before_persist=True,
+                diagnostic_id=diagnostic_id,
+            ),
+        ) from None
     if submission_id is not None:
         try:
             admitted = _require_chat_submission_admitted(

@@ -28,6 +28,8 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   skill_package_too_large: "backendErrors.skillPackageTooLarge",
   skill_package_file_too_large: "backendErrors.skillPackageTooLarge",
   context_file_too_large: "backendErrors.contextFileTooLarge",
+  queue_payload_invalid: "backendErrors.queuePayloadInvalid",
+  chat_submission_internal_error: "backendErrors.chatSubmissionInternalError",
   skill_package_path_escape: "backendErrors.skillPackageUnsafe",
   skill_package_mixed_root: "backendErrors.skillPackageUnsafe",
   skill_package_duplicate_path: "backendErrors.skillPackageUnsafe",
@@ -150,6 +152,7 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
 };
 
 const SAFE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const SAFE_DIAGNOSTIC_ID_PATTERN = /^diag_[a-f0-9]{16}$/;
 const SAFE_PATTERN_VALUE = /^[A-Za-z0-9][A-Za-z0-9:_ .-]{0,63}$/;
 const UNSAFE_PATTERN_VALUE =
   /(?:api[_-]?key|bearer|cookie|password|private|secret|session|token)/i;
@@ -206,11 +209,13 @@ export interface ChatAdmissionError {
   status?: unknown;
   code?: unknown;
   message?: unknown;
+  diagnosticId?: unknown;
 }
 
 export interface SafeChatAdmissionErrorProjection {
   message: string;
   code?: string;
+  diagnosticId?: string;
 }
 
 /**
@@ -222,6 +227,11 @@ export function projectChatAdmissionError(
   t: TFunction,
 ): SafeChatAdmissionErrorProjection {
   const code = safeDiagnosticCode(error);
+  const diagnosticId =
+    typeof error.diagnosticId === "string" &&
+    SAFE_DIAGNOSTIC_ID_PATTERN.test(error.diagnosticId)
+      ? error.diagnosticId
+      : undefined;
   if (
     error.status === 409 &&
     code === "user_active_run_limit_exceeded"
@@ -232,6 +242,7 @@ export function projectChatAdmissionError(
           "当前账户已有 3 个运行中的任务。请等待任务结束或取消旧任务后再发送。",
       }),
       code,
+      ...(diagnosticId ? { diagnosticId } : {}),
     };
   }
   const status =
@@ -243,9 +254,11 @@ export function projectChatAdmissionError(
     (code ? translateKnownBackendError(code, t) : undefined) ??
     translateKnownBackendError(message, t);
   const fallbackKey = statusFallbackKey(status, "chat.sendFailed");
+  const baseMessage = translated ?? t(fallbackKey, fallbackKey);
   return {
-    message: translated ?? t(fallbackKey, fallbackKey),
+    message: diagnosticId ? `${baseMessage} [${diagnosticId}]` : baseMessage,
     ...(code ? { code } : {}),
+    ...(diagnosticId ? { diagnosticId } : {}),
   };
 }
 
