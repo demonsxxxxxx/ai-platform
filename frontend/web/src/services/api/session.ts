@@ -337,7 +337,13 @@ export function buildAgentAppRunBody({
   submissionId: string;
   userTimezone?: string;
 }): Record<string, unknown> {
-  const fileIds = [...new Set((attachments ?? []).map((attachment) => attachment.id))];
+  const fileIds = [
+    ...new Set(
+      (attachments ?? [])
+        .map((attachment) => attachment.key.trim())
+        .filter((key) => key.length > 0),
+    ),
+  ];
   return {
     message,
     submission_id: submissionId,
