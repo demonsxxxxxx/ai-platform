@@ -2817,6 +2817,90 @@ def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):
     assert str(tmp_path) not in content
 
 
+@pytest.mark.parametrize(
+    ("operation", "error_type"),
+    [
+        pytest.param("mkdir", OSError, id="mkdir-oserror"),
+        pytest.param("mkdir", PermissionError, id="mkdir-permission-error"),
+        pytest.param("write_text", OSError, id="write-text-oserror"),
+        pytest.param("write_text", PermissionError, id="write-text-permission-error"),
+    ],
+)
+def test_executor_execute_fails_closed_when_runtime_marker_write_fails(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    operation,
+    error_type,
+):
+    runner_invoked = False
+    callbacks = []
+
+    async def executor_runner(request, workspace_root, emit_event):
+        nonlocal runner_invoked
+        runner_invoked = True
+        return {"status": "completed"}
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+    )
+    marker_dir = Path(tmp_path) / "runtime"
+    marker_path = marker_dir / "run-a.json"
+    leak = (
+        f"path={marker_path} config=secret-key header=Authorization "
+        "token=nested-secret prompt=hello executor"
+    )
+
+    if operation == "mkdir":
+        original_mkdir = Path.mkdir
+
+        def failing_mkdir(path, *args, **kwargs):
+            if path == marker_dir:
+                raise error_type(leak)
+            return original_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+    else:
+        original_write_text = Path.write_text
+
+        def failing_write_text(path, *args, **kwargs):
+            if path == marker_path:
+                raise error_type(leak)
+            return original_write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    response = client.post(
+        "/v1/tasks/execute",
+        json=sensitive_task_payload(),
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "executor_runtime_marker_write_failed"
+    assert body["message"] == "Executor runtime marker write failed"
+    assert body["error_message"] == "Executor runtime marker write failed"
+    assert runner_invoked is False
+    assert callbacks == []
+    public_output = response.text + caplog.text
+    for sensitive_value in (
+        str(tmp_path),
+        "secret-key",
+        "Authorization",
+        "nested-secret",
+        "hello executor",
+    ):
+        assert sensitive_value not in public_output
+
+
 def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
     client = create_test_client(
         tmp_path,
