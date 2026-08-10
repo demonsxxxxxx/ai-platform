@@ -219,6 +219,20 @@ jobs:
             -f frontend/web/Dockerfile \
             .
 
+      - name: Block fixable frontend image vulnerabilities
+        env:
+          TRIVY_LIST_ALL_PKGS: 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ai-platform-frontend:${{ env.IMAGE_SOURCE_COMMIT }}
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+          version: v0.70.0
+
       - name: Verify image build provenance
         run: |
           docker run --rm --entrypoint cat "ai-platform-frontend:$IMAGE_SOURCE_COMMIT" /usr/share/nginx/html/ai-platform-build-provenance.json > frontend-build-provenance.json

@@ -19,7 +19,7 @@ EXPECTED_BASES = {
     "python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8",
     "ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded",
     "node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a",
-    "nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
+    "nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46",
 }
 
 
@@ -129,6 +129,10 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         assert 'image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"' in image_job
         assert 'printf \'IMAGE_SOURCE_REPOSITORY=%s\\n\' "$image_source_repository" >> "$GITHUB_ENV"' in image_job
         assert "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git" not in image_job
+        assert "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25" in image_job
+        assert "severity: HIGH,CRITICAL" in image_job
+        assert "ignore-unfixed: true" in image_job
+        assert "exit-code: '1'" in image_job
     assert "packaged_backend_image_id=%s" in backend_image
     assert "packaged_frontend_image_id=%s" in frontend_image
     assert "backend_container_state=" in backend_image

@@ -103,6 +103,7 @@ def test_publish_checks_out_and_proves_the_exact_event_commit():
 def test_publish_matrix_is_exactly_backend_and_frontend_on_linux_amd64():
     workflow = _workflow()
     publish = workflow["jobs"]["publish"]
+    assert publish["strategy"]["fail-fast"] == "false"
     matrix = publish["strategy"]["matrix"]["include"]
 
     assert matrix == [
@@ -165,9 +166,18 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     names = [step.get("name") for step in steps]
 
     assert names.index("Build and push immutable image") < names.index("Generate SPDX SBOM")
-    assert names.index("Generate SPDX SBOM") < names.index("Scan published digest")
-    assert names.index("Scan published digest") < names.index("Attest SPDX SBOM")
-    assert names.index("Scan published digest") < names.index("Attest build provenance")
+    assert names.index("Generate SPDX SBOM") < names.index(
+        "Inventory all published digest vulnerabilities"
+    )
+    assert names.index("Inventory all published digest vulnerabilities") < names.index(
+        "Upload untrusted Trivy inventory"
+    ) < names.index("Scan published digest for fixable vulnerabilities")
+    assert names.index("Scan published digest for fixable vulnerabilities") < names.index(
+        "Attest SPDX SBOM"
+    )
+    assert names.index("Scan published digest for fixable vulnerabilities") < names.index(
+        "Attest build provenance"
+    )
     assert names.index("Attest build provenance") < names.index("Sign image by digest")
     assert names.index("Sign image by digest") < names.index("Create subject evidence record")
 
@@ -187,8 +197,10 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     assert "github.token" not in build_inputs["build-args"]
     assert "password: ${{ github.token }}" in text
     assert "TRIVY_SEVERITY: HIGH,CRITICAL" in text
+    assert "exit-code: '0'" in text
     assert "exit-code: '1'" in text
     assert "ignore-unfixed: false" in text
+    assert "ignore-unfixed: true" in text
     assert "version: v0.70.0" in text
     assert "trivy-version:" not in text
     assert "syft-version: v1.50.0" in text
@@ -202,19 +214,52 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     assert "--deny-self-hosted-runners" in text
 
 
-def test_trivy_failure_uploads_only_redacted_untrusted_run_bound_diagnostics():
+def test_trivy_inventory_and_fixable_failure_reports_are_run_bound_and_untrusted():
     workflow = _workflow()
     publish = workflow["jobs"]["publish"]
     steps = publish["steps"]
     names = [step.get("name") for step in steps]
-    scan = next(step for step in steps if step.get("name") == "Scan published digest")
+    inventory = next(
+        step
+        for step in steps
+        if step.get("name") == "Inventory all published digest vulnerabilities"
+    )
+    inventory_upload = next(
+        step for step in steps if step.get("name") == "Upload untrusted Trivy inventory"
+    )
+    scan = next(
+        step
+        for step in steps
+        if step.get("name") == "Scan published digest for fixable vulnerabilities"
+    )
     capture = next(
         step for step in steps if step.get("name") == "Create untrusted Trivy failure evidence"
     )
     upload = next(
-        step for step in steps if step.get("name") == "Upload untrusted Trivy scan diagnostic"
+        step for step in steps if step.get("name") == "Upload untrusted Trivy failure report"
     )
 
+    assert inventory["env"] == {"TRIVY_LIST_ALL_PKGS": "false"}
+    assert inventory["with"] == {
+        "scan-type": "image",
+        "image-ref": "${{ matrix.subject }}@${{ steps.build.outputs.digest }}",
+        "format": "json",
+        "output": "trivy-inventory-${{ matrix.role }}.json",
+        "vuln-type": "os,library",
+        "severity": "HIGH,CRITICAL",
+        "exit-code": "0",
+        "ignore-unfixed": "false",
+        "version": "v0.70.0",
+    }
+    assert inventory_upload["with"] == {
+        "name": (
+            "release-image-trivy-inventory-${{ github.sha }}-${{ github.run_id }}-"
+            "${{ github.run_attempt }}-${{ matrix.role }}"
+        ),
+        "if-no-files-found": "error",
+        "retention-days": "7",
+        "path": "trivy-inventory-${{ matrix.role }}.json",
+    }
     assert scan["id"] == "trivy-scan"
     assert "continue-on-error" not in scan
     assert scan["env"] == {"TRIVY_LIST_ALL_PKGS": "false"}
@@ -226,12 +271,14 @@ def test_trivy_failure_uploads_only_redacted_untrusted_run_bound_diagnostics():
         "vuln-type": "os,library",
         "severity": "HIGH,CRITICAL",
         "exit-code": "1",
-        "ignore-unfixed": "false",
+        "ignore-unfixed": "true",
         "version": "v0.70.0",
     }
-    assert names.index("Scan published digest") < names.index(
+    assert names.index("Inventory all published digest vulnerabilities") < names.index(
+        "Upload untrusted Trivy inventory"
+    ) < names.index("Scan published digest for fixable vulnerabilities") < names.index(
         "Create untrusted Trivy failure evidence"
-    ) < names.index("Upload untrusted Trivy scan diagnostic") < names.index("Install cosign")
+    ) < names.index("Upload untrusted Trivy failure report") < names.index("Install cosign")
     assert capture["id"] == "trivy-failure-evidence"
     assert capture["if"] == (
         "${{ failure() && steps.trivy-scan.outcome == 'failure' && "
@@ -262,13 +309,17 @@ def test_trivy_failure_uploads_only_redacted_untrusted_run_bound_diagnostics():
             "${{ github.run_attempt }}-${{ matrix.role }}"
         ),
         "if-no-files-found": "error",
-        "retention-days": "1",
-        "path": "trivy-failure-diagnostic-${{ matrix.role }}.json",
+        "retention-days": "7",
+        "path": (
+            "trivy-${{ matrix.role }}.json\n"
+            "trivy-failure-diagnostic-${{ matrix.role }}.json\n"
+        ),
     }
-    assert "trivy-${{ matrix.role }}.json" not in upload["with"]["path"]
-    assert "github.token" not in str(capture) + str(upload)
-    assert "GH_TOKEN" not in str(capture) + str(upload)
+    assert "github.token" not in str(inventory) + str(inventory_upload) + str(capture) + str(upload)
+    assert "GH_TOKEN" not in str(inventory) + str(inventory_upload) + str(capture) + str(upload)
     manifest = workflow["jobs"]["release-manifest"]
+    assert "release-image-trivy-inventory" not in str(manifest)
+    assert "trivy-inventory" not in str(manifest)
     assert "release-image-trivy-diagnostic" not in str(manifest)
     assert "trivy-failure-diagnostic" not in str(manifest)
     assert manifest["needs"] == ["publish"]
@@ -415,7 +466,12 @@ def test_generated_spdx_is_bound_before_scan_and_attestation():
     assert names.index("Capture generated SPDX source identity") < names.index(
         "Bind SPDX SBOM to immutable subject"
     )
-    assert names.index("Bind SPDX SBOM to immutable subject") < names.index("Scan published digest")
+    assert names.index("Bind SPDX SBOM to immutable subject") < names.index(
+        "Inventory all published digest vulnerabilities"
+    )
+    assert names.index("Bind SPDX SBOM to immutable subject") < names.index(
+        "Scan published digest for fixable vulnerabilities"
+    )
     assert names.index("Bind SPDX SBOM to immutable subject") < names.index("Attest SPDX SBOM")
     assert source["id"] == "spdx-source"
     assert "python tools/release_image_manifest.py spdx-source-hash" in source["run"]

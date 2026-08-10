@@ -155,6 +155,20 @@ jobs:
             -f Dockerfile \
             .
 
+      - name: Block fixable backend image vulnerabilities
+        env:
+          TRIVY_LIST_ALL_PKGS: 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ai-platform-backend:${{ env.IMAGE_SOURCE_COMMIT }}
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+          version: v0.70.0
+
       - name: Verify backend image runtime contract
         run: |
           set -euo pipefail

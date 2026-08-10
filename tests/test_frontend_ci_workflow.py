@@ -119,6 +119,15 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "--build-arg AI_PLATFORM_BUILD_DIRTY=false" in workflow
     assert '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"' in workflow
     assert "-f frontend/web/Dockerfile" in workflow
+    assert "- name: Block fixable frontend image vulnerabilities" in workflow
+    assert (
+        "uses: aquasecurity/trivy-action@"
+        "ed142fd0673e97e23eac54620cfb913e5ce36c25"
+    ) in workflow
+    assert "image-ref: ai-platform-frontend:${{ env.IMAGE_SOURCE_COMMIT }}" in workflow
+    assert "severity: HIGH,CRITICAL" in workflow
+    assert "ignore-unfixed: true" in workflow
+    assert "exit-code: '1'" in workflow
     assert "docker run --rm --entrypoint cat" in workflow
     assert "ai-platform-build-provenance.json" in workflow
     assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]

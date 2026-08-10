@@ -29,7 +29,7 @@ index digest:
 - `python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8`
 - `ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded`
 - `node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a`
-- `nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10`
+- `nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46`
 
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs
@@ -50,7 +50,11 @@ DNS subject. On failure, both image jobs report only a bounded log-tail line cou
 fixed non-secret startup signals, and container status/exit code; they never dump
 container environments or raw log content. The workflows have `contents: read`
 only and do not publish, deploy, read deployment configuration, or claim a registry
-or 211 runtime subject.
+or 211 runtime subject. Each locally built candidate image is also scanned for
+`HIGH,CRITICAL` OS and library vulnerabilities whose Trivy record identifies an
+upstream fixed version. A fixable finding fails the stable required check before
+merge. Upstream-unfixed findings are not silently promoted into fixable source
+defects and remain visible in the publication inventory described below.
 
 Rollback is an ordinary revert of the reviewed lock, Dockerfile, workflow, and
 version declaration changes. It does not retag, publish, deploy, or mutate the
@@ -87,7 +91,8 @@ release-image evidence.
 Each subject is pushed under only its full 40-hex source commit tag. Downstream
 steps immediately switch to `subject@sha256:<registry-manifest-digest>` and
 generate SPDX JSON, an OCI SBOM attestation, SLSA provenance, a keyless Sigstore
-signature, and a blocking Trivy scan for `HIGH,CRITICAL`. Missing or mismatched
+signature, a complete Trivy `HIGH,CRITICAL` inventory, and a blocking scan for
+findings whose Trivy record identifies an upstream fixed version. Missing or mismatched
 digests, attestations, signatures, SBOMs, or scan results fail before the ready
 manifest job. The strict machine-readable contract is
 `schemas/release-image-manifest.v1.schema.json`; the parser and assembler are
@@ -95,8 +100,13 @@ manifest job. The strict machine-readable contract is
 repository and workflow run identity, platform, Dockerfile hash and context,
 registry manifest digest, and all evidence references for both subjects.
 
-The scan runs against the published digest before any SBOM or provenance
-attestation and before keyless signing. Automatic BuildKit provenance is
+Both inventory and blocking scans run against the published digest before any
+SBOM or provenance attestation and before keyless signing. The run-bound
+inventory is explicitly untrusted release diagnostic evidence: it retains fixed
+and upstream-unfixed `HIGH,CRITICAL` findings for seven days, but it cannot enter
+the ready manifest or substitute for the blocking report. The blocking report
+contains only findings for which Trivy reports a fixed version and remains the
+digest-bound scan evidence carried into the subject record. Automatic BuildKit provenance is
 disabled so it cannot bypass that ordering. A scan failure can therefore leave
 an unattested, unsigned digest in GHCR, but it cannot create subject evidence or
 a ready manifest. Operators must treat every registry object without a verified
@@ -139,7 +149,8 @@ Dockerfile, source tag, immutable image reference, SBOM/signature reference,
 provenance artifact reference, and scan artifact reference. JSON Schema cannot
 express equality among arbitrary source, digest, and run fields. The Python
 semantic verifier is therefore the readiness authority: with the downloaded
-evidence root it rehashes and parses the SPDX document and Trivy report. The
+evidence root it rehashes and parses the SPDX document and the fixable-finding
+Trivy blocking report. The
 pinned Syft 1.50.0 image profile is accepted only when the document and the sole
 `SPDXRef-DOCUMENT DESCRIBES` root package identify the exact GHCR subject, the
 root purpose is `CONTAINER`, and root `versionInfo`, SHA256 checksum, and
