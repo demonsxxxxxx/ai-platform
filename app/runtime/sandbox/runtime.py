@@ -550,7 +550,8 @@ class SandboxRuntime:
             validation_succeeded = True
             dispatch_started_at = time.monotonic()
             response = normalize_executor_reported_failure(
-                await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
+                await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers),
+                expected_run_id=request.run_id,
             )
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
             collection_started = True

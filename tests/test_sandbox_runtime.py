@@ -1138,6 +1138,9 @@ async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_
             "run_id": task_request.run_id,
             "error_code": reported_code,
             "error_message": reported_message,
+            "url": "https://executor.test/run?token=private-token",
+            "path": "/private/workspace",
+            "nested": {"prompt": "private-prompt"},
         }
 
     async def record_lease(lease, request, workspace):
@@ -1165,6 +1168,7 @@ async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_
     assert result.executor_response["error_message"] == expected_message
     assert "private-token" not in str(result.executor_response)
     assert "private-prompt" not in str(result.executor_response)
+    assert set(result.executor_response) == {"status", "run_id", "error_code", "error_message"}
     assert calls == [("record", "run-a"), ("release", "run_failed", "lease-created-a")]
 
 

@@ -60,6 +60,7 @@ from app.runtime.sandbox.executor_client import (
     SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,
     executor_reported_failure_message,
+    normalize_executor_reported_failure,
 )
 from app.settings import get_settings
 from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
@@ -292,22 +293,17 @@ def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
 
 
 def _normalize_sandbox_reported_failure(result: ExecutorResult) -> ExecutorResult:
-    runtime_status = str(result.executor_payload.get("runtime_terminal_status") or "").strip().lower()
     if (
         result.status != "failed"
         or result.executor_payload.get("sandbox_runtime_used") is not True
-        or runtime_status in {"completed", "succeeded"}
     ):
         return result
     safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
-    safe_message = executor_reported_failure_message(safe_code)
-    safe_result = {
-        **result.result,
-        "error_code": safe_code,
-        "message": safe_message,
-    }
-    if "sdk_error" in safe_result:
-        safe_result["sdk_error"] = safe_code
+    safe_result = normalize_executor_reported_failure(
+        {**result.result, "status": "failed", "error_code": safe_code}
+    )
+    safe_result.pop("status", None)
+    safe_result.pop("error_message", None)
     safe_executor_payload = dict(result.executor_payload)
     if "sdk_error" in safe_executor_payload:
         safe_executor_payload["sdk_error"] = safe_code

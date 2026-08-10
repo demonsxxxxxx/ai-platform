@@ -5621,7 +5621,11 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(monkeypatch):
+@pytest.mark.parametrize("runtime_terminal_status", ["failed", "completed", "succeeded"])
+async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
+    monkeypatch,
+    runtime_terminal_status,
+):
     calls = []
     private_error = "https://executor.test/run?token=private-token<html>private-prompt</html>"
 
@@ -5637,10 +5641,13 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(monkey
                     "error_code": private_error,
                     "sdk_error": private_error,
                     "message": private_error,
+                    "url": private_error,
+                    "path": "/private/workspace",
+                    "nested": {"prompt": "private-prompt"},
                 },
                 executor_payload={
                     "sandbox_runtime_used": True,
-                    "runtime_terminal_status": "failed",
+                    "runtime_terminal_status": runtime_terminal_status,
                     "sdk_error": private_error,
                 },
             )
@@ -5676,6 +5683,8 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(monkey
     assert fail_call[1:3] == ("executor_reported_failure", "Executor reported failure")
     assert fail_call[3]["error_code"] == "executor_reported_failure"
     assert fail_call[3]["sdk_error"] == "executor_reported_failure"
+    assert set(fail_call[3]) >= {"error_code", "sdk_error", "message"}
+    assert not {"url", "path", "nested"} & set(fail_call[3])
     assert private_error not in str(calls)
 
 

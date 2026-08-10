@@ -529,6 +529,42 @@ async def test_executor_client_preserves_http_200_reported_failure():
     }
 
 
+def test_executor_failure_normalizer_drops_unknown_private_fields():
+    private = "https://executor.test/run?token=private-token"
+
+    normalized = executor_client_module.normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_health_timeout",
+            "message": private,
+            "sdk_error": private,
+            "detail": private,
+            "sdk_used": True,
+            "requested_max_seconds": 0.05,
+            "timeout_elapsed_ms": 51,
+            "url": private,
+            "path": "/private/workspace",
+            "token": "private-token",
+            "nested": {"prompt": "private-prompt"},
+        },
+        expected_run_id="run-a",
+    )
+
+    assert normalized == {
+        "status": "failed",
+        "run_id": "run-a",
+        "error_code": "executor_health_timeout",
+        "error_message": "Executor health timeout",
+        "message": "Executor health timeout",
+        "sdk_error": "executor_health_timeout",
+        "sdk_used": True,
+        "requested_max_seconds": 0.05,
+        "timeout_elapsed_ms": 51,
+    }
+    assert "private" not in str(normalized)
+
+
 @pytest.mark.asyncio
 async def test_executor_client_uses_normal_deadline_without_permission_wait(monkeypatch):
     calls = []
