@@ -637,12 +637,14 @@ test("unpublish fences the exact published revision and adopts immutable withdra
   });
 });
 
-test("real Builder test creates one controlled test submission for the exact published revision", async () => {
+test("real Builder test creates one controlled test submission for the exact saved draft snapshot", async () => {
   const calls: Array<{
     agentId: string;
     revision: number;
+    contentHash: string;
     message: string;
     submissionId: string;
+    fileIds: readonly string[];
   }> = [];
   const trialRun = {
     session_id: "ses_test_7ea9303330f540ea8a332f3c6e7b21c4",
@@ -653,21 +655,23 @@ test("real Builder test creates one controlled test submission for the exact pub
   };
   const controller = new AgentBuilderController(fakeApi({
     listAdmin: async () => ({
-      agent_profiles: [profile({ revision: 9, status: "published" })],
+      agent_profiles: [profile({ revision: 9, status: "draft", content_hash: "c".repeat(64) })],
     }),
-    runTest: async (agentId, revision, message, submissionId) => {
-      calls.push({ agentId, revision, message, submissionId });
+    runTest: async (agentId, revision, contentHash, message, submissionId, fileIds) => {
+      calls.push({ agentId, revision, contentHash, message, submissionId, fileIds });
       return { ...trialRun, submission_id: submissionId };
     },
   }));
   await controller.loadProfiles();
 
-  await controller.runActiveProfileTest("  Review this request  ");
+  await controller.runActiveProfileTest("  Review this request  ", ["file_builder_input"]);
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.agentId, "agt_document_review");
   assert.equal(calls[0]?.revision, 9);
+  assert.equal(calls[0]?.contentHash, "c".repeat(64));
   assert.equal(calls[0]?.message, "Review this request");
+  assert.deepEqual(calls[0]?.fileIds, ["file_builder_input"]);
   assert.match(
     calls[0]?.submissionId ?? "",
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,

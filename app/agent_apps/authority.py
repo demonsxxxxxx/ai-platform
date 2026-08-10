@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -824,6 +825,44 @@ class AgentProfileAuthority:
             )
         return admission
 
+    async def resolve_builder_draft_for_admission(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        selection: SelectedAgentProfileRequest,
+        expected_content_hash: str,
+    ) -> AgentProfileAdmission:
+        """Lock and reauthorize the exact latest saved draft for an admin test."""
+
+        self._require_admin(principal)
+        await repositories.acquire_agent_profile_lifecycle_lock(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=selection.agent_id,
+        )
+        aggregate = await repositories.get_agent_profile_aggregate(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=selection.agent_id,
+            for_update=True,
+        )
+        if (
+            aggregate is None
+            or int(aggregate.get("latest_revision") or 0) != selection.expected_revision
+        ):
+            raise HTTPException(status_code=409, detail="agent_profile_test_snapshot_stale")
+        row = await repositories.get_agent_profile_revision(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=selection.agent_id,
+            revision=selection.expected_revision,
+            status="draft",
+        )
+        if row is None or str(row.get("content_hash") or "") != expected_content_hash:
+            raise HTTPException(status_code=409, detail="agent_profile_test_snapshot_stale")
+        return await self._admission_from_row(conn, principal=principal, row=row)
+
     async def resolve_bound_for_submission(
         self,
         conn,
@@ -832,19 +871,34 @@ class AgentProfileAuthority:
         agent_id: str,
         revision: int,
         content_hash: str,
+        purpose: str = "conversation",
         submitted_request: ChatStreamRequest | None = None,
         query_agent_id: str | None = None,
     ) -> AgentProfileAdmission:
-        """Reauthorize a conversation's immutable publication while its Agent is live."""
+        """Reauthorize the immutable profile bound to a conversation purpose."""
 
-        row = await repositories.get_bound_published_agent_profile(
-            conn,
-            tenant_id=principal.tenant_id,
-            agent_id=agent_id,
-            revision=revision,
-            content_hash=content_hash,
-            for_update=True,
-        )
+        if purpose == "builder_test":
+            self._require_admin(principal)
+            row = await repositories.get_agent_profile_revision(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+                revision=revision,
+                status="draft",
+            )
+            if row is not None and str(row.get("content_hash") or "") != content_hash:
+                row = None
+        elif purpose == "conversation":
+            row = await repositories.get_bound_published_agent_profile(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+                revision=revision,
+                content_hash=content_hash,
+                for_update=True,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="agent_conversation_purpose_invalid")
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
         admission = await self._admission_from_row(conn, principal=principal, row=row)
@@ -951,19 +1005,27 @@ class AgentProfileAuthority:
         session_id: str | None = None,
         purpose: str = "conversation",
         operation_id: UUID | None = None,
+        expected_content_hash: str | None = None,
+        file_ids: Sequence[str] = (),
+        preflight_run_id: str | None = None,
     ) -> ChatSessionResponse:
-        """Atomically bind a new conversation to one current published profile revision/hash."""
+        """Atomically bind a conversation to its purpose-specific immutable profile."""
 
         if purpose not in {"conversation", "builder_test"}:
             raise HTTPException(status_code=400, detail="agent_conversation_purpose_invalid")
         if purpose == "builder_test":
             self._require_admin(principal)
+            if session_id is None or expected_content_hash is None or preflight_run_id is None:
+                raise HTTPException(status_code=400, detail="agent_profile_test_snapshot_invalid")
+        elif expected_content_hash is not None or file_ids or preflight_run_id is not None:
+            raise HTTPException(status_code=400, detail="agent_conversation_operation_invalid")
         if operation_id is not None and (purpose != "conversation" or session_id is not None):
             raise HTTPException(status_code=400, detail="agent_conversation_operation_invalid")
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
         await self._ensure_principal_user(conn, principal=principal)
         if operation_id is not None:
             session_id = f"ses_agent_{operation_id.hex}"
+        if operation_id is not None or purpose == "builder_test":
             existing = await repositories.get_authorized_session_projection(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -980,12 +1042,40 @@ class AgentProfileAuthority:
                     or str(existing.get("agent_id") or "") != selection.agent_id
                     or response.agent_conversation is None
                     or response.agent_conversation.revision != selection.expected_revision
+                    or (
+                        expected_content_hash is not None
+                        and str(existing.get("admitted_agent_profile_hash") or "")
+                        != expected_content_hash
+                    )
                     or response.purpose != purpose
                     or response.title != expected_title
                 ):
                     raise repositories.RepositoryConflictError("agent_conversation_operation_conflict")
                 return response
-        admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
+        if purpose == "builder_test":
+            admission = await self.resolve_builder_draft_for_admission(
+                conn,
+                principal=principal,
+                selection=selection,
+                expected_content_hash=str(expected_content_hash),
+            )
+            if file_ids:
+                await repositories.authorize_files_for_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=principal.user_id,
+                    session_id=str(session_id),
+                    run_id=str(preflight_run_id),
+                    file_ids=list(file_ids),
+                    input_modes=list(admission.skill.get("input_modes") or []),
+                )
+        else:
+            admission = await self.resolve_for_admission(
+                conn,
+                principal=principal,
+                selection=selection,
+            )
         resolved_title = title or admission.public_identity.name
         create_session_kwargs: dict[str, Any] = {
             "tenant_id": principal.tenant_id,

@@ -10200,6 +10200,56 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
     assert params == ("file-a",)
 
 
+@pytest.mark.parametrize(
+    ("row_update", "expected_error"),
+    [
+        ({"tenant_id": "tenant-b"}, "file_scope_mismatch"),
+        ({"workspace_id": "workspace-b"}, "file_scope_mismatch"),
+        ({"user_id": "user-b"}, "file_user_mismatch"),
+        ({"session_id": "session-b"}, "file_session_mismatch"),
+        ({"run_id": "run-b"}, "file_already_bound"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_foreign_scope_or_binding(
+    row_update,
+    expected_error,
+):
+    row = {
+        "id": "file-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": None,
+        "run_id": None,
+        "original_name": "source.docx",
+        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "size_bytes": 1024,
+        "sha256": "a" * 64,
+        **row_update,
+    }
+
+    class FileCursor:
+        async def fetchone(self):
+            return row
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match=expected_error):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_ids=["file-a"],
+        )
+
+
 @pytest.mark.asyncio
 async def test_authorize_files_for_run_rejects_skill_file_with_mismatched_mime():
     class FileCursor:

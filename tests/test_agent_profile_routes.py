@@ -275,8 +275,10 @@ def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonic
     client = TestClient(create_app())
     body = {
         "expected_revision": 7,
+        "expected_content_hash": "a" * 64,
         "message": "Run the enterprise test",
         "submission_id": "22222222-2222-4222-8222-222222222222",
+        "file_ids": ["file_builder_input"],
     }
 
     first = client.post(
@@ -303,10 +305,86 @@ def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonic
         assert call["purpose"] == "builder_test"
         assert call["selection"].agent_id == "agt_support"
         assert call["selection"].expected_revision == 7
+        assert call["expected_content_hash"] == "a" * 64
+        assert call["file_ids"] == ["file_builder_input"]
+        assert call["preflight_run_id"] == "run_test_preflight_22222222222242228222222222222222"
     assert [call["session_id"] for call in observed["runs"]] == [
         expected_session_id,
         expected_session_id,
     ]
+    assert [call["request"].file_ids for call in observed["runs"]] == [
+        ["file_builder_input"],
+        ["file_builder_input"],
+    ]
+
+
+def test_builder_trial_run_rejects_ordinary_users_before_storage_or_dispatch(monkeypatch):
+    calls: list[str] = []
+
+    async def forbidden(*_args, **_kwargs):
+        calls.append("side_effect")
+        raise AssertionError("ordinary users must not enter the Builder test path")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        forbidden,
+    )
+    monkeypatch.setattr("app.routes.agent_profiles._submit_dedicated_agent_run", forbidden)
+    response = TestClient(create_app()).post(
+        "/api/ai/admin/agent-profiles/agt_support/test-runs",
+        headers=auth_headers(),
+        json={
+            "expected_revision": 7,
+            "expected_content_hash": "a" * 64,
+            "message": "Attempt a Builder test",
+            "submission_id": "22222222-2222-4222-8222-222222222222",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+    assert calls == []
+
+
+def test_builder_trial_run_maps_cross_scope_file_denial_without_creating_a_run(monkeypatch):
+    from app import repositories
+
+    dispatched = False
+
+    async def deny_file_scope(*_args, **_kwargs):
+        raise repositories.RepositoryConflictError("file_scope_mismatch")
+
+    async def forbidden_dispatch(*_args, **_kwargs):
+        nonlocal dispatched
+        dispatched = True
+        raise AssertionError("file denial must precede canonical run dispatch")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        deny_file_scope,
+    )
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._submit_dedicated_agent_run",
+        forbidden_dispatch,
+    )
+    response = TestClient(create_app()).post(
+        "/api/ai/admin/agent-profiles/agt_support/test-runs",
+        headers=auth_headers(roles="admin"),
+        json={
+            "expected_revision": 7,
+            "expected_content_hash": "a" * 64,
+            "message": "Attempt a cross-scope file test",
+            "submission_id": "22222222-2222-4222-8222-222222222222",
+            "file_ids": ["file_foreign"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "agent_profile_test_file_not_authorized"
+    assert dispatched is False
 
 
 async def test_resolve_agent_skill_uses_global_skill_lifecycle_status():

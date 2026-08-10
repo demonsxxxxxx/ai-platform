@@ -31,8 +31,10 @@ export interface AgentBuilderProfileApi {
   runTest?: (
     agentId: string,
     expectedRevision: number,
+    expectedContentHash: string,
     message: string,
     submissionId: string,
+    fileIds: readonly string[],
   ) => Promise<AgentProfileTrialRunResponse>;
 }
 
@@ -477,15 +479,25 @@ export class AgentBuilderController {
     }
   }
 
-  /** Execute a published revision through the real Agent App submission chain. */
-  async runActiveProfileTest(message: string): Promise<AgentBuilderControllerState> {
+  /** Execute one exact saved draft through the real Agent App submission chain. */
+  async runActiveProfileTest(
+    message: string,
+    fileIds: readonly string[] = [],
+  ): Promise<AgentBuilderControllerState> {
     const editor = this.stateValue.activeEditor;
+    const materializedProfile = editor?.materializedProfile;
+    const contentHash = materializedProfile?.content_hash ?? "";
     if (
       this.hasActiveMutation() ||
       !this.api.runTest ||
       !editor?.agentId ||
       !editor.revision ||
-      editor.status !== "published" ||
+      editor.status !== "draft" ||
+      !materializedProfile ||
+      materializedProfile.agent_id !== editor.agentId ||
+      materializedProfile.revision !== editor.revision ||
+      materializedProfile.status !== "draft" ||
+      !/^[0-9a-f]{64}$/.test(contentHash) ||
       isAgentProfileEditorDirty(editor) ||
       !message.trim()
     ) {
@@ -497,8 +509,10 @@ export class AgentBuilderController {
       const trialRun = await this.api.runTest(
         editor.agentId,
         editor.revision,
+        contentHash,
         message.trim(),
         crypto.randomUUID(),
+        [...fileIds],
       );
       if (generation !== this.mutationGeneration) return this.stateValue;
       return this.commit({

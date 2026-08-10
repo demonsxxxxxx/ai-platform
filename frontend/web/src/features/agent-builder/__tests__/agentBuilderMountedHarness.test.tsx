@@ -579,6 +579,168 @@ test("mounted edit disables publish until save materializes a revision, then ado
   }
 });
 
+test("mounted recommended tasks update the save guard before blur and normalize on commit", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  const saveCalls: unknown[][] = [];
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [profile({ recommended_tasks: [] })],
+  });
+  agentProfileApi.saveDraft = async (...args) => {
+    saveCalls.push(args);
+    const draft = args[0];
+    return {
+      agent_profile: profile({
+        revision: 5,
+        recommended_tasks: [...draft.recommended_tasks],
+      }),
+      audit_id: "audit-save-recommended",
+    };
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+    const recommended = container.querySelector('[aria-label="推荐任务"]');
+    assert.ok(recommended);
+    assert.equal(findButton(container, "保存草稿").disabled, true);
+    assert.match(container.textContent, /至少填写一项推荐任务/);
+
+    await React.act(async () => {
+      recommended.value = "文件审阅， 合规检查\n文件审阅";
+      reactProps(recommended).onChange?.({ target: recommended } as never);
+      await Promise.resolve();
+    });
+    assert.equal(findButton(container, "保存草稿").disabled, false);
+
+    await React.act(async () => {
+      reactProps(recommended).onBlur?.({ target: recommended } as never);
+      await Promise.resolve();
+    });
+    assert.equal(recommended.value, "文件审阅\n合规检查");
+    await React.act(async () => {
+      await reactProps(findButton(container, "保存草稿")).onClick?.({} as never);
+      await flush();
+    });
+    assert.equal(saveCalls.length, 1);
+    assert.deepEqual(
+      (saveCalls[0][0] as { recommended_tasks: string[] }).recommended_tasks,
+      ["文件审阅", "合规检查"],
+    );
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("mounted saved file-capable draft uploads and submits opaque file ids to the real test API", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { uploadApi } = await import("../../../services/api/upload.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const profileOriginals = { ...agentProfileApi };
+  const uploadOriginals = { ...uploadApi };
+  const testCalls: unknown[][] = [];
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [profile({
+      status: "draft",
+      supported_input_types: ["text", "file"],
+      supported_file_types: ["docx"],
+      content_hash: "d".repeat(64),
+    })],
+  });
+  agentProfileApi.listHistory = async () => ({ agent_profiles: [] });
+  agentProfileApi.runTest = async (...args) => {
+    testCalls.push(args);
+    return {
+      session_id: "ses_test_builder",
+      run_id: "run_builder",
+      status: "queued",
+      submission_id: String(args[4]),
+      purpose: "builder_test",
+    };
+  };
+  uploadApi.getConfig = async () => ({
+    enabled: true,
+    uploadLimits: { image: 50, video: 50, audio: 50, document: 50, maxFiles: 10 },
+  });
+  uploadApi.uploadFile = () => ({
+    promise: Promise.resolve({
+      key: "file_builder_input",
+      url: "/api/ai/files/file_builder_input",
+      name: "review.docx",
+      type: "document",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      size: 120,
+    }),
+    abort: () => {},
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+    assert.match(container.textContent, /已保存草稿 revision 4/);
+    const attachmentInput = container.querySelector('[aria-label="测试附件"]');
+    const testMessage = container.querySelector('[aria-label="测试消息"]');
+    assert.ok(attachmentInput);
+    assert.ok(testMessage);
+    await React.act(async () => {
+      reactProps(attachmentInput).onChange?.({
+        target: {
+          files: [{
+            name: "review.docx",
+            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size: 120,
+          }],
+          value: "review.docx",
+        },
+      } as never);
+      await flush();
+    });
+    assert.match(container.textContent, /review\.docx/);
+    await React.act(async () => {
+      testMessage.value = "审阅附件";
+      reactProps(testMessage).onChange?.({ target: testMessage } as never);
+      await Promise.resolve();
+    });
+    const runButton = findButton(container, "真实试运行");
+    assert.equal(runButton.disabled, false);
+    await React.act(async () => {
+      await reactProps(runButton).onClick?.({} as never);
+      await flush();
+    });
+    assert.equal(testCalls.length, 1);
+    assert.equal(testCalls[0][0], "agt_support");
+    assert.equal(testCalls[0][1], 4);
+    assert.equal(testCalls[0][2], "d".repeat(64));
+    assert.equal(testCalls[0][3], "审阅附件");
+    assert.match(String(testCalls[0][4]), /^[0-9a-f-]{36}$/i);
+    assert.deepEqual(testCalls[0][5], ["file_builder_input"]);
+  } finally {
+    Object.assign(agentProfileApi, profileOriginals);
+    Object.assign(uploadApi, uploadOriginals);
+    await React.act(async () => root.unmount());
+  }
+});
+
 test("mounted dirty editor requires confirmation before switching profiles", async () => {
   const document = installDom();
   const ReactDOM = await import("react-dom/client");

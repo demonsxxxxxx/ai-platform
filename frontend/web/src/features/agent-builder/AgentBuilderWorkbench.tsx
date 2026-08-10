@@ -23,6 +23,7 @@ import {
   agentBuilderBlockReason,
   getAgentProfilePublishBlock,
   getAgentProfileSaveBlock,
+  getAgentProfileTestBlock,
   hasUnsavedAgentProfileEdits,
   isAgentProfileEditorDirty,
   type AgentBuilderCurrentCatalog,
@@ -118,6 +119,7 @@ export function AgentBuilderWorkbench({
   const activeEditor = workbench.activeEditor;
   const saveBlock = getAgentProfileSaveBlock(activeEditor, currentCatalog);
   const publishBlock = getAgentProfilePublishBlock(activeEditor, currentCatalog);
+  const testBlock = getAgentProfileTestBlock(activeEditor, currentCatalog);
   const mutationBusy =
     workbench.mutation.phase === "saving" ||
     workbench.mutation.phase === "publishing" ||
@@ -664,8 +666,11 @@ export function AgentBuilderWorkbench({
                 disabled={interactionBusy}
                 editor={activeEditor}
                 mutation={workbench.mutation}
-                onRunTest={(message) => void controller.runActiveProfileTest(message)}
+                onRunTest={(message, fileIds) =>
+                  void controller.runActiveProfileTest(message, fileIds)
+                }
                 onUnpublish={() => void controller.unpublishActiveProfile()}
+                testBlock={testBlock}
               />
             </div>
           )}

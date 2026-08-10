@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Building2, ShieldCheck } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
@@ -56,12 +56,20 @@ function ListField({
 }) {
   const canonicalValue = lineValue(values);
   const [draft, setDraft] = useState(canonicalValue);
+  const lastEmittedCanonical = useRef(canonicalValue);
 
-  useEffect(() => setDraft(canonicalValue), [canonicalValue]);
+  useEffect(() => {
+    if (canonicalValue !== lastEmittedCanonical.current) {
+      setDraft(canonicalValue);
+    }
+    lastEmittedCanonical.current = canonicalValue;
+  }, [canonicalValue]);
 
   const commit = () => {
     const normalized = lines(draft);
-    setDraft(lineValue(normalized));
+    const normalizedValue = lineValue(normalized);
+    lastEmittedCanonical.current = normalizedValue;
+    setDraft(normalizedValue);
     onChange(normalized);
   };
 
@@ -69,10 +77,17 @@ function ListField({
     <label className="flex flex-col gap-2">
       <span className="text-sm font-medium">{label}</span>
       <textarea
+        aria-label={label}
         className={`${INPUT_CLASS} resize-y ${className ?? "min-h-24"}`}
         disabled={disabled}
         onBlur={commit}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          const nextDraft = event.target.value;
+          const normalized = lines(nextDraft);
+          setDraft(nextDraft);
+          lastEmittedCanonical.current = lineValue(normalized);
+          onChange(normalized);
+        }}
         value={draft}
       />
     </label>

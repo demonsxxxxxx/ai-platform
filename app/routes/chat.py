@@ -1670,6 +1670,7 @@ async def chat_stream(
                         agent_id=selected_agent_profile.agent_id,
                         revision=selected_agent_profile.expected_revision,
                         content_hash=session_profile_hash,
+                        purpose=str(continuation_session.get("purpose") or "conversation"),
                         submitted_request=request,
                         query_agent_id=query_agent_id,
                     )

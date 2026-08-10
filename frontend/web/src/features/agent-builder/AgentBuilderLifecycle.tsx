@@ -1,9 +1,23 @@
 import { useEffect, useState } from "react";
-import { Archive, FlaskConical, History, RefreshCw } from "lucide-react";
+import {
+  Archive,
+  FileUp,
+  FlaskConical,
+  History,
+  RefreshCw,
+  X,
+} from "lucide-react";
 
+import { useFileUpload } from "../../hooks/useFileUpload";
 import { agentProfileApi } from "../../services/api/agentProfile";
-import type { AgentProfileAdminProjection } from "../../types";
-import { isAgentProfileEditorDirty, type AgentBuilderEditor } from "./agentBuilderAdapter";
+import { uploadApi } from "../../services/api/upload";
+import type { AgentProfileAdminProjection, MessageAttachment } from "../../types";
+import {
+  agentBuilderBlockReason,
+  isAgentProfileEditorDirty,
+  type AgentBuilderEditor,
+  type AgentBuilderValidationIssue,
+} from "./agentBuilderAdapter";
 import type { AgentBuilderMutationState } from "./agentBuilderController";
 
 function statusLabel(status: AgentProfileAdminProjection["status"]): string {
@@ -18,18 +32,25 @@ export function AgentBuilderLifecycle({
   mutation,
   onRunTest,
   onUnpublish,
+  testBlock,
 }: {
   disabled: boolean;
   editor: AgentBuilderEditor;
   mutation: AgentBuilderMutationState;
-  onRunTest: (message: string) => void;
+  onRunTest: (message: string, fileIds: readonly string[]) => void;
   onUnpublish: () => void;
+  testBlock: AgentBuilderValidationIssue | null;
 }) {
   const [history, setHistory] = useState<AgentProfileAdminProjection[]>([]);
   const [historyState, setHistoryState] = useState<"idle" | "loading" | "ready" | "error">(
     "idle",
   );
   const [testMessage, setTestMessage] = useState("");
+  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const { cancelUpload, uploadFiles } = useFileUpload({
+    attachments,
+    onAttachmentsChange: setAttachments,
+  });
 
   useEffect(() => {
     const agentId = editor.agentId;
@@ -57,11 +78,56 @@ export function AgentBuilderLifecycle({
     };
   }, [editor.agentId, editor.revision]);
 
+  useEffect(() => {
+    setAttachments([]);
+    setTestMessage("");
+  }, [editor.agentId, editor.revision]);
+
   const cleanPublished =
     Boolean(editor.agentId) && editor.status === "published" && !isAgentProfileEditorDirty(editor);
   const trialRun = mutation.phase === "success" && mutation.action === "test"
     ? mutation.trialRun
     : undefined;
+  const supportsFiles = editor.supportedInputTypes.includes("file");
+  const hasUploadingAttachment = attachments.some((attachment) => attachment.isUploading);
+  const hasInvalidAttachment = attachments.some(
+    (attachment) =>
+      !attachment.isUploading && !/^file_[A-Za-z0-9._:-]+$/.test(attachment.key),
+  );
+  const readyFileIds = Array.from(
+    new Set(
+      attachments
+        .filter(
+          (attachment) =>
+            !attachment.isUploading && /^file_[A-Za-z0-9._:-]+$/.test(attachment.key),
+        )
+        .map((attachment) => attachment.key),
+    ),
+  );
+  const acceptedFileTypes = editor.supportedFileTypes
+    .map((fileType) => fileType.trim())
+    .filter(Boolean)
+    .map((fileType) =>
+      fileType.includes("/") || fileType.startsWith(".") ? fileType : `.${fileType}`,
+    )
+    .join(",");
+
+  useEffect(() => {
+    if (!trialRun) return;
+    setAttachments([]);
+    setTestMessage("");
+  }, [trialRun]);
+
+  const removeAttachment = (attachment: MessageAttachment) => {
+    if (attachment.isUploading) {
+      cancelUpload(attachment.id);
+      return;
+    }
+    setAttachments((current) =>
+      current.filter((candidate) => candidate.id !== attachment.id),
+    );
+    if (attachment.key) void uploadApi.deleteFile(attachment.key).catch(() => undefined);
+  };
 
   return (
     <section
@@ -121,20 +187,85 @@ export function AgentBuilderLifecycle({
         <p className="text-sm text-[var(--theme-text-secondary)]">保存后显示不可变版本历史</p>
       )}
 
+      <p
+        className={`mt-4 text-sm ${testBlock ? "text-[var(--theme-text-secondary)]" : "text-[var(--theme-success)]"}`}
+        data-agent-builder-test-reason
+      >
+        {testBlock
+          ? `真实试运行：${agentBuilderBlockReason(testBlock)}`
+          : `已保存草稿 revision ${editor.revision}，content hash ${editor.materializedProfile?.content_hash.slice(0, 12)} 已锁定。`}
+      </p>
+
+      {supportsFiles ? (
+        <div className="mt-4 space-y-3">
+          <label className="inline-flex w-fit cursor-pointer items-center gap-2 text-sm font-medium text-[var(--theme-primary)] disabled:cursor-not-allowed">
+            <FileUp aria-hidden="true" size={16} />
+            添加测试附件
+            <input
+              accept={acceptedFileTypes || undefined}
+              aria-label="测试附件"
+              className="sr-only"
+              disabled={disabled || testBlock !== null}
+              multiple
+              onChange={(event) => {
+                if (event.target.files) uploadFiles(event.target.files);
+                event.target.value = "";
+              }}
+              type="file"
+            />
+          </label>
+          {attachments.length > 0 ? (
+            <ul className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)] text-sm">
+              {attachments.map((attachment) => (
+                <li className="flex min-w-0 items-center gap-3 py-2" key={attachment.id}>
+                  <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
+                  {attachment.isUploading ? (
+                    <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">
+                      {attachment.uploadProgress ?? 0}%
+                    </span>
+                  ) : null}
+                  <button
+                    aria-label={`移除测试附件 ${attachment.name}`}
+                    className="icon-btn shrink-0"
+                    onClick={() => removeAttachment(attachment)}
+                    title="移除附件"
+                    type="button"
+                  >
+                    <X aria-hidden="true" size={15} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {hasInvalidAttachment ? (
+            <p className="text-sm text-[var(--theme-danger)]" role="alert">
+              上传结果缺少可提交的文件标识，请移除后重试。
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-end">
         <label className="flex min-w-0 flex-col gap-2">
           <span className="text-sm font-medium">测试消息</span>
           <input
+            aria-label="测试消息"
             className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={disabled || !cleanPublished}
+            disabled={disabled || testBlock !== null}
             onChange={(event) => setTestMessage(event.target.value)}
             value={testMessage}
           />
         </label>
         <button
           className="btn-secondary inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={disabled || !cleanPublished || !testMessage.trim()}
-          onClick={() => onRunTest(testMessage)}
+          disabled={
+            disabled ||
+            testBlock !== null ||
+            !testMessage.trim() ||
+            hasUploadingAttachment ||
+            hasInvalidAttachment
+          }
+          onClick={() => onRunTest(testMessage, readyFileIds)}
           title="创建受控测试运行"
           type="button"
         >

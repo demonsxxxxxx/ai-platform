@@ -70,6 +70,8 @@ export type AgentBuilderBlockCode =
   | "no_changes"
   | "save_required"
   | "unsaved_changes"
+  | "draft_test_required"
+  | "profile_hash_missing"
   | "published_revision";
 
 export interface AgentBuilderValidationIssue {
@@ -367,6 +369,28 @@ export function getAgentProfilePublishBlock(
   return validateAgentProfileEditor(editor, catalog);
 }
 
+/** Return why the exact saved draft cannot enter the real Builder test path. */
+export function getAgentProfileTestBlock(
+  editor: AgentBuilderEditor | null,
+  catalog: AgentBuilderCurrentCatalog,
+): AgentBuilderValidationIssue | null {
+  if (!editor?.agentId || !editor.revision || !editor.materializedProfile) {
+    return { code: "save_required" };
+  }
+  if (isAgentProfileEditorDirty(editor)) return { code: "unsaved_changes" };
+  if (editor.status !== "draft") return { code: "draft_test_required" };
+  const materialized = editor.materializedProfile;
+  if (
+    materialized.agent_id !== editor.agentId ||
+    materialized.revision !== editor.revision ||
+    materialized.status !== "draft" ||
+    !/^[0-9a-f]{64}$/.test(materialized.content_hash)
+  ) {
+    return { code: "profile_hash_missing" };
+  }
+  return validateAgentProfileEditor(editor, catalog);
+}
+
 /** Materialize the exact optimistic-lock request accepted by agentProfileApi. */
 export function buildAgentProfileDraftRequest(
   editor: AgentBuilderEditor,
@@ -426,7 +450,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "profile_revision_missing":
       return "当前智能体缺少可用于版本锁定的服务端 revision，请刷新列表。";
     case "catalog_unavailable":
-      return "授权目录尚未完整加载，暂不能保存或发布。";
+      return "授权目录尚未完整加载，暂不能保存、发布或试运行。";
     case "selected_model_stale":
       return "所选模型已不在当前目录中，请重新选择。";
     case "selected_skill_stale":
@@ -439,6 +463,10 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "请先成功保存草稿，取得服务端 agent_id 与 revision 后再发布。";
     case "unsaved_changes":
       return "当前有未保存的更改，请先保存草稿后再发布。";
+    case "draft_test_required":
+      return "真实试运行仅适用于已保存草稿；请修改并保存为新草稿后再测试。";
+    case "profile_hash_missing":
+      return "已保存草稿缺少可验证的 content hash，请刷新列表后重试。";
     case "published_revision":
       return "当前 revision 已发布；修改配置并保存为新草稿后才能再次发布。";
   }

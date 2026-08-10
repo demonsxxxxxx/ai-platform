@@ -362,11 +362,16 @@ class AgentProfileDraftTestRequest(BaseModel):
 
 
 class AgentProfileTrialRunRequest(BaseModel):
-    """Idempotent Builder test submission against one current publication."""
+    """Idempotent Builder test submission against one exact saved draft."""
 
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=1)
+    expected_content_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     message: str = Field(min_length=1, max_length=100_000)
     submission_id: UUID
     workspace_id: str = "default"

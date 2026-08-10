@@ -43,6 +43,7 @@ test("workbench has explicit admin, loading, error, empty, and New Agent surface
 test("publish stays fenced by a clean materialized draft with visible reasons", () => {
   assert.match(workbenchSource, /getAgentProfileSaveBlock/);
   assert.match(workbenchSource, /getAgentProfilePublishBlock/);
+  assert.match(workbenchSource, /getAgentProfileTestBlock/);
   assert.match(workbenchSource, /data-agent-builder-save-reason/);
   assert.match(workbenchSource, /data-agent-builder-publish-reason/);
   assert.match(workbenchSource, /disabled=\{interactionBusy \|\| publishBlock !== null\}/);
@@ -62,7 +63,7 @@ test("real lifecycle controls use the profile authority without fake handoff pat
   assert.doesNotMatch(featureProductionSource, /useAgent/);
   assert.doesNotMatch(featureProductionSource, /预览消息|打开对话运行|对话交接/);
   assert.doesNotMatch(featureProductionSource, /sessionApi|sendMessage|onHandoffReady/);
-  assert.match(workbenchSource, /controller\.runActiveProfileTest\(message\)/);
+  assert.match(workbenchSource, /controller\.runActiveProfileTest\(message, fileIds\)/);
   assert.match(workbenchSource, /controller\.unpublishActiveProfile\(\)/);
   assert.match(controllerSource, /this\.api\.runTest\(/);
   assert.match(controllerSource, /this\.api\.unpublish\(/);

@@ -318,8 +318,20 @@ async def run_agent_profile_test(
                 title=f"[Builder test] {safe_agent_id}",
                 session_id=test_session_id,
                 purpose="builder_test",
+                expected_content_hash=request.expected_content_hash,
+                file_ids=request.file_ids,
+                preflight_run_id=f"run_test_preflight_{request.submission_id.hex}",
             )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="agent_profile_test_file_not_authorized") from exc
+    except repositories.RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_test_file_not_found") from exc
     except repositories.RepositoryConflictError as exc:
+        if str(exc) in {"file_scope_mismatch", "file_user_mismatch"}:
+            raise HTTPException(
+                status_code=403,
+                detail="agent_profile_test_file_not_authorized",
+            ) from exc
         raise HTTPException(status_code=409, detail="agent_profile_test_submission_conflict") from exc
     outcome = await _submit_dedicated_agent_run(
         agent_id=safe_agent_id,
