@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "d361ebbdd56798fbf6c6b2664f12848ee5387a54",
+    "scope_sha256": "a7a2ac460f16da91d6fe56b5c5f3e3285c8c17b6038ee198addf4faa0531ce1f"
+  },
+  "expires_on": "2026-08-17",
+  "owner": "issue-868-skill-admin-ui",
+  "reason": "Bounded single-PR consolidation of duplicate Skill management surfaces, responsive route layout fixes, department access controls, and their locale and acceptance contracts.",
+  "violations": [
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
+    }
+  ]
+}
