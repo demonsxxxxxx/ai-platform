@@ -448,6 +448,8 @@
     "queued": "대기 중 ({{position}}번째)...",
     "rateLimited": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요",
     "requestFailed": "세션 로드에 실패했습니다",
+    "historyLoadFailed": "세션 로드에 실패했습니다",
+    "sendFailed": "메시지 전송에 실패했습니다",
     "sandbox": {
       "error": "초기화 실패",
       "initializing": "환경 초기화 중",

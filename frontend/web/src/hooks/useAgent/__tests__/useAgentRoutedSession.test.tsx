@@ -7,271 +7,7 @@ import type {
   ChatStreamResponse,
   ChatSubmissionResolution,
 } from "../../../services/api/session.ts";
-
-type Listener = (event: { type: string; [key: string]: unknown }) => void;
-
-class TestEventTarget {
-  private readonly listeners = new Map<string, Set<Listener>>();
-
-  addEventListener(type: string, listener: Listener) {
-    const listeners = this.listeners.get(type) || new Set<Listener>();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: Listener) {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  dispatchEvent(event: { type: string; [key: string]: unknown }) {
-    this.listeners.get(event.type)?.forEach((listener) => listener(event));
-    return true;
-  }
-}
-
-class TestNode extends TestEventTarget {
-  parentNode: TestNode | null = null;
-  childNodes: TestNode[] = [];
-  nodeValue: string | null = null;
-  textContent = "";
-
-  get firstChild() {
-    return this.childNodes[0] || null;
-  }
-
-  get lastChild() {
-    return this.childNodes[this.childNodes.length - 1] || null;
-  }
-
-  appendChild(child: TestNode) {
-    child.parentNode = this;
-    this.childNodes.push(child);
-    return child;
-  }
-
-  insertBefore(child: TestNode, reference: TestNode | null) {
-    child.parentNode = this;
-    const index = reference ? this.childNodes.indexOf(reference) : -1;
-    if (index < 0) {
-      this.childNodes.push(child);
-    } else {
-      this.childNodes.splice(index, 0, child);
-    }
-    return child;
-  }
-
-  removeChild(child: TestNode) {
-    const index = this.childNodes.indexOf(child);
-    if (index >= 0) this.childNodes.splice(index, 1);
-    child.parentNode = null;
-    return child;
-  }
-
-  contains(node: TestNode | null): boolean {
-    return node === this || this.childNodes.some((child) => child.contains(node));
-  }
-}
-
-class TestElement extends TestNode {
-  readonly nodeType = 1;
-  readonly namespaceURI = "http://www.w3.org/1999/xhtml";
-  readonly style: Record<string, string> = {};
-  readonly attributes = new Map<string, string>();
-  ownerDocument!: TestDocument;
-  className = "";
-  id = "";
-  private html = "";
-
-  constructor(readonly tagName: string) {
-    super();
-  }
-
-  get nodeName() {
-    return this.tagName.toUpperCase();
-  }
-
-  get innerHTML() {
-    return this.html;
-  }
-
-  set innerHTML(value: string) {
-    this.html = value;
-    this.childNodes = [];
-    if (value) {
-      this.appendChild(this.ownerDocument.createTextNode(value));
-    }
-  }
-
-  setAttribute(name: string, value: string) {
-    this.attributes.set(name, value);
-  }
-
-  removeAttribute(name: string) {
-    this.attributes.delete(name);
-  }
-
-  getAttribute(name: string) {
-    return this.attributes.get(name) || null;
-  }
-
-  hasAttribute(name: string) {
-    return this.attributes.has(name);
-  }
-}
-
-class TestText extends TestNode {
-  readonly nodeType = 3;
-  readonly nodeName = "#text";
-  ownerDocument!: TestDocument;
-
-  constructor(value: string) {
-    super();
-    this.nodeValue = value;
-    this.textContent = value;
-  }
-
-  get data() {
-    return this.nodeValue || "";
-  }
-
-  set data(value: string) {
-    this.nodeValue = value;
-    this.textContent = value;
-  }
-}
-
-class TestDocument extends TestNode {
-  readonly nodeType = 9;
-  readonly nodeName = "#document";
-  readonly documentElement: TestElement;
-  readonly head: TestElement;
-  readonly body: TestElement;
-  activeElement: TestElement | null;
-  hidden = false;
-  visibilityState = "visible";
-  defaultView: typeof window | null = null;
-
-  constructor() {
-    super();
-    this.documentElement = this.createElement("html");
-    this.head = this.createElement("head");
-    this.body = this.createElement("body");
-    this.documentElement.appendChild(this.head);
-    this.documentElement.appendChild(this.body);
-    this.appendChild(this.documentElement);
-    this.activeElement = this.body;
-  }
-
-  createElement(tagName: string) {
-    const element = new TestElement(tagName);
-    element.ownerDocument = this;
-    return element;
-  }
-
-  createElementNS(_namespace: string, tagName: string) {
-    return this.createElement(tagName);
-  }
-
-  createTextNode(value: string) {
-    const text = new TestText(value);
-    text.ownerDocument = this;
-    return text;
-  }
-}
-
-class TestLockManager {
-  private readonly tails = new Map<string, Promise<void>>();
-
-  async request<T>(
-    name: string,
-    options: { mode: "exclusive" },
-    callback: () => Promise<T>,
-  ): Promise<T> {
-    assert.equal(options.mode, "exclusive");
-    const previous = this.tails.get(name) ?? Promise.resolve();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tail = previous.then(() => gate);
-    this.tails.set(name, tail);
-    await previous;
-    try {
-      return await callback();
-    } finally {
-      release();
-      if (this.tails.get(name) === tail) {
-        this.tails.delete(name);
-      }
-    }
-  }
-}
-
-function installTestDom() {
-  const document = new TestDocument();
-  const storage = new Map<string, string>();
-  const windowTarget = new TestEventTarget() as TestEventTarget & {
-    document: TestDocument;
-    fetch: typeof fetch;
-    location: { href: string; pathname: string; search: string; hash: string };
-    localStorage: Storage;
-    clearTimeout: typeof clearTimeout;
-    setTimeout: typeof setTimeout;
-  };
-  windowTarget.document = document;
-  windowTarget.fetch = globalThis.fetch;
-  windowTarget.location = { href: "http://test.local/", pathname: "/", search: "", hash: "" };
-  windowTarget.localStorage = {
-    getItem: (key) => storage.get(key) || null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: (key) => storage.delete(key),
-    clear: () => storage.clear(),
-    key: (index) => [...storage.keys()][index] || null,
-    get length() {
-      return storage.size;
-    },
-  };
-  windowTarget.clearTimeout = clearTimeout;
-  windowTarget.setTimeout = setTimeout;
-  Object.assign(windowTarget, {
-    Element: TestElement,
-    HTMLElement: TestElement,
-    HTMLIFrameElement: class TestIFrameElement extends TestElement {},
-    Node: TestNode,
-  });
-  document.defaultView = windowTarget as unknown as typeof window;
-
-  Object.assign(globalThis, {
-    window: windowTarget,
-    document,
-    localStorage: windowTarget.localStorage,
-    Node: TestNode,
-    Element: TestElement,
-    HTMLElement: TestElement,
-    HTMLIFrameElement: class TestIFrameElement extends TestElement {},
-    HTMLInputElement: TestElement,
-    HTMLTextAreaElement: TestElement,
-    HTMLSelectElement: TestElement,
-    SVGElement: TestElement,
-    CustomEvent: class {
-      readonly detail: unknown;
-
-      constructor(
-        readonly type: string,
-        init?: { detail?: unknown },
-      ) {
-        this.detail = init?.detail;
-      }
-    },
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
-  Object.defineProperty(globalThis, "navigator", {
-    configurable: true,
-    value: { userAgent: "node", locks: new TestLockManager() },
-  });
-
-  return { document, window: windowTarget };
-}
+import { installTestDom } from "./testDom.ts";
 
 const dom = installTestDom();
 
@@ -300,11 +36,15 @@ async function loadReactHarness({
   strict = false,
   onAuthScopeLayout,
   preserveSubmissionReferences = false,
+  sessionRouteLifecycle = false,
+  initialRoute = "/chat",
 }: {
   agentOptions?: UseAgentOptions;
   strict?: boolean;
   onAuthScopeLayout?: () => void;
   preserveSubmissionReferences?: boolean;
+  sessionRouteLifecycle?: boolean;
+  initialRoute?: string;
 } = {}) {
   if (!preserveSubmissionReferences) {
     clearPersistedSubmissionReferences();
@@ -314,9 +54,29 @@ async function loadReactHarness({
   const { AuthProvider, useAuth } = await import("../../useAuth.tsx");
   const { useAgent } = await import("../../useAgent.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
+  const {
+    MemoryRouter,
+    Route,
+    Routes,
+    useLocation,
+    useNavigate,
+    useParams,
+  } = await import("react-router-dom");
+  const {
+    useConversationRouteIdentityReset,
+    useSessionSync,
+  } = await import("../../../components/layout/AppContent/useSessionSync.ts");
 
   let snapshot: UseAgentReturn | null = null;
   let authSnapshot: ReturnType<typeof useAuth> | null = null;
+  let routeSnapshot: {
+    navigate: (path: string) => void;
+    pathname: string;
+    selectSession: (sessionId: string) => Promise<void>;
+    sessionId: string | undefined;
+  } | null = null;
+  let routeIdentityResetCount = 0;
+  const restoredRouteConfigs: unknown[] = [];
   const container = dom.document.createElement("div");
   const root = createRoot(container as never);
   const originalGetCurrentUser = authApi.getCurrentUser;
@@ -346,6 +106,45 @@ async function loadReactHarness({
     return null;
   }
 
+  function SessionRouteLifecycleProbe() {
+    authSnapshot = useAuth();
+    const agent = useAgent(agentOptions);
+    snapshot = agent;
+    const location = useLocation();
+    const navigate = useNavigate();
+    const { activeTab: routeActiveTab, sessionId: routeSessionId } = useParams<{
+      activeTab?: string;
+      sessionId?: string;
+    }>();
+    dom.window.location.pathname = location.pathname;
+    dom.window.location.href = `http://test.local${location.pathname}`;
+
+    useConversationRouteIdentityReset({
+      conversationIdentityKey: `generic:${routeSessionId ?? ""}`,
+      hasAgentWorkspace: false,
+      routeSessionId,
+      sessionId: agent.sessionId,
+      onIdentityChange: () => {
+        routeIdentityResetCount += 1;
+        agent.clearMessages();
+      },
+    });
+    const sessionSync = useSessionSync({
+      activeTab: routeActiveTab === "chat" ? "chat" : "skills",
+      sessionId: agent.sessionId,
+      loadHistory: agent.loadHistory,
+      clearMessages: agent.clearMessages,
+      onConfigRestored: (config) => restoredRouteConfigs.push(config),
+    });
+    routeSnapshot = {
+      navigate,
+      pathname: location.pathname,
+      selectSession: sessionSync.handleSelectSession,
+      sessionId: routeSessionId,
+    };
+    return null;
+  }
+
   function AuthScopeLayoutProbe() {
     const { isAuthenticated, user } = useAuth();
     const scope =
@@ -367,7 +166,9 @@ async function loadReactHarness({
     return null;
   }
 
-  const probe = React.createElement(Probe);
+  const probe = React.createElement(
+    sessionRouteLifecycle ? SessionRouteLifecycleProbe : Probe,
+  );
   const children = React.createElement(
     React.Fragment,
     null,
@@ -376,11 +177,27 @@ async function loadReactHarness({
   );
   try {
     await React.act(async () => {
+      const routedChildren = sessionRouteLifecycle
+        ? React.createElement(
+            MemoryRouter,
+            { initialEntries: [initialRoute] },
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: "/:activeTab/:sessionId?",
+                element: children,
+              }),
+            ),
+          )
+        : children;
       root.render(
         React.createElement(
           AuthProvider,
           null,
-          strict ? React.createElement(React.StrictMode, null, children) : children,
+          strict
+            ? React.createElement(React.StrictMode, null, routedChildren)
+            : routedChildren,
         ),
       );
     });
@@ -465,6 +282,23 @@ async function loadReactHarness({
     get auth() {
       assert.ok(authSnapshot, "Auth context should be mounted");
       return authSnapshot;
+    },
+    get route() {
+      assert.ok(routeSnapshot, "session route lifecycle should be mounted");
+      return routeSnapshot;
+    },
+    get routeIdentityResetCount() {
+      return routeIdentityResetCount;
+    },
+    get restoredRouteConfigs() {
+      return restoredRouteConfigs;
+    },
+    async navigateRoute(path: string) {
+      assert.ok(routeSnapshot, "session route lifecycle should be mounted");
+      await React.act(async () => {
+        routeSnapshot?.navigate(path);
+        await Promise.resolve();
+      });
     },
     async rotateAuthScope(userId: string, tenantId: string) {
       await rotateAuthScope(userId, tenantId, true);
@@ -596,8 +430,8 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
   }
 });
 
-test("useAgent carries the routed agent into a same-tab continuation", async () => {
-  const harness = await loadReactHarness();
+test("useAgent preserves accepted authority through URL canonicalization for a second submit", async () => {
+  const harness = await loadReactHarness({ sessionRouteLifecycle: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
@@ -637,18 +471,156 @@ test("useAgent carries the routed agent into a same-tab continuation", async () 
       await harness.hook.sendMessage("翻译这个文档");
     });
     await settle(harness.act);
+    assert.equal(harness.hook.sessionId, "session-routed");
+    assert.equal(harness.route.pathname, "/chat/session-routed");
+    assert.equal(harness.route.sessionId, "session-routed");
+    assert.equal(harness.routeIdentityResetCount, 1);
+    assert.match(JSON.stringify(harness.hook.messages), /翻译这个文档/);
     await harness.act(async () => {
       await harness.hook.sendMessage("继续处理");
     });
     await settle(harness.act);
 
     assert.equal(submissions.length, 2);
+    assert.equal(submissions[0]?.[1], undefined);
+    assert.equal(submissions[1]?.[1], "session-routed");
     assert.equal(submissions[0]?.[8], "general-agent");
     assert.equal(submissions[1]?.[8], "document-translation");
     assert.equal(harness.hook.sessionId, "session-routed");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(sseCalls, 2);
   } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("session route lifecycle supersedes stale loads across external and sidebar navigation", async () => {
+  const harness = await loadReactHarness({ sessionRouteLifecycle: true });
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalFetch = dom.window.fetch;
+  const historyLoads: string[] = [];
+  let releaseSessionB!: () => void;
+  const sessionBGate = new Promise<void>((resolve) => {
+    releaseSessionB = resolve;
+  });
+  let releaseSessionD!: () => void;
+  const sessionDGate = new Promise<void>((resolve) => {
+    releaseSessionD = resolve;
+  });
+
+  dom.window.fetch = async () => completedSseResponse();
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async (sessionId) => ({
+    title: "会话 A",
+    session_id: sessionId,
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-a",
+    run_id: "run-a",
+    trace_id: "trace-a",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  sessionApi.get = async (sessionId) => {
+    historyLoads.push(sessionId);
+    if (sessionId === "session-b") {
+      await sessionBGate;
+    }
+    if (sessionId === "session-d") {
+      await sessionDGate;
+    }
+    return {
+      id: sessionId,
+      agent_id: "general-agent",
+      created_at: "2026-08-10T00:00:00Z",
+      updated_at: "2026-08-10T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    };
+  };
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: "general-agent",
+    title: `会话 ${sessionId}`,
+    purpose: "conversation",
+    agent_conversation: null,
+  });
+  sessionApi.getEvents = async () => ({ events: [] });
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("会话 A 的首轮");
+    });
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, "/chat/session-a");
+    assert.match(JSON.stringify(harness.hook.messages), /会话 A 的首轮/);
+
+    await harness.navigateRoute("/chat/session-b");
+    assert.deepEqual(historyLoads, ["session-b"]);
+    assert.equal(harness.hook.sessionId, "session-b");
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.routeIdentityResetCount, 2);
+
+    await harness.navigateRoute("/chat/session-c");
+    await settle(harness.act);
+    assert.deepEqual(historyLoads, ["session-b", "session-c"]);
+    assert.equal(harness.route.pathname, "/chat/session-c");
+    assert.equal(harness.hook.sessionId, "session-c");
+    assert.equal(harness.routeIdentityResetCount, 3);
+    assert.equal(harness.restoredRouteConfigs.length, 1);
+
+    releaseSessionB();
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, "/chat/session-c");
+    assert.equal(harness.hook.sessionId, "session-c");
+    assert.equal(harness.restoredRouteConfigs.length, 1);
+
+    let pendingSidebarLoad!: Promise<void>;
+    await harness.act(async () => {
+      pendingSidebarLoad = harness.route.selectSession("session-d");
+      harness.route.navigate("/skills");
+      await Promise.resolve();
+    });
+    assert.equal(harness.route.pathname, "/skills");
+    assert.equal(harness.hook.messages.length, 0);
+
+    await harness.navigateRoute("/chat/session-e");
+    await settle(harness.act);
+    assert.deepEqual(historyLoads, [
+      "session-b",
+      "session-c",
+      "session-d",
+      "session-e",
+    ]);
+    assert.equal(harness.route.pathname, "/chat/session-e");
+    assert.equal(harness.hook.sessionId, "session-e");
+    assert.equal(harness.routeIdentityResetCount, 5);
+    assert.equal(harness.restoredRouteConfigs.length, 2);
+
+    releaseSessionD();
+    await harness.act(async () => {
+      await pendingSidebarLoad;
+    });
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, "/chat/session-e");
+    assert.equal(harness.hook.sessionId, "session-e");
+    assert.equal(harness.restoredRouteConfigs.length, 2);
+  } finally {
+    releaseSessionB();
+    releaseSessionD();
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
@@ -982,6 +954,7 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
       });
     });
     assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.error, "消息发送失败");
 
     await harness.act(async () => {
       assert.deepEqual(await harness.hook.sendMessage("重新提交"), {

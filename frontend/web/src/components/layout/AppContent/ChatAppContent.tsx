@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -29,7 +29,10 @@ import {
 import { useDragAndDrop } from "./useDragAndDrop";
 import { useWebSocketNotifications } from "./useWebSocketNotifications";
 import { useAgentOptions } from "./useAgentOptions";
-import { useSessionSync } from "./useSessionSync";
+import {
+  useConversationRouteIdentityReset,
+  useSessionSync,
+} from "./useSessionSync";
 import {
   getExternalNavigationTargetFile,
   shouldScrollToBottomAfterExternalNavigation,
@@ -618,35 +621,28 @@ export function ChatAppContent({
   const conversationIdentityKey = agentWorkspace
     ? `${agentWorkspace.agent_id}:${agentWorkspace.expected_revision}:${routeSessionId ?? ""}`
     : `generic:${routeSessionId ?? ""}`;
-  const previousConversationIdentityKeyRef = useRef<string | undefined>(
-    undefined,
-  );
   const agentWorkspaceSelectionRequestIdRef = useRef(0);
 
   // Clear before paint whenever the rendered workspace/session identity changes.
-  useLayoutEffect(() => {
-    if (previousConversationIdentityKeyRef.current === conversationIdentityKey) {
-      return;
-    }
-    previousConversationIdentityKeyRef.current = conversationIdentityKey;
-    agentWorkspaceSelectionRequestIdRef.current += 1;
-    clearMessages();
-    // A task Skill is scoped to the composer that selected it.  A route or
-    // workspace identity change clears the session, so it must also clear the
-    // local selector before a later submit can create an unbound conversation.
-    clearSelectedSkill();
-    setAgentConversationState(
-      agentWorkspace && routeSessionId
-        ? conversationState("loading", routeSessionId)
-        : conversationState("generic", null),
-    );
-  }, [
-    agentWorkspace,
-    clearMessages,
-    clearSelectedSkill,
+  useConversationRouteIdentityReset({
     conversationIdentityKey,
+    hasAgentWorkspace: Boolean(agentWorkspace),
     routeSessionId,
-  ]);
+    sessionId,
+    onIdentityChange: () => {
+      agentWorkspaceSelectionRequestIdRef.current += 1;
+      clearMessages();
+      // A task Skill is scoped to the composer that selected it. A route or
+      // workspace identity change clears the session, so it must also clear the
+      // local selector before a later submit can create an unbound conversation.
+      clearSelectedSkill();
+      setAgentConversationState(
+        agentWorkspace && routeSessionId
+          ? conversationState("loading", routeSessionId)
+          : conversationState("generic", null),
+      );
+    },
+  });
 
   useEffect(() => {
     if (!agentConversationTargetSessionId) {
