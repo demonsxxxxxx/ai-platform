@@ -2003,22 +2003,23 @@ async def chat_stream(
                     if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
-            session_create_kwargs = {
-                "tenant_id": principal.tenant_id,
-                "workspace_id": effective_workspace_id,
-                "user_id": principal.user_id,
-                "agent_id": resolved_agent_id,
-                "title": request.title or request.message[:80],
-                "session_id": session_id,
-            }
-            if admitted_agent_profile is not None:
-                session_create_kwargs.update(
-                    {
-                        "admitted_agent_profile_revision": admitted_agent_profile.revision,
-                        "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
-                    }
-                )
-            session_id = await repositories.create_session(conn, **session_create_kwargs)
+            if request.session_id is None:
+                session_create_kwargs = {
+                    "tenant_id": principal.tenant_id,
+                    "workspace_id": effective_workspace_id,
+                    "user_id": principal.user_id,
+                    "agent_id": resolved_agent_id,
+                    "title": request.title or request.message[:80],
+                    "session_id": session_id,
+                }
+                if admitted_agent_profile is not None:
+                    session_create_kwargs.update(
+                        {
+                            "admitted_agent_profile_revision": admitted_agent_profile.revision,
+                            "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
+                        }
+                    )
+                session_id = await repositories.create_session(conn, **session_create_kwargs)
             run_create_kwargs = {
                 "tenant_id": principal.tenant_id,
                 "workspace_id": effective_workspace_id,

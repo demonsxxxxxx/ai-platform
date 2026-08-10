@@ -4013,7 +4013,6 @@ async def test_chat_stream_keeps_routed_skill_without_reusing_a_prior_turn_file(
         ("resolve", "general-agent", "baoyu-translate"),
         ("workspace", "workspace-routed"),
         ("files", "workspace-routed", []),
-        ("session", "ses_routed", "general-agent", "workspace-routed"),
         ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
         ("bind", []),
         ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", []),
@@ -4506,15 +4505,15 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         expected_calls.extend(["claim", "skill_auth", "workspace_auth", "file_auth"])
     else:
         expected_calls.extend(["skill_auth", "workspace_auth", "file_auth", "claim"])
-    expected_calls.extend([
-        "create_session",
-        "create_run",
-        "profile_reauth",
-        "enqueue",
-    ])
+    if not restored_continuation:
+        expected_calls.append("create_session")
+    expected_calls.extend(["create_run", "profile_reauth", "enqueue"])
     assert initial_calls == expected_calls
-    assert persisted["session"]["admitted_agent_profile_revision"] == 7
-    assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
+    if restored_continuation:
+        assert "session" not in persisted
+    else:
+        assert persisted["session"]["admitted_agent_profile_revision"] == 7
+        assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["admitted_agent_profile_revision"] == 7
     assert persisted["run"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["input_json"]["agent_profile"] == {
