@@ -16,9 +16,11 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+    "&& corepack pnpm run test:agent-market "
     "&& corepack pnpm run test:prd-closure-smoke-source "
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
+    "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"

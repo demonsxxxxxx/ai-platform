@@ -23,7 +23,8 @@ test("market stays in the production shell and resolves durable detail URLs", ()
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /企业已发布/);
-  assert.match(source, /使用方式/);
+  assert.match(source, /输入与输出/);
+  assert.match(source, /权限与数据访问/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);

@@ -415,6 +415,49 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
     assert saved["published_at"] == expected_published_at
 
 
+@pytest.mark.asyncio
+async def test_list_published_agent_profiles_searches_safe_public_use_fields():
+    class RowsCursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, statement, params):
+            self.sql = " ".join(statement.split())
+            self.params = params
+            return RowsCursor()
+
+    conn = Connection()
+    rows = await repositories.list_current_published_agent_profiles(
+        conn,
+        tenant_id="company-default",
+        query="内部通知润色",
+        category="writing",
+        limit=500,
+    )
+
+    assert rows == []
+    assert "agent_profile_revisions.name ilike %s" in conn.sql
+    assert "agent_profile_revisions.description ilike %s" in conn.sql
+    assert "agent_profile_revisions.capability_summary ilike %s" in conn.sql
+    assert "jsonb_array_elements_text" in conn.sql
+    assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
+    assert "recommended_task.value ilike %s" in conn.sql
+    assert conn.params == (
+        "company-default",
+        "%内部通知润色%",
+        "%内部通知润色%",
+        "%内部通知润色%",
+        "%内部通知润色%",
+        "writing",
+        200,
+    )
+
+
 class TwoSnapshotFileMembershipConnection:
     """Model S1 as persisted authority even though S2 is created later."""
 
@@ -2400,6 +2443,18 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
             if compact.startswith("select metadata_json"):
                 return Cursor({"metadata_json": {"archived_at": "invalid"}})
             assert "metadata_json ? 'archived_at'" not in compact
+            if compact.startswith("update tenant_capability_distributions"):
+                assert compact.count("%s") == len(params)
+                assert params == (
+                    True,
+                    True,
+                    "admin-a",
+                    "tenant-a",
+                    "skill",
+                    "qa-file-reviewer",
+                )
+                assert "catalog_generation" not in compact
+                assert "catalog_status" not in compact
             return Cursor(
                 {
                     "id": "capdist-a",
@@ -2428,7 +2483,85 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
     assert row["status"] == "active"
     update_params = next(params for sql, params in conn.calls if "update tenant_capability_distributions" in sql)
-    assert update_params == (True, True, "admin-a", True, True, True, True, "tenant-a", "skill", "qa-file-reviewer")
+    assert update_params == (True, True, "admin-a", "tenant-a", "skill", "qa-file-reviewer")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "distribution_status", "expected_catalog_status"),
+    [(True, "active", "refresh_required"), (False, "disabled", "disabled")],
+)
+async def test_mcp_distribution_toggle_invalidates_server_catalog(
+    monkeypatch,
+    enabled,
+    distribution_status,
+    expected_catalog_status,
+):
+    async def no_backfill(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if "pg_advisory_xact_lock" in compact:
+                return Cursor(None)
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": {}})
+            if compact.startswith("update tenant_capability_distributions"):
+                assert "catalog_status" not in compact
+                assert params == (
+                    enabled,
+                    enabled,
+                    "admin-a",
+                    "tenant-a",
+                    "mcp_server",
+                    "qa-mcp",
+                )
+                return Cursor(
+                    {
+                        "id": "capdist-mcp",
+                        "tenant_id": "tenant-a",
+                        "capability_kind": "mcp_server",
+                        "capability_id": "qa-mcp",
+                        "status": distribution_status,
+                        "visible_to_user": True,
+                        "scope_mode": "allowlist",
+                        "department_ids": [],
+                        "allowed_roles": [],
+                        "metadata_json": {},
+                    }
+                )
+            if compact.startswith("update mcp_servers"):
+                assert "catalog_generation = catalog_generation + 1" in compact
+                assert "catalog_discovered_count = 0" in compact
+                assert "catalog_selectable_count = 0" in compact
+                assert params == (enabled, enabled, "tenant-a", "qa-mcp")
+                assert expected_catalog_status in compact
+                return Cursor({"name": "qa-mcp"})
+            raise AssertionError(compact)
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    row = await repositories.toggle_capability_distribution_row(
+        Connection(),
+        tenant_id="tenant-a",
+        capability_kind="mcp_server",
+        capability_id="qa-mcp",
+        enabled=enabled,
+        updated_by="admin-a",
+    )
+
+    assert row["status"] == distribution_status
 
 
 @pytest.mark.asyncio
@@ -10965,6 +11098,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                         "executor_type": "claude_agent",
                         "status": "active",
                         "visible_to_user": True,
+                        "distribution_metadata_json": {},
                     }
                 )
             if "from skill_versions" in compact:
@@ -11104,6 +11238,53 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_admin_skill_detail_hides_archived_distribution(monkeypatch):
+    async def no_backfill(_conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "skill_id": "archived-demo",
+                "name": "archived-demo",
+                "version": "hash-a",
+                "description": "Archived demo",
+                "input_modes": ["chat"],
+                "output_modes": ["answer"],
+                "executor_type": "claude-agent-worker",
+                "lifecycle_status": "active",
+                "status": "disabled",
+                "visible_to_user": False,
+                "distribution_metadata_json": {
+                    "archived_at": "2026-08-10T00:00:00.000Z",
+                    "archived_by": "admin-a",
+                },
+            }
+
+    class Connection:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, sql, params):
+            self.calls += 1
+            assert self.calls == 1
+            compact = " ".join(sql.split())
+            assert "distribution_metadata_json" in compact
+            assert params == ("tenant-a", "archived-demo")
+            return Cursor()
+
+    detail = await repositories.get_admin_skill_detail(
+        Connection(),
+        tenant_id="tenant-a",
+        skill_id="archived-demo",
+    )
+
+    assert detail is None
+
+
+@pytest.mark.asyncio
 async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
     async def no_backfill(_conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -11120,10 +11301,27 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
                     "lifecycle_status": "active",
                     "distribution_status": "disabled",
                     "visible_to_user": False,
+                    "distribution_metadata_json": {},
                     "latest_version": "hash-a",
                     "latest_version_status": "draft",
                     "current_version": None,
                     "rollout_percent": None,
+                },
+                {
+                    "skill_id": "archived-demo",
+                    "name": "archived-demo",
+                    "description": "Archived demo",
+                    "lifecycle_status": "active",
+                    "distribution_status": "disabled",
+                    "visible_to_user": False,
+                    "distribution_metadata_json": {
+                        "archived_at": "2026-08-10T00:00:00.000Z",
+                        "archived_by": "admin-a",
+                    },
+                    "latest_version": "hash-archived",
+                    "latest_version_status": "released",
+                    "current_version": "hash-archived",
+                    "rollout_percent": 100,
                 }
             ]
 
@@ -11133,6 +11331,7 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
             assert params == ("tenant-a", "tenant-a")
             assert "source_json" not in compact
             assert "storage_key" not in compact
+            assert "distribution_metadata_json" in compact
             assert "left join lateral" in compact
             return SummaryCursor()
 

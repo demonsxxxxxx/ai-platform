@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
-  Boxes,
   Edit3,
   FolderOpen,
   Plus,
   Search,
   Server,
-  ShieldCheck,
   ToggleLeft,
   ToggleRight,
   Trash2,
@@ -20,7 +18,6 @@ import { PanelHeader } from "../common/PanelHeader";
 import { MCPPanelSkeleton } from "../skeletons";
 import { Pagination } from "../common/Pagination";
 import { ConfirmDialog } from "../common/ConfirmDialog";
-import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import {
   buildFrontendGovernanceSmokeAttributes,
   isPermissionError,
@@ -345,83 +342,6 @@ export function MCPPanel() {
           <span>{t("mcp.admin.operationFailed")}</span>
         </div>
       )}
-      <div className={workbenchSurface.catalog.summaryGridFour}>
-        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
-          <div className="flex min-w-0 items-start gap-3">
-            <div className={workbenchSurface.catalog.compactIconBox}>
-              <ShieldCheck size={16} />
-            </div>
-            <div className="min-w-0">
-              <h3 className={workbenchSurface.catalog.title}>
-                {t("mcp.permissionLimited.title")}
-              </h3>
-              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.admin.directorySummary")}
-              </p>
-            </div>
-          </div>
-          <span data-mcp-summary-status>
-            <GovernanceAvailabilityBadge
-              state={mcpGovernance.directoryAvailability.state}
-              labelKey={mcpGovernance.directoryAvailability.labelKey}
-            />
-          </span>
-        </section>
-        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
-          <div className="flex min-w-0 items-start gap-3">
-            <div className={workbenchSurface.catalog.compactIconBox}>
-              <ShieldCheck size={16} />
-            </div>
-            <div className="min-w-0">
-              <h3 className={workbenchSurface.catalog.title}>
-                {t("mcp.permissionMode")}
-              </h3>
-              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.admin.permissionSummary")}
-              </p>
-            </div>
-          </div>
-        </section>
-        <section
-          data-fail-closed-surface="mcp-lifecycle"
-          className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}
-        >
-          <div className="flex min-w-0 items-start gap-3">
-            <div className={workbenchSurface.catalog.compactIconBox}>
-              <Boxes size={16} />
-            </div>
-            <div className="min-w-0">
-              <h3 className={workbenchSurface.catalog.title}>
-                {t("mcp.lifecycleGovernance.title")}
-              </h3>
-              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.admin.lifecycleSummary")}
-              </p>
-              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.admin.credentialsSummary")}
-              </p>
-            </div>
-          </div>
-        </section>
-        <section
-          data-fail-closed-surface="mcp-credentials"
-          className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}
-        >
-          <div className="flex min-w-0 items-start gap-3">
-            <div className={workbenchSurface.catalog.compactIconBox}>
-              <ShieldCheck size={16} />
-            </div>
-            <div className="min-w-0">
-              <h3 className={workbenchSurface.catalog.title}>
-                {t("mcp.credentialsGovernance.title")}
-              </h3>
-              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.credentialsGovernance.description")}
-              </p>
-            </div>
-          </div>
-        </section>
-      </div>
       {mcpGovernance.pageState === "degraded" ? (
         <div className="px-4 pb-2 pt-1">
           <WorkbenchStateSurface
@@ -449,11 +369,11 @@ export function MCPPanel() {
                 ? t("mcp.noMatchingServers")
                 : t("mcp.noServers")}
             </p>
-            <p className="mt-2 max-w-md text-center text-xs leading-5 text-[var(--theme-text-secondary)]">
-              {mcpGovernance.governedUnavailable
-                ? t("mcp.catalogUnavailable.description")
-                : t("mcp.lifecycleGovernance.description")}
-            </p>
+            {mcpGovernance.governedUnavailable ? (
+              <p className="mt-2 max-w-md text-center text-xs leading-5 text-[var(--theme-text-secondary)]">
+                {t("mcp.catalogUnavailable.description")}
+              </p>
+            ) : null}
             {canManageMcpUi && !searchQuery ? (
               <button
                 type="button"
@@ -535,10 +455,6 @@ export function MCPPanel() {
                       </dd>
                     </div>
                   </dl>
-
-                  <div className="mt-3 rounded-md border border-dashed border-[var(--theme-border)] p-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                    {t("mcp.lifecycleGovernance.description")}
-                  </div>
 
                 </article>
               );

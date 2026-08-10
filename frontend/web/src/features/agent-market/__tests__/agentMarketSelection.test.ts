@@ -52,7 +52,7 @@ test("market workspace deep links preserve the immutable published revision", ()
   );
 });
 
-test("market search uses only current safe public name and description fields", () => {
+test("market search covers the safe public identity and use fields", () => {
   const profiles = [
     profile,
     {
@@ -61,6 +61,8 @@ test("market search uses only current safe public name and description fields", 
       expected_revision: 2,
       name: "财务助手",
       description: "核对报销材料",
+      capability_summary: "核对企业财务单据。",
+      recommended_tasks: ["报销材料核验"],
       avatar_ref: "builtin:document" as const,
       category: "operations" as const,
     },
@@ -68,5 +70,7 @@ test("market search uses only current safe public name and description fields", 
 
   assert.deepEqual(filterPublishedMarketProfiles(profiles, " 支持 "), [profile]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "报销"), [profiles[1]]);
+  assert.deepEqual(filterPublishedMarketProfiles(profiles, "授权范围"), [profile]);
+  assert.deepEqual(filterPublishedMarketProfiles(profiles, "支持请求分流"), [profile]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, ""), profiles);
 });

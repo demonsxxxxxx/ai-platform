@@ -942,9 +942,26 @@ async def list_current_published_agent_profiles(
     category_filter = ""
     params: list[Any] = [tenant_id]
     if query:
-        query_filter = "and (agent_profile_revisions.name ilike %s or agent_profile_revisions.description ilike %s)"
+        query_filter = """
+        and (
+          agent_profile_revisions.name ilike %s
+          or agent_profile_revisions.description ilike %s
+          or agent_profile_revisions.capability_summary ilike %s
+          or exists (
+            select 1
+            from jsonb_array_elements_text(
+              case
+                when jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'
+                  then agent_profile_revisions.recommended_tasks
+                else '[]'::jsonb
+              end
+            ) as recommended_task(value)
+            where recommended_task.value ilike %s
+          )
+        )
+        """
         pattern = f"%{query.strip()}%"
-        params.extend([pattern, pattern])
+        params.extend([pattern, pattern, pattern, pattern])
     if category:
         category_filter = "and agent_profile_revisions.category = %s"
         params.append(category)
@@ -2747,7 +2764,35 @@ async def upsert_capability_distribution_row(
             capability_kind=capability_kind,
             capability_id=capability_id,
         )
-    return _capability_distribution_projection(dict(row))
+    projected = _capability_distribution_projection(dict(row))
+    if capability_kind == "mcp_server":
+        distribution_enabled = projected["status"] == "active"
+        catalog_cursor = await conn.execute(
+            """
+            update mcp_servers
+            set catalog_generation = catalog_generation + 1,
+                catalog_status = case
+                  when %s::boolean and status = 'active' then 'refresh_required'
+                  else 'disabled'
+                end,
+                catalog_unavailable_reason = case
+                  when %s::boolean and status = 'active' then 'refresh_required'
+                  else 'disabled'
+                end,
+                catalog_discovered_count = 0,
+                catalog_selectable_count = 0,
+                catalog_sync_lease_expires_at = null,
+                updated_at = now()
+            where tenant_id = %s
+              and name = %s
+              and status <> 'deleted'
+            returning name
+            """,
+            (distribution_enabled, distribution_enabled, tenant_id, capability_id),
+        )
+        if await catalog_cursor.fetchone() is None:
+            raise RepositoryNotFoundError("mcp_server_not_found")
+    return projected
 
 
 async def archive_capability_distribution_row(
@@ -2855,27 +2900,13 @@ async def toggle_capability_distribution_row(
               else 'disabled'
             end,
             updated_by = %s,
-            catalog_generation = catalog_generation + 1,
-            catalog_status = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'refresh_required' end
-              when %s::boolean then 'refresh_required'
-              else 'disabled'
-            end,
-            catalog_unavailable_reason = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'refresh_required' end
-              when %s::boolean then 'refresh_required'
-              else 'disabled'
-            end,
-            catalog_discovered_count = 0,
-            catalog_selectable_count = 0,
-            catalog_sync_lease_expires_at = null,
             updated_at = now()
         where tenant_id = %s and capability_kind = %s and capability_id = %s
         returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at
         """,
-        (enabled, enabled, updated_by, enabled, enabled, enabled, enabled, tenant_id, capability_kind, capability_id),
+        (enabled, enabled, updated_by, tenant_id, capability_kind, capability_id),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -2885,7 +2916,35 @@ async def toggle_capability_distribution_row(
             capability_kind=capability_kind,
             capability_id=capability_id,
         )
-    return _capability_distribution_projection(dict(row))
+    projected = _capability_distribution_projection(dict(row))
+    if capability_kind == "mcp_server":
+        distribution_enabled = projected["status"] == "active"
+        catalog_cursor = await conn.execute(
+            """
+            update mcp_servers
+            set catalog_generation = catalog_generation + 1,
+                catalog_status = case
+                  when %s::boolean and status = 'active' then 'refresh_required'
+                  else 'disabled'
+                end,
+                catalog_unavailable_reason = case
+                  when %s::boolean and status = 'active' then 'refresh_required'
+                  else 'disabled'
+                end,
+                catalog_discovered_count = 0,
+                catalog_selectable_count = 0,
+                catalog_sync_lease_expires_at = null,
+                updated_at = now()
+            where tenant_id = %s
+              and name = %s
+              and status <> 'deleted'
+            returning name
+            """,
+            (distribution_enabled, distribution_enabled, tenant_id, capability_id),
+        )
+        if await catalog_cursor.fetchone() is None:
+            raise RepositoryNotFoundError("mcp_server_not_found")
+    return projected
 
 
 async def set_capability_distribution_status(
@@ -8507,6 +8566,7 @@ async def list_admin_skill_summaries(
           skills.status as lifecycle_status,
           coalesce(tenant_capability_distributions.status, 'disabled') as distribution_status,
           coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user,
+          coalesce(tenant_capability_distributions.metadata_json, '{}'::jsonb) as distribution_metadata_json,
           latest_version.version as latest_version,
           latest_version.status as latest_version_status,
           skill_release_policies.current_version,
@@ -8532,7 +8592,16 @@ async def list_admin_skill_summaries(
         """,
         (tenant_id, tenant_id),
     )
-    return list(await cursor.fetchall())
+    rows = []
+    for raw_row in list(await cursor.fetchall()):
+        row = dict(raw_row)
+        distribution_metadata_json = row.pop("distribution_metadata_json", {})
+        if is_capability_distribution_archived(
+            {"metadata_json": distribution_metadata_json}
+        ):
+            continue
+        rows.append(row)
+    return rows
 
 
 async def get_admin_skill_detail(
@@ -8554,7 +8623,8 @@ async def get_admin_skill_detail(
           skills.executor_type,
           skills.status as lifecycle_status,
           coalesce(tenant_capability_distributions.status, 'disabled') as status,
-          coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user
+          coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user,
+          coalesce(tenant_capability_distributions.metadata_json, '{}'::jsonb) as distribution_metadata_json
         from skills
         left join tenant_capability_distributions
           on tenant_capability_distributions.tenant_id = %s
@@ -8564,8 +8634,14 @@ async def get_admin_skill_detail(
         """,
         (tenant_id, skill_id),
     )
-    skill = await cursor.fetchone()
-    if skill is None:
+    raw_skill = await cursor.fetchone()
+    if raw_skill is None:
+        return None
+    skill = dict(raw_skill)
+    distribution_metadata_json = skill.pop("distribution_metadata_json", {})
+    if is_capability_distribution_archived(
+        {"metadata_json": distribution_metadata_json}
+    ):
         return None
 
     versions = await list_skill_versions(conn, skill_id=skill_id)
@@ -8621,7 +8697,7 @@ async def get_admin_skill_detail(
         snapshots.append(snapshot)
 
     return {
-        "skill": dict(skill),
+        "skill": skill,
         "release_policy": release_policy,
         "versions": versions,
         "recent_snapshots": snapshots,

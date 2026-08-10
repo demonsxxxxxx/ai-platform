@@ -125,146 +125,154 @@ export function AgentBuilderEnterpriseFields({
             size={17}
           />
           <h3 className="text-sm font-semibold" id="agent-enterprise-heading">
-            企业专家信息
+            市场展示（可选）
           </h3>
         </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-2">
-            <span className="text-sm font-medium">头像</span>
-            <select
-              className={INPUT_CLASS}
+        <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
+          这些内容只影响智能体市场卡片和开场体验，不影响执行能力，也不要求填写。
+        </p>
+        <details className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+          <summary className="cursor-pointer text-sm font-medium">
+            编辑市场卡片与开场内容
+          </summary>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">头像</span>
+              <select
+                className={INPUT_CLASS}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({
+                    avatarRef: event.target.value as AgentBuilderEditor["avatarRef"],
+                  })
+                }
+                value={editor.avatarRef}
+              >
+                {AGENT_PROFILE_AVATAR_REFS.map((avatar) => (
+                  <option key={avatar} value={avatar}>
+                    {AVATAR_LABELS[avatar]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">分类</span>
+              <select
+                className={INPUT_CLASS}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({
+                    category: event.target.value as AgentBuilderEditor["category"],
+                  })
+                }
+                value={editor.category}
+              >
+                {AGENT_PROFILE_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {CATEGORY_LABELS[category]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4">
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">能力摘要</span>
+              <textarea
+                className={`${INPUT_CLASS} min-h-24 resize-y`}
+                disabled={disabled}
+                onChange={(event) => onChange({ capabilitySummary: event.target.value })}
+                value={editor.capabilitySummary}
+              />
+            </label>
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">欢迎语</span>
+              <textarea
+                className={`${INPUT_CLASS} min-h-20 resize-y`}
+                disabled={disabled}
+                onChange={(event) => onChange({ welcomeMessage: event.target.value })}
+                value={editor.welcomeMessage}
+              />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <ListField
+              className="min-h-28"
               disabled={disabled}
-              onChange={(event) =>
-                onChange({
-                  avatarRef: event.target.value as AgentBuilderEditor["avatarRef"],
-                })
-              }
-              value={editor.avatarRef}
-            >
-              {AGENT_PROFILE_AVATAR_REFS.map((avatar) => (
-                <option key={avatar} value={avatar}>
-                  {AVATAR_LABELS[avatar]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-2">
-            <span className="text-sm font-medium">分类</span>
-            <select
-              className={INPUT_CLASS}
-              disabled={disabled}
-              onChange={(event) =>
-                onChange({
-                  category: event.target.value as AgentBuilderEditor["category"],
-                })
-              }
-              value={editor.category}
-            >
-              {AGENT_PROFILE_CATEGORIES.map((category) => (
-                <option key={category} value={category}>
-                  {CATEGORY_LABELS[category]}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="mt-4 grid gap-4">
-          <label className="flex flex-col gap-2">
-            <span className="text-sm font-medium">能力摘要</span>
-            <textarea
-              className={`${INPUT_CLASS} min-h-24 resize-y`}
-              disabled={disabled}
-              onChange={(event) => onChange({ capabilitySummary: event.target.value })}
-              value={editor.capabilitySummary}
+              label="推荐任务（可选）"
+              onChange={(recommendedTasks) => onChange({ recommendedTasks })}
+              values={editor.recommendedTasks}
             />
-          </label>
-          <label className="flex flex-col gap-2">
-            <span className="text-sm font-medium">欢迎语</span>
-            <textarea
-              className={`${INPUT_CLASS} min-h-20 resize-y`}
+            <ListField
+              className="min-h-28"
               disabled={disabled}
-              onChange={(event) => onChange({ welcomeMessage: event.target.value })}
-              value={editor.welcomeMessage}
+              label="示例问题（可选）"
+              onChange={(starterPrompts) => onChange({ starterPrompts })}
+              values={editor.starterPrompts}
             />
-          </label>
-        </div>
+            <ListField
+              disabled={disabled}
+              label="预期输出（可选）"
+              onChange={(expectedOutputs) => onChange({ expectedOutputs })}
+              values={editor.expectedOutputs}
+            />
+          </div>
+        </details>
 
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <ListField
-            className="min-h-28"
-            disabled={disabled}
-            label="推荐任务"
-            onChange={(recommendedTasks) => onChange({ recommendedTasks })}
-            values={editor.recommendedTasks}
-          />
-          <ListField
-            className="min-h-28"
-            disabled={disabled}
-            label="示例问题"
-            onChange={(starterPrompts) => onChange({ starterPrompts })}
-            values={editor.starterPrompts}
-          />
-          <ListField
-            disabled={disabled}
-            label="预期输出"
-            onChange={(expectedOutputs) => onChange({ expectedOutputs })}
-            values={editor.expectedOutputs}
-          />
-          <fieldset className="min-w-0">
-            <legend className="text-sm font-medium">支持输入</legend>
-            <div className="mt-2 flex flex-wrap gap-4 text-sm">
-              {(["text", "file"] as const).map((inputType) => (
-                <label className="inline-flex items-center gap-2" key={inputType}>
-                  <input
-                    checked={editor.supportedInputTypes.includes(inputType)}
-                    disabled={disabled || inputType === "text"}
-                    onChange={(event) =>
-                      onChange({
-                        supportedInputTypes: event.target.checked
-                          ? [...editor.supportedInputTypes, inputType]
-                          : editor.supportedInputTypes.filter(
-                              (item) => item !== inputType,
-                            ),
-                      })
-                    }
-                    type="checkbox"
-                  />
-                  {inputType === "text" ? "文本" : "文件"}
-                </label>
-              ))}
-            </div>
-            {editor.supportedInputTypes.includes("file") ? (
-              <div className="mt-3">
-                <ListField
-                  className="min-h-20"
-                  disabled={disabled}
-                  label="文件类型"
-                  onChange={(supportedFileTypes) => onChange({ supportedFileTypes })}
-                  values={editor.supportedFileTypes}
+        <fieldset className="mt-5 min-w-0">
+          <legend className="text-sm font-medium">输入能力</legend>
+          <div className="mt-2 flex flex-wrap gap-4 text-sm">
+            {(["text", "file"] as const).map((inputType) => (
+              <label className="inline-flex items-center gap-2" key={inputType}>
+                <input
+                  checked={editor.supportedInputTypes.includes(inputType)}
+                  disabled={disabled || inputType === "text"}
+                  onChange={(event) =>
+                    onChange({
+                      supportedInputTypes: event.target.checked
+                        ? [...editor.supportedInputTypes, inputType]
+                        : editor.supportedInputTypes.filter(
+                            (item) => item !== inputType,
+                          ),
+                    })
+                  }
+                  type="checkbox"
                 />
-              </div>
-            ) : null}
-          </fieldset>
-        </div>
+                {inputType === "text" ? "文本" : "文件"}
+              </label>
+            ))}
+          </div>
+          {editor.supportedInputTypes.includes("file") ? (
+            <div className="mt-3 max-w-xl">
+              <ListField
+                className="min-h-20"
+                disabled={disabled}
+                label="支持的文件类型"
+                onChange={(supportedFileTypes) => onChange({ supportedFileTypes })}
+                values={editor.supportedFileTypes}
+              />
+            </div>
+          ) : null}
+        </fieldset>
       </section>
 
       <section
-        aria-labelledby="agent-access-heading"
+        aria-label="访问范围与数据说明（高级）"
         className="border-b border-[var(--theme-border)] py-6"
       >
-        <div className="mb-4 flex items-center gap-2">
-          <ShieldCheck
-            aria-hidden="true"
-            className="text-[var(--theme-text-secondary)]"
-            size={17}
-          />
-          <h3 className="text-sm font-semibold" id="agent-access-heading">
-            可见范围与数据访问
-          </h3>
-        </div>
-        <label className="flex max-w-sm flex-col gap-2">
+        <details className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+          <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+            <ShieldCheck
+              aria-hidden="true"
+              className="text-[var(--theme-text-secondary)]"
+              size={17}
+            />
+            访问范围与数据说明（高级）
+          </summary>
+          <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+            默认对公司内部用户开放；需要限制部门、角色或用户时再展开配置。
+          </p>
+        <label className="mt-4 flex max-w-sm flex-col gap-2">
           <span className="text-sm font-medium">可见范围</span>
           <select
             className={INPUT_CLASS}
@@ -276,8 +284,8 @@ export function AgentBuilderEnterpriseFields({
             }
             value={editor.visibility}
           >
-            <option value="tenant">全租户</option>
-            <option value="restricted">指定范围</option>
+            <option value="tenant">全公司</option>
+            <option value="restricted">指定部门、角色或用户</option>
           </select>
         </label>
 
@@ -323,6 +331,7 @@ export function AgentBuilderEnterpriseFields({
             value={editor.permissionsAndDataAccessNotice}
           />
         </label>
+        </details>
       </section>
     </>
   );

@@ -32,11 +32,10 @@ test("phase 1C discovery pages explain unavailable governance instead of blank d
     "utf8",
   );
 
-  assert.match(skillsHub, /statusCopyKey/);
-  assert.match(skillsHub, /"permissionLimited"/);
-  assert.match(skillsHub, /statusCopyNamespace/);
   assert.match(skillsHub, /data-phase1c-surface="skills-hub"/);
-  assert.match(skillsHub, /GovernanceAvailabilityBadge/);
+  assert.match(skillsHub, /governedUnavailable=\{isAdmin && hubGovernance\.governedUnavailable\}/);
+  assert.doesNotMatch(skillsHub, /GovernanceAvailabilityBadge/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-status/);
   assert.doesNotMatch(skillsHub, /skills\.featureDisabled/);
   assert.match(mcpPanel, /mcp\.permissionLimited/);
   assert.match(mcpPanel, /data-phase1c-surface="mcp"/);

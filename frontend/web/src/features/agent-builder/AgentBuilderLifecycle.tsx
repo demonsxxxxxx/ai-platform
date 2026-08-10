@@ -84,10 +84,10 @@ export function AgentBuilderLifecycle({
           <table className="w-full min-w-[34rem] text-left text-sm">
             <thead className="bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
               <tr>
-                <th className="px-3 py-2 font-medium">revision</th>
-                <th className="px-3 py-2 font-medium">状态</th>
-                <th className="px-3 py-2 font-medium">content hash</th>
-                <th className="px-3 py-2 font-medium">创建时间</th>
+                <th className="px-3 py-2 font-medium" scope="col">revision</th>
+                <th className="px-3 py-2 font-medium" scope="col">状态</th>
+                <th className="px-3 py-2 font-medium" scope="col">content hash</th>
+                <th className="px-3 py-2 font-medium" scope="col">创建时间</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--theme-border)]">

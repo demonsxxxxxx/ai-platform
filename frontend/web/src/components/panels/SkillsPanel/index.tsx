@@ -12,6 +12,7 @@ import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 import { SkillDistributionGovernancePanel } from "../SkillDistributionGovernancePanel";
+import { isAiAdminUser } from "../capabilityAdmin";
 import {
   buildSkillCatalogEntries,
   filterSkillCatalogEntries,
@@ -42,7 +43,8 @@ export function SkillsPanel({
   onCatalogStateChange,
 }: SkillsPanelProps) {
   const { t } = useTranslation();
-  const { hasAnyPermission } = useAuth();
+  const { hasAnyPermission, user } = useAuth();
+  const isAiAdmin = isAiAdminUser(user);
 
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
   const skillFileWriteBacked = true;
@@ -60,10 +62,12 @@ export function SkillsPanel({
   const effectivePermissions = new Set(actions.effectivePermissions);
   const canWrite =
     !isGovernedUnavailable &&
+    isAiAdmin &&
     (hasAnyPermission([Permission.SKILL_WRITE]) ||
       effectivePermissions.has(Permission.SKILL_WRITE));
   const canDeleteSkill =
     !isGovernedUnavailable &&
+    isAiAdmin &&
     (canDelete || effectivePermissions.has(Permission.SKILL_DELETE));
   const canEditSkills = skillFileWriteBacked && canWrite;
   const canExportSkills = canEditSkills;

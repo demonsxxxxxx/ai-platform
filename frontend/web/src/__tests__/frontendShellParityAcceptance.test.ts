@@ -211,7 +211,10 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
-  assert.match(sidebar, /useSessionList\(scrollEl\)/);
+  assert.match(
+    sidebar,
+    /useSessionList\(scrollEl,\s*sessionSource === undefined\)/,
+  );
   assert.doesNotMatch(sidebar, /ProjectItem|showProjectSection|sidebar\.projects/);
   assert.doesNotMatch(sidebar, /FolderPlus|sidebar\.newProject|onOpenNewProjectModal|NewProjectModal/);
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
@@ -437,7 +440,8 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
   );
 
   assert.match(skillsHub, /data-skills-catalog-workbench/);
-  assert.match(skillsHub, /data-skills-catalog-status/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-status/);
+  assert.doesNotMatch(skillsHub, /data-skills-hub-state-detail/);
   assert.match(skillsHub, /data-skills-catalog-main/);
   assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
   assert.doesNotMatch(skillsHub, /data-skills-catalog-nav/);
@@ -875,8 +879,9 @@ test("mcp workbench route exposes the same frontend governance state machine as 
   assert.match(mcpPanel, /data-required-permission=\{mcpGovernance\.requiredPermission\}/);
   assert.match(mcpPanel, /data-auth-projection-has-permission/);
   assert.match(mcpPanel, /WorkbenchStateSurface/);
-  assert.match(mcpPanel, /data-fail-closed-surface="mcp-lifecycle"/);
-  assert.match(mcpPanel, /data-fail-closed-surface="mcp-credentials"/);
+  assert.doesNotMatch(mcpPanel, /data-fail-closed-surface="mcp-lifecycle"/);
+  assert.doesNotMatch(mcpPanel, /data-fail-closed-surface="mcp-credentials"/);
+  assert.doesNotMatch(mcpPanel, /data-mcp-summary-status/);
   assert.match(mcpState, /requiredPermission: "mcp:read"/);
   assert.match(mcpState, /resolveFrontendGovernanceState/);
   assert.match(mcpState, /isPermissionError\(loadError\)/);
@@ -937,7 +942,9 @@ test("skills hub keeps management admin-only and serves a bounded ordinary catal
 
   assert.match(skillsHub, /resolveSkillsHubGovernance/);
   assert.match(skillsHub, /isAiAdminUser\(user\)/);
-  assert.match(skillsHub, /return <AvailableSkillsPanel \/>;/);
+  assert.match(skillsHub, /<SkillsPanel[\s\S]*allAuthorizedCatalog/);
+  assert.match(skillsHub, /showDistributionEditor=\{isAdmin\}/);
+  assert.doesNotMatch(skillsHub, /AvailableSkillsPanel/);
   assert.doesNotMatch(skillsHub, /useSettingsContext/);
   assert.doesNotMatch(skillsHub, /settingsError/);
   assert.doesNotMatch(skillsHub, /settingsStateDegraded/);
@@ -949,7 +956,7 @@ test("skills hub keeps management admin-only and serves a bounded ordinary catal
   assert.match(skillsHub, /catalogProjectionErrorByTab/);
   assert.match(skillsHub, /catalogPermissionDenied: catalogPermissionDeniedByTab\[requestedTab\]/);
   assert.match(skillsHub, /projectionError: catalogProjectionErrorByTab\[requestedTab\]/);
-  assert.match(skillsHub, /governedUnavailable=\{hubGovernance\.governedUnavailable\}/);
+  assert.match(skillsHub, /governedUnavailable=\{isAdmin && hubGovernance\.governedUnavailable\}/);
   assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-auth-projection-has-permission=\{hubGovernance\.authProjectionHasPermission\}/);
   assert.match(resolver, /catalogPermissionDenied\?: boolean/);

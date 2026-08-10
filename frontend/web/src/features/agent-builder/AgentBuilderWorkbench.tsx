@@ -505,10 +505,10 @@ export function AgentBuilderWorkbench({
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <BadgeCheck size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                    <h3 id="agent-skill-heading" className="text-sm font-semibold">Skill</h3>
+                    <h3 id="agent-skill-heading" className="text-sm font-semibold">主 Skill</h3>
                   </div>
                   <button className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("skills")} type="button">
-                    选择 Skill
+                    选择主 Skill
                   </button>
                 </div>
                 {activeEditor.selectedSkill ? (
@@ -528,8 +528,11 @@ export function AgentBuilderWorkbench({
                     ) : null}
                   </div>
                 ) : (
-                  <p className="text-sm text-[var(--theme-text-secondary)]">未选择 Skill</p>
+                  <p className="text-sm text-[var(--theme-text-secondary)]">未选择主 Skill</p>
                 )}
+                <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                  一个智能体固定一个主 Skill；该 Skill 声明的依赖会由系统自动装载。
+                </p>
               </section>
 
               <section aria-labelledby="agent-mcp-heading" className="border-b border-[var(--theme-border)] py-6">
@@ -669,7 +672,7 @@ export function AgentBuilderWorkbench({
         </section>
       </div>
 
-      <AgentBuilderDialog isOpen={dialog === "skills"} onClose={closeDialog} title="选择 Skill">
+      <AgentBuilderDialog isOpen={dialog === "skills"} onClose={closeDialog} title="选择主 Skill">
         {!skillCatalogResolved ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">授权 Skill 目录尚未完整加载。</p>
         ) : catalog.skills.length === 0 ? (

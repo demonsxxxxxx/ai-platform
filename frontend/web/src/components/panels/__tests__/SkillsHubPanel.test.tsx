@@ -75,3 +75,44 @@ test("canonical Skill page owns one catalog selection and one selected detail", 
   assert.match(list, /data-selected-skill-detail-shell/);
   assert.doesNotMatch(editor, /role="list"|aria-label="Skill 列表"/);
 });
+
+test("Skill catalog refreshes fail pending and hidden batch selections are cleared", () => {
+  const hook = readFileSync(
+    new URL("../../../hooks/useSkills.ts", import.meta.url),
+    "utf8",
+  );
+  const actions = readFileSync(
+    new URL("../SkillsPanel/useSkillsActions.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    hook,
+    /setCatalogReadResolved\(false\);\s*setPermissionsValid\(false\);\s*setEffectivePermissionsKnown\(false\);/,
+  );
+  assert.match(
+    actions,
+    /setSelectedNames\(new Set\(\)\);\s*\}, \[page, searchQuery, selectedTags\]\);/,
+  );
+});
+
+test("Skill management keeps admin mutations aligned and always reports the current page", () => {
+  const panel = readFileSync(
+    new URL("../SkillsPanel/index.tsx", import.meta.url),
+    "utf8",
+  );
+  const list = readFileSync(
+    new URL("../SkillsPanel/SkillsList.tsx", import.meta.url),
+    "utf8",
+  );
+  const hook = readFileSync(
+    new URL("../../../hooks/useSkills.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(panel, /const isAiAdmin = isAiAdminUser\(user\)/);
+  assert.match(list, /total > 0/);
+  assert.match(list, /skills\.paginationSummary/);
+  assert.match(hook, /skills\.toggleFailed/);
+  assert.match(hook, /skills\.deleteFailed/);
+});
