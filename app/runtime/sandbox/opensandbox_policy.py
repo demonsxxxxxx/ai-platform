@@ -15,7 +15,18 @@ from app.runtime.sandbox.contracts import (
 )
 
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
+SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
+INTERNAL_TEST_OPENSANDBOX_PROFILE = "official-opensandbox-direct-v1"
+_ORPHAN_SCOPE_KEYS = (
+    "tenant_id",
+    "workspace_id",
+    "user_id",
+    "session_id",
+    "run_id",
+    "attempt_id",
+    "sandbox_mode",
+)
 
 _GOVERNED_EGRESS_PROOF_LABEL = "ai-platform.governed_egress.proof"
 _GOVERNED_BRIDGE_PATHS = {
@@ -289,6 +300,7 @@ def governed_opensandbox_lease_labels(
                 capability.endpoint.encode("utf-8")
             ).hexdigest(),
             "ai-platform.external_egress.runtime_identity": capability.runtime_identity,
+            "ai-platform.external_egress.network_mode": capability.network_mode,
             "ai-platform.runtime_subject": capability.runtime_subject,
             "ai-platform.external_egress.gateway_policy_subject": capability.gateway_policy_subject,
             "ai-platform.external_egress.callback_boundary_subject": capability.callback_boundary_subject,
@@ -314,3 +326,74 @@ def governed_opensandbox_lease_labels(
     labels.update(executor_identity_labels)
     labels.update(skill_mount_labels)
     return labels
+
+
+def internal_test_opensandbox_lease_labels(
+    request: Any,
+    settings: Any,
+    *,
+    executor_identity_labels: Mapping[str, str],
+    skill_mount_labels: Mapping[str, str],
+) -> dict[str, str]:
+    """Build explicit non-production metadata for direct official OpenSandbox acceptance."""
+
+    requested_image, requested_digest = requested_opensandbox_image(settings)
+    labels = runtime_scope_labels(request)
+    labels.update(
+        {
+            "ai-platform.provider_backend": "opensandbox",
+            SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+            "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
+            "ai-platform.internal_test.network_mode": str(
+                getattr(settings, "opensandbox_expected_network_mode", "") or ""
+            ),
+            "ai-platform.internal_test.runtime_identity": "runsc",
+            "ai-platform.internal_test.risk": "bridge-non-production",
+            "ai-platform.executor.requested_image": requested_image,
+            "ai-platform.executor.requested_image_digest": requested_digest,
+            "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
+        }
+    )
+    labels.update(executor_identity_labels)
+    labels.update(skill_mount_labels)
+    return labels
+
+
+def internal_test_orphan_cleanup_metadata_filter(filters: Mapping[str, str]) -> dict[str, str] | None:
+    """Return an exact direct-mode inventory filter only for one complete runtime scope."""
+
+    if filters.get("security_profile") != SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        return None
+    if any(not str(filters.get(key) or "").strip() for key in _ORPHAN_SCOPE_KEYS):
+        return None
+    metadata = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.provider_backend": "opensandbox",
+        SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+    }
+    metadata.update({f"ai-platform.{key}": str(filters[key]) for key in _ORPHAN_SCOPE_KEYS})
+    return metadata
+
+
+def internal_test_orphan_cleanup_expected_labels(
+    filters: Mapping[str, str],
+    settings: Any,
+) -> dict[str, str] | None:
+    """Return all immutable direct-mode evidence required before orphan deletion."""
+
+    metadata = internal_test_orphan_cleanup_metadata_filter(filters)
+    if metadata is None:
+        return None
+    requested_image, requested_digest = requested_opensandbox_image(settings)
+    metadata.update(
+        {
+            "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
+            "ai-platform.internal_test.network_mode": "bridge",
+            "ai-platform.internal_test.runtime_identity": "runsc",
+            "ai-platform.internal_test.risk": "bridge-non-production",
+            "ai-platform.executor.requested_image": requested_image,
+            "ai-platform.executor.requested_image_digest": requested_digest,
+            "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
+        }
+    )
+    return metadata

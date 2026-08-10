@@ -7,6 +7,7 @@ import hmac
 import inspect
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -57,7 +58,6 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.filesystem_contract import encode_execd_mode
-from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidence,
     OpenSandboxStartupEvidenceCarrier,
@@ -75,11 +75,15 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
 from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
 from app.runtime.sandbox.opensandbox_policy import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
+    SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
     SANDBOX_SECURITY_PROFILE_LABEL,
     ExecutorEgressBases as _ExecutorEgressBases,
     OpenSandboxProfileConfigurationError,
     governed_opensandbox_lease_labels,
     governed_opensandbox_egress_bases,
+    internal_test_orphan_cleanup_expected_labels,
+    internal_test_orphan_cleanup_metadata_filter,
+    internal_test_opensandbox_lease_labels,
     opensandbox_container_name as _opensandbox_container_name,
     opensandbox_status_from_info as _opensandbox_status_from_info,
     requested_opensandbox_image,
@@ -94,6 +98,9 @@ from app.runtime.sandbox.opensandbox_legacy_cleanup import (
 from app.runtime.sandbox import readiness_evidence
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
+
+
+_logger = logging.getLogger(__name__)
 
 
 class SandboxRuntimeError(OpenSandboxStartupEvidenceCarrier, RuntimeError):
@@ -957,6 +964,23 @@ def _require_governed_security_profile(settings: Any) -> None:
         raise OpenSandboxCapabilityAdmissionError("sandbox security profile is not governed")
 
 
+def _opensandbox_security_profile(settings: Any) -> str:
+    profile = str(getattr(settings, "sandbox_security_profile", SANDBOX_SECURITY_PROFILE_GOVERNED) or "")
+    if profile == SANDBOX_SECURITY_PROFILE_GOVERNED:
+        return profile
+    if profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST and (
+        str(getattr(settings, "deployment_environment", "") or "") == "test"
+        and str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower() == "opensandbox"
+        and str(getattr(settings, "opensandbox_expected_network_mode", "") or "") == "bridge"
+    ):
+        return profile
+    raise OpenSandboxCapabilityAdmissionError("OpenSandbox security profile selection is invalid")
+
+
+def _is_internal_test_opensandbox(settings: Any) -> bool:
+    return _opensandbox_security_profile(settings) == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+
+
 def _opensandbox_external_egress_bases(settings: Any) -> _ExecutorEgressBases:
     try:
         return governed_opensandbox_egress_bases(settings)
@@ -969,7 +993,8 @@ def executor_callback_target(settings: Any, provider_name: str):
 
     selected_provider = str(provider_name or "").strip().lower()
     if selected_provider == "opensandbox":
-        _require_governed_security_profile(settings)
+        if _is_internal_test_opensandbox(settings):
+            return _trusted_callback_target(settings)
         return _opensandbox_external_egress_bases(settings).callback_target()
     return _trusted_callback_target(settings)
 
@@ -1130,6 +1155,7 @@ _OPENSANDBOX_CAPABILITY_PROFILE_FIELDS = {
     "expires_at",
     "opensandbox_endpoint",
     "runtime_identity",
+    "network_mode",
     "ai_platform_runtime_subject",
     "gateway_policy_subject",
     "callback_boundary_subject",
@@ -1178,6 +1204,7 @@ class OpenSandboxExternalEgressCapability:
     profile_id: str
     endpoint: str
     runtime_identity: str
+    network_mode: str
     runtime_subject: str
     gateway_policy_subject: str
     callback_boundary_subject: str
@@ -1259,8 +1286,8 @@ class OpenSandboxExternalEgressCapability:
         return build_governed_egress_proof(
             signing_key=signing_key,
             provider="opensandbox",
-            # OpenSandbox has no Docker bridge.  Its authenticated runsc
-            # capability supplies policy-bound enforcement instead.
+            # OpenSandbox network admission is capability-bound. Temporary
+            # bridge mode is accepted only by an explicitly signed profile.
             network_internal=False,
             key_id=key_id,
             issued_at=issued_at,
@@ -1270,48 +1297,6 @@ class OpenSandboxExternalEgressCapability:
                 lease_identity=lease_identity,
             ),
         )
-
-    def lease_labels(
-        self,
-        *,
-        signing_key: object,
-        key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
-        request: SandboxRuntimeRequest,
-        lease_identity: str,
-        now: datetime | None = None,
-    ) -> dict[str, str]:
-        proof = self.governed_egress_proof(
-            signing_key=signing_key,
-            key_id=key_id,
-            request=request,
-            lease_identity=lease_identity,
-            now=now,
-        )
-        return {
-            "ai-platform.external_egress.profile_version": "v1",
-            "ai-platform.external_egress.profile_id": self.profile_id,
-            "ai-platform.external_egress.runtime_identity": self.runtime_identity,
-            "ai-platform.runtime_subject": self.runtime_subject,
-            "ai-platform.external_egress.gateway_policy_subject": self.gateway_policy_subject,
-            "ai-platform.external_egress.callback_boundary_subject": self.callback_boundary_subject,
-            "ai-platform.external_egress.deny_audit_subject": self.deny_audit_subject,
-            "ai-platform.external_egress.deny_counter_subject": self.deny_counter_subject,
-            "ai-platform.external_egress.profile_requested_image": self.requested_image,
-            "ai-platform.external_egress.profile_requested_image_digest": self.requested_image_digest,
-            "ai-platform.external_egress.upstream_bridge_version": self.upstream_bridge_version,
-            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
-                self.callback_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
-                self.openai_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
-                self.anthropic_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.profile_expires_at": self.expires_at,
-            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
-        }
-
 
 def _required_capability_value(value: object, *, field: str) -> str:
     normalized = str(value or "").strip()
@@ -1541,6 +1526,10 @@ def _validate_opensandbox_external_egress_profile(
     runtime_identity = _required_capability_value(profile.get("runtime_identity"), field="runtime_identity")
     if runtime_identity != OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile runtime identity must be runsc") from None
+    network_mode = _required_capability_value(profile.get("network_mode"), field="network_mode")
+    configured_network_mode = str(getattr(settings, "opensandbox_expected_network_mode", "none") or "")
+    if configured_network_mode not in {"none", "bridge"} or network_mode != configured_network_mode:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile network mode drift detected") from None
 
     runtime_subject = _required_capability_value(
         getattr(settings, "sandbox_runtime_subject", ""), field="configured runtime subject"
@@ -1575,10 +1564,16 @@ def _validate_opensandbox_external_egress_profile(
     profile_image_digest = _required_profile_executor_image_digest(profile.get("executor_image_digest"))
     if profile_image_digest != requested_image_digest:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile executor image digest mismatch") from None
+    profile_id = _required_capability_value(profile.get("profile_id"), field="profile_id")
+    if network_mode == "bridge" and "internal-test" not in profile_id:
+        raise OpenSandboxCapabilityAdmissionError(
+            "OpenSandbox bridge network mode requires an internal-test profile"
+        ) from None
     return OpenSandboxExternalEgressCapability(
-        profile_id=_required_capability_value(profile.get("profile_id"), field="profile_id"),
+        profile_id=profile_id,
         endpoint=endpoint,
         runtime_identity=runtime_identity,
+        network_mode=network_mode,
         runtime_subject=runtime_subject,
         gateway_policy_subject=gateway_policy_subject,
         callback_boundary_subject=callback_boundary_subject,
@@ -1679,12 +1674,21 @@ def _opensandbox_labels(
 def _opensandbox_profile_labels(
     settings: Any,
     request: SandboxRuntimeRequest,
-    capability: OpenSandboxExternalEgressCapability,
+    capability: OpenSandboxExternalEgressCapability | None,
     skill_mount: _TrustedSkillMount | None,
     *,
     lease_identity: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, str]:
+    if _is_internal_test_opensandbox(settings):
+        return internal_test_opensandbox_lease_labels(
+            request,
+            settings,
+            executor_identity_labels=_executor_identity_labels(),
+            skill_mount_labels=_skill_mount_labels(skill_mount),
+        )
+    if capability is None:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed capability is unavailable")
     return _opensandbox_labels(
         settings,
         request,
@@ -1693,6 +1697,38 @@ def _opensandbox_profile_labels(
         lease_identity=lease_identity,
         now=now,
     )
+
+
+def _opensandbox_runtime_egress_bases(
+    settings: Any,
+    capability: OpenSandboxExternalEgressCapability | None,
+) -> _ExecutorEgressBases:
+    if _is_internal_test_opensandbox(settings):
+        callback = _trusted_callback_target(settings)
+        return _ExecutorEgressBases(
+            callback_base_url=callback.base_url,
+            openai_base_url=_env_value(settings, "openai_base_url"),
+            anthropic_base_url=_env_value(settings, "anthropic_base_url"),
+        )
+    if capability is None:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed capability is unavailable")
+    return capability.executor_egress_bases()
+
+
+def _ensure_opensandbox_profile_still_valid(
+    settings: Any,
+    capability: OpenSandboxExternalEgressCapability | None,
+    *,
+    now: datetime,
+) -> None:
+    if _is_internal_test_opensandbox(settings):
+        _requested_executor_image_digest(settings)
+        if not str(getattr(settings, "sandbox_runtime_subject", "") or "").strip():
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox runtime subject is unavailable")
+        return
+    if capability is None:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed capability is unavailable")
+    _ensure_capability_still_valid(capability, now=now)
 
 
 def _callback_policy_host(settings: Any) -> str:
@@ -2223,6 +2259,36 @@ def _opensandbox_cleanup_identity_is_authorized(
     lease_profile = str(lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED)
     if lease_profile == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL:
         return trusted_internal_cleanup_identity_is_authorized(status_labels, lease.labels)
+    if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        try:
+            if not _is_internal_test_opensandbox(settings):
+                return False
+            requested_image, requested_digest = requested_opensandbox_image(settings)
+            normalized_image = opensandbox_metadata.normalize_opensandbox_metadata(
+                {
+                    "ai-platform.executor.requested_image": requested_image,
+                    "ai-platform.executor.requested_image_digest": requested_digest,
+                }
+            )
+        except (
+            OpenSandboxCapabilityAdmissionError,
+            OpenSandboxProfileConfigurationError,
+            opensandbox_metadata.OpenSandboxMetadataError,
+        ):
+            return False
+        return bool(
+            opensandbox_metadata.opensandbox_status_matches_lease(status_labels, lease.labels)
+            and status_labels.get(SANDBOX_SECURITY_PROFILE_LABEL) == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+            and status_labels.get("ai-platform.internal_test.profile") == "official-opensandbox-direct-v1"
+            and status_labels.get("ai-platform.internal_test.network_mode") == "bridge"
+            and status_labels.get("ai-platform.internal_test.runtime_identity") == "runsc"
+            and status_labels.get("ai-platform.executor.requested_image")
+            == normalized_image["ai-platform.executor.requested_image"]
+            and status_labels.get("ai-platform.executor.requested_image_digest")
+            == normalized_image["ai-platform.executor.requested_image_digest"]
+            and lease.labels.get("ai-platform.runtime_subject")
+            == str(getattr(settings, "sandbox_runtime_subject", "") or "")
+        )
     if lease_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
         return False
     encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)
@@ -4407,7 +4473,6 @@ class OpenSandboxContainerProvider:
         health_probe: Callable[..., bool] | None = None,
         identity_probe: Callable[..., dict[str, int]] | None = None,
         capability_profile_fetcher: CapabilityProfileFetcher | None = None,
-        authoritative_attestation_probe: Callable[[Any, SandboxRuntimeRequest, str, Any], bool] | None = None,
         utcnow: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
@@ -4424,7 +4489,6 @@ class OpenSandboxContainerProvider:
         self._health_probe = health_probe or default_executor_health_probe
         self._identity_probe = identity_probe or default_executor_identity_probe
         self._capability_profile_fetcher = capability_profile_fetcher or _default_opensandbox_capability_profile_fetcher
-        self._authoritative_attestation_probe = authoritative_attestation_probe
         self._utcnow = utcnow or _utcnow
         self._monotonic = monotonic or time.monotonic
         self._sandboxes: dict[str, Any] = {}
@@ -4608,30 +4672,6 @@ class OpenSandboxContainerProvider:
         self._sandboxes.pop(cached.container_id, None)
         self._leases.pop(cache_key, None)
 
-    async def _require_authoritative_governed_attestation(
-        self,
-        capability: OpenSandboxExternalEgressCapability,
-        request: SandboxRuntimeRequest,
-        sandbox_id: str,
-        info: Any,
-    ) -> None:
-        """Require a provider-supplied post-create topology attestation before sealing proof."""
-        probe = self._authoritative_attestation_probe
-        if probe is None:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress is unsupported without authoritative topology attestation"
-            )
-        try:
-            attested = probe(capability, request, sandbox_id, info)
-            if inspect.isawaitable(attested):
-                attested = await attested
-        except Exception:
-            attested = False
-        if attested is not True:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress authoritative attestation failed"
-            )
-
     async def create_or_reuse(
         self,
         request: SandboxRuntimeRequest,
@@ -4639,23 +4679,30 @@ class OpenSandboxContainerProvider:
     ) -> ContainerLease:
         settings = get_settings()
         cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
-        _require_governed_security_profile(settings)
-        if not has_governed_egress_signing_key(getattr(settings, "sandbox_egress_proof_signing_key", "")):
+        security_profile = _opensandbox_security_profile(settings)
+        _logger.info(
+            "OpenSandbox security profile selected: %s (network_mode=%s)",
+            security_profile,
+            getattr(settings, "opensandbox_expected_network_mode", ""),
+        )
+        if security_profile == SANDBOX_SECURITY_PROFILE_GOVERNED and not has_governed_egress_signing_key(
+            getattr(settings, "sandbox_egress_proof_signing_key", "")
+        ):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed-egress proof key is unavailable") from None
-        if self._authoritative_attestation_probe is None:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress is unsupported without authoritative topology attestation"
-            ) from None
         self._ensure_symbols()
-        try:
-            capability = await _admit_opensandbox_external_egress_capability(
-                settings=settings,
-                fetcher=self._capability_profile_fetcher,
-                now=self._utcnow(),
-            )
-        except OpenSandboxCapabilityAdmissionError:
-            await self._cleanup_cached_lease_after_capability_rejection(request)
-            raise
+        capability: OpenSandboxExternalEgressCapability | None = None
+        if security_profile == SANDBOX_SECURITY_PROFILE_GOVERNED:
+            try:
+                capability = await _admit_opensandbox_external_egress_capability(
+                    settings=settings,
+                    fetcher=self._capability_profile_fetcher,
+                    now=self._utcnow(),
+                )
+            except OpenSandboxCapabilityAdmissionError:
+                await self._cleanup_cached_lease_after_capability_rejection(request)
+                raise
+        else:
+            _ensure_opensandbox_profile_still_valid(settings, None, now=self._utcnow())
         # Remote OpenSandbox has no controller filesystem identity.  Stage the
         # controlled Skill tree only after this ready sandbox has a DB lease.
         skill_mount = None
@@ -4726,19 +4773,20 @@ class OpenSandboxContainerProvider:
                     )
                 ):
                     raise ContainerStartFailedError("cached sandbox metadata mismatch")
-                await self._require_authoritative_governed_attestation(
-                    capability,
-                    request,
-                    cached.container_id,
-                    info,
-                )
-                labels_match = _governed_egress_labels_match(
-                    "opensandbox",
-                    cached.labels,
-                    sealed_labels,
-                    getattr(settings, "sandbox_egress_proof_signing_key", ""),
-                    signing_key_id=_governed_egress_proof_key_id(settings),
-                    now=self._utcnow(),
+                labels_match = (
+                    opensandbox_metadata.opensandbox_metadata_matches(
+                        cached.labels,
+                        _provider_lease_labels(sealed_labels),
+                    )
+                    if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+                    else _governed_egress_labels_match(
+                        "opensandbox",
+                        cached.labels,
+                        sealed_labels,
+                        getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                        signing_key_id=_governed_egress_proof_key_id(settings),
+                        now=self._utcnow(),
+                    )
                 )
                 if not labels_match:
                     raise ContainerStartFailedError("cached sandbox metadata mismatch")
@@ -4766,7 +4814,7 @@ class OpenSandboxContainerProvider:
                     executor_headers,
                 )
                 _require_expected_executor_identity(identity)
-                _ensure_capability_still_valid(capability, now=self._utcnow())
+                _ensure_opensandbox_profile_still_valid(settings, capability, now=self._utcnow())
             except asyncio.CancelledError as exc:
                 if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
@@ -4791,7 +4839,7 @@ class OpenSandboxContainerProvider:
             cached.executor_headers = executor_headers
             cached.labels = _provider_lease_labels(sealed_labels)
             try:
-                _ensure_capability_still_valid(capability, now=self._utcnow())
+                _ensure_opensandbox_profile_still_valid(settings, capability, now=self._utcnow())
             except OpenSandboxCapabilityAdmissionError as exc:
                 if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
@@ -4889,7 +4937,7 @@ class OpenSandboxContainerProvider:
             request,
             settings,
             executor_auth_token=executor_auth_token,
-            egress_bases=capability.executor_egress_bases(),
+            egress_bases=_opensandbox_runtime_egress_bases(settings, capability),
             workspace_container_path=workspace.workspace_container_path,
         )
         environment = {key: value for key, value in environment.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}}
@@ -4943,12 +4991,6 @@ class OpenSandboxContainerProvider:
                 or not _status_matches_lease(remote_status, expected_unsealed)
             ):
                 raise ContainerStartFailedError("OpenSandbox post-create metadata mismatch")
-            await self._require_authoritative_governed_attestation(
-                capability,
-                request,
-                sandbox_id,
-                info,
-            )
             return sandbox_id
 
         async def check_executor_health(executor_url: str, endpoint_headers: dict[str, str]) -> int:
@@ -4973,7 +5015,7 @@ class OpenSandboxContainerProvider:
                 _executor_auth_headers(executor_auth_token, endpoint_headers),
             )
             _require_expected_executor_identity(identity)
-            _ensure_capability_still_valid(capability, now=self._utcnow())
+            _ensure_opensandbox_profile_still_valid(settings, capability, now=self._utcnow())
 
         try:
             startup_result = await launch_opensandbox_startup(
@@ -5056,7 +5098,7 @@ class OpenSandboxContainerProvider:
             },
         )
         try:
-            _ensure_capability_still_valid(capability, now=self._utcnow())
+            _ensure_opensandbox_profile_still_valid(settings, capability, now=self._utcnow())
         except OpenSandboxCapabilityAdmissionError as exc:
             try:
                 await cleanup_new(sandbox)
@@ -5073,9 +5115,9 @@ class OpenSandboxContainerProvider:
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> None:
-        """Fail closed unless governed OpenSandbox evidence remains valid."""
+        """Fail closed unless the selected OpenSandbox profile remains valid."""
         settings = get_settings()
-        _require_governed_security_profile(settings)
+        security_profile = _opensandbox_security_profile(settings)
         if not _lease_matches_request_workspace(lease, request, workspace):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox dispatch scope mismatch")
         try:
@@ -5087,20 +5129,61 @@ class OpenSandboxContainerProvider:
                     skip_health_check=True,
                 )
             info = await _maybe_await(sandbox.get_info())
-            if self._authoritative_attestation_probe is None:
+            remote_status = _opensandbox_status_from_info(info)
+            if (
+                remote_status is None
+                or remote_status.container_id != lease.container_id
+                or not _status_matches_lease(remote_status, lease)
+            ):
                 raise OpenSandboxCapabilityAdmissionError(
-                    "OpenSandbox governed egress is unsupported without authoritative topology attestation"
+                    "OpenSandbox dispatch metadata mismatch"
                 )
+            if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+                _ensure_opensandbox_profile_still_valid(settings, None, now=self._utcnow())
+                expected_labels = internal_test_orphan_cleanup_expected_labels(
+                    {
+                        "tenant_id": request.tenant_id,
+                        "workspace_id": request.workspace_id,
+                        "user_id": request.user_id,
+                        "session_id": request.session_id,
+                        "run_id": request.run_id,
+                        "attempt_id": request.attempt_id,
+                        "sandbox_mode": request.sandbox_mode,
+                        "security_profile": SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+                    },
+                    settings,
+                )
+                if expected_labels is None or any(
+                    str(lease.labels.get(key) or "") != value for key, value in expected_labels.items()
+                ):
+                    raise OpenSandboxCapabilityAdmissionError("OpenSandbox internal-test dispatch profile drift")
+                executor_url, endpoint_headers = await resolve_executor_endpoint(
+                    sandbox, settings, error_factory=OpenSandboxCapabilityAdmissionError
+                )
+                executor_headers = _executor_auth_headers(
+                    str(lease.executor_headers.get(EXECUTOR_AUTH_HEADER) or ""),
+                    endpoint_headers,
+                )
+                if not await asyncio.to_thread(
+                    _call_executor_health_probe,
+                    self._health_probe,
+                    executor_url,
+                    int(getattr(settings, "sandbox_executor_health_timeout_seconds", 60) or 60),
+                    executor_headers,
+                ):
+                    raise ExecutorHealthTimeoutError()
+                identity = await asyncio.to_thread(
+                    self._identity_probe,
+                    executor_url,
+                    int(getattr(settings, "sandbox_executor_health_timeout_seconds", 60) or 60),
+                    executor_headers,
+                )
+                _require_expected_executor_identity(identity)
+                return
             capability = await _admit_opensandbox_external_egress_capability(
                 settings=settings,
                 fetcher=self._capability_profile_fetcher,
                 now=self._utcnow(),
-            )
-            await self._require_authoritative_governed_attestation(
-                capability,
-                request,
-                lease.container_id,
-                info,
             )
             _ensure_capability_still_valid(capability, now=self._utcnow())
             expected_binding = capability._governed_egress_binding(
@@ -5123,7 +5206,7 @@ class OpenSandboxContainerProvider:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            stop_result = await self.stop(lease, reason="dispatch_attestation_failed")
+            stop_result = await self.stop(lease, reason="dispatch_validation_failed")
             if stop_result.status == "failed":
                 raise ContainerCleanupFailedError("OpenSandbox dispatch cleanup could not be confirmed") from exc
             if isinstance(exc, SandboxRuntimeError):
@@ -5756,20 +5839,36 @@ class OpenSandboxContainerProvider:
             raise ContainerStartFailedError("OpenSandbox inventory failed") from exc
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        metadata_filter = trusted_internal_orphan_cleanup_metadata_filter(filters)
-        if metadata_filter is None:
-            return []
         settings = get_settings()
+        if filters.get("security_profile") == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+            if _opensandbox_security_profile(settings) != SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+                return []
+            raw_metadata_filter = internal_test_orphan_cleanup_metadata_filter(filters)
+            raw_expected_labels = internal_test_orphan_cleanup_expected_labels(filters, settings)
+            if raw_metadata_filter is None or raw_expected_labels is None:
+                return []
+            try:
+                metadata_filter = opensandbox_metadata.normalize_opensandbox_metadata(raw_metadata_filter)
+                expected_labels = opensandbox_metadata.normalize_opensandbox_metadata(raw_expected_labels)
+            except (opensandbox_metadata.OpenSandboxMetadataError, OpenSandboxProfileConfigurationError):
+                return []
+
+            def identity_is_authorized(labels: dict[str, str]) -> bool:
+                return all(str(labels.get(key) or "") == value for key, value in expected_labels.items())
+
+        else:
+            metadata_filter = trusted_internal_orphan_cleanup_metadata_filter(filters)
+            if metadata_filter is None:
+                return []
+            def identity_is_authorized(labels: dict[str, str]) -> bool:
+                return trusted_internal_orphan_cleanup_identity_is_authorized(labels, filters)
         manager = await self._manager(self._connection_config(settings))
         try:
             infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             results: list[StopResult] = []
             for info in infos or []:
                 status = _opensandbox_status_from_info(info)
-                if status is None or not trusted_internal_orphan_cleanup_identity_is_authorized(
-                    status.detail.get("labels"),
-                    filters,
-                ):
+                if status is None or not identity_is_authorized(status.detail.get("labels", {})):
                     continue
                 if status.status == "running":
                     continue
@@ -5801,8 +5900,11 @@ def reset_container_provider_cache() -> None:
 
 def create_container_provider(provider_name: str | None = None) -> ContainerProvider:
     settings = get_settings()
-    _require_governed_security_profile(settings)
     selected = str(provider_name or settings.sandbox_container_provider or "").strip().lower()
+    if selected == "opensandbox":
+        _opensandbox_security_profile(settings)
+    else:
+        _require_governed_security_profile(settings)
     cached = _PROVIDER_CACHE.get(selected)
     if cached is not None:
         return cached
@@ -5815,9 +5917,7 @@ def create_container_provider(provider_name: str | None = None) -> ContainerProv
         _PROVIDER_CACHE[selected] = provider
         return provider
     if selected == "opensandbox":
-        provider = OpenSandboxContainerProvider(
-            authoritative_attestation_probe=build_opensandbox_attestation_probe(settings)
-        )
+        provider = OpenSandboxContainerProvider()
         _PROVIDER_CACHE[selected] = provider
         return provider
     raise ValueError(f"Unknown sandbox container provider: {selected}")

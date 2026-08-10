@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import concurrent.futures
 import hashlib
@@ -25,7 +24,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.runtime.sandbox.opensandbox_attestation import _OpenSandboxAttestor, _TransportResponse
 import services.opensandbox_gateway.adapters as gateway_adapters
 import services.opensandbox_gateway.helper as gateway_helper
 import services.opensandbox_gateway.server as gateway_server
@@ -43,7 +41,6 @@ from services.opensandbox_gateway.adapters import (
 from services.opensandbox_gateway.gateway import (
     API_KEY_HEADER,
     CAPABILITY_VERSION,
-    CONTRACT_VERSION,
     ROUTE_HEADER,
     DeadlineExceeded,
     GatewayApplication,
@@ -139,6 +136,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "ai-platform.external_egress.profile_id": config.profile_id,
         "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(f"https://{PUBLIC_AUTHORITY}".encode()).hexdigest(),
         "ai-platform.external_egress.runtime_identity": "runsc",
+        "ai-platform.external_egress.network_mode": config.expected_network_mode,
         "ai-platform.runtime_subject": config.runtime_subject,
         "ai-platform.external_egress.gateway_policy_subject": config.gateway_policy_subject,
         "ai-platform.external_egress.callback_boundary_subject": config.callback_boundary_subject,
@@ -257,7 +255,7 @@ def _collection_proxy():
     return app, lifecycle, runtime, store, sandbox_id, token, f"/v1/sandboxes/{sandbox_id}/proxy/44772"
 
 
-def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> None:
+def test_create_rewrites_only_broker_bases_and_returns_official_lifecycle_info() -> None:
     app, lifecycle, runtime, store = application()
     config = gateway_config()
     response = call(app, "POST", "/v1/sandboxes", create_payload(config))
@@ -274,95 +272,9 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
     assert store.get(sandbox_id).metadata["ai-platform.model_id_sha256"] == base64.b32encode(
         hashlib.sha256(b"deepseek-v4-flash").digest()
     ).decode("ascii").rstrip("=")
-    attestation = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
-    assert attestation.status == 200
-    value = decoded(attestation)
-    assert value == {
-        "contract_version": CONTRACT_VERSION,
-        "provider": "opensandbox",
-        "sandbox_id": sandbox_id,
-        "scope_labels": {
-            "tenant_id": "tenant-one",
-            "workspace_id": "workspace-one",
-            "user_id": "user-one",
-            "session_id": "session-one",
-            "run_id": "run-one",
-            "attempt_id": "attempt-one",
-            "lease_id": f"opensandbox:opensandbox-run-one-attempt-one:{sandbox_id}",
-        },
-        "runtime": {"identity": "runsc", "subject": config.runtime_subject},
-        "network": {"mode": "none", "default_deny": True},
-        "security": {"no_new_privileges": True, "user": "1000:1000", "uid": "1000", "gid": "1000"},
-        "image": {"subject": IMAGE, "digest": IMAGE.rsplit("@", 1)[1]},
-        "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
-        "upstream_bridge": {
-            "version": UPSTREAM_BRIDGE_VERSION,
-            "callback_base_url": config.callback_upstream_base,
-            "openai_base_url": config.openai_upstream_base,
-            "anthropic_base_url": config.anthropic_upstream_base,
-        },
-        "subjects": {
-            "gateway_policy": config.gateway_policy_subject,
-            "callback_boundary": config.callback_boundary_subject,
-            "capability": config.profile_id,
-            "deny_audit": config.deny_audit_subject,
-            "deny_counter": config.deny_counter_subject,
-        },
-        "signed_profile": {
-            "id": config.profile_id,
-            "version": "v1",
-            "proof_key_id": config.proof_key_id,
-            "profile_signature": value["signed_profile"]["profile_signature"],
-        },
-    }
-
-
-def test_payload_is_accepted_by_merged_ai_platform_attestor() -> None:
-    app, _, _, _ = application()
-    config = gateway_config()
-    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(config)))["id"]
-    body = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").body
-    endpoint = f"https://{PUBLIC_AUTHORITY}/v1/sandboxes/{sandbox_id}/attestation"
-    attestor = _OpenSandboxAttestor(
-        base_url=f"https://{PUBLIC_AUTHORITY}",
-        api_key=API_KEY,
-        path_template="/v1/sandboxes/{sandbox_id}/attestation",
-        contract_version=CONTRACT_VERSION,
-        timeout_seconds=1,
-        runtime_subject=config.runtime_subject,
-        gateway_policy_subject=config.gateway_policy_subject,
-        callback_boundary_subject=config.callback_boundary_subject,
-        callback_base_url=config.callback_upstream_base,
-        openai_base_url=config.openai_upstream_base,
-        anthropic_base_url=config.anthropic_upstream_base,
-        proof_key_id=config.proof_key_id,
-        proof_signing_key=config.record_signing_key.decode(),
-        transport=lambda *_: _TransportResponse(200, endpoint, body),
-    )
-    capability = SimpleNamespace(
-        runtime_identity="runsc",
-        runtime_subject=config.runtime_subject,
-        gateway_policy_subject=config.gateway_policy_subject,
-        callback_boundary_subject=config.callback_boundary_subject,
-        requested_image=IMAGE,
-        requested_image_digest=IMAGE.rsplit("@", 1)[1],
-        profile_id=config.profile_id,
-        deny_audit_subject=config.deny_audit_subject,
-        deny_counter_subject=config.deny_counter_subject,
-        upstream_bridge_version=UPSTREAM_BRIDGE_VERSION,
-        callback_base_url=config.callback_upstream_base,
-        openai_base_url=config.openai_upstream_base,
-        anthropic_base_url=config.anthropic_upstream_base,
-    )
-    request = SimpleNamespace(
-        tenant_id="tenant-one",
-        workspace_id="workspace-one",
-        user_id="user-one",
-        session_id="session-one",
-        run_id="run-one",
-        attempt_id="attempt-one",
-    )
-    assert asyncio.run(attestor(capability, request, sandbox_id, {"id": sandbox_id})) is True
+    info = call(app, "GET", f"/v1/sandboxes/{sandbox_id}")
+    assert info.status == 200
+    assert decoded(info)["id"] == sandbox_id
 
 
 def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
@@ -598,7 +510,7 @@ def test_skill_mount_declaration_and_volume_are_bidirectionally_bound(case) -> N
     }
 
 
-def test_skill_mount_runtime_fingerprint_drift_fails_attestation() -> None:
+def test_skill_mount_runtime_fingerprint_drift_fails_lifecycle_read() -> None:
     app, _, runtime, _ = application()
     value = create_payload(gateway_config())
     workspace_path = value["volumes"][0]["host"]["path"]
@@ -619,9 +531,9 @@ def test_skill_mount_runtime_fingerprint_drift_fails_attestation() -> None:
         skill_mount_fingerprint="b" * 64,
     )
 
-    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
+    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}")
     assert response.status == 409
-    assert decoded(response)["error"]["code"] == "runtime_attestation_drift"
+    assert decoded(response)["error"]["code"] == "runtime_evidence_drift"
 
 
 def test_runtime_skill_mount_fingerprint_uses_exact_opened_source_inodes(monkeypatch) -> None:
@@ -724,7 +636,7 @@ def test_scope_reuse_workspace_conflict_and_parallel_attempt_lifecycle() -> None
         "attempt-two",
     ]
     assert call(app, "DELETE", f"/v1/sandboxes/{first_id}").status == 204
-    assert call(app, "GET", f"/v1/sandboxes/{second_id}/attestation").status == 200
+    assert call(app, "GET", f"/v1/sandboxes/{second_id}").status == 200
     assert call(app, "DELETE", f"/v1/sandboxes/{second_id}").status == 204
 
 
@@ -770,24 +682,58 @@ def test_signature_metadata_runtime_drift_and_route_auth_are_rejected() -> None:
     record = store.get(sandbox_id)
     assert record is not None
     record.signature = "0" * 64
-    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
     record.signature = app._sign_record(record)
     lifecycle.sandboxes[sandbox_id]["metadata"]["ai-platform.user_id"] = "other"
-    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
     lifecycle.sandboxes[sandbox_id]["metadata"] = dict(record.metadata)
     old = runtime.evidence[sandbox_id]
     runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "network_mode": "bridge"})
-    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
 
 
-def test_live_root_user_is_rejected_before_attestation() -> None:
+def test_internal_test_bridge_profile_accepts_only_bridge_runtime_evidence() -> None:
+    config = replace(
+        gateway_config(),
+        profile_id="s72-internal-test-runsc-bridge-v1",
+        expected_network_mode="bridge",
+    )
+    lifecycle = InMemoryLifecycleTransport()
+
+    class BridgeRuntime(InMemoryRuntimeAdapter):
+        def provision(self, record) -> None:
+            super().provision(record)
+            self.evidence[record.sandbox_id] = replace(
+                self.evidence[record.sandbox_id],
+                network_mode="bridge",
+            )
+
+    runtime = BridgeRuntime()
+    app = GatewayApplication(config, lifecycle, runtime, InMemoryStateStore())
+
+    response = call(app, "POST", "/v1/sandboxes", create_payload(config, "bridge"))
+
+    assert response.status == 201
+    sandbox_id = decoded(response)["id"]
+    runtime.evidence[sandbox_id] = replace(runtime.evidence[sandbox_id], network_mode="none")
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
+
+
+def test_bridge_network_profile_configuration_fails_closed() -> None:
+    with pytest.raises(ValueError, match="internal-test"):
+        replace(gateway_config(), expected_network_mode="bridge").validate()
+    with pytest.raises(ValueError, match="network mode"):
+        replace(gateway_config(), expected_network_mode="host").validate()
+
+
+def test_live_root_user_is_rejected_before_lifecycle_read() -> None:
     app, _, runtime, _ = application()
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
     old = runtime.evidence[sandbox_id]
     runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "user": "0:0"})
-    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
+    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}")
     assert response.status == 409
-    assert decoded(response)["error"]["code"] == "runtime_attestation_drift"
+    assert decoded(response)["error"]["code"] == "runtime_evidence_drift"
 
 
 def test_list_requires_scope_and_cancel_delete_are_idempotent() -> None:
@@ -1071,13 +1017,43 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     crashed_store = SQLiteStateStore(str(crash_path))
     crashed = GatewayApplication(config, crash_lifecycle, InMemoryRuntimeAdapter(), crashed_store)
     assert call(crashed, "POST", "/v1/sandboxes", create_payload(config, "crash")).status == 500
-    assert len(crashed_store.list({"state": "uncertain_create"})) == 1
+    assert len(crashed_store.list({"state": "reconciling"})) == 1
     recovered_runtime = InMemoryRuntimeAdapter()
     recovered_store = SQLiteStateStore(str(crash_path))
     GatewayApplication(config, crash_lifecycle, recovered_runtime, recovered_store)
     active = recovered_store.list({"state": "active"})
     assert len(active) == len(crash_lifecycle.sandboxes) == 1
     assert active[0].sandbox_id in recovered_runtime.relays
+
+
+def test_same_process_retry_reconciles_timeout_after_upstream_create() -> None:
+    class TimeoutAfterCreate(InMemoryLifecycleTransport):
+        timeout_once = True
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            response = super().request(method, path, body)
+            if method == "POST" and path == "/v1/sandboxes" and self.timeout_once:
+                self.timeout_once = False
+                raise RuntimeError("simulated response timeout after create")
+            return response
+
+    config = gateway_config()
+    lifecycle = TimeoutAfterCreate()
+    runtime = InMemoryRuntimeAdapter()
+    store = InMemoryStateStore()
+    app = GatewayApplication(config, lifecycle, runtime, store)
+    payload = create_payload(config, "same-process-retry")
+
+    assert call(app, "POST", "/v1/sandboxes", payload).status == 500
+    recovered = call(app, "POST", "/v1/sandboxes", payload)
+
+    assert recovered.status == 201
+    sandbox_id = decoded(recovered)["id"]
+    assert len(lifecycle.sandboxes) == 1
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+    assert store.list({"state": "uncertain_create"}) == []
+    assert store.get(sandbox_id) is not None
+    assert sandbox_id in runtime.relays
 
 
 def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(tmp_path) -> None:
@@ -1099,7 +1075,7 @@ def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(t
     first = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), store)
 
     assert call(first, "POST", "/v1/sandboxes", payload).status == 500
-    intent = store.list({"state": "uncertain_create"})[0]
+    intent = store.list({"state": "reconciling"})[0]
     restarted_store = SQLiteStateStore(str(state_path))
     restarted = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), restarted_store)
     tombstone = restarted_store.get(intent.sandbox_id)
@@ -2792,6 +2768,43 @@ def test_broker_loop_isolates_iteration_exception_and_continues() -> None:
     assert calls == 2 and not thread.is_alive()
 
 
+def test_capability_only_mode_does_not_load_model_credentials_or_start_broker(monkeypatch) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("capability-only mode touched the model broker")
+
+    monkeypatch.setattr(gateway_server, "_model_provider_credentials", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_broker_policy", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_upstream_tls_context", unexpected)
+    monkeypatch.setattr(gateway_server, "MailboxBroker", unexpected)
+
+    runtime = gateway_server._start_broker_runtime(
+        loopback_gateway_config(),
+        SimpleNamespace(),
+        "",
+        "",
+        {"OPENSANDBOX_GATEWAY_BROKER_ENABLED": "false"},
+    )
+
+    assert runtime is None
+
+
+def test_gateway_broker_defaults_enabled_and_requires_model_credentials() -> None:
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE"):
+        gateway_server._start_broker_runtime(
+            loopback_gateway_config(),
+            SimpleNamespace(),
+            "",
+            "",
+            {},
+        )
+
+
+@pytest.mark.parametrize("value", ("", "0", "False", "yes", " disabled "))
+def test_gateway_broker_mode_rejects_ambiguous_values(value: str) -> None:
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_BROKER_ENABLED"):
+        gateway_server._broker_enabled({"OPENSANDBOX_GATEWAY_BROKER_ENABLED": value})
+
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
     reason="real relay owner/mode and timeout cleanup requires a root-capable POSIX release gate",
@@ -2979,6 +2992,60 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
         timeout=90,
         check=False,
     )
+
+
+def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        s72_lock_parent_mode_is_safe 1777
+        s72_lock_parent_mode_is_safe 755
+        for unsafe in 777 1775 2777 invalid ''; do
+          if s72_lock_parent_mode_is_safe "$unsafe"; then
+            exit 41
+          fi
+        done
+        ''',
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_installer_config_metadata_survives_recoverable_ctime_change(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        TREE=$ROOT/config; METADATA=$ROOT/config.metadata
+        mkdir "$TREE"; chmod 0750 "$TREE"
+        printf 'sealed-config\n' > "$TREE/gateway.env"; chmod 0640 "$TREE/gateway.env"
+        require_gateway_config_contract_at() { :; }
+        s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        capture_config_metadata "$TREE" > "$METADATA"; chmod 0400 "$METADATA"
+
+        verify_config_metadata "$TREE" "$METADATA"
+        awk -F '\t' 'BEGIN { OFS = "\t" }
+          { split($3, fields, ":"); $3 = fields[1] ":" fields[2] ":" fields[3] ":" fields[4] ":" fields[5] ":123"; print }' \
+          "$METADATA" > "$ROOT/legacy.metadata"
+        chmod 0400 "$ROOT/legacy.metadata"
+        verify_config_metadata "$TREE" "$ROOT/legacy.metadata"
+
+        chmod 0600 "$TREE/gateway.env"
+        ! verify_config_metadata "$TREE" "$METADATA"
+        chmod 0640 "$TREE/gateway.env"
+        printf 'tampered-config\n' > "$TREE/gateway.env"
+        ! verify_config_metadata "$TREE" "$METADATA"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:

@@ -6,6 +6,7 @@ DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
+OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
 S72_COLOCATION_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.s72-colocation.yml"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
 TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
@@ -428,8 +429,6 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
             "OPENSANDBOX_DOMAIN",
             "OPENSANDBOX_PROTOCOL",
             "OPENSANDBOX_API_KEY",
-            "OPENSANDBOX_ATTESTATION_PATH",
-            "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
             "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
@@ -451,6 +450,25 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
     assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
     assert "trusted_internal" not in env_example
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
+
+
+def test_opensandbox_internal_test_overlay_is_explicit_direct_and_has_no_gateway_contract():
+    import yaml
+
+    overlay = yaml.safe_load(OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8"))
+
+    assert set(overlay["services"]) == {"api", "worker"}
+    for service_name in ("api", "worker"):
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["DEPLOYMENT_ENVIRONMENT"] == "test"
+        assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "false"
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""
+        assert "SANDBOX_EGRESS_PROOF_SIGNING_KEY" not in environment
+        assert "volumes" not in overlay["services"][service_name]
 
 
 def test_compose_does_not_mount_docker_socket_by_default():

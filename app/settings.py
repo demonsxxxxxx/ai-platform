@@ -27,10 +27,9 @@ class Settings(BaseSettings):
 
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
-    # OpenSandbox has one production security contract. Keeping this as a
-    # single-value Literal makes stale trusted_internal deployment settings
-    # fail during process startup instead of silently selecting a weaker path.
-    sandbox_security_profile: Literal["governed"] = Field(default="governed")
+    # Production remains governed. The explicit internal-test profile exists
+    # only for bounded functional acceptance against the official service.
+    sandbox_security_profile: Literal["governed", "internal-test"] = Field(default="governed")
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_browser_image: str = Field(default="")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
@@ -50,9 +49,6 @@ class Settings(BaseSettings):
     opensandbox_api_key: str = Field(default="")
     opensandbox_use_server_proxy: bool = Field(default=False)
     opensandbox_request_timeout_seconds: float = Field(default=30.0)
-    opensandbox_attestation_path: str = Field(default="")
-    opensandbox_attestation_contract_version: str = Field(default="")
-    opensandbox_attestation_timeout_seconds: float = Field(default=2.0)
     opensandbox_timeout_seconds: int = Field(default=1800)
     opensandbox_executor_image: str = Field(default="")
     opensandbox_executor_entrypoint: str = Field(default="/app/docker-entrypoint.sh uvicorn")
@@ -68,6 +64,7 @@ class Settings(BaseSettings):
     opensandbox_external_egress_openai_base_url: str = Field(default="")
     opensandbox_external_egress_anthropic_base_url: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
+    opensandbox_expected_network_mode: Literal["none", "bridge"] = Field(default="none")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
@@ -160,6 +157,12 @@ class Settings(BaseSettings):
             < self.artifact_object_delete_retry_base_seconds
         ):
             raise ValueError("artifact_object_delete_retry_cap_below_base")
+        if self.sandbox_security_profile == "internal-test" and not (
+            self.deployment_environment == "test"
+            and self.sandbox_container_provider == "opensandbox"
+            and self.opensandbox_expected_network_mode == "bridge"
+        ):
+            raise ValueError("internal_test_opensandbox_profile_invalid")
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")

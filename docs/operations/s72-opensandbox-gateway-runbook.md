@@ -60,6 +60,22 @@ Secrets are files, never `gateway.env` values or command output. Report only
 redacted metadata and non-secret authority evidence; do not print, copy, export,
 or retain secret, certificate-key, configuration, or private payload contents.
 
+`OPENSANDBOX_GATEWAY_BROKER_ENABLED` accepts only `true` or `false` and defaults
+to `true`. Set it to `false` only for an explicitly capability-only deployment:
+the authenticated lifecycle and external-egress capability routes remain active,
+but the mailbox/model broker is not started and model credential files are not
+read. Enabling the broker continues to require both model credential files and
+fails closed when either is absent or invalid. A capability-only deployment does
+not prove model egress or the remote smoke gates below.
+
+`OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE` defaults to `none`. The only other
+accepted value is `bridge`, and it additionally requires a profile ID containing
+`internal-test`. The gateway signs this value into the capability profile; the
+ai-platform provider must independently configure the same exact value or fail
+closed before sandbox creation. `bridge` is a temporary functional-test posture,
+never production isolation evidence. Production acceptance continues to require
+`none` and the remote smoke below.
+
 ## Mandatory Remote Smoke Before Provider Switch
 
 Installation alone is not authority to select the OpenSandbox provider on
@@ -68,9 +84,9 @@ smoke from s72 using the configured CA and a disposable scope. It must prove the
 fixed 211 hostname/IP and TLS validation, denial for wrong hostname/CA/pinned IP
 or source, callback and both model prefixes with the expected rewritten paths,
 and the OpenSandbox runtime boundary: runsc, `network_mode=none`,
-no-new-privileges, scoped mounts, attestation, cancellation, and bounded orphan
-cleanup. Keep Docker selected when any check fails or is unavailable; do not add
-sandbox egress or bypass attestation to make a smoke pass.
+no-new-privileges, scoped mounts, runtime validation, cancellation, and bounded
+orphan cleanup. Keep Docker selected when any check fails or is unavailable; do
+not add sandbox egress or bypass runtime validation to make a smoke pass.
 
 The separate 211 release authority owns any provider transition. Record only
 redacted, subject-bound remote evidence through that authorized procedure.
@@ -79,7 +95,11 @@ redacted, subject-bound remote evidence through that authorized procedure.
 
 `install-s72.sh` first opens and locks the trusted, pre-existing
 `/run/lock/opensandbox-gateway-s72-install.lock`; it performs no persistent
-bootstrap before this lock is held. It creates a private transaction-owned
+bootstrap before this lock is held. The parent must be root-owned and either
+the standard exact sticky mode `1777` or a three-digit mode with no group/world
+write bits; modes such as `0777`, `1775`, or `2777` fail closed. The lock file
+remains a root-owned, non-symlinked exact `0600` inode that is revalidated after
+open and after `flock`. It creates a private transaction-owned
 snapshot stage below `/var/lib/opensandbox-gateway-deploy/snapshots`, on the same
 filesystem as the final snapshot. The stage has a closed typed inventory: only
 the declared unit, configuration, ACL, authority, current-pointer, rollback-pointer,

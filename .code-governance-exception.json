@@ -1,28 +1,24 @@
 {
-  "candidate": {
-    "base_ref": "74c41b49662924c0fed924e8a9aed0adea4b715b",
-    "scope_sha256": "5810492fa0da74e16966ffde6872c468b8f757a6699bb6d21dce8dde21acd007"
-  },
-  "expires_on": "2026-08-23",
-  "owner": "demonsxxxxxx",
-  "reason": "Issue #843 integrates the reviewed atomic recovery authority and s72 co-location transport into one rapid internal-test release. The user explicitly authorizes only the emitted size and hot-file limits to be waived so deployment can proceed; Ruff, tests, security, source identity, CI, rollback and runtime checks remain mandatory.",
   "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "2b91eabf4a6a4f19898e9dbef0657025b4ba8120",
+    "scope_sha256": "84e4de13de422e32ecfe7949eb019a7a460d1cb8553cc7df844474a41a776151"
+  },
+  "expires_on": "2026-08-17",
+  "owner": "issue-843-internal-test-delivery",
+  "reason": "Bounded user-authorized internal-test direct OpenSandbox path; avoid a pre-acceptance hot-file refactor that would expand product risk.",
   "violations": [
     {
+      "code": "functional_hot_file_growth",
+      "path": "app/runtime/sandbox/container_provider.py"
+    },
+    {
       "code": "hot_file_growth",
-      "path": "deploy/opensandbox/install-s72.sh"
-    },
-    {
-      "code": "production_file_count",
-      "path": null
-    },
-    {
-      "code": "production_net_loc",
-      "path": null
+      "path": "app/runtime/sandbox/container_provider.py"
     },
     {
       "code": "test_hot_file_growth",
-      "path": "tests/test_opensandbox_gateway.py"
+      "path": "tests/test_sandbox_container_provider.py"
     }
   ]
 }

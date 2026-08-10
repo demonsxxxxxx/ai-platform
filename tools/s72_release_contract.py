@@ -59,8 +59,7 @@ REQUIRED_KEYS = frozenset(
         "OPENSANDBOX_PROTOCOL",
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-        "OPENSANDBOX_ATTESTATION_PATH",
-        "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
@@ -112,7 +111,7 @@ class ValidatedS72ReleaseContract:
             "sdk_selection_fail_closed": True,
             "sandbox_authority": "opensandbox",
             "attempt_credentials_required": True,
-            "callback_attestation_identity_bound": True,
+            "callback_identity_bound": True,
             "secret_values_projected": False,
         }
 
@@ -292,13 +291,8 @@ def _validated_contract(values: Mapping[str, str]) -> ValidatedS72ReleaseContrac
     image = values["OPENSANDBOX_EXECUTOR_IMAGE"]
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not IMMUTABLE_IMAGE_RE.fullmatch(image) or not image.endswith(f"@{digest}"):
         raise S72ReleaseContractError("OpenSandbox executor image is not immutable")
-    if (
-        values["OPENSANDBOX_ATTESTATION_PATH"]
-        != "/v1/sandboxes/{sandbox_id}/attestation"
-        or values["OPENSANDBOX_ATTESTATION_CONTRACT_VERSION"]
-        != "ai-platform.opensandbox.topology-attestation.v1"
-    ):
-        raise S72ReleaseContractError("attestation authority is invalid")
+    if values["OPENSANDBOX_EXPECTED_NETWORK_MODE"] not in {"none", "bridge"}:
+        raise S72ReleaseContractError("OpenSandbox expected network mode is invalid")
     if any(not IDENTITY_SUBJECT_RE.fullmatch(values[key]) for key in IDENTITY_SUBJECT_KEYS):
         raise S72ReleaseContractError("identity subject authority is invalid")
     _validate_secret_authority(values)
