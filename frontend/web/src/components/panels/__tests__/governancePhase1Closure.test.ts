@@ -104,11 +104,12 @@ test("mcp lifecycle governance exposes the backed admin lifecycle within role bo
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   assert.match(mcp, /data-phase1c-surface="mcp"/);
-  assert.match(mcp, /data-fail-closed-surface="mcp-lifecycle"/);
   assert.match(mcp, /lifecycleAvailability/);
-  assert.match(mcp, /mcp\.admin\.credentialsSummary/);
   assert.match(mcp, /mcp\.lifecycleGovernance/);
-  assert.match(mcp, /mcp\.credentialsGovernance/);
+  assert.doesNotMatch(mcp, /data-mcp-summary-status/);
+  assert.doesNotMatch(mcp, /summaryGridFour/);
+  assert.doesNotMatch(mcp, /mcp\.admin\.credentialsSummary/);
+  assert.doesNotMatch(mcp, /mcp\.credentialsGovernance/);
   assert.doesNotMatch(mcp, /mcp\.credentialsUnavailable/);
   assert.doesNotMatch(mcp, /mcp\.lifecycleUnavailable/);
   assert.match(mcp, /data-mcp-directory-shell/);
@@ -331,7 +332,7 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillsList, /canEditSkills/);
   assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /canManageSkills/);
-  assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canBatchSkills && selectableNames\.length > 0 &&/);
   assert.match(skillsList, /\{canImportSkills && \(/);
   assert.doesNotMatch(skillsList, /canCreateSkills|onCreate/);
   assert.doesNotMatch(
@@ -403,7 +404,7 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillsPanel, /skillFileWriteBacked = true/);
   assert.match(skillsPanel, /skillImportBacked = true/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
-  assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canBatchSkills && selectableNames\.length > 0 &&/);
   assert.match(
     skillsActions,
     /initialZipSkillSelection\(result\.skills, canAdminUploadSkills\)/,

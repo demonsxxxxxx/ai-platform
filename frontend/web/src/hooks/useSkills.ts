@@ -8,6 +8,8 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import i18n from "../i18n";
+import { ApiRequestError } from "../services/api/fetch";
 import { skillApi } from "../services/api/skill";
 import type { SkillListParams } from "../services/api/skill";
 import type {
@@ -98,6 +100,16 @@ export function resolveSkillsAfterListFailure(
   return allAuthorizedCatalog ? [] : current;
 }
 
+export function resolveSkillOperationError(
+  error: unknown,
+  fallbackKey: string,
+): string {
+  if (error instanceof ApiRequestError && error.status === 403) {
+    return i18n.t("errors.noPermission");
+  }
+  return i18n.t(fallbackKey);
+}
+
 export function useSkills(options?: {
   enabled?: boolean;
   listParams?: SkillListParams;
@@ -139,6 +151,7 @@ export function useSkills(options?: {
       setIsLoading(true);
       setError(null);
       setListError(null);
+      setCatalogReadResolved(false);
       setPermissionsValid(false);
       setEffectivePermissionsKnown(false);
       try {
@@ -178,8 +191,7 @@ export function useSkills(options?: {
         if (requestSequence !== catalogRequestSequenceRef.current) {
           return false;
         }
-        const message =
-          err instanceof Error ? err.message : "Failed to fetch skills";
+        const message = resolveSkillOperationError(err, "skills.loadFailed");
         setError(message);
         setListError(message);
         setEffectivePermissions([]);
@@ -369,7 +381,7 @@ export function useSkills(options?: {
         await fetchSkills();
         return true;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to update skill");
+        setError(resolveSkillOperationError(err, "skills.updateFailed"));
         return false;
       } finally {
         setIsUpdating(false);
@@ -389,7 +401,7 @@ export function useSkills(options?: {
         await fetchSkills();
         return true;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to delete skill");
+        setError(resolveSkillOperationError(err, "skills.deleteFailed"));
         return false;
       } finally {
         setIsDeleting(false);
@@ -431,7 +443,7 @@ export function useSkills(options?: {
             s.name === name ? { ...s, enabled: !newEnabled } : s,
           ),
         );
-        setError(err instanceof Error ? err.message : "Failed to toggle skill");
+        setError(resolveSkillOperationError(err, "skills.toggleFailed"));
         return false;
       } finally {
         // toggle 完成后清除 pending 状态

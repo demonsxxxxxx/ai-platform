@@ -151,6 +151,10 @@ export function useSkillsActions(options?: {
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
   const [batchLoading, setBatchLoading] = useState(false);
 
+  useEffect(() => {
+    setSelectedNames(new Set());
+  }, [page, searchQuery, selectedTags]);
+
   // Delete confirmation
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [deleteConfirmData, setDeleteConfirmData] = useState<{

@@ -299,6 +299,8 @@ function AgentMarketCatalog({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
+  const hasActiveFilter =
+    searchQuery.trim().length > 0 || activeCategory !== "all";
   const visibleProfiles = useMemo(
     () =>
       filterPublishedMarketProfiles(catalog.value, searchQuery).filter(
@@ -419,7 +421,7 @@ function AgentMarketCatalog({
           <p aria-live="polite" className="py-8 text-sm text-[var(--theme-text-secondary)]">
             正在加载已发布的智能体…
           </p>
-        ) : catalog.value.length === 0 ? (
+        ) : catalog.value.length === 0 && !hasActiveFilter ? (
           <section className="border-t border-[var(--theme-border)] py-10 text-sm text-[var(--theme-text-secondary)]">
             当前没有已发布的智能体，请稍后再试。
           </section>
@@ -445,7 +447,12 @@ function AgentMarketCatalog({
                     void handleOpenWorkspace(selectedProfile);
                   }}
                   onOpenDetail={(selectedProfile) => {
-                    navigate(buildAgentMarketDetailPath(selectedProfile));
+                    const returnSearch = searchParams.toString();
+                    navigate(
+                      `${buildAgentMarketDetailPath(selectedProfile)}${
+                        returnSearch ? `?${returnSearch}` : ""
+                      }`,
+                    );
                   }}
                 />
               ))}
@@ -459,13 +466,19 @@ function AgentMarketCatalog({
 
 function AgentMarketDetail({
   profile,
+  returnSearch,
 }: {
   profile: AgentProfilePublicProjection;
+  returnSearch: string;
 }) {
   const navigate = useNavigate();
   const handleReturnToCatalog = useCallback(() => {
-    navigate(APP_ROUTE_PATHS.agentMarket);
-  }, [navigate]);
+    navigate(
+      returnSearch
+        ? `${APP_ROUTE_PATHS.agentMarket}?${returnSearch}`
+        : APP_ROUTE_PATHS.agentMarket,
+    );
+  }, [navigate, returnSearch]);
 
   return (
     <main
@@ -515,27 +528,28 @@ function AgentMarketDetail({
         </section>
 
         <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
-          <div className="pb-6 sm:pb-7">
-            <h2 className="text-sm font-semibold">推荐任务</h2>
-            <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              {(profile.recommended_tasks.length
-                ? profile.recommended_tasks
-                : [profile.description]
-              ).filter(Boolean).map((task) => (
-                <li className="border-l-2 border-emerald-500 pl-3" key={task}>
-                  {task}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
-            <h2 className="text-sm font-semibold">示例问题</h2>
-            <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              {profile.starter_prompts.map((prompt) => (
-                <li key={prompt}>{prompt}</li>
-              ))}
-            </ul>
-          </div>
+          {profile.recommended_tasks.length ? (
+            <div className="pb-6 sm:pb-7">
+              <h2 className="text-sm font-semibold">推荐任务</h2>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                {profile.recommended_tasks.map((task) => (
+                  <li className="border-l-2 border-emerald-500 pl-3" key={task}>
+                    {task}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {profile.starter_prompts.length ? (
+            <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
+              <h2 className="text-sm font-semibold">示例问题</h2>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                {profile.starter_prompts.map((prompt) => (
+                  <li key={prompt}>{prompt}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div className="border-t border-[var(--theme-border)] py-6">
             <h2 className="text-sm font-semibold">输入与输出</h2>
             <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
@@ -630,6 +644,7 @@ export function AgentMarketRoute() {
       ) : detail.phase === "ready" && detail.value ? (
         <AgentMarketDetail
           profile={detail.value}
+          returnSearch={searchParams.toString()}
         />
       ) : (
         <main

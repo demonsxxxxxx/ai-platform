@@ -15,6 +15,10 @@ const adapterSource = readFileSync(
   join(process.cwd(), "src/features/agent-builder/agentBuilderAdapter.ts"),
   "utf8",
 );
+const enterpriseFieldsSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/AgentBuilderEnterpriseFields.tsx"),
+  "utf8",
+);
 
 test("server list and mutations are owned by the feature-local controller", () => {
   assert.match(controllerSource, /agentProfileApi/);
@@ -70,4 +74,16 @@ test("safe errors never render arbitrary Error.message", () => {
   assert.match(controllerSource, /SAFE_ERROR_CODE/);
   assert.doesNotMatch(controllerSource, /error\.message/);
   assert.doesNotMatch(workbenchSource, /error instanceof Error \? error\.message/);
+});
+
+test("builder keeps execution fields primary and collapses optional market metadata", () => {
+  assert.match(enterpriseFieldsSource, /市场展示（可选）/);
+  assert.match(enterpriseFieldsSource, /编辑市场卡片与开场内容/);
+  assert.match(enterpriseFieldsSource, /示例问题（可选）/);
+  assert.match(enterpriseFieldsSource, /预期输出（可选）/);
+  assert.match(enterpriseFieldsSource, /访问范围与数据说明（高级）/);
+  assert.match(enterpriseFieldsSource, /<option value="tenant">全公司<\/option>/);
+  assert.doesNotMatch(enterpriseFieldsSource, />全租户</);
+  assert.match(workbenchSource, /一个智能体固定一个主 Skill/);
+  assert.match(workbenchSource, /title="选择主 Skill"/);
 });

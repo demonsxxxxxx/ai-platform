@@ -19,6 +19,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:prd-closure-smoke-source "
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
+    "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"

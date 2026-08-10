@@ -564,7 +564,8 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   };
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
   function WorkspaceProbe() {
@@ -684,7 +685,10 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_finance/2");
+    assert.equal(
+      currentPath,
+      "/agent-market/agt_finance/2?q=%E8%B4%A2%E5%8A%A1&category=operations",
+    );
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
@@ -968,6 +972,10 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     assert.deepEqual(conversationSelections, []);
     assert.match(container.textContent, /支持助手 V4/);
     assert.doesNotMatch(container.textContent, /支持助手 V5/);
+    const composer = container.querySelector("textarea");
+    assert.ok(composer, "the superseded revision keeps its transcript composer frame");
+    assert.equal(composer.hasAttribute("disabled"), true);
+    assert.equal(composer.getAttribute("placeholder"), "该历史会话为只读状态");
   } finally {
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;

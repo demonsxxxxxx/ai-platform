@@ -139,6 +139,7 @@ export function SkillsList({
 
   const hasActiveFilters =
     searchQuery.trim().length > 0 || selectedTags.length > 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const canToggleSkills = canWrite && !governedUnavailable;
   const canEditSkills = canEdit && !governedUnavailable;
   const canImportSkills = canImport && !governedUnavailable;
@@ -395,14 +396,24 @@ export function SkillsList({
       </div>
 
       {/* Pagination */}
-      {total > pageSize && (
+      {total > 0 && (
         <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
-          <Pagination
-            page={page}
-            pageSize={pageSize}
-            total={total}
-            onChange={setPage}
-          />
+          {total > pageSize ? (
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onChange={setPage}
+            />
+          ) : (
+            <p className="text-center text-xs text-[var(--theme-text-secondary)] sm:text-sm">
+              {t("skills.paginationSummary", {
+                total,
+                page,
+                pages: totalPages,
+              })}
+            </p>
+          )}
         </div>
       )}
     </>

@@ -136,7 +136,9 @@ export function AgentWorkspaceRoute() {
             revision,
             profile: historicalProfile(identity),
             startProfile: currentProfile,
-            readOnly: currentProfile === null,
+            readOnly:
+              currentProfile === null ||
+              currentProfile.expected_revision !== validRevision,
           });
           setPhase("ready");
           return;

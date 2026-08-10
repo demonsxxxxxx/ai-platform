@@ -48,10 +48,16 @@ export function filterPublishedMarketProfiles(
 ): readonly AgentProfilePublicProjection[] {
   const normalizedQuery = query.trim().normalize("NFKC").toLocaleLowerCase();
   if (!normalizedQuery) return profiles;
-  return profiles.filter((profile) =>
-    `${profile.name}\n${profile.description}`
+  return profiles.filter((profile) => {
+    const searchableProjection = [
+      profile.name,
+      profile.description,
+      profile.capability_summary,
+      ...profile.recommended_tasks,
+    ].join("\n");
+    return searchableProjection
       .normalize("NFKC")
       .toLocaleLowerCase()
-      .includes(normalizedQuery),
-  );
+      .includes(normalizedQuery);
+  });
 }
