@@ -978,6 +978,116 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
   }
 });
 
+test("a withdrawn Agent keeps its owned pinned conversation visible and read-only", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const shellHarness = await prepareShellHarness();
+  const historicalIdentity = {
+    ...enterpriseProfileFields,
+    agent_id: "agt_support",
+    revision: 4,
+    name: "已下架支持助手 V4",
+    description: "创建会话时固定的版本。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  } as const;
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalListConversations = agentProfileApi.listConversations;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const historySelections: unknown[] = [];
+  const conversationSelections: unknown[] = [];
+  agentProfileApi.getPublished = async () => {
+    throw Object.assign(new Error("agent withdrawn"), { status: 404 });
+  };
+  agentProfileApi.listConversations = async (selection) => {
+    historySelections.push(selection);
+    return {
+      sessions: [
+        {
+          session_id: "session-v4",
+          workspace_id: "default",
+          agent_id: "agt_support",
+          title: "V4 历史会话",
+          purpose: "conversation",
+          created_at: "2026-08-03T01:00:00Z",
+          updated_at: "2026-08-04T01:00:00Z",
+          agent_conversation: historicalIdentity,
+        },
+      ],
+      next_cursor: null,
+    };
+  };
+  agentProfileApi.createConversation = async (selection) => {
+    conversationSelections.push(selection);
+    throw new Error("withdrawn Agent must not create another conversation");
+  };
+  sessionApi.getAuthoritative = async () => ({
+    session_id: "session-v4",
+    workspace_id: "default",
+    agent_id: "agt_support",
+    title: "V4 历史会话",
+    purpose: "conversation",
+    agent_conversation: historicalIdentity,
+  });
+  let currentPath = "";
+  function LocationProbe() {
+    currentPath = useLocation().pathname;
+    return null;
+  }
+
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/agent-market/agt_support/4/chat/session-v4"] },
+          shellHarness.wrap(
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  element: React.createElement(AgentWorkspaceRoute),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-v4");
+    assert.deepEqual(historySelections, [
+      { agent_id: "agt_support", expected_revision: 4 },
+    ]);
+    assert.deepEqual(conversationSelections, []);
+    assert.match(container.textContent, /已下架支持助手 V4/);
+    const composer = container.querySelector("textarea");
+    assert.ok(composer, "the historical transcript keeps its composer frame");
+    assert.equal(composer.hasAttribute("disabled"), true);
+    assert.equal(composer.getAttribute("placeholder"), "该历史会话为只读状态");
+  } finally {
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.listConversations = originalListConversations;
+    agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
 test("a shared detail URL restores the exact current published revision", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
