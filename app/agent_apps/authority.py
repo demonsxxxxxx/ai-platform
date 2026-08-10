@@ -932,6 +932,7 @@ class AgentProfileAuthority:
         governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
             "required_skill_id" in profile_snapshot or "required_skill_version" in profile_snapshot
         )
+        governed_mcp_tool_ids: tuple[str, ...] | None = None
         if governed_profile_snapshot:
             expected_profile_snapshot.update(
                 {
@@ -959,8 +960,36 @@ class AgentProfileAuthority:
                 if isinstance(release_decision, dict)
                 else ""
             )
-            skill_version_matches = bool(snapshot_skill_version) and (
-                snapshot_skill_version == manifest_skill_version == release_skill_version
+            try:
+                repositories.require_replay_source_identity(
+                    pinned_version=snapshot_skill_version,
+                    pinned_executor_type=str(snapshot.get("executor_type") or ""),
+                    release_decision=release_decision if isinstance(release_decision, dict) else {},
+                    skill_manifests=[
+                        dict(item)
+                        for item in snapshot.get("skill_manifests", [])
+                        if isinstance(item, dict)
+                    ],
+                )
+                governed_mcp_tool_ids = tuple(
+                    await repositories.validate_replay_skill_manifests(
+                        conn,
+                        skill_id=authority_skill_id,
+                        pinned_version=snapshot_skill_version,
+                        pinned_executor_type=str(snapshot.get("executor_type") or ""),
+                        skill_manifests=[
+                            dict(item)
+                            for item in snapshot.get("skill_manifests", [])
+                            if isinstance(item, dict)
+                        ],
+                    )
+                )
+            except repositories.RepositoryAuthorizationError as exc:
+                raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+            skill_version_matches = (
+                bool(snapshot_skill_version)
+                and snapshot_skill_version == manifest_skill_version == release_skill_version
+                and governed_mcp_tool_ids == admission.mcp_tool_ids
             )
         else:
             skill_version_matches = snapshot_skill_version == str(

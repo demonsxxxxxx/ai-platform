@@ -842,7 +842,24 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             ),
         )
 
+    replay_validation_calls: list[dict[str, object]] = []
+
+    def require_replay_source_identity(**kwargs):
+        replay_validation_calls.append({"source_identity": kwargs})
+
+    async def validate_replay_skill_manifests(*_args, **kwargs):
+        replay_validation_calls.append({"manifest_validation": kwargs})
+        return ["profile-tool"]
+
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.require_replay_source_identity",
+        require_replay_source_identity,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        validate_replay_skill_manifests,
+    )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
 
@@ -851,6 +868,9 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         principal=principal,
         run_id="run-profile",
     )
+    assert len(replay_validation_calls) == 2
+    assert replay_validation_calls[0]["source_identity"]["pinned_version"] == locked_version
+    assert replay_validation_calls[1]["manifest_validation"]["pinned_version"] == locked_version
 
     source["input_json"]["release_decision"] = {"selected_version": "c" * 64}
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
