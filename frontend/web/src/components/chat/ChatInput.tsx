@@ -845,7 +845,7 @@ export const ChatInput = memo(function ChatInput({
                 placeholder={
                   canSend
                     ? placeholder ?? t("chat.placeholder")
-                    : t("chat.noPermission")
+                    : placeholder ?? t("chat.noPermission")
                 }
                 disabled={disabled || !canSend}
                 rows={1}

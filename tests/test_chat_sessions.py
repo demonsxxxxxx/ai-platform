@@ -98,15 +98,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         assert (agent_id, revision, cursor, limit) == ("agt_support", 7, None, 3)
         return rows
 
-    async def fake_get_public_profile(conn, *, principal, agent_id):
-        assert principal.user_id == "user-a"
-        assert agent_id == "agt_support"
-        return object()
-
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.routes.chat_sessions.get_public_profile", fake_get_public_profile
-    )
     monkeypatch.setattr(
         "app.routes.chat_sessions.agent_conversation_repository.list_authorized_agent_conversations",
         fake_list_agent_conversations,
@@ -135,38 +127,34 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_reauthorizes_current_agent_before_reading_history(
+async def test_list_sessions_preserves_owned_history_without_current_publication(
     monkeypatch,
 ):
-    calls: list[str] = []
+    calls: list[tuple[object, ...]] = []
 
-    async def denied_profile(conn, *, principal, agent_id):
-        calls.append(f"authorize:{principal.user_id}:{agent_id}")
-        raise HTTPException(status_code=404, detail="agent_profile_not_found")
-
-    async def must_not_list(*_args, **_kwargs):
-        calls.append("list")
-        raise AssertionError("history must not be read after current authorization fails")
+    async def list_owned_history(
+        conn, *, tenant_id, user_id, agent_id, revision, cursor, limit
+    ):
+        calls.append((tenant_id, user_id, agent_id, revision, cursor, limit))
+        return []
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat_sessions.get_public_profile", denied_profile)
     monkeypatch.setattr(
         "app.routes.chat_sessions.agent_conversation_repository.list_authorized_agent_conversations",
-        must_not_list,
+        list_owned_history,
     )
 
-    with pytest.raises(HTTPException) as denied:
-        await list_sessions(
-            agent_id="agt_support",
-            revision=7,
-            cursor=None,
-            limit=20,
-            principal=principal(),
-        )
+    response = await list_sessions(
+        agent_id="agt_support",
+        revision=7,
+        cursor=None,
+        limit=20,
+        principal=principal(),
+    )
 
-    assert denied.value.status_code == 404
-    assert denied.value.detail == "agent_profile_not_found"
-    assert calls == ["authorize:user-a:agt_support"]
+    assert response.sessions == []
+    assert response.next_cursor is None
+    assert calls == [("tenant-a", "user-a", "agt_support", 7, None, 21)]
 
 
 @pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
@@ -174,14 +162,6 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
     monkeypatch, chat_submission_client, prefix
 ):
     from datetime import datetime, timezone
-
-    async def authorized(_conn, *, principal, agent_id):
-        assert (principal.tenant_id, principal.user_id, agent_id) == (
-            "tenant-a",
-            "user-a",
-            "agt_support",
-        )
-        return object()
 
     async def list_page(
         _conn, *, tenant_id, user_id, agent_id, revision, cursor, limit
@@ -213,7 +193,6 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
         ]
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat_sessions.get_public_profile", authorized)
     monkeypatch.setattr(
         "app.routes.chat_sessions.agent_conversation_repository.list_authorized_agent_conversations",
         list_page,
