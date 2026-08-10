@@ -1909,6 +1909,74 @@
       "title": "可用技能",
       "unavailable": "暂时无法加载可用技能"
     },
+    "governance": {
+      "departmentSelector": {
+        "directory": "公司部门目录",
+        "duplicate": "名称重复",
+        "duplicateReason": "部门名称重复，暂不能选择",
+        "empty": "没有匹配的部门",
+        "limitReached": "已达到 128 个部门的选择上限。",
+        "limitReason": "已达到 128 个部门的选择上限",
+        "maxDepartments": "最多选择 128 个部门",
+        "remove": "移除 {{name}}",
+        "removeShort": "移除",
+        "removeUnresolved": "移除未确认部门 {{name}}",
+        "search": "搜索部门",
+        "searchPlaceholder": "搜索部门名称或路径",
+        "select": "选择部门",
+        "selectAllowed": "选择允许部门",
+        "selectionHelp": "可从公司部门目录中选择最多 128 个部门。",
+        "unresolvedWarning": "未确认部门会保留显示；请移除它们，或等待公司部门目录恢复后再保存。"
+      },
+      "departments": {
+        "all": "全部部门",
+        "allowed": "允许部门",
+        "hint": "从公司部门目录中选择；选择全部部门时不限制部门范围。",
+        "restricted": "指定部门",
+        "scope": "部门范围"
+      },
+      "description": "配置该 Skill 对哪些用户、部门和角色可见；实际使用时仍会再次校验权限。",
+      "errors": {
+        "conflict": "当前无法修改该可见范围，请刷新后确认状态。",
+        "directoryNotAuthoritative": "当前部门范围尚未通过公司部门目录确认，不能保存。",
+        "directoryUnavailable": "公司部门目录暂时不可用；恢复前不能提交范围变更。",
+        "forbidden": "当前账号无权管理 Skill 可见范围。",
+        "notFound": "该 Skill 或其可见范围记录已不存在，请刷新后重试。",
+        "saveFailed": "暂时无法保存 Skill 可见范围，请稍后重试。"
+      },
+      "loading": "正在加载 Skill 可见范围和公司部门目录",
+      "refresh": "刷新 Skill 可见范围",
+      "refreshShort": "刷新",
+      "release": {
+        "current": "正式版本 {{version}}",
+        "latest": "最新版本包 {{version}}",
+        "noPackage": "尚无版本包",
+        "none": "尚无正式版本",
+        "title": "发布版本"
+      },
+      "roles": {
+        "allowed": "允许角色",
+        "hint": "可限制为指定公司角色；留空表示所有角色均可使用。"
+      },
+      "save": "保存可见范围",
+      "saved": "已保存",
+      "selectPrompt": "请从 Skill 目录选择一项查看详情。",
+      "status": {
+        "active": "启用",
+        "disabled": "停用",
+        "label": "状态"
+      },
+      "title": "Skill 可见范围",
+      "visibility": {
+        "activeHidden": "启用但隐藏",
+        "activeVisible": "启用且可见",
+        "allDepartments": "全部部门",
+        "departmentCount": "{{count}} 个部门",
+        "disabled": "已停用",
+        "title": "用户可见范围"
+      },
+      "visibleToUsers": "对普通用户可见"
+    },
     "batchDeleteFailed": "部分技能删除失败",
     "batchDeleteSuccess": "已删除 {{count}} 个技能",
     "batchDisableSuccess": "已禁用 {{count}} 个技能",

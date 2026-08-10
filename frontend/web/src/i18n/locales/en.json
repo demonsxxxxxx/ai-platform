@@ -1908,6 +1908,74 @@
       "title": "Available skills",
       "unavailable": "Available skills cannot be loaded right now"
     },
+    "governance": {
+      "departmentSelector": {
+        "directory": "Company department directory",
+        "duplicate": "Duplicate name",
+        "duplicateReason": "This duplicate department name cannot be selected",
+        "empty": "No matching departments",
+        "limitReached": "The 128-department selection limit has been reached.",
+        "limitReason": "The 128-department selection limit has been reached",
+        "maxDepartments": "Select up to 128 departments",
+        "remove": "Remove {{name}}",
+        "removeShort": "Remove",
+        "removeUnresolved": "Remove unconfirmed department {{name}}",
+        "search": "Search departments",
+        "searchPlaceholder": "Search by department name or path",
+        "select": "Select departments",
+        "selectAllowed": "Select allowed departments",
+        "selectionHelp": "Select up to 128 departments from the company directory.",
+        "unresolvedWarning": "Unconfirmed departments remain visible. Remove them or wait for the company directory to recover before saving."
+      },
+      "departments": {
+        "all": "All departments",
+        "allowed": "Allowed departments",
+        "hint": "Choose departments from the company directory. Selecting all departments removes department restrictions.",
+        "restricted": "Selected departments",
+        "scope": "Department access"
+      },
+      "description": "Choose which users, departments, and roles can discover this Skill. Access is still verified when the Skill is used.",
+      "errors": {
+        "conflict": "This access setting cannot be changed right now. Refresh and check its status.",
+        "directoryNotAuthoritative": "The selected departments have not been confirmed by the company directory and cannot be saved.",
+        "directoryUnavailable": "The company department directory is unavailable. Access changes stay locked until it recovers.",
+        "forbidden": "This account cannot manage Skill access.",
+        "notFound": "This Skill or its access settings no longer exist. Refresh and try again.",
+        "saveFailed": "Skill access could not be saved. Try again later."
+      },
+      "loading": "Loading Skill access and the company department directory",
+      "refresh": "Refresh Skill access",
+      "refreshShort": "Refresh",
+      "release": {
+        "current": "Published version {{version}}",
+        "latest": "Latest package {{version}}",
+        "noPackage": "No version package yet",
+        "none": "No published version",
+        "title": "Published version"
+      },
+      "roles": {
+        "allowed": "Allowed roles",
+        "hint": "Optionally limit access to selected company roles. Leaving it empty allows all roles."
+      },
+      "save": "Save access",
+      "saved": "Saved",
+      "selectPrompt": "Select a Skill from the catalog to view its details.",
+      "status": {
+        "active": "Enabled",
+        "disabled": "Disabled",
+        "label": "Status"
+      },
+      "title": "Skill access",
+      "visibility": {
+        "activeHidden": "Enabled but hidden",
+        "activeVisible": "Enabled and visible",
+        "allDepartments": "All departments",
+        "departmentCount": "{{count}} departments",
+        "disabled": "Disabled",
+        "title": "User visibility"
+      },
+      "visibleToUsers": "Visible to regular users"
+    },
     "batchDeleteFailed": "Failed to delete some skills",
     "batchDeleteSuccess": "{{count}} skill(s) deleted",
     "batchDisableSuccess": "{{count}} skill(s) disabled",

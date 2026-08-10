@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { RoleSelector } from "../mcp/RoleSelector";
 import { DepartmentDirectorySelector } from "./DepartmentDirectorySelector";
@@ -31,23 +32,19 @@ function createDraft(
   };
 }
 
-function safeDirectoryError(): string {
-  return "权威部门目录暂时不可用；在目录恢复前不能提交任何范围变更。";
-}
-
-function safeDistributionError(error: unknown): string {
+function safeDistributionErrorKey(error: unknown): string {
   if (error instanceof ApiRequestError) {
     if (error.status === 401 || error.status === 403) {
-      return "当前账号无权管理 Skill 可见范围。";
+      return "skills.governance.errors.forbidden";
     }
     if (error.status === 404) {
-      return "该 Skill 或其可见范围记录已不存在，请刷新后重试。";
+      return "skills.governance.errors.notFound";
     }
     if (error.status === 409) {
-      return "该可见范围当前不可修改，请刷新后确认状态。";
+      return "skills.governance.errors.conflict";
     }
   }
-  return "暂时无法保存 Skill 可见范围，请稍后重试。";
+  return "skills.governance.errors.saveFailed";
 }
 
 interface SkillDistributionGovernancePanelProps {
@@ -60,6 +57,7 @@ export function SkillDistributionGovernancePanel({
   selectedSkill,
   selectedSkillId,
 }: SkillDistributionGovernancePanelProps) {
+  const { t } = useTranslation();
   const [distributions, setDistributions] = useState<CapabilityDistribution[]>([]);
   const [draft, setDraft] = useState<CapabilityDistributionUpdate | null>(null);
   const [departmentScope, setDepartmentScope] =
@@ -101,17 +99,17 @@ export function SkillDistributionGovernancePanel({
         setDirectory(directoryResult.value);
       } else {
         setDirectory(null);
-        setDirectoryError(safeDirectoryError());
+        setDirectoryError(t("skills.governance.errors.directoryUnavailable"));
       }
     } catch (error) {
-      setLoadError(safeDistributionError(error));
+      setLoadError(t(safeDistributionErrorKey(error)));
       setDistributions([]);
       setDraft(null);
       setDirectory(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void load();
@@ -133,7 +131,7 @@ export function SkillDistributionGovernancePanel({
       !departmentSelection.authoritative ||
       (departmentScope === "restricted" && draft.departmentIds.length === 0)
     ) {
-      setSaveError("当前部门范围尚未通过权威目录确认，不能保存。");
+      setSaveError(t("skills.governance.errors.directoryNotAuthoritative"));
       return;
     }
     setSaving(true);
@@ -158,7 +156,7 @@ export function SkillDistributionGovernancePanel({
       setDraft(createDraft(savedDistribution));
       setSaved(true);
     } catch (error) {
-      setSaveError(safeDistributionError(error));
+      setSaveError(t(safeDistributionErrorKey(error)));
     } finally {
       setSaving(false);
     }
@@ -166,25 +164,25 @@ export function SkillDistributionGovernancePanel({
 
   return (
     <section
-      aria-label="Skill 可见范围"
+      aria-label={t("skills.governance.title")}
       className="border-t border-[var(--theme-border)] px-4 py-4"
       data-skill-distribution-governance
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold text-[var(--theme-text)]">
-            Skill 可见范围
+            {t("skills.governance.title")}
           </h2>
           <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-            配置该 Skill 对哪些用户、部门和角色可见；实际使用权限仍由服务端校验。
+            {t("skills.governance.description")}
           </p>
         </div>
         <button
-          aria-label="刷新 Skill 可见范围"
+          aria-label={t("skills.governance.refresh")}
           className="btn-icon"
           disabled={loading || saving}
           onClick={() => void load()}
-          title="刷新"
+          title={t("skills.governance.refreshShort")}
           type="button"
         >
           <RefreshCw
@@ -211,7 +209,7 @@ export function SkillDistributionGovernancePanel({
           role="status"
         >
           <RefreshCw aria-hidden="true" className="animate-spin" size={15} />
-          正在加载 Skill 与权威部门目录
+          {t("skills.governance.loading")}
         </div>
       ) : null}
 
@@ -225,35 +223,41 @@ export function SkillDistributionGovernancePanel({
                   data-skill-authority-rail
                 >
                   <div>
-                    <span>Admin release</span>
+                    <span>{t("skills.governance.release.title")}</span>
                     <strong>
                       {selectedSkill.currentVersion
-                        ? `stable ${selectedSkill.currentVersion}`
-                        : "尚无 stable 版本"}
+                        ? t("skills.governance.release.current", {
+                            version: selectedSkill.currentVersion,
+                          })
+                        : t("skills.governance.release.none")}
                     </strong>
                     <small>
                       {selectedSkill.latestVersion
-                        ? `最新 ${selectedSkill.latestVersion} · ${selectedSkill.latestVersionStatus}`
-                        : "尚无版本包"}
+                        ? t("skills.governance.release.latest", {
+                            version: selectedSkill.latestVersion,
+                          })
+                        : t("skills.governance.release.noPackage")}
                     </small>
                   </div>
                   <div>
-                    <span>用户可见范围</span>
+                    <span>{t("skills.governance.visibility.title")}</span>
                     <strong>
                       {(selectedDistribution?.status ??
                         selectedSkill.distributionStatus) === "active" &&
                       (selectedDistribution?.visibleToUser ??
                         selectedSkill.visibleToUser)
-                        ? "启用且可见"
+                        ? t("skills.governance.visibility.activeVisible")
                         : (selectedDistribution?.status ??
                               selectedSkill.distributionStatus) === "active"
-                          ? "启用但隐藏"
-                          : "已停用"}
+                          ? t("skills.governance.visibility.activeHidden")
+                          : t("skills.governance.visibility.disabled")}
                     </strong>
                     <small>
                       {draft.departmentIds.length > 0
-                        ? `${draft.departmentIds.length} 个部门范围`
-                        : "不限制部门"}
+                        ? t("skills.governance.visibility.departmentCount", {
+                            count: draft.departmentIds.length,
+                          })
+                        : t("skills.governance.visibility.allDepartments")}
                     </small>
                   </div>
                 </div>
@@ -273,10 +277,10 @@ export function SkillDistributionGovernancePanel({
                     }
                     type="checkbox"
                   />
-                  对普通用户可见
+                  {t("skills.governance.visibleToUsers")}
                 </label>
                 <label className="es-field">
-                  <span className="es-label">状态</span>
+                  <span className="es-label">{t("skills.governance.status.label")}</span>
                   <select
                     className="enterprise-field-control es-input"
                     data-skill-distribution-status
@@ -293,14 +297,14 @@ export function SkillDistributionGovernancePanel({
                     }
                     value={draft.status}
                   >
-                    <option value="active">启用</option>
-                    <option value="disabled">停用</option>
+                    <option value="active">{t("skills.governance.status.active")}</option>
+                    <option value="disabled">{t("skills.governance.status.disabled")}</option>
                   </select>
                 </label>
               </div>
 
               <fieldset className="es-field mt-4">
-                <legend className="es-label">部门范围</legend>
+                <legend className="es-label">{t("skills.governance.departments.scope")}</legend>
                 <div className="mt-2 flex flex-wrap gap-2" data-skill-distribution-department-mode>
                   <label className="inline-flex items-center gap-2 text-sm text-[var(--theme-text)]">
                     <input
@@ -310,7 +314,7 @@ export function SkillDistributionGovernancePanel({
                       onChange={() => setDepartmentScope("all")}
                       type="radio"
                     />
-                    全部部门
+                    {t("skills.governance.departments.all")}
                   </label>
                   <label className="inline-flex items-center gap-2 text-sm text-[var(--theme-text)]">
                     <input
@@ -320,16 +324,16 @@ export function SkillDistributionGovernancePanel({
                       onChange={() => setDepartmentScope("restricted")}
                       type="radio"
                     />
-                    指定部门
+                    {t("skills.governance.departments.restricted")}
                   </label>
                 </div>
               </fieldset>
 
               {departmentScope === "restricted" ? (
               <div className="es-field mt-4">
-                <span className="es-label">允许部门</span>
+                <span className="es-label">{t("skills.governance.departments.allowed")}</span>
                 <span className="es-hint">
-                  仅可选择服务端权威目录中的部门；留空表示不限制部门。
+                  {t("skills.governance.departments.hint")}
                 </span>
                 <DepartmentDirectorySelector
                   directory={directory}
@@ -348,8 +352,8 @@ export function SkillDistributionGovernancePanel({
               ) : null}
 
               <div className="es-field mt-4">
-                <span className="es-label">允许角色</span>
-                <span className="es-hint">沿用 MCP 权限编辑器的角色选择方式。</span>
+                <span className="es-label">{t("skills.governance.roles.allowed")}</span>
+                <span className="es-hint">{t("skills.governance.roles.hint")}</span>
                 <div className="mt-1">
                   <RoleSelector
                     onChange={(allowedRoles) =>
@@ -381,11 +385,11 @@ export function SkillDistributionGovernancePanel({
                   ) : (
                     <Save size={16} />
                   )}
-                  保存可见范围
+                  {t("skills.governance.save")}
                 </button>
                 {saved ? (
                   <span className="inline-flex items-center gap-1 text-sm text-[var(--theme-success)]" role="status">
-                    <ShieldCheck size={16} /> 已保存
+                    <ShieldCheck size={16} /> {t("skills.governance.saved")}
                   </span>
                 ) : null}
                 {saveError ? (
@@ -397,7 +401,7 @@ export function SkillDistributionGovernancePanel({
             </div>
           ) : (
             <p className="py-8 text-center text-sm text-[var(--theme-text-secondary)]">
-              请从 Skill 目录选择一项查看详情。
+              {t("skills.governance.selectPrompt")}
             </p>
           )}
         </div>
