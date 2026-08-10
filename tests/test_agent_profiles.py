@@ -767,6 +767,100 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
     ]
 
 
+@pytest.mark.asyncio
+async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_drift(monkeypatch):
+    from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
+    from app.models import AgentConversationIdentity
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+    locked_version = "b" * 64
+    source = {
+        "id": "run-profile",
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "agent_id": "agt_support",
+        "skill_id": "profile-skill",
+        "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "a" * 64,
+        "input_json": {
+            "input": {"message": "retry", "mcp_tool_ids": ["profile-tool"]},
+            "executor_type": "claude-agent-worker",
+            "skill_version": locked_version,
+            "release_decision": {"selected_version": locked_version},
+            "skill_manifests": [
+                {
+                    "skill_id": "profile-skill",
+                    "version": "version-a",
+                    "content_hash": locked_version,
+                }
+            ],
+            "model_id": "model-a",
+            "model_value": "provider-model-a",
+            "agent_profile": {
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "required_skill_id": "profile-skill",
+                "required_skill_version": locked_version,
+            },
+        },
+    }
+
+    async def get_run(*_args, **_kwargs):
+        return source
+
+    async def resolve_bound(*_args, **_kwargs):
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=4,
+            content_hash="a" * 64,
+            skill={
+                "skill_id": "profile-skill",
+                "skill_version": "version-a",
+                "executor_type": "claude-agent-worker",
+            },
+            model={"id": "model-a", "value": "provider-model-a"},
+            mcp_tool_ids=("profile-tool",),
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "required_skill_id": "profile-skill",
+                "required_skill_version": "version-a",
+            },
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=4,
+                name="Support assistant",
+            ),
+        )
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+
+    await authority.reauthorize_pinned_run_for_replay(
+        object(),
+        principal=principal,
+        run_id="run-profile",
+    )
+
+    source["input_json"]["release_decision"] = {"selected_version": "c" * 64}
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+
+
 def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():
     from app.executors.claude_agent_sdk_runner import build_skill_prompt
 

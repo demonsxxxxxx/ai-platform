@@ -926,11 +926,50 @@ class AgentProfileAuthority:
         )
         profile_snapshot = snapshot.get("agent_profile")
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
+        expected_profile_snapshot = dict(admission.private_execution_input)
+        snapshot_skill_version = str(snapshot.get("skill_version") or "")
+        authority_skill_id = str(admission.skill.get("skill_id") or "")
+        governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
+            "required_skill_id" in profile_snapshot or "required_skill_version" in profile_snapshot
+        )
+        if governed_profile_snapshot:
+            expected_profile_snapshot.update(
+                {
+                    "required_skill_id": authority_skill_id,
+                    "required_skill_version": snapshot_skill_version,
+                }
+            )
+            primary_manifest = next(
+                (
+                    manifest
+                    for manifest in snapshot.get("skill_manifests", [])
+                    if isinstance(manifest, dict)
+                    and str(manifest.get("skill_id") or "") == authority_skill_id
+                ),
+                None,
+            )
+            manifest_skill_version = (
+                str(primary_manifest.get("content_hash") or primary_manifest.get("version") or "")
+                if isinstance(primary_manifest, dict)
+                else ""
+            )
+            release_decision = snapshot.get("release_decision")
+            release_skill_version = (
+                str(release_decision.get("selected_version") or "")
+                if isinstance(release_decision, dict)
+                else ""
+            )
+            skill_version_matches = bool(snapshot_skill_version) and (
+                snapshot_skill_version == manifest_skill_version == release_skill_version
+            )
+        else:
+            skill_version_matches = snapshot_skill_version == str(
+                admission.skill.get("skill_version") or ""
+            )
         if (
-            profile_snapshot != admission.private_execution_input
+            profile_snapshot != expected_profile_snapshot
             or str(run.get("skill_id") or "") != str(admission.skill.get("skill_id") or "")
-            or str(snapshot.get("skill_version") or "")
-            != str(admission.skill.get("skill_version") or "")
+            or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")
             or str(snapshot.get("model_id") or "") != str(admission.model.get("id") or "")
