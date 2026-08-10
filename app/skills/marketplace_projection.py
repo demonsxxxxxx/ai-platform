@@ -127,7 +127,7 @@ def project_public_skill(
         skill_name=skill_name,
         expected_version=str(row.get("expected_version") or ""),
         input_modes=input_modes,
-        requires_file="docx" in input_modes,
+        requires_file=False,
         description=str(row.get("description") or ""),
         tags=marketplace_tags(row),
         files=files,

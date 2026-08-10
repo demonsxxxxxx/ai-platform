@@ -140,16 +140,10 @@ export function selectedSkillTaskReducer(
 
 export function getSelectedSkillPreflightError(
   state: SelectedSkillTaskState,
-  attachments: Array<Pick<MessageAttachment, "id" | "isUploading">>,
+  _attachments: Array<Pick<MessageAttachment, "id" | "isUploading">>,
 ): SelectedSkillRecoverableCode | null {
   if (state.requiresReconfirmation) {
     return state.recoveryCode ?? "capability_not_authorized";
-  }
-  if (
-    state.selectedSkill?.requires_file &&
-    !attachments.some((attachment) => attachment.id && !attachment.isUploading)
-  ) {
-    return "file_required_for_skill";
   }
   return null;
 }

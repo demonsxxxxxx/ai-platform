@@ -571,6 +571,7 @@ async def record_initial_context_snapshot(
     source: str,
     source_run_id: str | None = None,
     include_session_history: bool = False,
+    include_session_files: bool = True,
 ) -> dict[str, Any]:
     included_message_ids = list(message_ids or [])
     prior_messages: list[dict[str, Any]] = []
@@ -618,23 +619,24 @@ async def record_initial_context_snapshot(
             and str(row.get("id") or "") not in current_message_ids
             and str(row.get("run_id") or "") != run_id
         ]
-        session_files = await repositories.list_session_context_files(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            limit=8,
-        )
-        included_file_ids = snapshot_file_ids(
-            current_file_ids=included_file_ids,
-            historical_file_ids=[
-                str(row.get("id") or "")
-                for row in session_files
-                if isinstance(row, dict) and row.get("id")
-            ],
-        )
+        if include_session_files:
+            session_files = await repositories.list_session_context_files(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                limit=8,
+            )
+            included_file_ids = snapshot_file_ids(
+                current_file_ids=included_file_ids,
+                historical_file_ids=[
+                    str(row.get("id") or "")
+                    for row in session_files
+                    if isinstance(row, dict) and row.get("id")
+                ],
+            )
         session_artifacts = await repositories.list_session_context_artifacts(
             conn,
             tenant_id=tenant_id,
