@@ -1979,6 +1979,13 @@ async def chat_stream(
                 skill_id=resolved_skill_id,
                 mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
             )
+            agent_profile_execution_input = None
+            if admitted_agent_profile is not None:
+                agent_profile_execution_input = {
+                    **admitted_agent_profile.private_execution_input,
+                    "required_skill_id": resolved_skill_id,
+                    "required_skill_version": skill_version,
+                }
             if (
                 required_tool_declaration is not None
                 and required_tool_declaration.capability_kind == "builtin"
@@ -2025,8 +2032,8 @@ async def chat_stream(
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                     **(
-                        {"agent_profile": admitted_agent_profile.private_execution_input}
-                        if admitted_agent_profile is not None
+                        {"agent_profile": agent_profile_execution_input}
+                        if agent_profile_execution_input is not None
                         else {}
                     ),
                 }
@@ -2100,8 +2107,8 @@ async def chat_stream(
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                     **(
-                        {"agent_profile": admitted_agent_profile.private_execution_input}
-                        if admitted_agent_profile is not None
+                        {"agent_profile": queue_payload["agent_profile"]}
+                        if agent_profile_execution_input is not None
                         else {}
                     ),
                 },

@@ -4155,6 +4155,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     queue_readback_available = enqueue_failure_mode != "after_publish_unknown"
     enqueue_payloads: list[dict[str, object]] = []
     published_payloads: list[dict[str, object]] = []
+    profile_manifest = snapshot_manifest("profile-specialist")
 
     class TransactionState:
         def __init__(self) -> None:
@@ -4217,6 +4218,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 "revision": 7,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instructions",
+                "required_skill_id": "profile-specialist",
+                "required_skill_version": "version-profile",
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -4244,7 +4247,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         }
 
     async def governed_manifest(*_args, **_kwargs):
-        return [snapshot_manifest("profile-specialist")]
+        return [dict(profile_manifest)]
 
     async def authorize_workspace(*_args, **_kwargs):
         calls.append("workspace_auth")
@@ -4542,6 +4545,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "private profile instructions",
+        "required_skill_id": "profile-specialist",
+        "required_skill_version": profile_manifest["content_hash"],
     }
     if enqueue_failure_mode is None:
         assert response.status == "queued"

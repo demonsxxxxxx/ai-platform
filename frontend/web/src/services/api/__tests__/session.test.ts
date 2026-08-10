@@ -392,8 +392,8 @@ test("submits only the exact published Agent profile lock", () => {
 
 test("builds the selector-free Agent App run URL and deduplicated file body", () => {
   const attachment = {
-    id: "file-a",
-    key: "private-storage-key",
+    id: "client-upload-8bd6fe68-4c41-4577-a4b6-60c3ec36b75a",
+    key: "file-a",
     name: "source.pdf",
     type: "document" as const,
     mimeType: "application/pdf",
@@ -417,6 +417,31 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
       user_timezone: "Asia/Shanghai",
+    },
+  );
+});
+
+test("omits unfinished Agent App attachments without a server file id", () => {
+  assert.deepEqual(
+    buildAgentAppRunBody({
+      message: "Review this",
+      attachments: [
+        {
+          id: "client-upload-pending",
+          key: "",
+          name: "pending.pdf",
+          type: "document",
+          mimeType: "application/pdf",
+          size: 42,
+          isUploading: true,
+        },
+      ],
+      submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    }),
+    {
+      message: "Review this",
+      submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      file_ids: [],
     },
   );
 });
