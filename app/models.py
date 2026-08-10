@@ -392,6 +392,18 @@ class AgentProfileTrialRunRequest(BaseModel):
         return normalized
 
 
+class AgentProfileBuilderTestContext(BaseModel):
+    """Trusted route-owned context for one exact Builder draft submission."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    agent_id: str
+    expected_revision: int
+    expected_content_hash: str
+    session_id: str
+    title: str
+
+
 class AgentAppRunRequest(BaseModel):
     """Strict dedicated submission surface without client-owned capability selectors."""
 
@@ -874,6 +886,14 @@ class UploadFileResponse(BaseModel):
     file_id: str
     sha256: str
     size_bytes: int
+
+
+class UploadedFileDeletionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deleted: bool
+    file_id: str
+    state: Literal["pending", "processing", "failed", "dead_letter", "deleted"]
 
 
 class SessionInputFileResponse(BaseModel):

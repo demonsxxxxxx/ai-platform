@@ -173,6 +173,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
   const result = deferred<UploadResult>();
   let onProgress: ((progress: number) => void) | undefined;
   let aborts = 0;
+  const deletedKeys: string[] = [];
   const task = startFileUploadTask({
     file: harness.file,
     fileCategory: "document",
@@ -199,6 +200,9 @@ test("active XHR cancellation is idempotent and fences stale progress and result
     })(),
     notifyError: (message) => harness.toasts.push(message),
     reportFailure: (error) => harness.reports.push(error),
+    deleteUploadedFile: async (key) => {
+      deletedKeys.push(key);
+    },
   });
 
   await uploadEntered.promise;
@@ -228,6 +232,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
   assert.deepEqual(harness.reports, []);
   assert.equal(harness.abortMap.size, 0);
   assert.equal(harness.cancelled.size, 0);
+  assert.deepEqual(deletedKeys, ["uploaded-key"]);
 });
 
 test("compression fallback continues through normal progress and success", async () => {

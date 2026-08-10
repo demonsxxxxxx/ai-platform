@@ -251,27 +251,32 @@ def test_dedicated_agent_run_fails_closed_on_ownership_or_agent_mismatch(
 
 
 def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonical_run(monkeypatch):
-    observed: dict[str, list[object]] = {"conversations": [], "runs": []}
+    observed: list[dict[str, object]] = []
 
-    async def create_conversation(_conn, **kwargs):
-        observed["conversations"].append(kwargs)
-
-    async def submit_run(**kwargs):
-        observed["runs"].append(kwargs)
+    async def submit_builder_test_run(**kwargs):
+        observed.append(kwargs)
+        request = kwargs["request"]
         return ChatStreamResponse(
             session_id=kwargs["session_id"],
             run_id="run-test",
             status="queued",
-            submission_id=str(kwargs["request"].submission_id),
+            submission_id=str(request.submission_id),
         )
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Builder tests must not pre-create a Session outside canonical Chat admission")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.routes.agent_profiles._authority.create_conversation",
-        create_conversation,
+        forbidden,
     )
-    monkeypatch.setattr("app.routes.agent_profiles._submit_dedicated_agent_run", submit_run)
+    monkeypatch.setattr("app.routes.agent_profiles._submit_dedicated_agent_run", forbidden)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._submit_builder_test_run",
+        submit_builder_test_run,
+    )
     client = TestClient(create_app())
     body = {
         "expected_revision": 7,
@@ -297,25 +302,15 @@ def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonic
     assert first.json()["session_id"] == second.json()["session_id"]
     assert first.json()["run_id"] == second.json()["run_id"] == "run-test"
     expected_session_id = "ses_test_22222222222242228222222222222222"
-    assert [call["session_id"] for call in observed["conversations"]] == [
-        expected_session_id,
-        expected_session_id,
-    ]
-    for call in observed["conversations"]:
-        assert call["purpose"] == "builder_test"
-        assert call["selection"].agent_id == "agt_support"
-        assert call["selection"].expected_revision == 7
-        assert call["expected_content_hash"] == "a" * 64
-        assert call["file_ids"] == ["file_builder_input"]
-        assert call["preflight_run_id"] == "run_test_preflight_22222222222242228222222222222222"
-    assert [call["session_id"] for call in observed["runs"]] == [
-        expected_session_id,
-        expected_session_id,
-    ]
-    assert [call["request"].file_ids for call in observed["runs"]] == [
-        ["file_builder_input"],
-        ["file_builder_input"],
-    ]
+    assert [call["session_id"] for call in observed] == [expected_session_id, expected_session_id]
+    for call in observed:
+        request = call["request"]
+        assert call["agent_id"] == "agt_support"
+        assert request.expected_revision == 7
+        assert request.expected_content_hash == "a" * 64
+        assert request.file_ids == ["file_builder_input"]
+        assert request.message == "Run the enterprise test"
+        assert str(request.submission_id) == "22222222-2222-4222-8222-222222222222"
 
 
 def test_builder_trial_run_rejects_ordinary_users_before_storage_or_dispatch(monkeypatch):
@@ -331,6 +326,10 @@ def test_builder_trial_run_rejects_ordinary_users_before_storage_or_dispatch(mon
         forbidden,
     )
     monkeypatch.setattr("app.routes.agent_profiles._submit_dedicated_agent_run", forbidden)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._submit_builder_test_run",
+        forbidden,
+    )
     response = TestClient(create_app()).post(
         "/api/ai/admin/agent-profiles/agt_support/test-runs",
         headers=auth_headers(),
@@ -350,25 +349,24 @@ def test_builder_trial_run_rejects_ordinary_users_before_storage_or_dispatch(mon
 def test_builder_trial_run_maps_cross_scope_file_denial_without_creating_a_run(monkeypatch):
     from app import repositories
 
-    dispatched = False
+    legacy_side_effect = False
 
     async def deny_file_scope(*_args, **_kwargs):
         raise repositories.RepositoryConflictError("file_scope_mismatch")
 
-    async def forbidden_dispatch(*_args, **_kwargs):
-        nonlocal dispatched
-        dispatched = True
-        raise AssertionError("file denial must precede canonical run dispatch")
+    async def forbidden_legacy_side_effect(*_args, **_kwargs):
+        nonlocal legacy_side_effect
+        legacy_side_effect = True
+        raise AssertionError("builder tests must not use a pre-admission side-effect path")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.agent_profiles._authority.create_conversation",
+        "app.routes.agent_profiles._submit_builder_test_run",
         deny_file_scope,
     )
     monkeypatch.setattr(
-        "app.routes.agent_profiles._submit_dedicated_agent_run",
-        forbidden_dispatch,
+        "app.routes.agent_profiles._authority.create_conversation",
+        forbidden_legacy_side_effect,
     )
     response = TestClient(create_app()).post(
         "/api/ai/admin/agent-profiles/agt_support/test-runs",
@@ -384,7 +382,7 @@ def test_builder_trial_run_maps_cross_scope_file_denial_without_creating_a_run(m
 
     assert response.status_code == 403
     assert response.json()["detail"] == "agent_profile_test_file_not_authorized"
-    assert dispatched is False
+    assert legacy_side_effect is False
 
 
 async def test_resolve_agent_skill_uses_global_skill_lifecycle_status():

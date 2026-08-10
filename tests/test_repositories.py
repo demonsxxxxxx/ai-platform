@@ -559,6 +559,8 @@ class _RunSessionTableConnection:
                 predicates.append(session["status"] == "active")
             if not all(predicates):
                 row = None
+            elif "sessions.purpose as session_purpose" in normalized:
+                row = {**row, "session_purpose": session.get("purpose", "conversation")}
         return SingleRowCursor(row)
 
 
@@ -637,6 +639,7 @@ async def test_owner_session_lookups_are_active_only_and_keep_principal_scope(lo
         "user_id": "user-a",
         "agent_id": "general-agent",
         "status": "active",
+        "purpose": "builder_test",
     }
     deleted = {**active, "id": "session-deleted", "status": "deleted"}
     conn = _SessionTableConnection([active, deleted])
@@ -737,6 +740,7 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
         "user_id": "user-a",
         "agent_id": "general-agent",
         "status": "active",
+        "purpose": "builder_test",
     }
     conn = _RunSessionTableConnection(run=run, session=session)
 
@@ -746,9 +750,12 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
         user_id="user-a",
         run_id="run-a",
         for_update=True,
-    ) == run
+    ) == {**run, "session_purpose": "builder_test"}
     active_sql, active_params = conn.calls[-1]
-    assert active_sql.startswith("select runs.* from runs join sessions")
+    assert active_sql.startswith(
+        "select runs.*, sessions.purpose as session_purpose from runs join sessions"
+    )
+    assert "sessions.purpose as session_purpose" in active_sql
     assert "sessions.tenant_id = runs.tenant_id" in active_sql
     assert "sessions.workspace_id = runs.workspace_id" in active_sql
     assert "sessions.user_id = runs.user_id" in active_sql
@@ -10201,18 +10208,20 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
 
 
 @pytest.mark.parametrize(
-    ("row_update", "expected_error"),
+    ("row_update", "expected_exception", "expected_error"),
     [
-        ({"tenant_id": "tenant-b"}, "file_scope_mismatch"),
-        ({"workspace_id": "workspace-b"}, "file_scope_mismatch"),
-        ({"user_id": "user-b"}, "file_user_mismatch"),
-        ({"session_id": "session-b"}, "file_session_mismatch"),
-        ({"run_id": "run-b"}, "file_already_bound"),
+        ({"tenant_id": "tenant-b"}, repositories.RepositoryConflictError, "file_scope_mismatch"),
+        ({"workspace_id": "workspace-b"}, repositories.RepositoryConflictError, "file_scope_mismatch"),
+        ({"user_id": "user-b"}, repositories.RepositoryConflictError, "file_user_mismatch"),
+        ({"session_id": "session-b"}, repositories.RepositoryConflictError, "file_session_mismatch"),
+        ({"run_id": "run-b"}, repositories.RepositoryConflictError, "file_already_bound"),
+        ({"lifecycle_state": "delete_pending"}, repositories.RepositoryNotFoundError, "file_not_available"),
     ],
 )
 @pytest.mark.asyncio
 async def test_authorize_files_for_run_rejects_foreign_scope_or_binding(
     row_update,
+    expected_exception,
     expected_error,
 ):
     row = {
@@ -10238,7 +10247,7 @@ async def test_authorize_files_for_run_rejects_foreign_scope_or_binding(
             self.calls.append((" ".join(sql.split()), params))
             return FileCursor()
 
-    with pytest.raises(repositories.RepositoryConflictError, match=expected_error):
+    with pytest.raises(expected_exception, match=expected_error):
         await repositories.authorize_files_for_run(
             FileConnection(),
             tenant_id="tenant-a",

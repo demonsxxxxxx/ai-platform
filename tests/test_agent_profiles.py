@@ -686,6 +686,7 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
     )
     source = {
         "id": "run-profile",
+        "session_purpose": "builder_test",
         "agent_id": "agt_support",
         "skill_id": "profile-skill",
         "admitted_agent_profile_revision": 4,
@@ -765,6 +766,7 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
     assert [(call["agent_id"], call["revision"], call["content_hash"]) for call in bound_calls] == [
         ("agt_support", 4, "a" * 64)
     ]
+    assert [call["purpose"] for call in bound_calls] == ["builder_test"]
 
 
 def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():

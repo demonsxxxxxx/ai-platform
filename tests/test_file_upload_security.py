@@ -381,3 +381,74 @@ async def test_compat_upload_preserves_frontend_response_contract(monkeypatch):
     assert response["mime_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     assert response["size"] == len(make_safe_docx_bytes())
     assert response["sha256"] == "sha-docx"
+
+
+@pytest.mark.asyncio
+async def test_delete_unbound_upload_queues_server_owned_object_lifecycle(monkeypatch):
+    observed: list[dict[str, object]] = []
+
+    async def queue_delete(_conn, **kwargs):
+        observed.append(kwargs)
+        return {"id": "objdel_file_upload_1", "state": "pending"}
+
+    monkeypatch.setattr(files_routes, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        files_routes.artifact_lifecycle_repository,
+        "queue_unbound_file_for_deletion",
+        queue_delete,
+    )
+
+    response = await files_routes.delete_file(
+        file_id="file_upload_1",
+        workspace_id="default",
+        principal=upload_principal(),
+    )
+
+    assert response == {"deleted": False, "file_id": "file_upload_1", "state": "pending"}
+    assert observed == [
+        {
+            "tenant_id": "default",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "file_id": "file_upload_1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_upload_hides_foreign_owner_and_rejects_bound_file(monkeypatch):
+    from app import artifact_lifecycle_repository, repositories
+
+    monkeypatch.setattr(files_routes, "transaction", fake_transaction)
+
+    async def foreign_owner(*_args, **_kwargs):
+        raise repositories.RepositoryNotFoundError("file_not_found")
+
+    monkeypatch.setattr(
+        files_routes.artifact_lifecycle_repository,
+        "queue_unbound_file_for_deletion",
+        foreign_owner,
+    )
+    with pytest.raises(HTTPException) as hidden:
+        await files_routes.delete_file(
+            file_id="file_foreign",
+            workspace_id="default",
+            principal=upload_principal(),
+        )
+    assert (hidden.value.status_code, hidden.value.detail) == (404, "file_not_found")
+
+    async def bound_file(*_args, **_kwargs):
+        raise artifact_lifecycle_repository.FileDeletionConflictError("file_already_bound")
+
+    monkeypatch.setattr(
+        files_routes.artifact_lifecycle_repository,
+        "queue_unbound_file_for_deletion",
+        bound_file,
+    )
+    with pytest.raises(HTTPException) as bound:
+        await files_routes.delete_file(
+            file_id="file_bound",
+            workspace_id="default",
+            principal=upload_principal(),
+        )
+    assert (bound.value.status_code, bound.value.detail) == (409, "file_already_bound")

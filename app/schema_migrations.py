@@ -14,7 +14,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.09.2"
+TARGET_SCHEMA_VERSION = "2026.08.10.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -35,18 +35,24 @@ CRITICAL_COLUMNS = (
     ("messages", "content", "text", True),
     ("messages", "metadata_json", "jsonb", True),
     ("files", "storage_key", "text", True),
+    ("files", "lifecycle_state", "text", True),
+    ("files", "delete_requested_at", "timestamptz", False),
+    ("files", "deleted_at", "timestamptz", False),
     ("artifacts", "lifecycle_state", "text", True),
     ("artifacts", "expires_at", "timestamptz", False),
     ("object_deletion_outbox", "state", "text", True),
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
     ("object_deletion_outbox", "reconcile_required", "bool", True),
+    ("object_deletion_outbox", "file_id", "text", False),
     ("audit_logs", "payload_json", "jsonb", True),
 )
 CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
+    ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
+    ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
 )
 
 

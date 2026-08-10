@@ -4382,7 +4382,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     )
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", late_ensure_user)
     monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
-    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", profile_admission)
+    monkeypatch.setattr(
+        "app.routes.chat._agent_profile_authority.resolve_bound_for_submission",
+        profile_admission,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_run_capabilities",
@@ -4737,7 +4740,10 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         ensure_principal,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
+    monkeypatch.setattr(
+        "app.routes.chat._agent_profile_authority.resolve_bound_for_submission",
+        bound_profile,
+    )
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_chat_mcp_tools",
         authorize_transport_mcp_defaults,

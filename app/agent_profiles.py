@@ -85,7 +85,6 @@ async def resolve_bound_profile_for_submission(
     agent_id,
     revision,
     content_hash,
-    purpose="conversation",
     submitted_request=None,
     query_agent_id=None,
 ) -> AgentProfileAdmission:
@@ -96,7 +95,6 @@ async def resolve_bound_profile_for_submission(
         "agent_id": agent_id,
         "revision": revision,
         "content_hash": content_hash,
-        "purpose": purpose,
     }
     if submitted_request is not None:
         authority_kwargs["submitted_request"] = submitted_request

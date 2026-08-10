@@ -7,6 +7,12 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.persistence import RepositoryNotFoundError
+
+
+class FileDeletionConflictError(ValueError):
+    """An owned upload is no longer eligible for unbound deletion."""
+
 
 async def queue_expired_artifacts_for_deletion(
     conn: AsyncConnection,
@@ -152,7 +158,8 @@ async def claim_object_deletions(
             leased_at = now(),
             updated_at = now()
         where id in (select id from candidates)
-        returning id, tenant_id, artifact_id, storage_key, attempts
+        returning id, tenant_id, coalesce(artifact_id, file_id) as artifact_id,
+                  storage_key, attempts
         """,
         (resolved_max_attempts, resolved_max_attempts, resolved_limit),
     )
@@ -175,22 +182,38 @@ async def complete_object_deletion(
             reconcile_required = false,
             last_error_code = null,
             updated_at = now()
-        where id = %s and tenant_id = %s and artifact_id = %s and state = 'processing'
-        returning id
+        where id = %s and tenant_id = %s
+          and (artifact_id = %s or file_id = %s)
+          and state = 'processing'
+        returning artifact_id, file_id
         """,
-        (outbox_id, tenant_id, artifact_id),
+        (outbox_id, tenant_id, artifact_id, artifact_id),
     )
     row = await cursor.fetchone()
     if row is None:
         return False
-    await conn.execute(
-        """
-        update artifacts
-        set lifecycle_state = 'deleted', deleted_at = coalesce(deleted_at, now())
-        where tenant_id = %s and id = %s and lifecycle_state = 'delete_pending'
-        """,
-        (tenant_id, artifact_id),
-    )
+    persisted_artifact_id = row.get("artifact_id")
+    persisted_file_id = row.get("file_id")
+    if persisted_artifact_id is not None:
+        await conn.execute(
+            """
+            update artifacts
+            set lifecycle_state = 'deleted', deleted_at = coalesce(deleted_at, now())
+            where tenant_id = %s and id = %s and lifecycle_state = 'delete_pending'
+            """,
+            (tenant_id, persisted_artifact_id),
+        )
+    elif persisted_file_id is not None:
+        await conn.execute(
+            """
+            update files
+            set lifecycle_state = 'deleted', deleted_at = coalesce(deleted_at, now())
+            where tenant_id = %s and id = %s and lifecycle_state = 'delete_pending'
+            """,
+            (tenant_id, persisted_file_id),
+        )
+    else:
+        raise ValueError("object_deletion_target_invalid")
     return True
 
 
@@ -261,18 +284,120 @@ async def requeue_dead_letter_object_deletion(
             reconcile_required = false,
             last_error_code = null,
             updated_at = now()
-        from artifacts
         where outbox.id = %s
           and outbox.tenant_id = %s
           and outbox.state = 'dead_letter'
-          and artifacts.id = outbox.artifact_id
-          and artifacts.tenant_id = outbox.tenant_id
-          and artifacts.lifecycle_state = 'delete_pending'
+          and (
+            exists (
+              select 1 from artifacts
+              where artifacts.id = outbox.artifact_id
+                and artifacts.tenant_id = outbox.tenant_id
+                and artifacts.lifecycle_state = 'delete_pending'
+            )
+            or exists (
+              select 1 from files
+              where files.id = outbox.file_id
+                and files.tenant_id = outbox.tenant_id
+                and files.lifecycle_state = 'delete_pending'
+            )
+          )
         returning outbox.id
         """,
         (outbox_id, tenant_id),
     )
     return await cursor.fetchone() is not None
+
+
+async def queue_unbound_file_for_deletion(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    file_id: str,
+) -> dict[str, Any]:
+    """Lock one owner-scoped unbound upload and enqueue durable object deletion."""
+
+    cursor = await conn.execute(
+        """
+        select files.*,
+               exists (
+                 select 1 from run_context_snapshots snapshots
+                 where snapshots.tenant_id = files.tenant_id
+                   and snapshots.included_file_ids ? files.id
+               ) as snapshot_referenced,
+               exists (
+                 select 1 from artifacts
+                 where artifacts.tenant_id = files.tenant_id
+                   and artifacts.manifest_json->>'source_file_id' = files.id
+               ) as artifact_referenced
+        from files
+        where files.id = %s
+          and files.tenant_id = %s
+          and files.workspace_id = %s
+          and files.user_id = %s
+        for update of files
+        """,
+        (file_id, tenant_id, workspace_id, user_id),
+    )
+    file_row = await cursor.fetchone()
+    if file_row is None:
+        raise RepositoryNotFoundError("file_not_found")
+    lifecycle_state = str(file_row.get("lifecycle_state") or "active")
+    if lifecycle_state in {"delete_pending", "deleted"}:
+        cursor = await conn.execute(
+            """
+            select id, tenant_id, file_id, state, attempts, created_at
+            from object_deletion_outbox
+            where tenant_id = %s and file_id = %s
+            """,
+            (tenant_id, file_id),
+        )
+        outbox = await cursor.fetchone()
+        if outbox is None:
+            raise FileDeletionConflictError("file_deletion_state_invalid")
+        return dict(outbox)
+    if lifecycle_state != "active":
+        raise FileDeletionConflictError("file_deletion_state_invalid")
+    if (
+        file_row.get("session_id")
+        or file_row.get("run_id")
+        or file_row.get("snapshot_referenced")
+        or file_row.get("artifact_referenced")
+    ):
+        raise FileDeletionConflictError("file_already_bound")
+
+    cursor = await conn.execute(
+        """
+        with tombstoned as (
+          update files
+          set lifecycle_state = 'delete_pending',
+              delete_requested_at = coalesce(delete_requested_at, now())
+          where id = %s
+            and tenant_id = %s
+            and workspace_id = %s
+            and user_id = %s
+            and lifecycle_state = 'active'
+            and session_id is null
+            and run_id is null
+          returning id, tenant_id, storage_key
+        )
+        insert into object_deletion_outbox(
+          id, tenant_id, artifact_id, file_id, storage_key, state, available_at
+        )
+        select 'objdel_' || id, tenant_id, null, id, storage_key, 'pending', now()
+        from tombstoned
+        on conflict (tenant_id, file_id) where file_id is not null do update
+        set storage_key = excluded.storage_key,
+            updated_at = now()
+        returning id, tenant_id, file_id, state, attempts, created_at
+        """,
+        (file_id, tenant_id, workspace_id, user_id),
+    )
+    outbox = await cursor.fetchone()
+    if outbox is None:
+        raise FileDeletionConflictError("file_already_bound")
+    return dict(outbox)
 
 
 async def purge_deleted_memory_records(

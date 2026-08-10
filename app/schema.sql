@@ -2081,8 +2081,18 @@ create table if not exists files (
   size_bytes bigint not null,
   storage_key text not null unique,
   sha256 text not null,
+  lifecycle_state text not null default 'active',
+  delete_requested_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table files add column if not exists lifecycle_state text not null default 'active';
+alter table files add column if not exists delete_requested_at timestamptz;
+alter table files add column if not exists deleted_at timestamptz;
+alter table files drop constraint if exists chk_files_lifecycle_state;
+alter table files add constraint chk_files_lifecycle_state
+  check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
 
 create table if not exists artifacts (
   id text primary key,
@@ -2118,7 +2128,8 @@ alter table artifacts add constraint chk_artifacts_lifecycle_state
 create table if not exists object_deletion_outbox (
   id text primary key,
   tenant_id text not null references tenants(id),
-  artifact_id text not null references artifacts(id),
+  artifact_id text references artifacts(id),
+  file_id text references files(id),
   storage_key text not null,
   state text not null default 'pending',
   attempts integer not null default 0,
@@ -2134,6 +2145,11 @@ create table if not exists object_deletion_outbox (
 );
 alter table object_deletion_outbox add column if not exists dead_letter_at timestamptz;
 alter table object_deletion_outbox add column if not exists reconcile_required boolean not null default false;
+alter table object_deletion_outbox add column if not exists file_id text references files(id);
+alter table object_deletion_outbox alter column artifact_id drop not null;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target;
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target
+  check ((artifact_id is not null) <> (file_id is not null));
 alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_state_check;
 alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_state;
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
@@ -2141,6 +2157,9 @@ alter table object_deletion_outbox add constraint chk_object_deletion_outbox_sta
 create index if not exists idx_object_deletion_outbox_claim
   on object_deletion_outbox(state, available_at asc, created_at asc, id asc)
   where state in ('pending', 'processing', 'failed');
+create unique index if not exists uq_object_deletion_outbox_file
+  on object_deletion_outbox(tenant_id, file_id)
+  where file_id is not null;
 
 create table if not exists audit_logs (
   id text primary key,

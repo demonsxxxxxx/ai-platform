@@ -214,7 +214,7 @@ export function AgentBuilderEnterpriseFields({
             <ListField
               className="min-h-28"
               disabled={disabled}
-              label="推荐任务（可选）"
+              label="推荐任务"
               onChange={(recommendedTasks) => onChange({ recommendedTasks })}
               values={editor.recommendedTasks}
             />

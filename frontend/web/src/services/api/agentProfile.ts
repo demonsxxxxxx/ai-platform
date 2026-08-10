@@ -186,10 +186,8 @@ export const agentProfileApi = {
   runTest(
     agentId: string,
     expectedRevision: number,
-    expectedContentHash: string,
     message: string,
     submissionId: string,
-    fileIds: readonly string[],
   ): Promise<AgentProfileTrialRunResponse> {
     return authFetch(
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/test-runs`,
@@ -197,10 +195,8 @@ export const agentProfileApi = {
         method: "POST",
         body: JSON.stringify({
           expected_revision: expectedRevision,
-          expected_content_hash: expectedContentHash,
           message,
           submission_id: submissionId,
-          file_ids: fileIds,
         }),
       },
     );

@@ -18,9 +18,9 @@ from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
 from app import repositories
+from app.agent_apps import AgentProfileAuthority
 from app.agent_profiles import (
     reauthorize_pinned_run_for_replay,
-    resolve_bound_profile_for_submission,
     resolve_profile_for_admission,
 )
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -40,6 +40,7 @@ from app.intent_router import (
 )
 from app.model_catalog import resolve_model_selection
 from app.models import (
+    AgentProfileBuilderTestContext,
     CapabilitySuggestionResponse,
     ChatMessageResponse,
     ChatMessagesResponse,
@@ -102,6 +103,7 @@ from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_agent_profile_authority = AgentProfileAuthority()
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
@@ -112,7 +114,6 @@ _QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
 _SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
 _SAFE_SUBMISSION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MESSAGE_CURSOR_VERSION = 1
-
 
 def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
     return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
@@ -262,6 +263,7 @@ def _canonical_pre_persistence_rejection_fingerprint(
     principal: AuthPrincipal,
     query_agent_id: str | None,
     code: str,
+    internal_context: dict[str, object] | None = None,
 ) -> str:
     """Hash the complete rejected request through the authoritative ledger contract."""
 
@@ -270,6 +272,7 @@ def _canonical_pre_persistence_rejection_fingerprint(
             "request": request.model_dump(mode="json", exclude={"submission_id"}),
             "query_agent_id": query_agent_id,
             "rejection_code": code,
+            **({"internal_context": internal_context} if internal_context is not None else {}),
         },
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
@@ -429,6 +432,7 @@ async def _persist_pre_persistence_rejection(
     workspace_id: str | None,
     session_id: str | None,
     code: str,
+    internal_context: dict[str, object] | None = None,
 ) -> None:
     """Record a deterministic rejection after the mutation transaction rolled back."""
 
@@ -439,6 +443,7 @@ async def _persist_pre_persistence_rejection(
         principal=principal,
         query_agent_id=query_agent_id,
         code=code,
+        internal_context=internal_context,
     )
     async with transaction() as conn:
         await repositories.ensure_submission_principal(
@@ -1336,17 +1341,29 @@ async def list_messages(
     )
 
 
-@router.post("/chat/stream", response_model=ChatStreamResponse)
-async def chat_stream(
+async def _chat_stream(
     request: ChatStreamRequest,
-    agent_id: str | None = Query(None),
-    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
+    agent_id: str | None,
+    principal: AuthPrincipal,
+    *,
+    builder_test: AgentProfileBuilderTestContext | None,
 ) -> ChatStreamResponse:
     try:
         assert_safe_principal_user_id(principal.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
     query_agent_id = _normalized_query_agent_id(agent_id)
+    internal_context = (
+        {
+            "purpose": "builder_test",
+            "agent_id": builder_test.agent_id,
+            "expected_revision": builder_test.expected_revision,
+            "expected_content_hash": builder_test.expected_content_hash,
+            "session_id": builder_test.session_id,
+        }
+        if builder_test is not None
+        else None
+    )
     submission_id = str(request.submission_id) if request.submission_id is not None else None
     request_fingerprint = None
     existing_submission_row = None
@@ -1355,6 +1372,7 @@ async def chat_stream(
             {
                 "request": request.model_dump(mode="json", exclude={"submission_id"}),
                 "query_agent_id": query_agent_id,
+                **({"internal_context": internal_context} if internal_context is not None else {}),
             },
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1375,6 +1393,7 @@ async def chat_stream(
                     principal=principal,
                     query_agent_id=query_agent_id,
                     code=str(existing_submission_row.get("rejection_code") or "chat_submission_rejected"),
+                    internal_context=internal_context,
                 )
                 if existing_submission_row.get("state") == "rejected_before_persist"
                 else request_fingerprint
@@ -1395,6 +1414,7 @@ async def chat_stream(
             workspace_id=request.workspace_id,
             session_id=request.session_id,
             code=code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code=code)
@@ -1416,6 +1436,7 @@ async def chat_stream(
             workspace_id=request.workspace_id,
             session_id=request.session_id,
             code="raw_skill_selector_forbidden",
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code="raw_skill_selector_forbidden")
@@ -1430,6 +1451,7 @@ async def chat_stream(
             workspace_id=request.workspace_id,
             session_id=request.session_id,
             code="skill_selector_conflict",
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code="skill_selector_conflict")
@@ -1451,6 +1473,7 @@ async def chat_stream(
             workspace_id=request.workspace_id,
             session_id=request.session_id,
             code=code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
@@ -1468,6 +1491,7 @@ async def chat_stream(
             workspace_id=request.workspace_id,
             session_id=request.session_id,
             code=code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code=code)
@@ -1480,7 +1504,8 @@ async def chat_stream(
         run_input = attach_required_tool_declaration(run_input)
         required_tool_declaration = declaration_from_input(run_input)
     except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="chat_stream")
+        if builder_test is None:
+            await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
         error_code = (
             "mcp_tool_not_available"
@@ -1495,6 +1520,7 @@ async def chat_stream(
             workspace_id=request.workspace_id,
             session_id=request.session_id,
             code=error_code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
@@ -1519,7 +1545,8 @@ async def chat_stream(
                     permissions=principal.permissions,
                 )
         except repositories.RepositoryAuthorizationError as exc:
-            await _audit_capability_denial(principal, exc, source="chat_stream")
+            if builder_test is None:
+                await _audit_capability_denial(principal, exc, source="chat_stream")
             await _persist_pre_persistence_rejection(
                 principal=principal,
                 submission_id=submission_id,
@@ -1528,6 +1555,7 @@ async def chat_stream(
                 workspace_id=request.workspace_id,
                 session_id=request.session_id,
                 code="mcp_tool_not_available",
+                internal_context=internal_context,
             )
             if submission_id is not None:
                 raise _chat_submission_http_error(
@@ -1663,8 +1691,28 @@ async def chat_stream(
                 raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
 
             if selected_agent_profile is not None:
-                if request.session_id and isinstance(session_profile_revision, int):
-                    admitted_agent_profile = await resolve_bound_profile_for_submission(
+                if builder_test is not None:
+                    if (
+                        request.session_id is not None
+                        or selected_agent_profile.agent_id != builder_test.agent_id
+                        or selected_agent_profile.expected_revision != builder_test.expected_revision
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="agent_profile_test_snapshot_invalid",
+                        )
+                    admitted_agent_profile = await _agent_profile_authority.resolve_bound_for_submission(
+                        conn,
+                        principal=principal,
+                        agent_id=builder_test.agent_id,
+                        revision=builder_test.expected_revision,
+                        content_hash=builder_test.expected_content_hash,
+                        purpose="builder_test",
+                        submitted_request=request,
+                        query_agent_id=query_agent_id,
+                    )
+                elif request.session_id and isinstance(session_profile_revision, int):
+                    admitted_agent_profile = await _agent_profile_authority.resolve_bound_for_submission(
                         conn,
                         principal=principal,
                         agent_id=selected_agent_profile.agent_id,
@@ -1731,6 +1779,7 @@ async def chat_stream(
                 {
                     "request": fingerprint_request,
                     "query_agent_id": query_agent_id,
+                    **({"internal_context": internal_context} if internal_context is not None else {}),
                 },
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1763,6 +1812,7 @@ async def chat_stream(
                                 claimed_submission.get("rejection_code")
                                 or "chat_submission_rejected"
                             ),
+                            internal_context=internal_context,
                         )
                     if claimed_submission.get("request_fingerprint_sha256") != claimed_fingerprint:
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
@@ -2013,7 +2063,11 @@ async def chat_stream(
                         status_code=403,
                         detail=public_required_tool_detail("unavailable"),
                     )
-            session_id = request.session_id or repositories.new_id("ses")
+            session_id = (
+                builder_test.session_id
+                if builder_test is not None
+                else request.session_id or repositories.new_id("ses")
+            )
             run_id = repositories.new_id("run")
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
@@ -2079,7 +2133,11 @@ async def chat_stream(
                     "workspace_id": effective_workspace_id,
                     "user_id": principal.user_id,
                     "agent_id": resolved_agent_id,
-                    "title": request.title or request.message[:80],
+                    "title": (
+                        builder_test.title
+                        if builder_test is not None
+                        else request.title or request.message[:80]
+                    ),
                     "session_id": session_id,
                 }
                 if admitted_agent_profile is not None:
@@ -2089,6 +2147,8 @@ async def chat_stream(
                             "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
                         }
                     )
+                if builder_test is not None:
+                    session_create_kwargs["purpose"] = "builder_test"
                 session_id = await repositories.create_session(conn, **session_create_kwargs)
             run_create_kwargs = {
                 "tenant_id": principal.tenant_id,
@@ -2128,6 +2188,22 @@ async def chat_stream(
                     }
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
+            if builder_test is not None:
+                await repositories.append_audit_log(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    action="agent_profile.test_conversation_created",
+                    target_type="agent_profile",
+                    target_id=builder_test.agent_id,
+                    trace_id=standard_trace_id(session_id),
+                    payload_json={
+                        "revision": builder_test.expected_revision,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "purpose": "builder_test",
+                    },
+                )
             await repositories.insert_run_skill_snapshots_at_creation(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -2270,12 +2346,14 @@ async def chat_stream(
                 workspace_id=effective_workspace_id,
                 session_id=request.session_id,
                 code=code,
+                internal_context=internal_context,
             )
         if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise
     except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="chat_stream")
+        if builder_test is None:
+            await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
         error_code = (
             "mcp_tool_not_available"
@@ -2290,12 +2368,15 @@ async def chat_stream(
             workspace_id=effective_workspace_id,
             session_id=request.session_id,
             code=error_code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
     except RepositoryNotFoundError as exc:
         code = str(exc)
+        if builder_test is not None and code == "file_not_found":
+            code = "agent_profile_test_file_not_found"
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -2304,6 +2385,7 @@ async def chat_stream(
             workspace_id=effective_workspace_id,
             session_id=request.session_id,
             code=code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=404, code=code) from exc
@@ -2318,12 +2400,17 @@ async def chat_stream(
             workspace_id=effective_workspace_id,
             session_id=request.session_id,
             code=code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
     except RepositoryConflictError as exc:
         code = str(exc)
+        status_code = 409
+        if builder_test is not None and code in {"file_scope_mismatch", "file_user_mismatch"}:
+            code = "agent_profile_test_file_not_authorized"
+            status_code = 403
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -2332,10 +2419,11 @@ async def chat_stream(
             workspace_id=effective_workspace_id,
             session_id=request.session_id,
             code=code,
+            internal_context=internal_context,
         )
         if submission_id is not None:
-            raise _chat_submission_http_error(status_code=409, code=code) from exc
-        raise HTTPException(status_code=409, detail=code) from exc
+            raise _chat_submission_http_error(status_code=status_code, code=code) from exc
+        raise HTTPException(status_code=status_code, detail=code) from exc
     except Exception as exc:
         diagnostic_id = _new_submission_diagnostic_id()
         _log_safe_submission_exception(
@@ -2352,6 +2440,7 @@ async def chat_stream(
                 workspace_id=effective_workspace_id,
                 session_id=request.session_id,
                 code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                internal_context=internal_context,
             )
         except Exception as persistence_exc:
             _log_safe_submission_exception(
@@ -2427,6 +2516,15 @@ async def chat_stream(
         queue_insight=await get_queue_insight(principal.tenant_id, user_id=principal.user_id),
         intent_decision=_intent_response(decision_payload, principal),
     )
+
+
+@router.post("/chat/stream", response_model=ChatStreamResponse)
+async def chat_stream(
+    request: ChatStreamRequest,
+    agent_id: str | None = Query(None),
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
+) -> ChatStreamResponse:
+    return await _chat_stream(request, agent_id, principal, builder_test=None)
 
 
 async def get_chat_submission(

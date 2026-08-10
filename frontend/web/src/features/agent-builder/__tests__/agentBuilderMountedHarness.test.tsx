@@ -648,10 +648,14 @@ test("mounted saved file-capable draft uploads and submits opaque file ids to th
   const ReactDOM = await import("react-dom/client");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { uploadApi } = await import("../../../services/api/upload.ts");
+  const { unboundUploadLifecycleApi } = await import("../../../hooks/useFileUpload.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const profileOriginals = { ...agentProfileApi };
   const uploadOriginals = { ...uploadApi };
+  const originalDeleteFile = unboundUploadLifecycleApi.deleteFile;
+  const originalFetch = globalThis.fetch;
   const testCalls: unknown[][] = [];
+  const deleteCalls: string[] = [];
   agentProfileApi.listAdmin = async () => ({
     agent_profiles: [profile({
       status: "draft",
@@ -661,15 +665,30 @@ test("mounted saved file-capable draft uploads and submits opaque file ids to th
     })],
   });
   agentProfileApi.listHistory = async () => ({ agent_profiles: [] });
-  agentProfileApi.runTest = async (...args) => {
-    testCalls.push(args);
-    return {
+  globalThis.fetch = async (input, init) => {
+    const request = JSON.parse(String(init?.body)) as {
+      expected_revision: number;
+      expected_content_hash: string;
+      message: string;
+      submission_id: string;
+      file_ids: string[];
+    };
+    assert.match(String(input), /\/api\/ai\/admin\/agent-profiles\/agt_support\/test-runs$/);
+    testCalls.push([
+      "agt_support",
+      request.expected_revision,
+      request.expected_content_hash,
+      request.message,
+      request.submission_id,
+      request.file_ids,
+    ]);
+    return new Response(JSON.stringify({
       session_id: "ses_test_builder",
       run_id: "run_builder",
       status: "queued",
-      submission_id: String(args[4]),
+      submission_id: request.submission_id,
       purpose: "builder_test",
-    };
+    }), { status: 200 });
   };
   uploadApi.getConfig = async () => ({
     enabled: true,
@@ -686,6 +705,10 @@ test("mounted saved file-capable draft uploads and submits opaque file ids to th
     }),
     abort: () => {},
   });
+  unboundUploadLifecycleApi.deleteFile = async (fileId) => {
+    deleteCalls.push(fileId);
+    return { deleted: false, file_id: fileId };
+  };
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = ReactDOM.createRoot(container as never);
@@ -735,9 +758,100 @@ test("mounted saved file-capable draft uploads and submits opaque file ids to th
     assert.match(String(testCalls[0][4]), /^[0-9a-f-]{36}$/i);
     assert.deepEqual(testCalls[0][5], ["file_builder_input"]);
   } finally {
+    await React.act(async () => root.unmount());
+    assert.deepEqual(deleteCalls, []);
     Object.assign(agentProfileApi, profileOriginals);
     Object.assign(uploadApi, uploadOriginals);
+    unboundUploadLifecycleApi.deleteFile = originalDeleteFile;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("mounted Builder deletes an unbound upload when switching profiles", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { uploadApi } = await import("../../../services/api/upload.ts");
+  const { unboundUploadLifecycleApi } = await import("../../../hooks/useFileUpload.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const profileOriginals = { ...agentProfileApi };
+  const uploadOriginals = { ...uploadApi };
+  const originalDeleteFile = unboundUploadLifecycleApi.deleteFile;
+  const deleteCalls: string[] = [];
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [
+      profile({
+        supported_input_types: ["text", "file"],
+        supported_file_types: ["docx"],
+      }),
+      profile({
+        agent_id: "agt_other",
+        name: "其他助手",
+        supported_input_types: ["text", "file"],
+        supported_file_types: ["docx"],
+      }),
+    ],
+  });
+  agentProfileApi.listHistory = async () => ({ agent_profiles: [] });
+  uploadApi.getConfig = async () => ({
+    enabled: true,
+    uploadLimits: { image: 50, video: 50, audio: 50, document: 50, maxFiles: 10 },
+  });
+  uploadApi.uploadFile = () => ({
+    promise: Promise.resolve({
+      key: "file_builder_unbound",
+      url: "/api/ai/files/file_builder_unbound",
+      name: "review.docx",
+      type: "document",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      size: 120,
+    }),
+    abort: () => {},
+  });
+  unboundUploadLifecycleApi.deleteFile = async (fileId) => {
+    deleteCalls.push(fileId);
+    return { deleted: false, file_id: fileId };
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+    const attachmentInput = container.querySelector('[aria-label="测试附件"]');
+    assert.ok(attachmentInput);
+    await React.act(async () => {
+      reactProps(attachmentInput).onChange?.({
+        target: {
+          files: [{
+            name: "review.docx",
+            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size: 120,
+          }],
+          value: "review.docx",
+        },
+      } as never);
+      await flush();
+    });
+    const otherProfile = container.querySelector(
+      '[aria-label="编辑智能体 其他助手，草稿，revision 4"]',
+    );
+    assert.ok(otherProfile);
+    await React.act(async () => {
+      await reactProps(otherProfile).onClick?.({} as never);
+      await flush();
+    });
+    assert.deepEqual(deleteCalls, ["file_builder_unbound"]);
+  } finally {
     await React.act(async () => root.unmount());
+    Object.assign(agentProfileApi, profileOriginals);
+    Object.assign(uploadApi, uploadOriginals);
+    unboundUploadLifecycleApi.deleteFile = originalDeleteFile;
   }
 });
 

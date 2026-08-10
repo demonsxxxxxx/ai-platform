@@ -1,4 +1,3 @@
-import asyncio
 import codecs
 import io
 import re
@@ -9,6 +8,7 @@ import zipfile
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
 
+from app import artifact_lifecycle_repository
 from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
@@ -26,6 +26,7 @@ from app.models import (
     SessionInputFileResponse,
     SessionInputFilesResponse,
     UploadFileResponse,
+    UploadedFileDeletionResponse,
 )
 from app.repositories import (
     RepositoryNotFoundError,
@@ -427,6 +428,42 @@ async def upload_file(
         sha256=stored.sha256,
         size_bytes=stored.size_bytes,
     )
+
+
+@router.delete("/files/{file_id}", response_model=UploadedFileDeletionResponse)
+async def delete_file(
+    file_id: str,
+    workspace_id: str = "default",
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Queue deletion only for one exact, owner-scoped, still-unbound upload."""
+
+    _require_upload_permissions(principal)
+    try:
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+        workspace_id = assert_safe_id(workspace_id, "workspace_id")
+        file_id = assert_safe_id(file_id, "file_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        async with transaction() as conn:
+            queued = await artifact_lifecycle_repository.queue_unbound_file_for_deletion(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                file_id=file_id,
+            )
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="file_not_found") from exc
+    except artifact_lifecycle_repository.FileDeletionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    state = str(queued.get("state") or "pending")
+    return {
+        "deleted": state == "deleted",
+        "file_id": file_id,
+        "state": state,
+    }
 
 
 @router.get(

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Archive,
   FileUp,
@@ -8,15 +8,20 @@ import {
   X,
 } from "lucide-react";
 
-import { useFileUpload } from "../../hooks/useFileUpload";
-import { agentProfileApi } from "../../services/api/agentProfile";
-import { uploadApi } from "../../services/api/upload";
+import {
+  unboundUploadLifecycleApi,
+  useFileUpload,
+} from "../../hooks/useFileUpload";
+import {
+  agentProfileApi,
+  type AgentProfileTrialRunResponse,
+} from "../../services/api/agentProfile";
+import { API_BASE } from "../../services/api/config";
+import { ApiRequestError, authFetch } from "../../services/api/fetch";
 import type { AgentProfileAdminProjection, MessageAttachment } from "../../types";
 import {
-  agentBuilderBlockReason,
   isAgentProfileEditorDirty,
   type AgentBuilderEditor,
-  type AgentBuilderValidationIssue,
 } from "./agentBuilderAdapter";
 import type { AgentBuilderMutationState } from "./agentBuilderController";
 
@@ -26,31 +31,101 @@ function statusLabel(status: AgentProfileAdminProjection["status"]): string {
   return "草稿";
 }
 
+type BuilderTrialState =
+  | { phase: "idle" }
+  | { phase: "testing" }
+  | { phase: "success"; trialRun: AgentProfileTrialRunResponse }
+  | { phase: "error"; message: string };
+
+function builderTestUnavailableReason(editor: AgentBuilderEditor): string | null {
+  const materialized = editor.materializedProfile;
+  if (!editor.agentId || !editor.revision || !materialized) {
+    return "请先成功保存草稿，取得服务端 revision 后再试运行。";
+  }
+  if (isAgentProfileEditorDirty(editor)) return "当前有未保存的更改，请先保存草稿。";
+  if (editor.status !== "draft") return "真实试运行仅适用于已保存草稿。";
+  if (
+    materialized.agent_id !== editor.agentId ||
+    materialized.revision !== editor.revision ||
+    materialized.status !== "draft" ||
+    !/^[0-9a-f]{64}$/.test(materialized.content_hash)
+  ) {
+    return "已保存草稿缺少可验证的 content hash，请刷新列表后重试。";
+  }
+  return null;
+}
+
+const agentBuilderTrialApi = {
+  run(
+    agentId: string,
+    expectedRevision: number,
+    expectedContentHash: string,
+    message: string,
+    submissionId: string,
+    fileIds: readonly string[],
+  ): Promise<AgentProfileTrialRunResponse> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/test-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: expectedRevision,
+          expected_content_hash: expectedContentHash,
+          message,
+          submission_id: submissionId,
+          file_ids: fileIds,
+        }),
+      },
+    );
+  },
+};
+
 export function AgentBuilderLifecycle({
   disabled,
   editor,
   mutation,
-  onRunTest,
   onUnpublish,
-  testBlock,
 }: {
   disabled: boolean;
   editor: AgentBuilderEditor;
   mutation: AgentBuilderMutationState;
-  onRunTest: (message: string, fileIds: readonly string[]) => void;
+  onRunTest: (message: string) => void;
   onUnpublish: () => void;
-  testBlock: AgentBuilderValidationIssue | null;
 }) {
   const [history, setHistory] = useState<AgentProfileAdminProjection[]>([]);
   const [historyState, setHistoryState] = useState<"idle" | "loading" | "ready" | "error">(
     "idle",
   );
   const [testMessage, setTestMessage] = useState("");
+  const [trialState, setTrialState] = useState<BuilderTrialState>({ phase: "idle" });
+  const trialGenerationRef = useRef(0);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const attachmentsRef = useRef<MessageAttachment[]>([]);
+  const ownedUploadKeysRef = useRef<Set<string>>(new Set());
+  const recordCompletedUpload = useCallback((attachment: MessageAttachment) => {
+    if (attachment.key) ownedUploadKeysRef.current.add(attachment.key);
+  }, []);
   const { cancelUpload, uploadFiles } = useFileUpload({
     attachments,
     onAttachmentsChange: setAttachments,
+    onUploadCompleted: recordCompletedUpload,
   });
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  const cleanupOwnedUploads = useCallback(() => {
+    for (const attachment of attachmentsRef.current) {
+      if (attachment.isUploading) cancelUpload(attachment.id);
+    }
+    const ownedKeys = Array.from(ownedUploadKeysRef.current);
+    ownedUploadKeysRef.current.clear();
+    attachmentsRef.current = [];
+    for (const key of ownedKeys) {
+      void unboundUploadLifecycleApi.deleteFile(key).catch(() => undefined);
+    }
+  }, [cancelUpload]);
 
   useEffect(() => {
     const agentId = editor.agentId;
@@ -79,15 +154,20 @@ export function AgentBuilderLifecycle({
   }, [editor.agentId, editor.revision]);
 
   useEffect(() => {
+    trialGenerationRef.current += 1;
+    setTrialState({ phase: "idle" });
     setAttachments([]);
     setTestMessage("");
-  }, [editor.agentId, editor.revision]);
+    return () => {
+      trialGenerationRef.current += 1;
+      cleanupOwnedUploads();
+    };
+  }, [cleanupOwnedUploads, editor.agentId, editor.revision]);
 
   const cleanPublished =
     Boolean(editor.agentId) && editor.status === "published" && !isAgentProfileEditorDirty(editor);
-  const trialRun = mutation.phase === "success" && mutation.action === "test"
-    ? mutation.trialRun
-    : undefined;
+  const testUnavailableReason = builderTestUnavailableReason(editor);
+  const trialRun = trialState.phase === "success" ? trialState.trialRun : undefined;
   const supportsFiles = editor.supportedInputTypes.includes("file");
   const hasUploadingAttachment = attachments.some((attachment) => attachment.isUploading);
   const hasInvalidAttachment = attachments.some(
@@ -114,6 +194,11 @@ export function AgentBuilderLifecycle({
 
   useEffect(() => {
     if (!trialRun) return;
+    for (const attachment of attachmentsRef.current) {
+      if (!attachment.isUploading && attachment.key) {
+        ownedUploadKeysRef.current.delete(attachment.key);
+      }
+    }
     setAttachments([]);
     setTestMessage("");
   }, [trialRun]);
@@ -126,7 +211,48 @@ export function AgentBuilderLifecycle({
     setAttachments((current) =>
       current.filter((candidate) => candidate.id !== attachment.id),
     );
-    if (attachment.key) void uploadApi.deleteFile(attachment.key).catch(() => undefined);
+    if (attachment.key) {
+      ownedUploadKeysRef.current.delete(attachment.key);
+      void unboundUploadLifecycleApi.deleteFile(attachment.key).catch(() => undefined);
+    }
+  };
+
+  const runBuilderTest = async () => {
+    const materialized = editor.materializedProfile;
+    if (
+      disabled ||
+      testUnavailableReason !== null ||
+      !editor.agentId ||
+      !editor.revision ||
+      !materialized ||
+      !testMessage.trim() ||
+      hasUploadingAttachment ||
+      hasInvalidAttachment
+    ) {
+      return;
+    }
+    const generation = ++trialGenerationRef.current;
+    setTrialState({ phase: "testing" });
+    try {
+      const outcome = await agentBuilderTrialApi.run(
+        editor.agentId,
+        editor.revision,
+        materialized.content_hash,
+        testMessage.trim(),
+        crypto.randomUUID(),
+        readyFileIds,
+      );
+      if (trialGenerationRef.current !== generation) return;
+      setTrialState({ phase: "success", trialRun: outcome });
+    } catch (error) {
+      if (trialGenerationRef.current !== generation) return;
+      setTrialState({
+        phase: "error",
+        message: error instanceof ApiRequestError
+          ? error.message
+          : "真实试运行暂不可用，请稍后重试。",
+      });
+    }
   };
 
   return (
@@ -188,11 +314,11 @@ export function AgentBuilderLifecycle({
       )}
 
       <p
-        className={`mt-4 text-sm ${testBlock ? "text-[var(--theme-text-secondary)]" : "text-[var(--theme-success)]"}`}
+        className={`mt-4 text-sm ${testUnavailableReason ? "text-[var(--theme-text-secondary)]" : "text-[var(--theme-success)]"}`}
         data-agent-builder-test-reason
       >
-        {testBlock
-          ? `真实试运行：${agentBuilderBlockReason(testBlock)}`
+        {testUnavailableReason
+          ? `真实试运行：${testUnavailableReason}`
           : `已保存草稿 revision ${editor.revision}，content hash ${editor.materializedProfile?.content_hash.slice(0, 12)} 已锁定。`}
       </p>
 
@@ -205,7 +331,7 @@ export function AgentBuilderLifecycle({
               accept={acceptedFileTypes || undefined}
               aria-label="测试附件"
               className="sr-only"
-              disabled={disabled || testBlock !== null}
+              disabled={disabled || testUnavailableReason !== null}
               multiple
               onChange={(event) => {
                 if (event.target.files) uploadFiles(event.target.files);
@@ -251,7 +377,7 @@ export function AgentBuilderLifecycle({
           <input
             aria-label="测试消息"
             className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={disabled || testBlock !== null}
+            disabled={disabled || testUnavailableReason !== null}
             onChange={(event) => setTestMessage(event.target.value)}
             value={testMessage}
           />
@@ -260,21 +386,22 @@ export function AgentBuilderLifecycle({
           className="btn-secondary inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={
             disabled ||
-            testBlock !== null ||
+            trialState.phase === "testing" ||
+            testUnavailableReason !== null ||
             !testMessage.trim() ||
             hasUploadingAttachment ||
             hasInvalidAttachment
           }
-          onClick={() => onRunTest(testMessage, readyFileIds)}
+          onClick={() => void runBuilderTest()}
           title="创建受控测试运行"
           type="button"
         >
-          {mutation.phase === "testing" ? (
+          {trialState.phase === "testing" ? (
             <RefreshCw aria-hidden="true" className="animate-spin" size={16} />
           ) : (
             <FlaskConical aria-hidden="true" size={16} />
           )}
-          {mutation.phase === "testing" ? "试运行中" : "真实试运行"}
+          {trialState.phase === "testing" ? "试运行中" : "真实试运行"}
         </button>
         <button
           className="btn-secondary inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -291,6 +418,12 @@ export function AgentBuilderLifecycle({
           {mutation.phase === "unpublishing" ? "下架中" : "下架"}
         </button>
       </div>
+
+      {trialState.phase === "error" ? (
+        <p className="mt-3 text-sm text-[var(--theme-danger)]" role="alert">
+          {trialState.message}
+        </p>
+      ) : null}
 
       {trialRun ? (
         <dl className="mt-4 grid gap-3 border-l-2 border-l-[var(--theme-success)] pl-3 text-sm sm:grid-cols-3">

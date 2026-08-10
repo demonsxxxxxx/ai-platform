@@ -6,6 +6,7 @@ from app.agent_profiles import list_admin_profiles, list_public_profiles, publis
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import (
+    AgentProfileBuilderTestContext,
     AgentProfileAdminListResponse,
     AgentAppRunRequest,
     AgentProfileCatalogResponse,
@@ -85,6 +86,42 @@ async def _submit_dedicated_agent_run(
     from app.routes.chat import chat_stream
 
     return await chat_stream(canonical_request, agent_id=agent_id, principal=principal)
+
+
+async def _submit_builder_test_run(
+    *,
+    agent_id: str,
+    request: AgentProfileTrialRunRequest,
+    session_id: str,
+    principal: AuthPrincipal,
+) -> ChatStreamResponse:
+    """Adapt one trusted Builder request into the atomic canonical Chat transaction."""
+
+    from app.routes.chat import _chat_stream
+
+    canonical_request = ChatStreamRequest(
+        workspace_id=request.workspace_id,
+        selected_agent_profile=SelectedAgentProfileRequest(
+            agent_id=agent_id,
+            expected_revision=request.expected_revision,
+        ),
+        message=request.message,
+        file_ids=request.file_ids,
+        submission_id=request.submission_id,
+        user_timezone=request.user_timezone,
+    )
+    return await _chat_stream(
+        canonical_request,
+        None,
+        principal,
+        builder_test=AgentProfileBuilderTestContext(
+            agent_id=agent_id,
+            expected_revision=request.expected_revision,
+            expected_content_hash=request.expected_content_hash,
+            session_id=session_id,
+            title=f"[Builder test] {agent_id}",
+        ),
+    )
 
 
 @router.get("/agent-apps", include_in_schema=False)
@@ -304,24 +341,13 @@ async def run_agent_profile_test(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     test_session_id = f"ses_test_{request.submission_id.hex}"
-    selection = SelectedAgentProfileRequest(
-        agent_id=safe_agent_id,
-        expected_revision=request.expected_revision,
-    )
     try:
-        async with transaction() as conn:
-            await _authority.create_conversation(
-                conn,
-                principal=principal,
-                workspace_id=request.workspace_id,
-                selection=selection,
-                title=f"[Builder test] {safe_agent_id}",
-                session_id=test_session_id,
-                purpose="builder_test",
-                expected_content_hash=request.expected_content_hash,
-                file_ids=request.file_ids,
-                preflight_run_id=f"run_test_preflight_{request.submission_id.hex}",
-            )
+        outcome = await _submit_builder_test_run(
+            agent_id=safe_agent_id,
+            request=request,
+            session_id=test_session_id,
+            principal=principal,
+        )
     except repositories.RepositoryAuthorizationError as exc:
         raise HTTPException(status_code=403, detail="agent_profile_test_file_not_authorized") from exc
     except repositories.RepositoryNotFoundError as exc:
@@ -333,17 +359,6 @@ async def run_agent_profile_test(
                 detail="agent_profile_test_file_not_authorized",
             ) from exc
         raise HTTPException(status_code=409, detail="agent_profile_test_submission_conflict") from exc
-    outcome = await _submit_dedicated_agent_run(
-        agent_id=safe_agent_id,
-        session_id=test_session_id,
-        request=AgentAppRunRequest(
-            message=request.message,
-            submission_id=request.submission_id,
-            file_ids=request.file_ids,
-            user_timezone=request.user_timezone,
-        ),
-        principal=principal,
-    )
     return AgentProfileTrialRunResponse.model_validate(
         {**outcome.model_dump(mode="python"), "purpose": "builder_test"}
     )

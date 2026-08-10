@@ -538,123 +538,39 @@ async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_
 
 
 @pytest.mark.asyncio
-async def test_builder_test_creates_session_only_after_exact_draft_and_file_preflight(monkeypatch):
+async def test_builder_test_cannot_precreate_a_session_through_conversation_authority(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.models import SelectedAgentProfileRequest
 
-    order: list[str] = []
-    observed: dict[str, object] = {}
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid Builder purpose must fail before any repository side effect")
 
-    async def record(step: str):
-        order.append(step)
+    for name in (
+        "ensure_workspace",
+        "ensure_submission_principal",
+        "create_session",
+        "append_audit_log",
+    ):
+        monkeypatch.setattr(f"app.agent_apps.authority.repositories.{name}", forbidden)
 
-    async def ensure_workspace(*_args, **_kwargs):
-        await record("workspace")
-
-    async def ensure_user(*_args, **_kwargs):
-        await record("user")
-
-    async def lifecycle_lock(*_args, **_kwargs):
-        await record("lifecycle_lock")
-
-    async def aggregate(*_args, **kwargs):
-        assert kwargs["for_update"] is True
-        await record("aggregate_lock")
-        return {"latest_revision": 7, "published_revision": 6}
-
-    async def draft_revision(*_args, **kwargs):
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "agent_id": "agt_support",
-            "revision": 7,
-            "status": "draft",
-        }
-        await record("draft_revision")
-        return _profile_row(status="draft", revision=7, content_hash="a" * 64)
-
-    async def validate(*_args, **_kwargs):
-        await record("capabilities")
-        return (
-            {
-                "skill_id": "general-chat",
-                "skill_version": "version-a",
-                "input_modes": ["docx"],
-            },
-            {"id": "model-a", "value": "model-a"},
+    with pytest.raises(HTTPException) as caught:
+        await AgentProfileAuthority().create_conversation(
+            object(),
+            principal=_principal(roles=["admin"]),
+            workspace_id="default",
+            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
+            title="[Builder test] agt_support",
+            session_id="ses_test_exact",
+            purpose="builder_test",
+            expected_content_hash="a" * 64,
+            file_ids=["file_builder_input"],
+            preflight_run_id="run_test_preflight_exact",
         )
 
-    async def authorize_files(*_args, **kwargs):
-        await record("files")
-        observed["files"] = kwargs
-
-    async def create_session(*_args, **kwargs):
-        await record("session")
-        observed["session"] = kwargs
-        return "ses_test_exact", True
-
-    async def audit(*_args, **_kwargs):
-        await record("audit")
-        return "aud_test"
-
-    async def no_existing_session(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", ensure_workspace)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
-    monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
-        lifecycle_lock,
+    assert (caught.value.status_code, caught.value.detail) == (
+        400,
+        "agent_conversation_purpose_invalid",
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", draft_revision)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.authorize_files_for_run", authorize_files)
-    monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_authorized_session_projection",
-        no_existing_session,
-    )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "_validate_definition", validate)
-
-    response = await authority.create_conversation(
-        object(),
-        principal=_principal(roles=["admin"]),
-        workspace_id="default",
-        selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
-        title="[Builder test] agt_support",
-        session_id="ses_test_exact",
-        purpose="builder_test",
-        expected_content_hash="a" * 64,
-        file_ids=["file_builder_input"],
-        preflight_run_id="run_test_preflight_exact",
-    )
-
-    assert order == [
-        "workspace",
-        "user",
-        "lifecycle_lock",
-        "aggregate_lock",
-        "draft_revision",
-        "capabilities",
-        "files",
-        "session",
-        "audit",
-    ]
-    assert observed["files"] == {
-        "tenant_id": "tenant-a",
-        "workspace_id": "default",
-        "user_id": "user-a",
-        "session_id": "ses_test_exact",
-        "run_id": "run_test_preflight_exact",
-        "file_ids": ["file_builder_input"],
-        "input_modes": ["docx"],
-    }
-    assert observed["session"]["admitted_agent_profile_revision"] == 7
-    assert observed["session"]["admitted_agent_profile_hash"] == "a" * 64
-    assert response.purpose == "builder_test"
-    assert response.agent_conversation is not None
-    assert response.agent_conversation.revision == 7
 
 
 @pytest.mark.asyncio
@@ -719,7 +635,18 @@ async def test_builder_bound_draft_is_admin_only_while_market_binding_stays_publ
             {"id": "model-a", "value": "model-a"},
         )
 
+    async def lifecycle_lock(*_args, **_kwargs):
+        return None
+
+    async def aggregate(*_args, **_kwargs):
+        return {"latest_revision": 7}
+
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", get_draft)
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        lifecycle_lock,
+    )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
         get_published,
@@ -760,86 +687,187 @@ async def test_builder_bound_draft_is_admin_only_while_market_binding_stays_publ
 
 
 @pytest.mark.asyncio
-async def test_builder_test_session_replay_requires_the_exact_snapshot_without_second_write(monkeypatch):
-    from app import repositories
+async def test_builder_bound_draft_rechecks_exact_latest_revision_before_capabilities(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
-    from app.models import (
-        AgentConversationIdentity,
-        ChatSessionResponse,
-        SelectedAgentProfileRequest,
-    )
 
-    existing = {
-        "workspace_id": "default",
-        "agent_id": "agt_support",
-        "admitted_agent_profile_hash": "a" * 64,
-    }
+    order: list[str] = []
+
+    async def lifecycle_lock(*_args, **_kwargs):
+        order.append("lifecycle_lock")
+
+    async def aggregate(*_args, **kwargs):
+        order.append("aggregate_lock")
+        assert kwargs["for_update"] is True
+        return {"latest_revision": 8}
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("superseded Builder draft must fail before revision or capability reads")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        lifecycle_lock,
+    )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", forbidden)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.resolve_bound_for_submission(
+            object(),
+            principal=_principal(roles=["admin"]),
+            agent_id="agt_support",
+            revision=7,
+            content_hash="a" * 64,
+            purpose="builder_test",
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_test_snapshot_stale",
+    )
+    assert order == ["lifecycle_lock", "aggregate_lock"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "expected_code"),
+    [
+        ("saved_n_plus_one", 409, "agent_profile_test_snapshot_stale"),
+        ("capability_revoked", 403, "capability_not_authorized"),
+    ],
+)
+async def test_builder_canonical_admission_denial_leaves_no_test_side_effects(
+    monkeypatch,
+    failure: str,
+    expected_status: int,
+    expected_code: str,
+):
+    from contextlib import asynccontextmanager
+    from uuid import UUID
+
+    from app import repositories
+    from app.models import AgentProfileTrialRunRequest
+    from app.routes.agent_profiles import _submit_builder_test_run
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_existing_submission(*_args, **_kwargs):
+        return None
 
     async def noop(*_args, **_kwargs):
         return None
 
-    async def get_session(*_args, **_kwargs):
-        return existing
+    async def canonical_recheck(*_args, **kwargs):
+        assert kwargs["purpose"] == "builder_test"
+        assert kwargs["revision"] == 7
+        assert kwargs["content_hash"] == "a" * 64
+        if failure == "saved_n_plus_one":
+            raise HTTPException(status_code=409, detail="agent_profile_test_snapshot_stale")
+        raise repositories.RepositoryAuthorizationError("capability_not_authorized")
+
+    writes: list[str] = []
+
+    async def forbidden_write(*_args, **_kwargs):
+        writes.append("write")
+        raise AssertionError("denied Builder admission must not write Session, Run, event, or audit")
+
+    monkeypatch.setattr("app.routes.chat.transaction", transaction)
+    monkeypatch.setattr(repositories, "get_chat_submission", no_existing_submission)
+    monkeypatch.setattr(repositories, "acquire_user_active_run_admission_lock", noop)
+    monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
+    monkeypatch.setattr(
+        "app.routes.chat._agent_profile_authority.resolve_bound_for_submission",
+        canonical_recheck,
+    )
+    monkeypatch.setattr("app.routes.chat._persist_pre_persistence_rejection", noop)
+    monkeypatch.setattr("app.routes.chat._audit_capability_denial", forbidden_write)
+    for name in ("create_session", "create_run", "append_event", "append_audit_log"):
+        monkeypatch.setattr(repositories, name, forbidden_write)
+
+    with pytest.raises(HTTPException) as caught:
+        await _submit_builder_test_run(
+            agent_id="agt_support",
+            request=AgentProfileTrialRunRequest(
+                expected_revision=7,
+                expected_content_hash="a" * 64,
+                message="Run the enterprise test",
+                submission_id=UUID("22222222-2222-4222-8222-222222222222"),
+                file_ids=["file_builder_input"],
+            ),
+            session_id="ses_test_22222222222242228222222222222222",
+            principal=_principal(roles=["admin"]),
+        )
+
+    assert caught.value.status_code == expected_status
+    assert caught.value.detail == {
+        "code": expected_code,
+        "submission_disposition": "rejected_before_persist",
+    }
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_builder_test_submission_replay_returns_the_same_canonical_session_and_run(monkeypatch):
+    from contextlib import asynccontextmanager
+    from uuid import UUID
+
+    from app import repositories
+    from app.models import AgentProfileTrialRunRequest
+    from app.routes.agent_profiles import _submit_builder_test_run
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def existing_submission(*_args, **_kwargs):
+        return {
+            "submission_id": "22222222-2222-4222-8222-222222222222",
+            "request_fingerprint_sha256": "builder-fingerprint",
+            "state": "queued",
+            "outcome_json": {
+                "session_id": "ses_test_22222222222242228222222222222222",
+                "run_id": "run-test",
+                "status": "queued",
+                "submission_id": "22222222-2222-4222-8222-222222222222",
+            },
+        }
 
     async def forbidden(*_args, **_kwargs):
-        raise AssertionError("an exact Builder replay must not create or preflight a second session")
+        raise AssertionError("an exact Builder replay must not re-admit or write a second run")
 
-    def project_session(_row):
-        return ChatSessionResponse(
-            session_id="ses_test_exact",
-            workspace_id="default",
-            agent_id="agt_support",
-            title="[Builder test] agt_support",
-            purpose="builder_test",
-            agent_conversation=AgentConversationIdentity(
-                agent_id="agt_support",
-                revision=7,
-                name="Support assistant",
-            ),
-        )
-
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr("app.routes.chat.transaction", transaction)
+    monkeypatch.setattr(repositories, "chat_submission_fingerprint", lambda *_args, **_kwargs: "builder-fingerprint")
+    monkeypatch.setattr(repositories, "get_chat_submission", existing_submission)
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_authorized_session_projection",
-        get_session,
+        "app.routes.chat._agent_profile_authority.resolve_bound_for_submission",
+        forbidden,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.authorize_files_for_run", forbidden)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", forbidden)
-    monkeypatch.setattr("app.agent_apps.authority.session_response", project_session)
-    authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "resolve_builder_draft_for_admission", forbidden)
-    selection = SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7)
+    for name in ("create_session", "create_run", "append_event", "append_audit_log"):
+        monkeypatch.setattr(repositories, name, forbidden)
 
-    replay = await authority.create_conversation(
-        object(),
-        principal=_principal(roles=["admin"]),
-        workspace_id="default",
-        selection=selection,
-        title="[Builder test] agt_support",
-        session_id="ses_test_exact",
-        purpose="builder_test",
-        expected_content_hash="a" * 64,
-        file_ids=["file_builder_input"],
-        preflight_run_id="run_test_preflight_exact",
+    kwargs = {
+        "agent_id": "agt_support",
+        "request": AgentProfileTrialRunRequest(
+            expected_revision=7,
+            expected_content_hash="a" * 64,
+            message="Run the enterprise test",
+            submission_id=UUID("22222222-2222-4222-8222-222222222222"),
+            file_ids=["file_builder_input"],
+        ),
+        "session_id": "ses_test_22222222222242228222222222222222",
+        "principal": _principal(roles=["admin"]),
+    }
+    first = await _submit_builder_test_run(**kwargs)
+    second = await _submit_builder_test_run(**kwargs)
+
+    assert first == second
+    assert (first.session_id, first.run_id) == (
+        "ses_test_22222222222242228222222222222222",
+        "run-test",
     )
-    assert replay.purpose == "builder_test"
-
-    with pytest.raises(
-        repositories.RepositoryConflictError,
-        match="agent_conversation_operation_conflict",
-    ):
-        await authority.create_conversation(
-            object(),
-            principal=_principal(roles=["admin"]),
-            workspace_id="default",
-            selection=selection,
-            title="[Builder test] agt_support",
-            session_id="ses_test_exact",
-            purpose="builder_test",
-            expected_content_hash="b" * 64,
-            preflight_run_id="run_test_preflight_exact",
-        )
 
 
 @pytest.mark.asyncio
@@ -1358,7 +1386,10 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     monkeypatch.setattr(repositories, "acquire_user_active_run_admission_lock", noop)
     monkeypatch.setattr(repositories, "get_latest_authorized_session_run_input", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
-    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
+    monkeypatch.setattr(
+        "app.routes.chat._agent_profile_authority.resolve_bound_for_submission",
+        bound_profile,
+    )
     monkeypatch.setattr(
         "app.routes.chat.resolve_profile_for_admission",
         AsyncMock(side_effect=AssertionError("a continuation must not resolve the current publication")),

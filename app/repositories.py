@@ -5053,7 +5053,7 @@ async def get_authorized_run(
     lock_clause = "for update of runs" if for_update else ""
     cursor = await conn.execute(
         f"""
-        select runs.*
+        select runs.*, sessions.purpose as session_purpose
         from runs
         join sessions on sessions.id = runs.session_id
           and sessions.tenant_id = runs.tenant_id
@@ -10651,7 +10651,7 @@ async def authorize_files_for_run(
         cursor = await conn.execute(
             """
             select id, tenant_id, workspace_id, user_id, session_id, run_id,
-                   original_name, content_type, size_bytes, sha256
+                   original_name, content_type, size_bytes, sha256, lifecycle_state
             from files
             where id = %s
             for update
@@ -10659,8 +10659,8 @@ async def authorize_files_for_run(
             (file_id,),
         )
         row = await cursor.fetchone()
-        if row is None:
-            raise RepositoryNotFoundError("file_not_found")
+        if row is None or str(row.get("lifecycle_state") or "active") != "active":
+            raise RepositoryNotFoundError("file_not_found" if row is None else "file_not_available")
         if row["tenant_id"] != tenant_id or row["workspace_id"] != workspace_id:
             raise RepositoryConflictError("file_scope_mismatch")
         if row["user_id"] != user_id:

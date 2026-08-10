@@ -878,16 +878,15 @@ class AgentProfileAuthority:
         """Reauthorize the immutable profile bound to a conversation purpose."""
 
         if purpose == "builder_test":
-            self._require_admin(principal)
-            row = await repositories.get_agent_profile_revision(
+            admission = await self.resolve_builder_draft_for_admission(
                 conn,
-                tenant_id=principal.tenant_id,
-                agent_id=agent_id,
-                revision=revision,
-                status="draft",
+                principal=principal,
+                selection=SelectedAgentProfileRequest(
+                    agent_id=agent_id,
+                    expected_revision=revision,
+                ),
+                expected_content_hash=content_hash,
             )
-            if row is not None and str(row.get("content_hash") or "") != content_hash:
-                row = None
         elif purpose == "conversation":
             row = await repositories.get_bound_published_agent_profile(
                 conn,
@@ -897,11 +896,11 @@ class AgentProfileAuthority:
                 content_hash=content_hash,
                 for_update=True,
             )
+            if row is None:
+                raise HTTPException(status_code=409, detail="agent_profile_not_available")
+            admission = await self._admission_from_row(conn, principal=principal, row=row)
         else:
             raise HTTPException(status_code=400, detail="agent_conversation_purpose_invalid")
-        if row is None:
-            raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        admission = await self._admission_from_row(conn, principal=principal, row=row)
         if submitted_request is not None:
             self.reject_profile_selector_conflicts(
                 submitted_request,
@@ -977,6 +976,7 @@ class AgentProfileAuthority:
             agent_id=str(run.get("agent_id") or ""),
             revision=revision,
             content_hash=str(content_hash or ""),
+            purpose=str(run.get("session_purpose") or "conversation"),
         )
         profile_snapshot = snapshot.get("agent_profile")
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
@@ -1011,13 +1011,9 @@ class AgentProfileAuthority:
     ) -> ChatSessionResponse:
         """Atomically bind a conversation to its purpose-specific immutable profile."""
 
-        if purpose not in {"conversation", "builder_test"}:
+        if purpose != "conversation":
             raise HTTPException(status_code=400, detail="agent_conversation_purpose_invalid")
-        if purpose == "builder_test":
-            self._require_admin(principal)
-            if session_id is None or expected_content_hash is None or preflight_run_id is None:
-                raise HTTPException(status_code=400, detail="agent_profile_test_snapshot_invalid")
-        elif expected_content_hash is not None or file_ids or preflight_run_id is not None:
+        if expected_content_hash is not None or file_ids or preflight_run_id is not None:
             raise HTTPException(status_code=400, detail="agent_conversation_operation_invalid")
         if operation_id is not None and (purpose != "conversation" or session_id is not None):
             raise HTTPException(status_code=400, detail="agent_conversation_operation_invalid")
@@ -1025,7 +1021,7 @@ class AgentProfileAuthority:
         await self._ensure_principal_user(conn, principal=principal)
         if operation_id is not None:
             session_id = f"ses_agent_{operation_id.hex}"
-        if operation_id is not None or purpose == "builder_test":
+        if operation_id is not None:
             existing = await repositories.get_authorized_session_projection(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1052,30 +1048,11 @@ class AgentProfileAuthority:
                 ):
                     raise repositories.RepositoryConflictError("agent_conversation_operation_conflict")
                 return response
-        if purpose == "builder_test":
-            admission = await self.resolve_builder_draft_for_admission(
-                conn,
-                principal=principal,
-                selection=selection,
-                expected_content_hash=str(expected_content_hash),
-            )
-            if file_ids:
-                await repositories.authorize_files_for_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    workspace_id=workspace_id,
-                    user_id=principal.user_id,
-                    session_id=str(session_id),
-                    run_id=str(preflight_run_id),
-                    file_ids=list(file_ids),
-                    input_modes=list(admission.skill.get("input_modes") or []),
-                )
-        else:
-            admission = await self.resolve_for_admission(
-                conn,
-                principal=principal,
-                selection=selection,
-            )
+        admission = await self.resolve_for_admission(
+            conn,
+            principal=principal,
+            selection=selection,
+        )
         resolved_title = title or admission.public_identity.name
         create_session_kwargs: dict[str, Any] = {
             "tenant_id": principal.tenant_id,
@@ -1089,8 +1066,6 @@ class AgentProfileAuthority:
         if session_id is not None:
             create_session_kwargs["session_id"] = session_id
             create_session_kwargs["return_created"] = True
-        if purpose != "conversation":
-            create_session_kwargs["purpose"] = purpose
         created = True
         created_session = await repositories.create_session(conn, **create_session_kwargs)
         if session_id is not None:
@@ -1102,11 +1077,7 @@ class AgentProfileAuthority:
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
-                action=(
-                    "agent_profile.test_conversation_created"
-                    if purpose == "builder_test"
-                    else "agent_conversation.created"
-                ),
+                action="agent_conversation.created",
                 target_type="agent_profile",
                 target_id=admission.agent_id,
                 trace_id=standard_trace_id(session_id),

@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
+import { API_BASE } from "../services/api/config";
+import { authFetch } from "../services/api/fetch";
 import { uploadApi, UploadRequestError } from "../services/api/upload";
 import { compressImageFile } from "../utils/imageCompression";
 import { uuid } from "../utils/uuid";
@@ -21,7 +23,17 @@ export interface UseFileUploadOptions {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+  onUploadCompleted?: (attachment: MessageAttachment) => void;
 }
+
+export const unboundUploadLifecycleApi = {
+  deleteFile(fileId: string): Promise<{ deleted: boolean; file_id: string }> {
+    return authFetch(
+      `${API_BASE}/api/ai/files/${encodeURIComponent(fileId)}`,
+      { method: "DELETE" },
+    );
+  },
+};
 
 type UploadTranslation = (key: string) => unknown;
 
@@ -73,6 +85,8 @@ interface FileUploadTaskOptions {
   createId: () => string;
   notifyError: (message: string) => void;
   reportFailure: (error: unknown) => void;
+  deleteUploadedFile?: (key: string) => Promise<unknown>;
+  onUploadCompleted?: (attachment: MessageAttachment) => void;
 }
 
 interface FileUploadTask {
@@ -121,6 +135,8 @@ export function startFileUploadTask({
   createId,
   notifyError,
   reportFailure,
+  deleteUploadedFile,
+  onUploadCompleted,
 }: FileUploadTaskOptions): FileUploadTask {
   const tempId = `temp-${createId()}`;
   const isCancelled = () => cancelled.has(tempId);
@@ -179,6 +195,9 @@ export function startFileUploadTask({
       abortMap.set(tempId, handle.abort);
       const result = await handle.promise;
       if (isCancelled()) {
+        if (result.key && deleteUploadedFile) {
+          await deleteUploadedFile(result.key).catch(() => undefined);
+        }
         finish();
         return;
       }
@@ -191,6 +210,7 @@ export function startFileUploadTask({
         size: result.size,
         url: result.url,
       };
+      onUploadCompleted?.(finalAttachment);
       onAttachmentsChange((previous) =>
         previous.map((attachment) =>
           attachment.id === tempId ? finalAttachment : attachment,
@@ -222,6 +242,7 @@ export function startFileUploadTask({
 export function useFileUpload({
   attachments,
   onAttachmentsChange,
+  onUploadCompleted,
 }: UseFileUploadOptions) {
   const { t } = useTranslation();
   const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
@@ -319,9 +340,11 @@ export function useFileUpload({
             status: error instanceof UploadRequestError ? error.status : undefined,
           });
         },
+        deleteUploadedFile: unboundUploadLifecycleApi.deleteFile,
+        onUploadCompleted,
       });
     },
-    [onAttachmentsChange, t],
+    [onAttachmentsChange, onUploadCompleted, t],
   );
 
   /** Validate and upload multiple files */

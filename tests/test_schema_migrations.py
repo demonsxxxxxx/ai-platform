@@ -202,3 +202,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "chk_object_deletion_outbox_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("files", "chk_files_lifecycle_state") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "object_deletion_outbox",
+        "chk_object_deletion_outbox_target",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("object_deletion_outbox", "file_id", "text", False) in schema_migrations.CRITICAL_COLUMNS

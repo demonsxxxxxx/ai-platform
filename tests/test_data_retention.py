@@ -56,7 +56,12 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
 
     async def claim(_conn, *, limit, max_attempts):
         calls.append(("claim", limit, max_attempts))
-        return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
+        return [{
+            "id": "out-file-a",
+            "tenant_id": "default",
+            "artifact_id": "file-a",
+            "storage_key": "private/a",
+        }]
 
     async def complete(_conn, **kwargs):
         calls.append(("complete", kwargs))
@@ -84,6 +89,11 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
     }
     assert storage.deleted == ["private/a"]
     assert "private/a" not in str(calls)
+    assert ("complete", {
+        "outbox_id": "out-file-a",
+        "tenant_id": "default",
+        "artifact_id": "file-a",
+    }) in calls
 
 
 @pytest.mark.asyncio
@@ -95,7 +105,12 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
         return []
 
     async def claim(_conn, *, limit, max_attempts):
-        return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
+        return [{
+            "id": "out-file-a",
+            "tenant_id": "default",
+            "artifact_id": "file-a",
+            "storage_key": "private/a",
+        }]
 
     async def fail(_conn, **kwargs):
         failures.append(kwargs)
@@ -113,7 +128,7 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
     assert result["failed_objects"] == 1
     assert failures == [
         {
-            "outbox_id": "out-a",
+            "outbox_id": "out-file-a",
             "error_code": "object_delete_runtimeerror",
             "max_attempts": 5,
             "retry_base_seconds": 60,
