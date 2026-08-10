@@ -2483,7 +2483,7 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
     assert row["status"] == "active"
     update_params = next(params for sql, params in conn.calls if "update tenant_capability_distributions" in sql)
-    assert update_params == (True, True, "admin-a", True, True, True, True, "tenant-a", "skill", "qa-file-reviewer")
+    assert update_params == (True, True, "admin-a", "tenant-a", "skill", "qa-file-reviewer")
 
 
 @pytest.mark.asyncio

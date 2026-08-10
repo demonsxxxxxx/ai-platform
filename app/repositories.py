@@ -2906,7 +2906,7 @@ async def toggle_capability_distribution_row(
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at
         """,
-        (enabled, enabled, updated_by, enabled, enabled, enabled, enabled, tenant_id, capability_kind, capability_id),
+        (enabled, enabled, updated_by, tenant_id, capability_kind, capability_id),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -2916,7 +2916,35 @@ async def toggle_capability_distribution_row(
             capability_kind=capability_kind,
             capability_id=capability_id,
         )
-    return _capability_distribution_projection(dict(row))
+    projected = _capability_distribution_projection(dict(row))
+    if capability_kind == "mcp_server":
+        distribution_enabled = projected["status"] == "active"
+        catalog_cursor = await conn.execute(
+            """
+            update mcp_servers
+            set catalog_generation = catalog_generation + 1,
+                catalog_status = case
+                  when %s::boolean and status = 'active' then 'refresh_required'
+                  else 'disabled'
+                end,
+                catalog_unavailable_reason = case
+                  when %s::boolean and status = 'active' then 'refresh_required'
+                  else 'disabled'
+                end,
+                catalog_discovered_count = 0,
+                catalog_selectable_count = 0,
+                catalog_sync_lease_expires_at = null,
+                updated_at = now()
+            where tenant_id = %s
+              and name = %s
+              and status <> 'deleted'
+            returning name
+            """,
+            (distribution_enabled, distribution_enabled, tenant_id, capability_id),
+        )
+        if await catalog_cursor.fetchone() is None:
+            raise RepositoryNotFoundError("mcp_server_not_found")
+    return projected
 
 
 async def set_capability_distribution_status(
