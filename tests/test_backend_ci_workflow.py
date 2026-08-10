@@ -677,6 +677,15 @@ def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contrac
     assert "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git" not in image_job
     assert "docker build" in image_job
     assert "-f Dockerfile" in image_job
+    assert "- name: Block fixable backend image vulnerabilities" in image_job
+    assert (
+        "uses: aquasecurity/trivy-action@"
+        "ed142fd0673e97e23eac54620cfb913e5ce36c25"
+    ) in image_job
+    assert "image-ref: ai-platform-backend:${{ env.IMAGE_SOURCE_COMMIT }}" in image_job
+    assert "severity: HIGH,CRITICAL" in image_job
+    assert "ignore-unfixed: true" in image_job
+    assert "exit-code: '1'" in image_job
     assert "uv.lock" not in image_job  # The real Docker build proves lock consumption.
     assert 'config["User"] == "10001:10001"' in image_job
     assert 'config["Entrypoint"] == ["/app/docker-entrypoint.sh"]' in image_job

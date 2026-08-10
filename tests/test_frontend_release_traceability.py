@@ -499,8 +499,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
         "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
     )
     nginx_base = (
-        "nginx:1.27.5-alpine@"
-        "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+        "nginx:1.30.4-alpine@"
+        "sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46"
     )
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
@@ -826,8 +826,8 @@ def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | Non
 def frontend_healthcheck_command():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
     runtime_dockerfile = dockerfile.split(
-        "FROM nginx:1.27.5-alpine@"
-        "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime",
+        "FROM nginx:1.30.4-alpine@"
+        "sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46 AS runtime",
         1,
     )[1]
     healthcheck = next(
