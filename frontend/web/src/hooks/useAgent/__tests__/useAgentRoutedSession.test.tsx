@@ -300,11 +300,15 @@ async function loadReactHarness({
   strict = false,
   onAuthScopeLayout,
   preserveSubmissionReferences = false,
+  sessionRouteLifecycle = false,
+  initialRoute = "/chat",
 }: {
   agentOptions?: UseAgentOptions;
   strict?: boolean;
   onAuthScopeLayout?: () => void;
   preserveSubmissionReferences?: boolean;
+  sessionRouteLifecycle?: boolean;
+  initialRoute?: string;
 } = {}) {
   if (!preserveSubmissionReferences) {
     clearPersistedSubmissionReferences();
@@ -314,9 +318,28 @@ async function loadReactHarness({
   const { AuthProvider, useAuth } = await import("../../useAuth.tsx");
   const { useAgent } = await import("../../useAgent.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
+  const {
+    MemoryRouter,
+    Route,
+    Routes,
+    useLocation,
+    useNavigate,
+    useParams,
+  } = await import("react-router-dom");
+  const {
+    useConversationRouteIdentityReset,
+    useSessionSync,
+  } = await import("../../../components/layout/AppContent/useSessionSync.ts");
 
   let snapshot: UseAgentReturn | null = null;
   let authSnapshot: ReturnType<typeof useAuth> | null = null;
+  let routeSnapshot: {
+    navigate: (path: string) => void;
+    pathname: string;
+    sessionId: string | undefined;
+  } | null = null;
+  let routeIdentityResetCount = 0;
+  const restoredRouteConfigs: unknown[] = [];
   const container = dom.document.createElement("div");
   const root = createRoot(container as never);
   const originalGetCurrentUser = authApi.getCurrentUser;
@@ -346,6 +369,41 @@ async function loadReactHarness({
     return null;
   }
 
+  function SessionRouteLifecycleProbe() {
+    authSnapshot = useAuth();
+    const agent = useAgent(agentOptions);
+    snapshot = agent;
+    const location = useLocation();
+    const navigate = useNavigate();
+    const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>();
+    dom.window.location.pathname = location.pathname;
+    dom.window.location.href = `http://test.local${location.pathname}`;
+    routeSnapshot = {
+      navigate,
+      pathname: location.pathname,
+      sessionId: routeSessionId,
+    };
+
+    useConversationRouteIdentityReset({
+      conversationIdentityKey: `generic:${routeSessionId ?? ""}`,
+      hasAgentWorkspace: false,
+      routeSessionId,
+      sessionId: agent.sessionId,
+      onIdentityChange: () => {
+        routeIdentityResetCount += 1;
+        agent.clearMessages();
+      },
+    });
+    useSessionSync({
+      activeTab: "chat",
+      sessionId: agent.sessionId,
+      loadHistory: agent.loadHistory,
+      clearMessages: agent.clearMessages,
+      onConfigRestored: (config) => restoredRouteConfigs.push(config),
+    });
+    return null;
+  }
+
   function AuthScopeLayoutProbe() {
     const { isAuthenticated, user } = useAuth();
     const scope =
@@ -367,7 +425,9 @@ async function loadReactHarness({
     return null;
   }
 
-  const probe = React.createElement(Probe);
+  const probe = React.createElement(
+    sessionRouteLifecycle ? SessionRouteLifecycleProbe : Probe,
+  );
   const children = React.createElement(
     React.Fragment,
     null,
@@ -376,11 +436,27 @@ async function loadReactHarness({
   );
   try {
     await React.act(async () => {
+      const routedChildren = sessionRouteLifecycle
+        ? React.createElement(
+            MemoryRouter,
+            { initialEntries: [initialRoute] },
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: "/chat/:sessionId?",
+                element: children,
+              }),
+            ),
+          )
+        : children;
       root.render(
         React.createElement(
           AuthProvider,
           null,
-          strict ? React.createElement(React.StrictMode, null, children) : children,
+          strict
+            ? React.createElement(React.StrictMode, null, routedChildren)
+            : routedChildren,
         ),
       );
     });
@@ -465,6 +541,23 @@ async function loadReactHarness({
     get auth() {
       assert.ok(authSnapshot, "Auth context should be mounted");
       return authSnapshot;
+    },
+    get route() {
+      assert.ok(routeSnapshot, "session route lifecycle should be mounted");
+      return routeSnapshot;
+    },
+    get routeIdentityResetCount() {
+      return routeIdentityResetCount;
+    },
+    get restoredRouteConfigs() {
+      return restoredRouteConfigs;
+    },
+    async navigateRoute(path: string) {
+      assert.ok(routeSnapshot, "session route lifecycle should be mounted");
+      await React.act(async () => {
+        routeSnapshot?.navigate(path);
+        await Promise.resolve();
+      });
     },
     async rotateAuthScope(userId: string, tenantId: string) {
       await rotateAuthScope(userId, tenantId, true);
@@ -597,11 +690,8 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
 });
 
 test("useAgent preserves accepted authority through URL canonicalization for a second submit", async () => {
-  const harness = await loadReactHarness();
+  const harness = await loadReactHarness({ sessionRouteLifecycle: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
-  const { shouldClearConversationOnRouteIdentityChange } = await import(
-    "../../../components/layout/AppContent/useSessionSync.ts"
-  );
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
@@ -641,14 +731,9 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     });
     await settle(harness.act);
     assert.equal(harness.hook.sessionId, "session-routed");
-    assert.equal(
-      shouldClearConversationOnRouteIdentityChange({
-        hasAgentWorkspace: false,
-        routeSessionId: "session-routed",
-        sessionId: harness.hook.sessionId,
-      }),
-      false,
-    );
+    assert.equal(harness.route.pathname, "/chat/session-routed");
+    assert.equal(harness.route.sessionId, "session-routed");
+    assert.equal(harness.routeIdentityResetCount, 1);
     assert.match(JSON.stringify(harness.hook.messages), /翻译这个文档/);
     await harness.act(async () => {
       await harness.hook.sendMessage("继续处理");
@@ -664,6 +749,98 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(sseCalls, 2);
   } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("session route lifecycle clears a real external switch and supersedes its stale history load", async () => {
+  const harness = await loadReactHarness({ sessionRouteLifecycle: true });
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalFetch = dom.window.fetch;
+  const historyLoads: string[] = [];
+  let releaseSessionB!: () => void;
+  const sessionBGate = new Promise<void>((resolve) => {
+    releaseSessionB = resolve;
+  });
+
+  dom.window.fetch = async () => completedSseResponse();
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async (sessionId) => ({
+    title: "会话 A",
+    session_id: sessionId,
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-a",
+    run_id: "run-a",
+    trace_id: "trace-a",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  sessionApi.get = async (sessionId) => {
+    historyLoads.push(sessionId);
+    if (sessionId === "session-b") {
+      await sessionBGate;
+    }
+    return {
+      id: sessionId,
+      agent_id: "general-agent",
+      created_at: "2026-08-10T00:00:00Z",
+      updated_at: "2026-08-10T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    };
+  };
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: "general-agent",
+    title: `会话 ${sessionId}`,
+    purpose: "conversation",
+    agent_conversation: null,
+  });
+  sessionApi.getEvents = async () => ({ events: [] });
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("会话 A 的首轮");
+    });
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, "/chat/session-a");
+    assert.match(JSON.stringify(harness.hook.messages), /会话 A 的首轮/);
+
+    await harness.navigateRoute("/chat/session-b");
+    assert.deepEqual(historyLoads, ["session-b"]);
+    assert.equal(harness.hook.sessionId, "session-b");
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.routeIdentityResetCount, 2);
+
+    await harness.navigateRoute("/chat/session-c");
+    await settle(harness.act);
+    assert.deepEqual(historyLoads, ["session-b", "session-c"]);
+    assert.equal(harness.route.pathname, "/chat/session-c");
+    assert.equal(harness.hook.sessionId, "session-c");
+    assert.equal(harness.routeIdentityResetCount, 3);
+    assert.equal(harness.restoredRouteConfigs.length, 1);
+
+    releaseSessionB();
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, "/chat/session-c");
+    assert.equal(harness.hook.sessionId, "session-c");
+    assert.equal(harness.restoredRouteConfigs.length, 1);
+  } finally {
+    releaseSessionB();
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
