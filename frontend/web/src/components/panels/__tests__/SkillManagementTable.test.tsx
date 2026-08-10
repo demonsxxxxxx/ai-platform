@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("Skill workbench separates runtime and tenant distribution without a public writer", () => {
+test("Skill workbench separates runtime and catalog visibility without a public writer", () => {
   const table = readFileSync(
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),
     "utf8",
@@ -21,8 +21,9 @@ test("Skill workbench separates runtime and tenant distribution without a public
   assert.match(table, /skills\.managementTable\.runtimeStatus/);
   assert.match(table, /skills\.managementTable\.distributed/);
   assert.match(table, /skills\.managementTable\.distributionDisabled/);
-  assert.match(table, /skill\.marketplace_is_active/);
-  assert.match(table, /skill\.expected_version/);
+  assert.match(table, /entry\.catalogStatus/);
+  assert.match(table, /entry\.version/);
+  assert.match(table, /entry\.id === selectedSkillId/);
   assert.doesNotMatch(table, /onPublish|publishToMarketplace|republish|unpublish/);
   assert.match(list, /<SkillManagementTable/);
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
@@ -69,15 +70,20 @@ test("management table translations stay complete across supported locales", () 
     "enableSkill",
     "exportSkill",
     "fileCount",
+    "hidden",
     "listLabel",
     "notInDirectory",
+    "notPublished",
     "package",
+    "packageOnly",
     "readOnly",
     "runtimeStatus",
     "selectSkill",
+    "selectedDetail",
+    "selectDetailPrompt",
     "skill",
     "tags",
-    "tenantDistribution",
+    "catalogStatus",
     "updatedAt",
   ];
 

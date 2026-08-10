@@ -1556,6 +1556,74 @@
     "title": "スキル"
   },
   "skills": {
+    "governance": {
+      "departmentSelector": {
+        "directory": "社内部門ディレクトリ",
+        "duplicate": "名前が重複しています",
+        "duplicateReason": "部門名が重複しているため選択できません",
+        "empty": "一致する部門がありません",
+        "limitReached": "選択上限の128部門に達しました。",
+        "limitReason": "選択上限の128部門に達しました",
+        "maxDepartments": "最大128部門を選択できます",
+        "remove": "{{name}}を削除",
+        "removeShort": "削除",
+        "removeUnresolved": "未確認の部門{{name}}を削除",
+        "search": "部門を検索",
+        "searchPlaceholder": "部門名またはパスで検索",
+        "select": "部門を選択",
+        "selectAllowed": "許可する部門を選択",
+        "selectionHelp": "社内部門ディレクトリから最大128部門を選択できます。",
+        "unresolvedWarning": "未確認の部門は表示されたままです。削除するか、社内部門ディレクトリの復旧後に保存してください。"
+      },
+      "departments": {
+        "all": "全部門",
+        "allowed": "許可する部門",
+        "hint": "社内部門ディレクトリから選択します。全部門を選ぶと部門制限はありません。",
+        "restricted": "指定部門",
+        "scope": "部門範囲"
+      },
+      "description": "このSkillを表示できるユーザー、部門、ロールを設定します。利用時にもアクセス権が確認されます。",
+      "errors": {
+        "conflict": "現在この公開範囲を変更できません。更新して状態を確認してください。",
+        "directoryNotAuthoritative": "選択した部門が社内部門ディレクトリで確認されていないため保存できません。",
+        "directoryUnavailable": "社内部門ディレクトリを利用できません。復旧するまで範囲変更は保存できません。",
+        "forbidden": "このアカウントにはSkillの公開範囲を管理する権限がありません。",
+        "notFound": "このSkillまたは公開範囲の設定が存在しません。更新して再試行してください。",
+        "saveFailed": "Skillの公開範囲を保存できませんでした。後でもう一度お試しください。"
+      },
+      "loading": "Skillの公開範囲と社内部門ディレクトリを読み込み中",
+      "refresh": "Skillの公開範囲を更新",
+      "refreshShort": "更新",
+      "release": {
+        "current": "公開バージョン {{version}}",
+        "latest": "最新パッケージ {{version}}",
+        "noPackage": "バージョンパッケージはまだありません",
+        "none": "公開バージョンはまだありません",
+        "title": "公開バージョン"
+      },
+      "roles": {
+        "allowed": "許可するロール",
+        "hint": "必要に応じて社内ロールを指定します。空の場合はすべてのロールを許可します。"
+      },
+      "save": "公開範囲を保存",
+      "saved": "保存しました",
+      "selectPrompt": "カタログからSkillを選択して詳細を表示します。",
+      "status": {
+        "active": "有効",
+        "disabled": "無効",
+        "label": "状態"
+      },
+      "title": "Skillの公開範囲",
+      "visibility": {
+        "activeHidden": "有効・非表示",
+        "activeVisible": "有効・表示",
+        "allDepartments": "全部門",
+        "departmentCount": "{{count}}部門",
+        "disabled": "無効",
+        "title": "ユーザーへの表示"
+      },
+      "visibleToUsers": "一般ユーザーに表示"
+    },
     "batchDeleteFailed": "一部のスキルの削除に失敗しました",
     "batchDeleteSuccess": "{{count}}件のスキルを削除しました",
     "batchDisableSuccess": "{{count}}件のスキルを無効化しました",
@@ -1586,8 +1654,8 @@
       "disable": "無効化",
       "disableSkill": "{{name}}を無効化",
       "disabled": "無効",
-      "distributed": "テナントに配布中",
-      "distributionDisabled": "テナント配布は無効",
+      "distributed": "カタログで利用可能",
+      "distributionDisabled": "カタログで無効",
       "edit": "編集",
       "editSkill": "{{name}}を編集",
       "enable": "有効化",
@@ -1595,15 +1663,20 @@
       "enableSkill": "{{name}}を有効化",
       "exportSkill": "{{name}}をエクスポート",
       "fileCount": "{{count}}ファイル",
+      "hidden": "一般ユーザーには非表示",
       "listLabel": "Skill管理リスト",
-      "notInDirectory": "テナントカタログ未登録",
+      "notInDirectory": "カタログ未登録",
+      "notPublished": "未公開",
       "package": "バージョンパッケージ",
+      "packageOnly": "公開待ちパッケージ",
       "readOnly": "読み取り専用",
       "runtimeStatus": "実行状態",
       "selectSkill": "{{name}}を選択",
+      "selectedDetail": "選択したSkillの詳細",
+      "selectDetailPrompt": "カタログからSkillを選択してください。",
       "skill": "スキル",
       "tags": "タグ",
-      "tenantDistribution": "テナント配布",
+      "catalogStatus": "カタログ状態",
       "updatedAt": "更新日時"
     },
     "confirmDelete": "スキルを削除",
