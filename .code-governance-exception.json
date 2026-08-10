@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "d361ebbdd56798fbf6c6b2664f12848ee5387a54",
-    "scope_sha256": "a7a2ac460f16da91d6fe56b5c5f3e3285c8c17b6038ee198addf4faa0531ce1f"
+    "scope_sha256": "518277dc455d8ce3e11ed9d2b108b8054c0cdb8947dedc0065333f9b04e9cb6b"
   },
   "expires_on": "2026-08-17",
   "owner": "issue-868-skill-admin-ui",
