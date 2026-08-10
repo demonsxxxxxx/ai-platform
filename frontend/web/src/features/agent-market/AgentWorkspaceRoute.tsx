@@ -244,7 +244,7 @@ export function AgentWorkspaceRoute() {
     >
       <main
         aria-live="polite"
-        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-sm text-[var(--theme-text-secondary)]"
+        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-sm text-[var(--theme-text-secondary)] sm:px-6"
         data-agent-workspace-loading
       >
         <div className="max-w-md text-center">

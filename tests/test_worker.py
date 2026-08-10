@@ -28,6 +28,7 @@ from app.repositories import (
 from app.required_tool_contract import declaration_from_input
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.worker import (
     WorkerOutcome,
@@ -70,7 +71,7 @@ def admitted_sse_stream(monkeypatch):
     return published
 
 
-def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
+def test_worker_preserves_only_typed_safe_executor_failures():
     private_token = "private-native-token"
     private_path = "/home/private/workspace/native-tool.sock"
     native_error = NativeToolAdmissionError()
@@ -82,9 +83,30 @@ def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     )
     assert worker_module._executor_exception_failure(
         RuntimeError("ordinary executor failure")
-    ) == ("executor_failure", "ordinary executor failure")
+    ) == ("executor_failure", "Executor failed")
+    assert worker_module._executor_exception_failure(
+        SandboxExecutorHttpError(
+            status_code=401,
+            error_code="invalid_executor_credential",
+            detail="invalid_executor_credential",
+        )
+    ) == (
+        "invalid_executor_credential",
+        "Executor authentication failed (HTTP 401)",
+    )
+    hostile_error = SandboxExecutorHttpError(
+        status_code=502,
+        error_code="token_private-secret",
+        detail="<html>private-prompt</html>",
+    )
+    assert worker_module._executor_exception_failure(hostile_error) == (
+        "executor_http_failure",
+        "Executor request failed (HTTP 502)",
+    )
     assert private_token not in str(worker_module._executor_exception_failure(native_error))
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
+    assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
+    assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
 
 
 @pytest.mark.asyncio
@@ -2408,7 +2430,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
-    assert outcome.status == "failed"
+    assert outcome == WorkerOutcome("failed", "run-a", "executor_failure", "Executor failed")
+    assert ("fail", "run-a", "executor_failure", "Executor failed") in calls
     assert ("lease_create", "run-a") in calls
     release_call = next(item[1] for item in calls if item[0] == "lease_release")
     assert release_call["tenant_id"] == "tenant-a"
@@ -5595,6 +5618,74 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
     assert outcome.error_code == "fake_failure"
     assert outcome.error_message == "fake run failed for run-a"
     assert any(item[0] == "fail" and item[1] == "fake_failure" for item in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_terminal_status", ["failed", "completed", "succeeded"])
+async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
+    monkeypatch,
+    runtime_terminal_status,
+):
+    calls = []
+    private_error = "https://executor.test/run?token=private-token<html>private-prompt</html>"
+
+    class MaliciousSandboxFailureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="executor/1",
+                capabilities={},
+                result={
+                    "error_code": private_error,
+                    "sdk_error": private_error,
+                    "message": private_error,
+                    "url": private_error,
+                    "path": "/private/workspace",
+                    "nested": {"prompt": "private-prompt"},
+                },
+                executor_payload={
+                    "sandbox_runtime_used": True,
+                    "runtime_terminal_status": runtime_terminal_status,
+                    "sdk_error": private_error,
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-malicious-sandbox-failure"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message, result_json))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": MaliciousSandboxFailureAdapter()}),
+    )
+
+    assert outcome == WorkerOutcome(
+        "failed",
+        "run-a",
+        "executor_reported_failure",
+        "Executor reported failure",
+    )
+    fail_call = next(item for item in calls if item[0] == "fail")
+    assert fail_call[1:3] == ("executor_reported_failure", "Executor reported failure")
+    assert fail_call[3]["error_code"] == "executor_reported_failure"
+    assert fail_call[3]["sdk_error"] == "executor_reported_failure"
+    assert set(fail_call[3]) >= {"error_code", "sdk_error", "message"}
+    assert not {"url", "path", "nested"} & set(fail_call[3])
+    assert private_error not in str(calls)
 
 
 @pytest.mark.asyncio

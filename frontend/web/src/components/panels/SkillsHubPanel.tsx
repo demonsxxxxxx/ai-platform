@@ -14,8 +14,6 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { isAiAdminUser } from "./capabilityAdmin";
-import { AvailableSkillsPanel } from "./AvailableSkillsPanel";
-import { SkillDistributionGovernancePanel } from "./SkillDistributionGovernancePanel";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -117,7 +115,7 @@ export function SkillsHubPanel() {
         : "permissionLimited";
   const statusCopyNamespace = "skillsHub.skillManagement";
   const statusIndicatorClass =
-    governanceState === "ready"
+    !isAiAdminUser(user) || governanceState === "ready"
       ? "bg-[var(--theme-primary)]"
       : governanceState === "degraded"
         ? "bg-amber-500"
@@ -129,6 +127,7 @@ export function SkillsHubPanel() {
     enabled: governanceState === "ready",
     adminOnly: governanceState === "forbidden",
   });
+  const isAdmin = isAiAdminUser(user);
 
   useEffect(() => {
     if (!visibleTab) return;
@@ -159,10 +158,6 @@ export function SkillsHubPanel() {
     [requestedTab],
   );
 
-  if (!isAiAdminUser(user)) {
-    return <AvailableSkillsPanel />;
-  }
-
   return (
     <div
       data-phase1c-surface="skills-hub"
@@ -176,7 +171,7 @@ export function SkillsHubPanel() {
     >
       <div
         data-skills-catalog-status
-        className="px-4 pt-2"
+        className="px-4 pt-3 sm:px-6 sm:pt-4"
       >
         <div
           data-skills-catalog-status-strip
@@ -189,46 +184,61 @@ export function SkillsHubPanel() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <h2 className="text-sm font-semibold leading-5 text-[var(--theme-text)]">
-                  {t(`${statusCopyNamespace}.${statusCopyKey}.title`)}
+                  {isAdmin
+                    ? t(`${statusCopyNamespace}.${statusCopyKey}.title`)
+                    : t("skills.available.title")}
                 </h2>
-                <span
+                {isAdmin ? <span
                   data-skills-hub-state-detail
                   className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-[11px] font-semibold text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
                 >
                   {hubGovernance.requiredPermission}
-                </span>
-                <span
+                </span> : null}
+                {isAdmin ? <span
                   data-skills-hub-state-detail
                   className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
                 >
                   {t(
                     `skillsHub.permissionSource.${hubGovernance.effectivePermissionsSource}`,
                   )}
-                </span>
+                </span> : null}
               </div>
               <p className="mt-0.5 line-clamp-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                {t(`${statusCopyNamespace}.${statusCopyKey}.description`)}
+                {isAdmin
+                  ? t(`${statusCopyNamespace}.${statusCopyKey}.description`)
+                  : t("skills.available.subtitle")}
               </p>
             </div>
           </div>
-          <GovernanceAvailabilityBadge
-            state={permissionAvailability.state}
-            labelKey={permissionAvailability.labelKey}
-          />
+          {isAdmin ? (
+            <GovernanceAvailabilityBadge
+              state={permissionAvailability.state}
+              labelKey={permissionAvailability.labelKey}
+            />
+          ) : (
+            <span className="rounded-md bg-[var(--theme-primary-soft)] px-2.5 py-1 text-xs font-medium text-[var(--theme-primary)] ring-1 ring-[var(--theme-primary)]/20">
+              {t("skills.available.title")}
+            </span>
+          )}
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 px-4 pb-4 pt-2">
+      <div
+        className="flex min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-2 sm:px-6"
+        data-primary-page-scroller
+      >
         <section
           data-skills-catalog-main
-          className="min-h-0 min-w-0 flex-1 overflow-hidden"
+          className="min-h-0 min-w-0 flex-1"
         >
           {visibleTab === "skills" ? (
-            <div data-skill-catalog-shell className="h-full min-h-0">
+            <div data-skill-catalog-shell className="min-h-0">
               <SkillsPanel
+                allAuthorizedCatalog
                 embedded
-                governedUnavailable={hubGovernance.governedUnavailable}
+                governedUnavailable={isAdmin && hubGovernance.governedUnavailable}
                 onCatalogStateChange={handleCatalogStateChange}
+                showDistributionEditor={isAdmin}
               />
             </div>
           ) : (
@@ -242,7 +252,6 @@ export function SkillsHubPanel() {
           )}
         </section>
       </div>
-      <SkillDistributionGovernancePanel />
     </div>
   );
 }

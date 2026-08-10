@@ -6,6 +6,8 @@ DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
+OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
+S72_COLOCATION_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.s72-colocation.yml"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
 TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
 STALE_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
@@ -20,29 +22,42 @@ def compose_service_text(compose_text: str, service_name: str) -> str:
     return section
 
 
-def test_company_auth_defaults_match_webui_production_backend():
-    settings_text = Path("app/settings.py").read_text(encoding="utf-8")
+def env_example_values(env_example_text: str) -> dict[str, str]:
+    return {
+        name: value
+        for line in env_example_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+        for name, _, value in (line.partition("="),)
+    }
+
+
+def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    env_values = env_example_values(env_example_text)
 
-    assert 'existing_auth_base_url: str = Field(default="http://10.56.0.25:7263")' in settings_text
-    assert 'existing_user_info_base_url: str = Field(default="http://10.56.0.25:5166")' in settings_text
-    assert "EXISTING_AUTH_BASE_URL:-http://10.56.0.25:7263" in compose_text
-    assert "EXISTING_USER_INFO_BASE_URL:-http://10.56.0.25:5166" in compose_text
-    assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_example_text
-    assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_example_text
-    assert "EXISTING_AUTH_BASE_URL=http://10.56.0.211" not in env_example_text
+    for service_name in ("api", "worker"):
+        service = compose_service_text(compose_text, service_name)
+        assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
+        assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
+    assert "10.56.0.25" not in compose_text
+    assert env_values["EXISTING_AUTH_BASE_URL"] == "http://10.56.0.25:7263"
+    assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
 
 
 def test_cors_defaults_include_current_211_frontend_origin():
     settings_text = Path("app/settings.py").read_text(encoding="utf-8")
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    env_values = env_example_values(env_example_text)
     current_origin = "http://10.56.0.211:18001"
 
     assert current_origin in settings_text
     assert compose_text.count(current_origin) == 2
-    assert current_origin in env_example_text
+    assert env_values["CORS_ALLOW_ORIGINS"] == (
+        "http://localhost:9527,http://127.0.0.1:9527"
+    )
+    assert current_origin not in env_values["CORS_ALLOW_ORIGINS"]
 
 
 def test_worker_is_default_required_service_in_compose():
@@ -414,8 +429,6 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
             "OPENSANDBOX_DOMAIN",
             "OPENSANDBOX_PROTOCOL",
             "OPENSANDBOX_API_KEY",
-            "OPENSANDBOX_ATTESTATION_PATH",
-            "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
             "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
@@ -439,6 +452,26 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
 
+def test_opensandbox_internal_test_overlay_is_explicit_direct_and_has_no_gateway_contract():
+    import yaml
+
+    overlay = yaml.safe_load(OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8"))
+
+    assert set(overlay["services"]) == {"api", "worker"}
+    for service_name in ("api", "worker"):
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["DEPLOYMENT_ENVIRONMENT"] == "test"
+        assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS"] == "true"
+        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "false"
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""
+        assert "SANDBOX_EGRESS_PROOF_SIGNING_KEY" not in environment
+        assert "volumes" not in overlay["services"][service_name]
+
+
 def test_compose_does_not_mount_docker_socket_by_default():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     sandbox_text = SANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
@@ -451,16 +484,20 @@ def test_compose_does_not_mount_docker_socket_by_default():
 def test_compose_requires_non_empty_sandbox_callback_token():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    env_values = env_example_values(env_example_text)
 
     assert "SANDBOX_CALLBACK_TOKEN: ${SANDBOX_CALLBACK_TOKEN:?set SANDBOX_CALLBACK_TOKEN}" in compose_text
-    assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_example_text
+    assert env_values["SANDBOX_CALLBACK_TOKEN"] == ""
+    assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" not in env_example_text
 
 
 def test_env_example_documents_sandbox_egress_policy_defaults():
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    colocation_text = S72_COLOCATION_COMPOSE_FILE.read_text(encoding="utf-8")
 
     for expected in [
-        "SANDBOX_CONTAINER_PROVIDER=fake",
+        "SANDBOX_CONTAINER_PROVIDER=opensandbox",
+        "SANDBOX_SECURITY_PROFILE=governed",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
@@ -473,6 +510,20 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
         "SANDBOX_CALLBACK_HOST_GATEWAY=",
     ]:
         assert expected in env_example_text
+
+    assert "SANDBOX_CONTAINER_PROVIDER=fake" not in env_example_text
+    assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" not in env_example_text
+    assert colocation_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
+    assert colocation_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
+    assert colocation_text.count(
+        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: http://127.0.0.1:18043"
+    ) == 2
+    assert colocation_text.count(
+        "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: http://127.0.0.1:18043/openai/v1"
+    ) == 2
+    assert colocation_text.count(
+        "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: http://127.0.0.1:18043/anthropic"
+    ) == 2
 
 
 def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():

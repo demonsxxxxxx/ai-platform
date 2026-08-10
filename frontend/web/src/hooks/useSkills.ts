@@ -127,11 +127,15 @@ export function useSkills(options?: {
 
   // 跟踪正在 toggle 中的 skill，防止 fetchSkills 覆盖乐观更新
   const pendingTogglesRef = useRef<Map<string, boolean>>(new Map());
+  // Only the newest catalog request may update visible state. Search, filters,
+  // and pagination can otherwise resolve out of order and restore stale rows.
+  const catalogRequestSequenceRef = useRef(0);
 
   // Fetch all skills (basic info only)
   const fetchSkills = useCallback(
     async (params?: SkillListParams): Promise<boolean> => {
       if (!enabled) return false;
+      const requestSequence = ++catalogRequestSequenceRef.current;
       setIsLoading(true);
       setError(null);
       setListError(null);
@@ -142,6 +146,9 @@ export function useSkills(options?: {
           ? await skillApi.listAllAuthorized()
           : await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
+        if (requestSequence !== catalogRequestSequenceRef.current) {
+          return false;
+        }
         // For list view, we don't fetch full details immediately
         // Components that need details will fetch them on demand
         const composed = userSkills.map((u) => composeSkillResponse(u));
@@ -168,6 +175,9 @@ export function useSkills(options?: {
         }
         return true;
       } catch (err) {
+        if (requestSequence !== catalogRequestSequenceRef.current) {
+          return false;
+        }
         const message =
           err instanceof Error ? err.message : "Failed to fetch skills";
         setError(message);
@@ -185,7 +195,9 @@ export function useSkills(options?: {
         }
         return false;
       } finally {
-        setIsLoading(false);
+        if (requestSequence === catalogRequestSequenceRef.current) {
+          setIsLoading(false);
+        }
       }
     },
     [allAuthorizedCatalog, enabled, listParams],

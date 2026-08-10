@@ -62,6 +62,35 @@
   );
 }
 
+.skill-management-table__row--selected {
+  box-shadow: inset 2px 0 0 var(--theme-primary);
+  background: var(--theme-bg-sidebar);
+}
+
+.skill-management-table__row:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: -2px;
+}
+
+@media (min-width: 768px) {
+  .skill-management-table--master .skill-management-table__head,
+  .skill-management-table--master .skill-management-table__row {
+    grid-template-columns: minmax(15rem, 1fr) minmax(6.5rem, auto) minmax(8rem, auto);
+    min-width: 0;
+  }
+
+  .skill-management-table--master .skill-management-table__head--selectable,
+  .skill-management-table--master .skill-management-table__row--selectable {
+    grid-template-columns: 2rem minmax(15rem, 1fr) minmax(6.5rem, auto) minmax(8rem, auto);
+  }
+
+  .skill-management-table--master .skill-management-table__package,
+  .skill-management-table--master .skill-management-table__distribution,
+  .skill-management-table--master .skill-management-table__updated {
+    display: none;
+  }
+}
+
 .skill-management-table__identity,
 .skill-management-table__package {
   min-width: 0;

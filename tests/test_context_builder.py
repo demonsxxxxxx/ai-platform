@@ -810,7 +810,7 @@ async def test_context_builder_preserves_only_authorized_retrieval_file_basename
 
 
 @pytest.mark.asyncio
-async def test_record_initial_context_snapshot_builds_bounded_same_session_continuity(monkeypatch):
+async def test_record_initial_context_snapshot_keeps_messages_without_implicit_session_files(monkeypatch):
     captured = {}
 
     async def fake_count_messages(conn, **kwargs):
@@ -859,23 +859,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
         ]
 
     async def fake_list_files(conn, **kwargs):
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-current",
-            "limit": 8,
-        }
-        return [
-            {
-                "id": "file-prior",
-                "run_id": "run-prior",
-                "original_name": "source.docx",
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "size_bytes": 2048,
-            }
-        ]
+        raise AssertionError("session input files must not be injected into this snapshot")
 
     async def fake_memory_policy(conn, **kwargs):
         return {
@@ -920,6 +904,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
         file_ids=["file-current"],
         source="chat_stream",
         include_session_history=True,
+        include_session_files=False,
     )
 
     assert captured["included_message_ids"] == [
@@ -928,7 +913,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
         "msg-current",
     ]
     assert captured["included_artifact_ids"] == ["art-prior"]
-    assert captured["included_file_ids"] == ["file-prior", "file-current"]
+    assert captured["included_file_ids"] == ["file-current"]
     manifest = captured["payload_json"]["context_manifest"]
     assert [item["message_id"] for item in manifest["recent_messages"]] == [
         "msg-prior-user",
@@ -941,7 +926,6 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
     assert all(item["run_id"] == "run-prior" for item in manifest["recent_messages"])
     assert manifest["artifacts"] == [{"artifact_id": "art-prior", "requires_retrieval": True}]
     assert manifest["files"] == [
-        {"file_id": "file-prior", "requires_retrieval": True},
         {"file_id": "file-current", "requires_retrieval": True},
     ]
     assert manifest["source_runs"] == [{"run_id": "run-prior"}]

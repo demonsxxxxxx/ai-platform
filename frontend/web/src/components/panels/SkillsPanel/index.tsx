@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
@@ -11,6 +11,12 @@ import { ZipUploadModal } from "./ZipUploadModal";
 import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
+import { SkillDistributionGovernancePanel } from "../SkillDistributionGovernancePanel";
+import {
+  buildSkillCatalogEntries,
+  filterSkillCatalogEntries,
+  resolveSkillCatalogPage,
+} from "./skillCatalogEntries";
 
 interface CatalogState {
   permissionDenied: boolean;
@@ -21,14 +27,18 @@ interface CatalogState {
 }
 
 interface SkillsPanelProps {
+  allAuthorizedCatalog?: boolean;
   embedded?: boolean;
   governedUnavailable?: boolean;
+  showDistributionEditor?: boolean;
   onCatalogStateChange?: (state: CatalogState) => void;
 }
 
 export function SkillsPanel({
+  allAuthorizedCatalog = false,
   embedded = false,
   governedUnavailable = false,
+  showDistributionEditor = false,
   onCatalogStateChange,
 }: SkillsPanelProps) {
   const { t } = useTranslation();
@@ -39,7 +49,12 @@ export function SkillsPanel({
   const skillImportBacked = true;
   const skillBatchWriteBacked = true;
 
-  const actions = useSkillsActions({ enabled: !governedUnavailable });
+  const actions = useSkillsActions({
+    allAuthorizedCatalog,
+    enabled: !governedUnavailable,
+    loadAdminCatalog: showDistributionEditor,
+  });
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const permissionDenied = isPermissionError(actions.listError);
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
@@ -56,6 +71,107 @@ export function SkillsPanel({
     skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =
     skillBatchWriteBacked && (canWrite || canDeleteSkill);
+
+  const catalogEntries = useMemo(
+    () =>
+      buildSkillCatalogEntries(
+        actions.skills,
+        showDistributionEditor ? actions.adminCatalogItems : [],
+      ),
+    [actions.adminCatalogItems, actions.skills, showDistributionEditor],
+  );
+  const filteredCatalogEntries = useMemo(
+    () =>
+      filterSkillCatalogEntries(
+        catalogEntries,
+        actions.searchQuery,
+        actions.selectedTags,
+      ),
+    [actions.searchQuery, actions.selectedTags, catalogEntries],
+  );
+  const catalogPage = useMemo(
+    () =>
+      resolveSkillCatalogPage({
+        entries: filteredCatalogEntries,
+        page: actions.page,
+        pageSize: actions.pageSize,
+        localPagination: allAuthorizedCatalog,
+        serverTotal: actions.total,
+      }),
+    [
+      actions.page,
+      actions.pageSize,
+      actions.total,
+      allAuthorizedCatalog,
+      filteredCatalogEntries,
+    ],
+  );
+  const selectableNames = useMemo(
+    () =>
+      filteredCatalogEntries.flatMap((entry) =>
+        entry.actionName ? [entry.actionName] : [],
+      ),
+    [filteredCatalogEntries],
+  );
+
+  useEffect(() => {
+    setSelectedSkillId((current) =>
+      current && filteredCatalogEntries.some((entry) => entry.id === current)
+        ? current
+        : filteredCatalogEntries[0]?.id ?? null,
+    );
+  }, [filteredCatalogEntries]);
+
+  const selectedCatalogEntry = useMemo(
+    () =>
+      selectedSkillId
+        ? filteredCatalogEntries.find((entry) => entry.id === selectedSkillId) ?? null
+        : null,
+    [filteredCatalogEntries, selectedSkillId],
+  );
+  const selectedSkill = selectedCatalogEntry?.runtimeSkill ?? null;
+  const selectedAdminSkill = selectedCatalogEntry?.adminSkill ?? null;
+
+  const selectedDetail = showDistributionEditor ? (
+    <SkillDistributionGovernancePanel
+      selectedSkill={selectedAdminSkill}
+      selectedSkillId={selectedAdminSkill?.skillId ?? null}
+    />
+  ) : selectedSkill ? (
+    <section
+      aria-label={t("skills.managementTable.selectedDetail")}
+      className="p-4 sm:p-5"
+      data-selected-skill-detail
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--theme-text-tertiary)]">
+        {t("skills.managementTable.selectedDetail")}
+      </p>
+      <h2 className="mt-2 text-lg font-semibold text-[var(--theme-text)]">
+        {selectedSkill.name}
+      </h2>
+      <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+        {selectedSkill.description || t("skills.noDescription")}
+      </p>
+      <dl className="mt-5 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-3 border-t border-[var(--theme-border)] pt-4 text-sm">
+        <dt className="text-[var(--theme-text-secondary)]">
+          {t("skills.managementTable.runtimeStatus")}
+        </dt>
+        <dd>{selectedSkill.enabled ? t("skills.managementTable.enabled") : t("skills.managementTable.disabled")}</dd>
+        <dt className="text-[var(--theme-text-secondary)]">
+          {t("skills.managementTable.package")}
+        </dt>
+        <dd className="font-mono text-xs">{selectedSkill.expected_version || "-"}</dd>
+        <dt className="text-[var(--theme-text-secondary)]">
+          {t("skills.available.fileTypes")}
+        </dt>
+        <dd>{selectedSkill.input_modes?.filter((mode) => mode !== "chat").join(" / ") || "-"}</dd>
+      </dl>
+    </section>
+  ) : (
+    <div className="flex min-h-56 items-center justify-center p-6 text-sm text-[var(--theme-text-secondary)]">
+      {t("skills.managementTable.selectDetailPrompt")}
+    </div>
+  );
 
   useEffect(() => {
     onCatalogStateChange?.({
@@ -76,7 +192,11 @@ export function SkillsPanel({
 
   return (
     <div
-      className={workbenchSurface.page}
+      className={
+        embedded
+          ? "flex min-h-0 flex-col text-[var(--theme-text)]"
+          : workbenchSurface.page
+      }
       data-skill-workbench-shell
     >
       <SkillsList
@@ -87,9 +207,9 @@ export function SkillsPanel({
         isFilterOpen={actions.isFilterOpen}
         setIsFilterOpen={actions.setIsFilterOpen}
         availableTags={actions.availableTags}
-        filteredSkills={actions.filteredSkills}
-        paginatedSkills={actions.paginatedSkills}
-        total={actions.total}
+        catalogEntries={filteredCatalogEntries}
+        paginatedCatalogEntries={catalogPage.entries}
+        total={catalogPage.total}
         page={actions.page}
         pageSize={actions.pageSize}
         setPage={actions.setPage}
@@ -112,9 +232,12 @@ export function SkillsPanel({
         onDelete={actions.handleDelete}
         onExportZip={actions.handleExportZip}
         onSelectSkill={actions.handleSelectSkill}
-        onSelectAll={actions.handleSelectAll}
+        onSelectAll={() => actions.handleSelectAll(selectableNames)}
+        onSelectDetail={setSelectedSkillId}
         onGithubClick={actions.handleGithubClick}
         onZipClick={actions.handleZipClick}
+        selectedDetail={selectedDetail}
+        selectedSkillId={selectedSkillId}
       />
 
       <SkillFormSidebar

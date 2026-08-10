@@ -16,7 +16,7 @@ import { SkillsPanelSkeleton } from "../../skeletons";
 import { Pagination } from "../../common/Pagination";
 import { SkillManagementTable } from "./SkillManagementTable";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
-import type { SkillResponse } from "../../../types";
+import type { SkillCatalogEntry } from "./skillCatalogEntries";
 
 interface SkillsListProps {
   embedded?: boolean;
@@ -27,8 +27,8 @@ interface SkillsListProps {
   isFilterOpen: boolean;
   setIsFilterOpen: React.Dispatch<React.SetStateAction<boolean>>;
   availableTags: string[];
-  filteredSkills: SkillResponse[];
-  paginatedSkills: SkillResponse[];
+  catalogEntries: SkillCatalogEntry[];
+  paginatedCatalogEntries: SkillCatalogEntry[];
   total: number;
   page: number;
   pageSize: number;
@@ -46,12 +46,15 @@ interface SkillsListProps {
   canDelete: boolean;
   adminRelease: boolean;
   selectedNames: Set<string>;
+  selectedDetail: React.ReactNode;
+  selectedSkillId: string | null;
   onToggle: (name: string) => void;
-  onEdit: (skill: SkillResponse) => void;
+  onEdit: (skill: NonNullable<SkillCatalogEntry["runtimeSkill"]>) => void;
   onDelete: (name: string) => void;
   onExportZip: (name: string) => void;
   onSelectSkill: (name: string) => void;
   onSelectAll: () => void;
+  onSelectDetail: (skillId: string) => void;
   onGithubClick: () => void;
   onZipClick: () => void;
 }
@@ -65,8 +68,8 @@ export function SkillsList({
   isFilterOpen,
   setIsFilterOpen,
   availableTags,
-  filteredSkills,
-  paginatedSkills,
+  catalogEntries,
+  paginatedCatalogEntries,
   total,
   page,
   pageSize,
@@ -84,12 +87,15 @@ export function SkillsList({
   canDelete,
   adminRelease,
   selectedNames,
+  selectedDetail,
+  selectedSkillId,
   onToggle,
   onEdit,
   onDelete,
   onExportZip,
   onSelectSkill,
   onSelectAll,
+  onSelectDetail,
   onGithubClick,
   onZipClick,
 }: SkillsListProps) {
@@ -138,6 +144,12 @@ export function SkillsList({
   const canImportSkills = canImport && !governedUnavailable;
   const canBatchSkills = canBatch && !governedUnavailable;
   const canManageSkills = canBatchSkills || canImportSkills;
+  const selectableNames = catalogEntries.flatMap((entry) =>
+    entry.actionName ? [entry.actionName] : [],
+  );
+  const allSelectableSelected =
+    selectableNames.length > 0 &&
+    selectableNames.every((name) => selectedNames.has(name));
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -208,15 +220,14 @@ export function SkillsList({
 
   const headerActions = canManageSkills ? (
     <div className="flex items-center gap-2">
-      {canBatchSkills && filteredSkills.length > 0 && (
+      {canBatchSkills && selectableNames.length > 0 && (
         <button
           onClick={onSelectAll}
           className="btn-secondary h-10"
         >
           <Check size={16} />
           <span className="hidden sm:inline">
-            {selectedNames.size === filteredSkills.length &&
-            filteredSkills.length > 0
+            {allSelectableSelected
               ? t("common.deselectAll")
               : t("common.selectAll")}
           </span>
@@ -256,7 +267,7 @@ export function SkillsList({
       {embedded && (
         <div
           data-skills-catalog-toolbar
-          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar}`}
+          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar} px-0`}
         >
           <div
             className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell}`}
@@ -324,8 +335,11 @@ export function SkillsList({
       )}
 
       {/* Skills List */}
-      <div className={workbenchSurface.catalog.content}>
-        {filteredSkills.length === 0 ? (
+      <div
+        className={`min-h-0 flex-1 py-3 ${embedded ? "px-0" : "px-4"}`}
+        data-skills-master-detail
+      >
+        {catalogEntries.length === 0 ? (
           <div className={workbenchSurface.catalog.emptyState}>
             <div className={workbenchSurface.catalog.emptyIcon}>
               <FolderOpen size={28} />
@@ -353,20 +367,30 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <SkillManagementTable
-            canBatch={canBatchSkills}
-            canDelete={canDelete}
-            canEdit={canEditSkills}
-            canExport={canExport && !governedUnavailable}
-            canToggle={canToggleSkills}
-            onDelete={onDelete}
-            onEdit={onEdit}
-            onExportZip={onExportZip}
-            onSelectSkill={onSelectSkill}
-            onToggle={onToggle}
-            selectedNames={selectedNames}
-            skills={paginatedSkills}
-          />
+          <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(30rem,1.1fr)_minmax(24rem,0.9fr)] xl:items-start">
+            <SkillManagementTable
+              canBatch={canBatchSkills}
+              canDelete={canDelete}
+              canEdit={canEditSkills}
+              canExport={canExport && !governedUnavailable}
+              canToggle={canToggleSkills}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onExportZip={onExportZip}
+              onSelectDetail={onSelectDetail}
+              onSelectSkill={onSelectSkill}
+              onToggle={onToggle}
+              selectedNames={selectedNames}
+              selectedSkillId={selectedSkillId}
+              entries={paginatedCatalogEntries}
+            />
+            <div
+              className="min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]"
+              data-selected-skill-detail-shell
+            >
+              {selectedDetail}
+            </div>
+          </div>
         )}
       </div>
 

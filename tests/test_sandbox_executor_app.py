@@ -20,7 +20,7 @@ from app.file_parser_contracts import (
     MaterializedAttachmentFact,
     build_attachment_preprocessing_contract,
 )
-from app.public_execution import PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS
+from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.required_tool_contract import RequiredCapabilityDeclaration
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
@@ -113,8 +113,15 @@ def callback_ack(payload: dict[str, object]) -> dict[str, object]:
 
 
 def mapped_execution_fact(invocation_id: str, lifecycle: str, *, fact_kind: str = "tool_invocation"):
-    public_label = "Tenant Search" if fact_kind == "capability_invocation" else "Running controlled processing"
-    return executor_app._PrivateExecutionFact(fact={"fact_kind": fact_kind, "invocation_id": invocation_id, "lifecycle": lifecycle, "public_label": public_label})
+    capability = fact_kind == "capability_invocation"
+    return executor_app._PrivateExecutionFact(
+        fact={
+            "invocation_id": invocation_id,
+            "tool_name": "MCP" if capability else "Bash",
+            "lifecycle": lifecycle,
+            **({"safe_label": "Tenant Search"} if capability else {}),
+        }
+    )
 
 
 def public_execution_events(callbacks):
@@ -502,7 +509,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         ("invocation_requested", "tool-call-1"),
         ("completed", "tool-call-1"),
     ]
-    capability_events = [item for item in callbacks if item.get("events")]
+    capability_events = [
+        item
+        for item in callbacks
+        if any(event["type"].startswith("capability_") for event in item.get("events", []))
+    ]
     assert {
         (item["session_id"], item["run_id"], item["attempt_id"])
         for item in capability_events
@@ -521,9 +532,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         "execution_step_completed",
     ]
     assert execution_events[0]["payload"]["step_id"] == execution_events[1]["payload"]["step_id"]
-    assert set(execution_events[0]["payload"]) <= {
-        "step_id", "kind", "stage", "status", "title", "summary", "progress", "safe_file_name", "artifact_public_id"
-    }
+    assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
     assert "mcp__tenant-server__search" not in json.dumps(capability_events)
     assert "tool-call-1" not in json.dumps(capability_events)
 
@@ -587,7 +596,9 @@ def test_executor_active_progress_is_bounded_rate_limited_and_invocation_scoped(
         return {"status": "failed", "error_code": "controlled_failure", "error_message": "Stopped"}
     monkeypatch.setattr(executor_app, "_ACTIVE_PROGRESS_INTERVAL_SECONDS", interval_seconds)
     client = create_test_client(tmp_path, executor_runner=executor_runner, callback_sender=callback_sender)
-    assert client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers()).status_code == 200
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    assert response.status_code == 200
+    assert response.json()["error_code"] == "controlled_failure"
     events = public_execution_events(callbacks)
     assert len(started_ids) == len(set(started_ids)) == 3
     by_step = {step_id: [event for event in events if event["payload"]["step_id"] == step_id] for step_id in started_ids}
@@ -597,7 +608,7 @@ def test_executor_active_progress_is_bounded_rate_limited_and_invocation_scoped(
     assert len(progress_times[started_ids[1]]) >= 2
     assert progress_times[started_ids[1]][1] - progress_times[started_ids[1]][0] >= interval_seconds * 0.75
     assert all(event["payload"]["progress"] == {"current": 0, "total": 1} for event in events if event["type"] == "execution_progress")
-    assert all(set(event["payload"]) <= PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS for event in events)
+    assert all(set(event["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS for event in events)
     assert not any(value in json.dumps(events) for value in ("private-capability-a", "private-tool-b", "private-short-c", "state_patch", "tool_call_id"))
 
 
@@ -662,14 +673,20 @@ async def test_executor_rejects_unknown_capability_identity_without_inference(mo
     request = ExecutorTaskRequest.model_validate(task_payload())
     events = []
 
-    result = await _default_executor_runner(request, tmp_path, events.append)
+    async def emit_event(event):
+        events.append(event)
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
 
     assert len(acknowledgements) == 1
     assert acknowledgements[0] is False
     assert result["status"] == "failed"
     assert result["message"] == ""
+    assert result["error_code"] == "capability_lifecycle_sequence_invalid"
     assert result["capability_evidence"] == []
-    assert events == []
+    assert events
+    assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
 
 
 @pytest.mark.parametrize(
@@ -965,6 +982,8 @@ async def test_executor_serializes_concurrent_capability_transitions(
         return sdk_result()
 
     async def emit_event(event):
+        if not event.type.startswith("capability_"):
+            return True
         persisted_phases.append(event.type)
         if len(persisted_phases) == len(seed_call_ids) + 1:
             first_callback_started.set()
@@ -1797,7 +1816,10 @@ async def test_executor_routes_uploaded_controlled_id_collision_to_sdk_native(mo
     ]
     request = ExecutorTaskRequest.model_validate(raw)
 
-    result = await _default_executor_runner(request, Path(tmp_path), lambda _event: None)
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, Path(tmp_path), emit_event)
 
     assert result["status"] == "completed"
     assert result["executor_mode"] == "claude_agent_sdk"
@@ -2431,12 +2453,26 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         await asyncio.sleep(0)
 
         assert late_event_attempted.is_set()
-        assert [callback["status"] for callback in callbacks] == ["running", "running"]
-        assert all(
-            event.get("message") != "late"
-            for callback in callbacks
+        assert [callback["status"] for callback in callbacks] == ["running", "running", "running"]
+        assert callbacks[-1]["state_patch"] == {
+            "stage": "executor_finished",
+            "error_code": "executor_cleanup_failed",
+        }
+        late_events = [
+            event
+            for callback in callbacks[:-1]
             for event in callback.get("events", [])
-        )
+            if event.get("message") == "late"
+        ]
+        assert late_events == [
+            {
+                "type": "assistant_delta",
+                "message": "late",
+                "payload": {"delta": "late"},
+                "admin_only": False,
+            }
+        ]
+        assert not callbacks[-1].get("events")
         assert loop_exception_contexts == []
         assert [task for task in asyncio.all_tasks() - initial_tasks if not task.done()] == []
     finally:
@@ -2815,6 +2851,90 @@ def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):
     assert "prompt_length" in content
     assert "hello executor" not in content
     assert str(tmp_path) not in content
+
+
+@pytest.mark.parametrize(
+    ("operation", "error_type"),
+    [
+        pytest.param("mkdir", OSError, id="mkdir-oserror"),
+        pytest.param("mkdir", PermissionError, id="mkdir-permission-error"),
+        pytest.param("write_text", OSError, id="write-text-oserror"),
+        pytest.param("write_text", PermissionError, id="write-text-permission-error"),
+    ],
+)
+def test_executor_execute_fails_closed_when_runtime_marker_write_fails(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    operation,
+    error_type,
+):
+    runner_invoked = False
+    callbacks = []
+
+    async def executor_runner(request, workspace_root, emit_event):
+        nonlocal runner_invoked
+        runner_invoked = True
+        return {"status": "completed"}
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+    )
+    marker_dir = Path(tmp_path) / "runtime"
+    marker_path = marker_dir / "run-a.json"
+    leak = (
+        f"path={marker_path} config=secret-key header=Authorization "
+        "token=nested-secret prompt=hello executor"
+    )
+
+    if operation == "mkdir":
+        original_mkdir = Path.mkdir
+
+        def failing_mkdir(path, *args, **kwargs):
+            if path == marker_dir:
+                raise error_type(leak)
+            return original_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+    else:
+        original_write_text = Path.write_text
+
+        def failing_write_text(path, *args, **kwargs):
+            if path == marker_path:
+                raise error_type(leak)
+            return original_write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    response = client.post(
+        "/v1/tasks/execute",
+        json=sensitive_task_payload(),
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "executor_runtime_marker_write_failed"
+    assert body["message"] == "Executor runtime marker write failed"
+    assert body["error_message"] == "Executor runtime marker write failed"
+    assert runner_invoked is False
+    assert callbacks == []
+    public_output = response.text + caplog.text
+    for sensitive_value in (
+        str(tmp_path),
+        "secret-key",
+        "Authorization",
+        "nested-secret",
+        "hello executor",
+    ):
+        assert sensitive_value not in public_output
 
 
 def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):

@@ -3856,8 +3856,8 @@ async def test_lambchat_translate_agent_defaults_to_translate_skill(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_turn(monkeypatch):
-    """A projected routed agent id must remain valid when the client continues its session."""
+async def test_chat_stream_keeps_routed_skill_without_reusing_a_prior_turn_file(monkeypatch):
+    """A routed file-capable Skill remains conversational without carrying the prior file."""
 
     calls = []
     run_ids = iter(["run_routed_first", "run_routed_second"])
@@ -3925,15 +3925,7 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         calls.append(("files", kwargs["workspace_id"], kwargs["file_ids"]))
 
     async def fake_list_authorized_session_input_files(conn, **kwargs):
-        calls.append(("reusable_files", kwargs["workspace_id"], kwargs["session_id"]))
-        return [
-            {
-                "id": "file_routed",
-                "original_name": "demo.docx",
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "created_at": "2026-08-01T00:00:00Z",
-            }
-        ]
+        raise AssertionError("chat turns must not implicitly reuse session input files")
 
     async def fake_bind_files(conn, **kwargs):
         calls.append(("bind", kwargs["file_ids"]))
@@ -4019,13 +4011,11 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         ("session_lookup", "workspace-routed", True),
         ("continuation_runs", "tenant-a", "user-a", "ses_routed", "workspace-routed", 1),
         ("resolve", "general-agent", "baoyu-translate"),
-        ("reusable_files", "workspace-routed", "ses_routed"),
         ("workspace", "workspace-routed"),
         ("files", "workspace-routed", []),
-        ("session", "ses_routed", "general-agent", "workspace-routed"),
         ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
         ("bind", []),
-        ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", ["file_routed"]),
+        ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", []),
     ]
 
 
@@ -4515,15 +4505,15 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         expected_calls.extend(["claim", "skill_auth", "workspace_auth", "file_auth"])
     else:
         expected_calls.extend(["skill_auth", "workspace_auth", "file_auth", "claim"])
-    expected_calls.extend([
-        "create_session",
-        "create_run",
-        "profile_reauth",
-        "enqueue",
-    ])
+    if not restored_continuation:
+        expected_calls.append("create_session")
+    expected_calls.extend(["create_run", "profile_reauth", "enqueue"])
     assert initial_calls == expected_calls
-    assert persisted["session"]["admitted_agent_profile_revision"] == 7
-    assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
+    if restored_continuation:
+        assert "session" not in persisted
+    else:
+        assert persisted["session"]["admitted_agent_profile_revision"] == 7
+        assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["admitted_agent_profile_revision"] == 7
     assert persisted["run"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["input_json"]["agent_profile"] == {

@@ -55,18 +55,22 @@ def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig
         callback_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_CALLBACK_BASE"),
         openai_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_OPENAI_BASE"),
         anthropic_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_ANTHROPIC_BASE"),
+        expected_network_mode=env.get("OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE", "none"),
         executor_entrypoint=tuple(json.loads(env.get("OPENSANDBOX_GATEWAY_EXECUTOR_ENTRYPOINT_JSON", '["/app/docker-entrypoint.sh","uvicorn"]'))),
         request_timeout_seconds=float(env.get("OPENSANDBOX_GATEWAY_TIMEOUT_SECONDS", "5")),
         dispatch_timeout_seconds=float(env.get("OPENSANDBOX_GATEWAY_DISPATCH_TIMEOUT_SECONDS", "3600")),
     )
     config.validate()
+    loopback = config.upstream_transport == "loopback_http"
     return (
         config,
         _required(env, "OPENSANDBOX_GATEWAY_STATE_PATH"),
-        _required(env, "OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE"),
+        env.get("OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE", "") if loopback else _required(
+            env, "OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE"
+        ),
         _required(env, "OPENSANDBOX_GATEWAY_TLS_CERT_FILE"),
         _required(env, "OPENSANDBOX_GATEWAY_TLS_KEY_FILE"),
-        _app_scoped_upstream_ca_path(env),
+        _app_scoped_upstream_ca_path(env, required=not loopback),
         int(env.get("OPENSANDBOX_GATEWAY_LISTEN_PORT", "8443")),
     )
 
@@ -86,35 +90,18 @@ def build_application(config: GatewayConfig, state_path: str) -> tuple[GatewayAp
 
 
 def run() -> None:
-    """Run the authenticated HTTPS gateway and host mailbox worker."""
+    """Run the authenticated HTTPS gateway and optional host mailbox worker."""
 
     config, state_path, policy_path, cert_path, key_path, upstream_ca_path, port = load_config()
-    provider_credentials = _model_provider_credentials(os.environ)
     _verify_certificate_ip_san(cert_path, config.public_authority)
     application, store = build_application(config, state_path)
-    policy_value = json.loads(pathlib.Path(policy_path).read_text(encoding="utf-8"))
-    policy = BrokerPolicy(policy_value)
-    upstream_tls_context = _load_upstream_tls_context(upstream_ca_path)
-    expected_bases = {
-        "callback": config.callback_upstream_base,
-        "openai": config.openai_upstream_base,
-        "anthropic": config.anthropic_upstream_base,
-    }
-    if any(policy.targets[name][0] != value for name, value in expected_bases.items()):
-        raise ValueError("egress policy target does not match signed gateway subjects")
-    broker = MailboxBroker(
+    broker_runtime = _start_broker_runtime(
+        config,
         store,
-        policy,
-        config.request_timeout_seconds,
-        config.max_response_bytes,
-        config.workspace_root,
-        config.dispatch_timeout_seconds,
-        upstream_tls_context=upstream_tls_context,
-        provider_credentials=provider_credentials,
+        policy_path,
+        upstream_ca_path,
+        os.environ,
     )
-    stop = threading.Event()
-    worker = threading.Thread(target=_broker_loop, args=(broker, stop), name="opensandbox-mailbox-broker", daemon=True)
-    worker.start()
 
     class Handler(_GatewayHandler):
         app = application
@@ -135,7 +122,8 @@ def run() -> None:
     server.tls_context = context
 
     def shutdown(*_: object) -> None:
-        stop.set()
+        if broker_runtime is not None:
+            broker_runtime[0].set()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
@@ -143,9 +131,52 @@ def run() -> None:
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
-        stop.set()
-        worker.join(timeout=2.0)
+        if broker_runtime is not None:
+            broker_runtime[0].set()
+            broker_runtime[1].join(timeout=2.0)
         server.server_close()
+
+
+def _start_broker_runtime(
+    config: GatewayConfig,
+    store: SQLiteStateStore,
+    policy_path: str,
+    upstream_ca_path: str,
+    environ: Mapping[str, str],
+) -> tuple[threading.Event, threading.Thread] | None:
+    if not _broker_enabled(environ):
+        return None
+    provider_credentials = _model_provider_credentials(environ)
+    policy = _load_broker_policy(config, policy_path)
+    upstream_tls_context = _load_upstream_tls_context(upstream_ca_path) if upstream_ca_path else None
+    broker = MailboxBroker(
+        store,
+        policy,
+        config.request_timeout_seconds,
+        config.max_response_bytes,
+        config.workspace_root,
+        config.dispatch_timeout_seconds,
+        upstream_tls_context=upstream_tls_context,
+        provider_credentials=provider_credentials,
+    )
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=_broker_loop,
+        args=(broker, stop),
+        name="opensandbox-mailbox-broker",
+        daemon=True,
+    )
+    worker.start()
+    return stop, worker
+
+
+def _broker_enabled(environ: Mapping[str, str]) -> bool:
+    value = environ.get("OPENSANDBOX_GATEWAY_BROKER_ENABLED", "true")
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError("OPENSANDBOX_GATEWAY_BROKER_ENABLED must be true or false")
 
 
 class _GatewayHandler(BaseHTTPRequestHandler):
@@ -439,11 +470,43 @@ def _verify_certificate_ip_san(cert_path: str, public_authority: str) -> None:
         raise ValueError("gateway TLS certificate IP SAN does not exactly match public authority")
 
 
-def _app_scoped_upstream_ca_path(env: Mapping[str, str]) -> str:
-    path = _required(env, "OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE")
+def _app_scoped_upstream_ca_path(env: Mapping[str, str], *, required: bool = True) -> str:
+    path = env.get("OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE", "")
+    if not required:
+        if path:
+            raise ValueError("loopback broker must not configure upstream CA")
+        return ""
+    if not path:
+        raise ValueError("missing required setting: OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE")
     if path != UPSTREAM_CA_BUNDLE_PATH:
         raise ValueError("gateway upstream CA path is not app-scoped")
     return path
+
+
+def _load_broker_policy(config: GatewayConfig, policy_path: str) -> BrokerPolicy:
+    """Load pinned HTTPS policy or synthesize the exact loopback-only policy."""
+
+    expected_bases = {
+        "callback": config.callback_upstream_base,
+        "openai": config.openai_upstream_base,
+        "anthropic": config.anthropic_upstream_base,
+    }
+    if config.upstream_transport == "loopback_http":
+        if policy_path:
+            raise ValueError("loopback broker must not configure an external egress policy")
+        policy_value = {
+            "version": 1,
+            "targets": {
+                name: {"base_url": value, "expected_ips": ["127.0.0.1"]}
+                for name, value in expected_bases.items()
+            },
+        }
+    else:
+        policy_value = json.loads(pathlib.Path(policy_path).read_text(encoding="utf-8"))
+    policy = BrokerPolicy(policy_value)
+    if any(policy.targets[name][0] != value for name, value in expected_bases.items()):
+        raise ValueError("egress policy target does not match signed gateway subjects")
+    return policy
 
 
 def _load_upstream_tls_context(ca_path: str) -> ssl.SSLContext:

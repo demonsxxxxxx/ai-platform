@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -31,7 +31,11 @@ interface GitHubSkill {
   description: string;
 }
 
-export function useSkillsActions(options?: { enabled?: boolean }) {
+export function useSkillsActions(options?: {
+  allAuthorizedCatalog?: boolean;
+  enabled?: boolean;
+  loadAdminCatalog?: boolean;
+}) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const location = useLocation();
@@ -61,7 +65,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     effectivePermissions,
     effectivePermissionsKnown,
     catalogReadResolved,
-    total,
+    total: catalogTotal,
     isLoading,
     error,
     listError,
@@ -83,8 +87,27 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     installGitHubSkills,
     clearError,
     fetchSkills,
-  } = useSkills({ enabled, listParams });
-  const filteredSkills = skills;
+  } = useSkills({
+    enabled,
+    listParams,
+    allAuthorizedCatalog: options?.allAuthorizedCatalog,
+  });
+  const filteredSkills = useMemo(() => {
+    if (!options?.allAuthorizedCatalog) return skills;
+    const query = searchQuery.trim().normalize("NFKC").toLocaleLowerCase();
+    return skills.filter((skill) => {
+      if (
+        query &&
+        !`${skill.name}\n${skill.description}`
+          .normalize("NFKC")
+          .toLocaleLowerCase()
+          .includes(query)
+      ) {
+        return false;
+      }
+      return selectedTags.every((tag) => skill.tags.includes(tag));
+    });
+  }, [options?.allAuthorizedCatalog, searchQuery, selectedTags, skills]);
   const canAdminUploadSkills = isAiAdminUser(user);
 
   useEffect(() => {
@@ -102,7 +125,12 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     navigate(location.pathname, { replace: true });
   }, [location.pathname, location.state, navigate]);
 
-  const paginatedSkills = filteredSkills;
+  const paginatedSkills = options?.allAuthorizedCatalog
+    ? filteredSkills.slice((page - 1) * pageSize, page * pageSize)
+    : filteredSkills;
+  const total = options?.allAuthorizedCatalog
+    ? filteredSkills.length
+    : catalogTotal;
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -145,13 +173,19 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const refreshAdminSkillCatalog = async (): Promise<
+  const refreshAdminSkillCatalog = useCallback(async (): Promise<
     AdminSkillCatalogItem[] | null
   > => {
     const items = await adminListSkills();
     if (items) setAdminCatalogItems(items);
     return items;
-  };
+  }, [adminListSkills]);
+
+  useEffect(() => {
+    if (options?.loadAdminCatalog && canAdminUploadSkills) {
+      void refreshAdminSkillCatalog();
+    }
+  }, [canAdminUploadSkills, options?.loadAdminCatalog, refreshAdminSkillCatalog]);
 
   // GitHub import state
   const [showGithubModal, setShowGithubModal] = useState(false);
@@ -254,11 +288,15 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     });
   };
 
-  const handleSelectAll = () => {
-    if (selectedNames.size === filteredSkills.length) {
+  const handleSelectAll = (names = filteredSkills.map((skill) => skill.name)) => {
+    const selectableNames = [...new Set(names)];
+    if (
+      selectableNames.length > 0 &&
+      selectableNames.every((name) => selectedNames.has(name))
+    ) {
       setSelectedNames(new Set());
     } else {
-      setSelectedNames(new Set(filteredSkills.map((s) => s.name)));
+      setSelectedNames(new Set(selectableNames));
     }
   };
 

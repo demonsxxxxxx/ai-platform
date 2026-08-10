@@ -252,6 +252,15 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert "Bash" not in str(ordinary)
 
 
+def test_context_file_size_terminal_projection_is_specific_and_safe():
+    projection = public_terminal_projection("failed", "context_file_too_large")
+
+    assert projection["detail_code"] == "context_file_too_large"
+    assert projection["error_code"] == "context_file_too_large"
+    assert projection["message"] == "文件超过 32 MB 处理上限。请选择更小的文件后重试。"
+    assert projection["event_payload"] == {}
+
+
 def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
     succeeded = public_chat_terminal_projection(
         {

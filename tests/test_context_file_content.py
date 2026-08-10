@@ -1,6 +1,6 @@
 import hashlib
 import io
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
 from docx import Document
@@ -11,6 +11,7 @@ from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObjec
 from app.context.file_content import (
     ContextFileContentError,
     DOCX_CONTENT_TYPE,
+    MAX_CONTEXT_FILE_STAGE_BYTES,
     MAX_DOCUMENT_SOURCE_BYTES,
     MAX_PDF_OBJECTS_INSPECTED,
     MAX_PDF_PAGES,
@@ -119,6 +120,20 @@ def test_parse_context_file_rejects_oversize_text():
     raw = b"a" * (MAX_TEXT_SOURCE_BYTES + 1)
     with pytest.raises(ContextFileContentError, match="context_file_too_large"):
         parse_context_file(_row("notes.txt", "text/plain", raw), raw)
+
+
+def test_parse_context_file_accepts_docx_above_legacy_16_mib_limit():
+    stream = io.BytesIO(_docx_bytes())
+    with ZipFile(stream, "a", compression=ZIP_STORED) as archive:
+        archive.writestr("customXml/bounded-padding.bin", b"x" * (17 * 1024 * 1024))
+    raw = stream.getvalue()
+
+    assert 16 * 1024 * 1024 < len(raw) <= MAX_DOCUMENT_SOURCE_BYTES
+    assert MAX_DOCUMENT_SOURCE_BYTES == MAX_CONTEXT_FILE_STAGE_BYTES == 32 * 1024 * 1024
+    parsed = parse_context_file(_row("source.docx", DOCX_CONTENT_TYPE, raw), raw)
+
+    assert parsed.parser_id == "ai-platform.docx.python-docx"
+    assert parsed.source_bytes == len(raw)
 
 
 @pytest.mark.parametrize(

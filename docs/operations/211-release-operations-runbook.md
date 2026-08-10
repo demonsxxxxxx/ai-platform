@@ -208,6 +208,32 @@ read only for signed `released` or `expired` history; active acquisition and
 dispatch require the current key and a fresh proof. Keep the raw values in the
 host environment file only.
 
+### s72 direct official OpenSandbox functional acceptance
+
+`docker-compose.opensandbox-internal-test.yml` is a separate, non-default
+functional-acceptance overlay. It pins API and worker to
+`DEPLOYMENT_ENVIRONMENT=test`, `SANDBOX_CONTAINER_PROVIDER=opensandbox`,
+`SANDBOX_SECURITY_PROFILE=internal-test`, and
+`OPENSANDBOX_EXPECTED_NETWORK_MODE=bridge`. Use it only with the base Compose
+file and an exact merged backend SHA; do not combine it with the governed
+OpenSandbox overlay or the Docker-socket sandbox overlay.
+
+This mode connects directly to the official OpenSandbox lifecycle API. It does
+not require the capability gateway, model broker, a custom `/attestation`
+endpoint, or a governed-egress proof key. The official API key remains an
+operator-held secret and must never appear in commands, logs, or evidence.
+Unknown profiles, production selection, non-OpenSandbox providers, or a
+one-sided network-mode change fail during process startup.
+
+The `bridge` network is an accepted internal-test risk, not production
+isolation evidence. Acceptance still requires one application-owned run to
+prove SDK create and metadata readback, executor health and runtime identity,
+command execution, file stage/read/collect, stop, and orphan-free cleanup. On
+the s72 host, inspect that exact sandbox container and record
+`HostConfig.Runtime=runsc`; configuration files and source tests are not runtime
+proof. Keep the governed profile as the production default and track network
+closure as separate follow-up work.
+
 ### s72 pinned-HTTPS bridge listener
 
 The Docker/global callback and model bases above remain unchanged. When

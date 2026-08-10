@@ -29,7 +29,6 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
-from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.intent_router import (
@@ -1878,22 +1877,7 @@ async def chat_stream(
                     ),
                 )
             input_modes = list(skill.get("input_modes") or [])
-            reusable_file_rows = []
-            if request.session_id and not requested_file_ids and has_file_input_mode(input_modes):
-                reusable_file_rows = await repositories.list_authorized_session_input_files(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    workspace_id=effective_workspace_id,
-                    user_id=principal.user_id,
-                    session_id=request.session_id,
-                )
-            primary_file_ids = primary_file_ids_for_run(
-                requested_file_ids=requested_file_ids,
-                reusable_rows=[dict(row) for row in reusable_file_rows],
-                input_modes=input_modes,
-            )
-            if has_file_input_mode(input_modes) and not primary_file_ids:
-                raise RepositoryConflictError("file_required_for_skill")
+            primary_file_ids = list(requested_file_ids)
             await enforce_user_active_run_limit(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -2019,22 +2003,23 @@ async def chat_stream(
                     if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
-            session_create_kwargs = {
-                "tenant_id": principal.tenant_id,
-                "workspace_id": effective_workspace_id,
-                "user_id": principal.user_id,
-                "agent_id": resolved_agent_id,
-                "title": request.title or request.message[:80],
-                "session_id": session_id,
-            }
-            if admitted_agent_profile is not None:
-                session_create_kwargs.update(
-                    {
-                        "admitted_agent_profile_revision": admitted_agent_profile.revision,
-                        "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
-                    }
-                )
-            session_id = await repositories.create_session(conn, **session_create_kwargs)
+            if request.session_id is None:
+                session_create_kwargs = {
+                    "tenant_id": principal.tenant_id,
+                    "workspace_id": effective_workspace_id,
+                    "user_id": principal.user_id,
+                    "agent_id": resolved_agent_id,
+                    "title": request.title or request.message[:80],
+                    "session_id": session_id,
+                }
+                if admitted_agent_profile is not None:
+                    session_create_kwargs.update(
+                        {
+                            "admitted_agent_profile_revision": admitted_agent_profile.revision,
+                            "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
+                        }
+                    )
+                session_id = await repositories.create_session(conn, **session_create_kwargs)
             run_create_kwargs = {
                 "tenant_id": principal.tenant_id,
                 "workspace_id": effective_workspace_id,
@@ -2137,6 +2122,7 @@ async def chat_stream(
                 file_ids=primary_file_ids,
                 source="chat_stream",
                 include_session_history=True,
+                include_session_files=False,
             )
             for event in intent_event_specs(decision_payload):
                 await repositories.append_event(

@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { AlertTriangle, Check, ChevronDown, Search, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import type { DepartmentDirectoryNode } from "../../services/api/capabilityDistribution";
 import {
@@ -31,6 +32,7 @@ export function DepartmentDirectorySelector({
   onChange,
   selectedAuthorityIds,
 }: DepartmentDirectorySelectorProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const listboxId = useId();
@@ -159,9 +161,11 @@ export function DepartmentDirectorySelector({
             </span>
             {!disabled ? (
               <button
-                aria-label={`移除 ${option.name}`}
+                aria-label={t("skills.governance.departmentSelector.remove", {
+                  name: option.name,
+                })}
                 onClick={() => remove(option.authorityId)}
-                title="移除"
+                title={t("skills.governance.departmentSelector.removeShort")}
                 type="button"
               >
                 <X aria-hidden="true" size={13} />
@@ -180,9 +184,11 @@ export function DepartmentDirectorySelector({
             </span>
             {!disabled ? (
               <button
-                aria-label={`移除未确认部门 ${authorityId}`}
+                aria-label={t("skills.governance.departmentSelector.removeUnresolved", {
+                  name: authorityId,
+                })}
                 onClick={() => remove(authorityId)}
-                title="移除"
+                title={t("skills.governance.departmentSelector.removeShort")}
                 type="button"
               >
                 <X aria-hidden="true" size={13} />
@@ -191,14 +197,16 @@ export function DepartmentDirectorySelector({
           </span>
         ))}
         {selectedAuthorityIds.length === 0 ? (
-          <span className="department-selector__placeholder">全部部门</span>
+          <span className="department-selector__placeholder">
+            {t("skills.governance.departments.all")}
+          </span>
         ) : null}
         <button
           aria-controls={listboxId}
           aria-describedby={selectionStatusId}
           aria-expanded={open}
           aria-haspopup="listbox"
-          aria-label="选择允许部门"
+          aria-label={t("skills.governance.departmentSelector.selectAllowed")}
           className="department-selector__trigger"
           disabled={disabled || directory === null}
           onClick={() => setOpen((current) => !current)}
@@ -209,7 +217,7 @@ export function DepartmentDirectorySelector({
             }
           }}
           ref={triggerRef}
-          title="选择部门"
+          title={t("skills.governance.departmentSelector.select")}
           type="button"
         >
           <ChevronDown
@@ -225,17 +233,17 @@ export function DepartmentDirectorySelector({
           <div className="department-selector__search">
             <Search aria-hidden="true" size={15} />
             <input
-              aria-label="搜索部门"
+              aria-label={t("skills.governance.departmentSelector.search")}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={onSearchKeyDown}
-              placeholder="搜索部门名称或路径"
+              placeholder={t("skills.governance.departmentSelector.searchPlaceholder")}
               ref={searchRef}
               type="search"
               value={query}
             />
           </div>
           <div
-            aria-label="权威部门目录"
+            aria-label={t("skills.governance.departmentSelector.directory")}
             aria-describedby={selectionStatusId}
             aria-multiselectable="true"
             className="department-selector__options"
@@ -248,9 +256,9 @@ export function DepartmentDirectorySelector({
                 !checked && selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS;
               const unavailable = !option.selectable || atSelectionLimit;
               const unavailableReason = !option.selectable
-                ? "名称重复，不能作为分发权威"
+                ? t("skills.governance.departmentSelector.duplicateReason")
                 : atSelectionLimit
-                  ? "已达到 128 个部门的选择上限"
+                  ? t("skills.governance.departmentSelector.limitReason")
                   : null;
               return (
                 <button
@@ -274,9 +282,9 @@ export function DepartmentDirectorySelector({
                   style={{ paddingLeft: `${0.75 + option.depth * 1.1}rem` }}
                   title={
                     !option.selectable
-                      ? "名称重复，不能作为分发权威"
+                      ? t("skills.governance.departmentSelector.duplicateReason")
                       : atSelectionLimit
-                        ? "最多选择 128 个部门"
+                        ? t("skills.governance.departmentSelector.maxDepartments")
                         : option.path
                   }
                   type="button"
@@ -289,7 +297,7 @@ export function DepartmentDirectorySelector({
                   </span>
                   {!option.selectable ? (
                     <span className="text-[11px] text-[var(--theme-warning)]">
-                      名称重复
+                      {t("skills.governance.departmentSelector.duplicate")}
                     </span>
                   ) : null}
                 </button>
@@ -297,7 +305,7 @@ export function DepartmentDirectorySelector({
             })}
             {filtered.length === 0 ? (
               <p className="px-3 py-4 text-center text-xs text-[var(--theme-text-secondary)]">
-                没有匹配的部门
+                {t("skills.governance.departmentSelector.empty")}
               </p>
             ) : null}
           </div>
@@ -315,7 +323,7 @@ export function DepartmentDirectorySelector({
           id={selectionStatusId}
           role="status"
         >
-          未确认部门会保留显示；请移除它们，或等待权威目录恢复后再保存。
+          {t("skills.governance.departmentSelector.unresolvedWarning")}
         </p>
       ) : selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS ? (
         <p
@@ -323,11 +331,11 @@ export function DepartmentDirectorySelector({
           id={selectionStatusId}
           role="status"
         >
-          已达到 128 个部门的选择上限。
+          {t("skills.governance.departmentSelector.limitReached")}
         </p>
       ) : (
         <span className="sr-only" id={selectionStatusId}>
-          可从权威部门目录中选择最多 128 个部门。
+          {t("skills.governance.departmentSelector.selectionHelp")}
         </span>
       )}
     </div>

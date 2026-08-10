@@ -136,3 +136,29 @@ test("renders run status from allowlisted event type instead of backend message 
     /private|token-bearing|stdout|C:\\private/i,
   );
 });
+
+test("renders a specific safe file-size failure instead of a generic failure", async () => {
+  const part: Extract<MessagePart, { type: "run_status" }> = {
+    type: "run_status",
+    event_id: "evt-file-too-large",
+    event_type: "context_file_too_large",
+    stage: "private storage stage",
+    message: "private token-bearing backend detail",
+    severity: "error",
+  };
+  await i18n.changeLanguage("zh");
+  const zhMarkup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, { part, isLast: true }),
+  );
+  await i18n.changeLanguage("en");
+  const enMarkup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, { part, isLast: true }),
+  );
+  await i18n.changeLanguage(PRODUCT_LANGUAGE);
+
+  assert.match(zhMarkup, /文件超过处理上限/);
+  assert.match(zhMarkup, /文件超过 32 MB 处理上限/);
+  assert.match(enMarkup, /File exceeds processing limit/);
+  assert.match(enMarkup, /32 MB processing limit/);
+  assert.doesNotMatch(`${zhMarkup}${enMarkup}`, /private|token-bearing|storage stage/);
+});

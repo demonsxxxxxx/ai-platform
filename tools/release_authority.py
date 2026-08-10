@@ -21,7 +21,7 @@ import tarfile
 import threading
 import time
 import unicodedata
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -94,11 +94,13 @@ DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
 DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
-OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
-PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset(
+S72_COLOCATION_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.s72-colocation.yml"
+S72_COLOCATION_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), S72_COLOCATION_COMPOSE_RELATIVE_PATH)
+GOVERNED_COMPOSE_SELECTIONS = frozenset(
     {
+        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),),
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
-        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        S72_COLOCATION_SELECTION,
     }
 )
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
@@ -1674,23 +1676,14 @@ def resolve_compose_files(
     values: Sequence[str | Path] = compose_files if compose_files is not None else (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
     if not values:
         raise ReleaseAuthorityError("compose file selection is invalid")
-    relative_paths: list[str] = []
+    if any(not isinstance(value, (str, Path)) for value in values):
+        raise ReleaseAuthorityError("compose file selection is invalid")
+    relative_paths = tuple(value.as_posix() if isinstance(value, Path) else value for value in values)
+    if relative_paths not in GOVERNED_COMPOSE_SELECTIONS:
+        raise ReleaseAuthorityError("compose file selection is not a governed release contour")
     absolute_paths: list[Path] = []
-    identities: set[str] = set()
-    for index, value in enumerate(values):
-        if not isinstance(value, (str, Path)):
-            raise ReleaseAuthorityError("compose file selection is invalid")
-        raw = value.as_posix() if isinstance(value, Path) else value
-        invalid_text = not raw or raw != unicodedata.normalize("NFC", raw) or "\\" in raw or "," in raw or any(unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES for character in raw)
+    for raw in relative_paths:
         pure = PurePosixPath(raw)
-        windows = PureWindowsPath(raw)
-        invalid_path = invalid_text or pure.is_absolute() or windows.is_absolute() or bool(windows.drive) or pure.as_posix() != raw or raw.endswith("/") or any(part in {"", ".", ".."} for part in pure.parts)
-        if invalid_path:
-            raise ReleaseAuthorityError("compose file selection is invalid")
-        if index == 0 and raw != DEFAULT_COMPOSE_RELATIVE_PATH.as_posix():
-            raise ReleaseAuthorityError("canonical main compose file must be first")
-        if raw in relative_paths:
-            raise ReleaseAuthorityError("duplicate compose file is forbidden")
         candidate = root.joinpath(*pure.parts)
         current = root
         for part in pure.parts:
@@ -1703,14 +1696,11 @@ def resolve_compose_files(
             raise ReleaseAuthorityError("compose file must exist") from exc
         if resolved != candidate or not resolved.is_relative_to(root) or not resolved.is_file():
             raise ReleaseAuthorityError("compose file must be a regular checkout file")
-        identity = os.path.normcase(str(resolved))
-        if identity in identities or any(os.path.samefile(resolved, other) for other in absolute_paths):
+        if any(os.path.samefile(resolved, other) for other in absolute_paths):
             raise ReleaseAuthorityError("duplicate compose file is forbidden")
-        identities.add(identity)
-        relative_paths.append(raw)
         absolute_paths.append(resolved)
     working_dir = absolute_paths[0].parent.as_posix()
-    return _ComposeSelection(root, tuple(relative_paths), tuple(absolute_paths), working_dir, ",".join(path.as_posix() for path in absolute_paths))
+    return _ComposeSelection(root, relative_paths, tuple(absolute_paths), working_dir, ",".join(path.as_posix() for path in absolute_paths))
 
 
 def _normalized_release_root(release_root: Path) -> Path:
@@ -1922,6 +1912,34 @@ def _compose_config_preflight_error(category: str, missing_keys: Sequence[str] =
     error.safe_compose_config_evidence = {"compose_config_error_category": category, **({"missing_required_keys": list(sorted(set(missing_keys)))} if missing_keys else {})}
     return error
 
+
+def _validate_s72_colocation_config(rendered: str | bytes) -> None:
+    try:
+        services = json.loads(rendered)["services"]
+        authorities = tuple(
+            tuple(services[role]["environment"].get(key) for role in ("api", "worker"))
+            for key in ("EXISTING_AUTH_BASE_URL", "EXISTING_USER_INFO_BASE_URL")
+        )
+        invalid_ports = any(services[role].get("ports") not in (None, []) for role in ("postgres", "redis", "minio", "api"))
+        invalid_authority = any(
+            any(not isinstance(value, str) or not value.strip() for value in values)
+            or values[0] != values[1]
+            or any(
+                (parsed := urlsplit(value)).scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or bool(parsed.query or parsed.fragment)
+                for value in values
+            )
+            for values in authorities
+        )
+    except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        raise _compose_config_preflight_error("invalid-colocation-config") from None
+    if invalid_ports or invalid_authority:
+        raise _compose_config_preflight_error("invalid-colocation-config")
+
+
 def _semantic_compose_config_preflight(docker: Sequence[str], selection: _ComposeSelection, env_file: Path, *, commit: str) -> None:
     pattern = re.compile(r"\$\{([A-Z][A-Z0-9_]{0,127}):\?[^}]*\}", re.ASCII)
     try:
@@ -1933,12 +1951,16 @@ def _semantic_compose_config_preflight(docker: Sequence[str], selection: _Compos
     missing_keys: list[str] = []
     release_overrides = [f"AI_PLATFORM_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/backend", f"AI_PLATFORM_FRONTEND_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/frontend", f"SANDBOX_EXECUTOR_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/sandbox-executor", f"AI_PLATFORM_SOURCE_COMMIT={commit}", f"AI_PLATFORM_BUILD_COMMIT={commit}", "AI_PLATFORM_BUILD_DIRTY=false"]
     compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
+    is_s72_colocation = selection.relative_paths == S72_COLOCATION_SELECTION
+    config_args = ["config", "--format", "json"] if is_s72_colocation else ["config", "--quiet"]
     for _ in range(COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1):
-        command = [*_compose_command_with_environment(docker, [*release_overrides, *(f"{key}={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}" for key in missing_keys)]), "compose", "-p", COMPOSE_PROJECT, "--env-file", str(env_file), *compose_file_args, "config", "--quiet"]
+        command = [*_compose_command_with_environment(docker, [*release_overrides, *(f"{key}={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}" for key in missing_keys)]), "compose", "-p", COMPOSE_PROJECT, "--env-file", str(env_file), *compose_file_args, *config_args]
         result = _run(command, cwd=selection.absolute_paths[0].parent, check=False, timeout=COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS)
         if result.returncode == 0:
             if missing_keys:
                 raise _compose_config_preflight_error("missing-required-config", missing_keys)
+            if is_s72_colocation:
+                _validate_s72_colocation_config(result.stdout)
             return
         stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr if isinstance(result.stderr, str) else ""
         if "required" not in stderr.lower() or not any(marker in stderr.lower() for marker in ("missing", "value", "set ")):
@@ -2148,7 +2170,7 @@ def _compose_ownership_selection(
     labels: dict[str, Any],
     target: _ComposeSelection,
 ) -> _ComposeSelection | None:
-    """Resolve exact or allowlisted provider-transition ownership from live labels."""
+    """Resolve exact prior-release ownership from live Compose labels."""
     working_dir = labels.get("com.docker.compose.project.working_dir")
     config_files = labels.get("com.docker.compose.project.config_files")
     if not isinstance(working_dir, str) or not isinstance(config_files, str):
@@ -2158,21 +2180,9 @@ def _compose_ownership_selection(
     observed_files = config_files.split(",")
     if not observed_files or any(not value for value in observed_files):
         return None
-    observed_paths: list[Path] = []
-    for value in observed_files:
-        path = Path(value)
-        if (
-            not path.is_absolute()
-            or path.as_posix() != value
-            or value != unicodedata.normalize("NFC", value)
-            or "\\" in value
-            or any(
-                unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
-                for character in value
-            )
-        ):
-            return None
-        observed_paths.append(path)
+    observed_paths = [Path(value) for value in observed_files]
+    if any(not path.is_absolute() or path.as_posix() != value for path, value in zip(observed_paths, observed_files, strict=True)):
+        return None
     observed_main = observed_paths[0]
     observed_root = observed_main
     for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
@@ -2197,9 +2207,6 @@ def _compose_ownership_selection(
     if observed.working_dir != working_dir or observed.config_files != config_files:
         return None
     if observed.relative_paths == target.relative_paths:
-        return observed
-    transition = frozenset({observed.relative_paths, target.relative_paths})
-    if transition == PROVIDER_OVERLAY_COMPOSE_SELECTIONS:
         return observed
     return None
 
@@ -2265,14 +2272,6 @@ def _preflight_managed_container_ownership(
                 "manual frontend identity mismatch; refusing container removal"
             )
         manual_frontend_id = _manual_frontend_container_id(inspected)
-    required_roles = ("api", "worker", "frontend")
-    if (
-        compose_owner_selection is not None
-        and compose_owner_selection.relative_paths != selection.relative_paths
-        and tuple(compose_roles) != required_roles
-    ):
-        missing_role = next(role for role in required_roles if role not in compose_roles)
-        raise ReleaseAuthorityError(f"{missing_role} compose ownership mismatch")
     return _ManagedContainerOwnership(
         compose_selection=compose_owner_selection,
         compose_roles=tuple(compose_roles),

@@ -974,7 +974,8 @@
 .department-selector__menu {
   position: absolute;
   z-index: 30;
-  top: calc(100% + 0.35rem);
+  top: auto;
+  bottom: calc(100% + 0.35rem);
   left: 0;
   width: 100%;
   overflow: hidden;
