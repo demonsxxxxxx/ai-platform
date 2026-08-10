@@ -38,6 +38,11 @@ import {
 } from "./composerSelections";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
+  reconcileChatInputSubmissionLock,
+  releaseChatInputSubmissionLock,
+  tryAcquireChatInputSubmissionLock,
+} from "./chatInputSubmissionLock";
+import {
   consumePendingSelectionActionPrompt,
   SELECTION_ACTION_EVENT,
   type SelectionActionEventDetail,
@@ -140,9 +145,13 @@ export const ChatInput = memo(function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
-  const isSubmittingRef = useRef(false);
+  const isSubmittingRef = useRef<symbol | null>(null);
   const [, setCursorPosition] = useState(0);
   const { hasPermission } = useAuth();
+
+  useEffect(() => {
+    reconcileChatInputSubmissionLock(isSubmittingRef, isLoading);
+  }, [isLoading]);
 
   const uploadCategories = (
     Object.keys(FILE_CATEGORY_PERMISSIONS) as Array<
@@ -211,7 +220,7 @@ export const ChatInput = memo(function ChatInput({
     e.preventDefault();
     if (!canSend) return;
     if (handleComposerCommandSubmit(input)) return;
-    if (input.trim() && !isLoading && !disabled && !isSubmittingRef.current) {
+    if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
       const selectedSkillSubmission = selectedSkillState
         ? prepareSelectedSkillSubmission(selectedSkillState, attachments)
@@ -221,7 +230,8 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
 
-      isSubmittingRef.current = true;
+      const submissionToken = tryAcquireChatInputSubmissionLock(isSubmittingRef);
+      if (!submissionToken) return;
       try {
         const outcome = await onSend(
           trimmed,
@@ -243,7 +253,7 @@ export const ChatInput = memo(function ChatInput({
           });
         }
       } finally {
-        isSubmittingRef.current = false;
+        releaseChatInputSubmissionLock(isSubmittingRef, submissionToken);
       }
     }
   };
