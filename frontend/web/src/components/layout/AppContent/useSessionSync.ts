@@ -383,9 +383,13 @@ export function useSessionSync({
   // Load session when URL changes (e.g., from toast click)
   useEffect(() => {
     if (activeTab !== "chat") {
+      selectSessionRequestIdRef.current += 1;
       if (activeHistoryLoadRef.current) {
         retireHistoryLoad();
       }
+      isInternalNavRef.current = false;
+      internalNavigationSourcePathRef.current = null;
+      isNewSessionRef.current = false;
       if (initialUrlSyncPendingRef.current) {
         isSyncingRef.current = false;
       }

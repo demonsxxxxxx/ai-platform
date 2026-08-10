@@ -821,7 +821,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setPendingSubmissionId(active.submissionId);
       setError(
         i18n.t("chat.runTerminal.statusUnavailable", {
-          defaultValue: i18n.t("chat.requestFailed"),
+          defaultValue: i18n.t("chat.sendFailed"),
         }),
       );
       return true;
@@ -1007,7 +1007,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             event_type: "status_unavailable",
             stage: "agent",
             message: i18n.t("chat.runTerminal.statusUnavailable", {
-              defaultValue: i18n.t("chat.requestFailed"),
+              defaultValue: i18n.t("chat.sendFailed"),
             }),
             severity: "warning",
           };
@@ -1888,7 +1888,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       if (submissionUncertaintyRef.current !== null) {
         const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-          defaultValue: i18n.t("chat.requestFailed"),
+          defaultValue: i18n.t("chat.sendFailed"),
         });
         setError(statusUnavailable);
         toast.error(statusUnavailable);
@@ -1970,7 +1970,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         // A durable key is the only recovery authority for an unknown POST.
         // Do not send if the browser cannot prove that it retained the key.
         const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-          defaultValue: i18n.t("chat.requestFailed"),
+          defaultValue: i18n.t("chat.sendFailed"),
         });
         setError(statusUnavailable);
         toast.error(statusUnavailable);
@@ -2111,7 +2111,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             throw new Error("chat_submission_protocol_unavailable");
           }
           const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-            defaultValue: i18n.t("chat.requestFailed"),
+            defaultValue: i18n.t("chat.sendFailed"),
           });
           const pendingMessages = messagesRef.current.filter(
             (message) => message.id !== assistantMessageId,
@@ -2344,7 +2344,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           toast.error(errorMessage);
         } else if (!admissionAccepted) {
           const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-            defaultValue: i18n.t("chat.requestFailed"),
+            defaultValue: i18n.t("chat.sendFailed"),
           });
           const uncertainMessages = optimisticMessages.filter(
             (message) => message.id !== assistantMessageId,
@@ -2561,7 +2561,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     if (authScope !== null && installPersistedSubmissionFence(authScope)) {
       setError(
         i18n.t("chat.runTerminal.statusUnavailable", {
-          defaultValue: i18n.t("chat.requestFailed"),
+          defaultValue: i18n.t("chat.sendFailed"),
         }),
       );
     }
@@ -2600,7 +2600,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     if (installPersistedSubmissionFence(authScope)) {
       setError(
         i18n.t("chat.runTerminal.statusUnavailable", {
-          defaultValue: i18n.t("chat.requestFailed"),
+          defaultValue: i18n.t("chat.sendFailed"),
         }),
       );
     }
@@ -2629,7 +2629,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         submissionUncertaintyRef.current?.submissionId === submissionId &&
         authScopesEqual(submissionUncertaintyRef.current?.owner ?? null, owner);
       const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-        defaultValue: i18n.t("chat.requestFailed"),
+        defaultValue: i18n.t("chat.sendFailed"),
       });
       try {
         const response = await sessionApi.getChatSubmission(submissionId);
@@ -2760,7 +2760,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       submissionUncertaintyRef.current?.submissionId === pending.submissionId &&
       authScopesEqual(submissionUncertaintyRef.current?.owner ?? null, pending.owner);
     const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-      defaultValue: i18n.t("chat.requestFailed"),
+      defaultValue: i18n.t("chat.sendFailed"),
     });
     try {
       const response = await sessionApi.retryChatSubmissionAdmission(

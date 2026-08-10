@@ -72,6 +72,7 @@ async function loadReactHarness({
   let routeSnapshot: {
     navigate: (path: string) => void;
     pathname: string;
+    selectSession: (sessionId: string) => Promise<void>;
     sessionId: string | undefined;
   } | null = null;
   let routeIdentityResetCount = 0;
@@ -111,14 +112,12 @@ async function loadReactHarness({
     snapshot = agent;
     const location = useLocation();
     const navigate = useNavigate();
-    const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>();
+    const { activeTab: routeActiveTab, sessionId: routeSessionId } = useParams<{
+      activeTab?: string;
+      sessionId?: string;
+    }>();
     dom.window.location.pathname = location.pathname;
     dom.window.location.href = `http://test.local${location.pathname}`;
-    routeSnapshot = {
-      navigate,
-      pathname: location.pathname,
-      sessionId: routeSessionId,
-    };
 
     useConversationRouteIdentityReset({
       conversationIdentityKey: `generic:${routeSessionId ?? ""}`,
@@ -130,13 +129,19 @@ async function loadReactHarness({
         agent.clearMessages();
       },
     });
-    useSessionSync({
-      activeTab: "chat",
+    const sessionSync = useSessionSync({
+      activeTab: routeActiveTab === "chat" ? "chat" : "skills",
       sessionId: agent.sessionId,
       loadHistory: agent.loadHistory,
       clearMessages: agent.clearMessages,
       onConfigRestored: (config) => restoredRouteConfigs.push(config),
     });
+    routeSnapshot = {
+      navigate,
+      pathname: location.pathname,
+      selectSession: sessionSync.handleSelectSession,
+      sessionId: routeSessionId,
+    };
     return null;
   }
 
@@ -180,7 +185,7 @@ async function loadReactHarness({
               Routes,
               null,
               React.createElement(Route, {
-                path: "/chat/:sessionId?",
+                path: "/:activeTab/:sessionId?",
                 element: children,
               }),
             ),
@@ -493,7 +498,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
   }
 });
 
-test("session route lifecycle clears a real external switch and supersedes its stale history load", async () => {
+test("session route lifecycle supersedes stale loads across external and sidebar navigation", async () => {
   const harness = await loadReactHarness({ sessionRouteLifecycle: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -507,6 +512,10 @@ test("session route lifecycle clears a real external switch and supersedes its s
   let releaseSessionB!: () => void;
   const sessionBGate = new Promise<void>((resolve) => {
     releaseSessionB = resolve;
+  });
+  let releaseSessionD!: () => void;
+  const sessionDGate = new Promise<void>((resolve) => {
+    releaseSessionD = resolve;
   });
 
   dom.window.fetch = async () => completedSseResponse();
@@ -525,6 +534,9 @@ test("session route lifecycle clears a real external switch and supersedes its s
     historyLoads.push(sessionId);
     if (sessionId === "session-b") {
       await sessionBGate;
+    }
+    if (sessionId === "session-d") {
+      await sessionDGate;
     }
     return {
       id: sessionId,
@@ -572,8 +584,40 @@ test("session route lifecycle clears a real external switch and supersedes its s
     assert.equal(harness.route.pathname, "/chat/session-c");
     assert.equal(harness.hook.sessionId, "session-c");
     assert.equal(harness.restoredRouteConfigs.length, 1);
+
+    let pendingSidebarLoad!: Promise<void>;
+    await harness.act(async () => {
+      pendingSidebarLoad = harness.route.selectSession("session-d");
+      harness.route.navigate("/skills");
+      await Promise.resolve();
+    });
+    assert.equal(harness.route.pathname, "/skills");
+    assert.equal(harness.hook.messages.length, 0);
+
+    await harness.navigateRoute("/chat/session-e");
+    await settle(harness.act);
+    assert.deepEqual(historyLoads, [
+      "session-b",
+      "session-c",
+      "session-d",
+      "session-e",
+    ]);
+    assert.equal(harness.route.pathname, "/chat/session-e");
+    assert.equal(harness.hook.sessionId, "session-e");
+    assert.equal(harness.routeIdentityResetCount, 5);
+    assert.equal(harness.restoredRouteConfigs.length, 2);
+
+    releaseSessionD();
+    await harness.act(async () => {
+      await pendingSidebarLoad;
+    });
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, "/chat/session-e");
+    assert.equal(harness.hook.sessionId, "session-e");
+    assert.equal(harness.restoredRouteConfigs.length, 2);
   } finally {
     releaseSessionB();
+    releaseSessionD();
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
