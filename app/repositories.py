@@ -2875,7 +2875,7 @@ async def toggle_capability_distribution_row(
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at
         """,
-        (enabled, enabled, updated_by, tenant_id, capability_kind, capability_id),
+        (enabled, enabled, updated_by, enabled, enabled, enabled, enabled, tenant_id, capability_kind, capability_id),
     )
     row = await cursor.fetchone()
     if row is None:

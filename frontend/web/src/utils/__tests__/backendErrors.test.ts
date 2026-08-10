@@ -83,6 +83,37 @@ test("chat admission retains only bounded codes and never exposes private detail
   assert.doesNotMatch(JSON.stringify([unsafe]), /private|token|worker/i);
 });
 
+test("chat admission projects only bounded diagnostic identifiers", () => {
+  assert.deepEqual(
+    projectChatAdmissionError(
+      {
+        status: 500,
+        code: "chat_submission_internal_error",
+        message: "private database failure",
+        diagnosticId: "diag_0123456789abcdef",
+      },
+      t,
+    ),
+    {
+      code: "chat_submission_internal_error",
+      diagnosticId: "diag_0123456789abcdef",
+      message:
+        "translated:backendErrors.chatSubmissionInternalError [diag_0123456789abcdef]",
+    },
+  );
+  const unsafe = projectChatAdmissionError(
+    {
+      status: 500,
+      code: "chat_submission_internal_error",
+      message: "private database failure",
+      diagnosticId: "diag_private-token",
+    },
+    t,
+  );
+  assert.equal(unsafe.diagnosticId, undefined);
+  assert.doesNotMatch(unsafe.message, /private|token/i);
+});
+
 test("translates backend error patterns", () => {
   assert.equal(
     translateBackendError("缺少权限: model:admin", t),

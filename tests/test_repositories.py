@@ -2391,7 +2391,11 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
             return self.row
 
     class Connection:
+        def __init__(self):
+            self.calls = []
+
         async def execute(self, sql, params=()):
+            self.calls.append((sql, params))
             compact = " ".join(sql.split())
             if compact.startswith("select metadata_json"):
                 return Cursor({"metadata_json": {"archived_at": "invalid"}})
@@ -2412,8 +2416,9 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
             )
 
     monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
     row = await repositories.toggle_capability_distribution_row(
-        Connection(),
+        conn,
         tenant_id="tenant-a",
         capability_kind="skill",
         capability_id="qa-file-reviewer",
@@ -2422,6 +2427,8 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
     )
 
     assert row["status"] == "active"
+    update_params = next(params for sql, params in conn.calls if "update tenant_capability_distributions" in sql)
+    assert update_params == (True, True, "admin-a", True, True, True, True, "tenant-a", "skill", "qa-file-reviewer")
 
 
 @pytest.mark.asyncio

@@ -159,7 +159,7 @@ def test_retry_admission_http_error_is_private_no_store_over_http(
 
 @pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
 def test_retry_admission_unhandled_error_is_private_no_store_over_http(
-    monkeypatch, chat_submission_client, prefix
+    monkeypatch, chat_submission_client, prefix, caplog
 ):
     async def broken_recovery(*_args, **_kwargs):
         raise RuntimeError("unexpected persistence failure")
@@ -169,14 +169,24 @@ def test_retry_admission_unhandled_error_is_private_no_store_over_http(
         broken_recovery,
     )
 
-    response = chat_submission_client.post(
-        f"{prefix}/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission",
-        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
-    )
+    with caplog.at_level("ERROR", logger="app.routes.chat"):
+        response = chat_submission_client.post(
+            f"{prefix}/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission",
+            headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+        )
 
     assert response.status_code == 500
-    assert response.text == "Internal Server Error"
+    detail = response.json()["detail"]
+    assert detail["code"] == "chat_submission_internal_error"
+    assert detail["diagnostic_id"].startswith("diag_")
+    assert len(detail["diagnostic_id"]) == 21
+    int(detail["diagnostic_id"][5:], 16)
+    assert "submission_disposition" not in detail
     assert response.headers["cache-control"] == "private, no-store"
+    assert detail["diagnostic_id"] in caplog.text
+    assert "phase=resolver" in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "unexpected persistence failure" not in caplog.text
 
 
 def principal(**overrides):
@@ -1861,6 +1871,7 @@ def test_queue_payload_invalid_detail_is_field_level_and_redacted():
     assert exc_info.value.status_code == 500
     detail = exc_info.value.detail
     assert detail["code"] == "queue_payload_invalid"
+    assert detail["submission_disposition"] == "rejected_before_persist"
     assert detail["errors"] == [
         {
             "loc": [],
@@ -1889,6 +1900,7 @@ def test_queue_payload_invalid_detail_sanitizes_validation_messages():
 
     assert detail == {
         "code": "queue_payload_invalid",
+        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["input", "field"],
@@ -4436,14 +4448,23 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_submission is None
         return
     if force_creation_rollback:
-        with pytest.raises(RuntimeError, match="forced Agent run commit failure"):
+        with pytest.raises(HTTPException) as exc_info:
             await chat_stream(
                 chat_request,
                 agent_id=query_agent_id,
                 principal=principal(),
             )
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "chat_submission_internal_error"
+        assert exc_info.value.detail["submission_disposition"] == "rejected_before_persist"
+        diagnostic_id = exc_info.value.detail["diagnostic_id"]
+        assert diagnostic_id.startswith("diag_")
+        assert len(diagnostic_id) == 21
+        int(diagnostic_id[5:], 16)
         assert committed_run is None
-        assert committed_submission is None
+        assert committed_submission is not None
+        assert committed_submission["state"] == "rejected_before_persist"
+        assert committed_submission["rejection_code"] == "chat_submission_internal_error"
         assert "enqueue" not in calls
         return
 

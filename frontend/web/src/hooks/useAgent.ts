@@ -119,10 +119,14 @@ function getSelectedSkillRecoverableCode(
 }
 
 function isProvenPrePersistenceChatRejection(error: unknown): boolean {
+  const provenInternalRejection =
+    error instanceof ApiRequestError &&
+    error.status === 500 &&
+    (error.code === "queue_payload_invalid" ||
+      error.code === "chat_submission_internal_error");
   return (
     error instanceof ApiRequestError &&
-    error.status >= 400 &&
-    error.status < 500 &&
+    ((error.status >= 400 && error.status < 500) || provenInternalRejection) &&
     error.submissionDisposition === "rejected_before_persist"
   );
 }
@@ -160,6 +164,7 @@ function formatChatSubmissionError(error: unknown): string {
         status: error.status,
         code: error.code,
         message: error.message,
+        diagnosticId: error.diagnosticId,
       },
       i18n.t.bind(i18n),
     );

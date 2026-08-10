@@ -288,6 +288,8 @@
     "fileReadFailed": "Failed to read file.",
     "fileTooLarge": "File size exceeds the {{max}}MB limit.",
     "contextFileTooLarge": "The file exceeds the 32 MB processing limit. Choose a smaller file and try again.",
+    "queuePayloadInvalid": "The task parameters were invalid, so the task was not submitted. Refresh and try again; contact an administrator if it persists.",
+    "chatSubmissionInternalError": "The task could not be submitted because of an internal service error. Refresh and try again; provide the diagnostic ID to an administrator if it persists.",
     "fileUploadNoPermission": "You do not have permission to upload {{category}} files.",
     "fileUrlFailed": "Failed to generate file URL.",
     "instanceNameRequired": "Instance name is required.",
