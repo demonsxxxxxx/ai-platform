@@ -183,6 +183,10 @@ function publicTerminalPresentation(
       i18n.t("chat.runTerminal.skillSandboxAdmissionFailed"),
       "skill_sandbox_admission",
     ),
+    context_file_too_large: failed(
+      i18n.t("chat.runTerminal.contextFileTooLarge"),
+      "file_preprocessing",
+    ),
     run_cancelled: {
       detailKind: "cancelled",
       message: i18n.t("chat.runTerminal.cancelledWithPartial", {

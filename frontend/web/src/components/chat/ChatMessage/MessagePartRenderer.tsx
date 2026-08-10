@@ -382,7 +382,12 @@ const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
   tool_permission_denied: "chat.runStatus.event.toolPermissionDenied",
   skill_sandbox_admission_failed:
     "chat.runStatus.event.skillSandboxAdmissionFailed",
+  context_file_too_large: "chat.runStatus.event.contextFileTooLarge",
   run_cancelled: "chat.runStatus.event.runCancelled",
+};
+
+const RUN_STATUS_DETAIL_I18N_KEYS: Readonly<Record<string, string>> = {
+  context_file_too_large: "chat.runTerminal.contextFileTooLarge",
 };
 
 function RunStatusItem({
@@ -424,16 +429,18 @@ function RunStatusItem({
     RUN_STATUS_EVENT_I18N_KEYS[part.event_type] ??
       "chat.runStatus.event.executionUpdate",
   );
+  const detailKey = RUN_STATUS_DETAIL_I18N_KEYS[part.event_type];
   const statusLabel = t(
-    part.severity === "error"
-      ? "chat.runStatus.status.failed"
-      : part.severity === "warning"
-        ? "chat.runStatus.status.warning"
-        : isWaiting
-          ? "chat.runStatus.status.waiting"
-          : isActive
-            ? "chat.runStatus.status.running"
-            : "chat.runStatus.status.completed",
+    detailKey ??
+      (part.severity === "error"
+        ? "chat.runStatus.status.failed"
+        : part.severity === "warning"
+          ? "chat.runStatus.status.warning"
+          : isWaiting
+            ? "chat.runStatus.status.waiting"
+            : isActive
+              ? "chat.runStatus.status.running"
+              : "chat.runStatus.status.completed"),
   );
 
   return (
@@ -453,7 +460,14 @@ function RunStatusItem({
       />
       <div className="min-w-0 flex-1">
         <div className="break-words font-medium leading-snug">{eventLabel}</div>
-        <div className="mt-0.5 truncate text-xs opacity-70">{statusLabel}</div>
+        <div
+          className={clsx(
+            "mt-0.5 text-xs opacity-70",
+            detailKey ? "break-words" : "truncate",
+          )}
+        >
+          {statusLabel}
+        </div>
       </div>
     </div>
   );

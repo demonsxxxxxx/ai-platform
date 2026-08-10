@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
+from app.context.file_content import ContextFileContentError
 from app.context.file_continuity import materialize_run_context_files
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
@@ -111,7 +112,7 @@ _SDK_ACTIONABLE_FAILURE_CODES = {
 }
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
-_REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
+_REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 32 * 1024 * 1024
 _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 _REQUIRED_DOCX_MAX_COMPRESSION_RATIO = 100
 _OPC_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -594,12 +595,15 @@ class ClaudeAgentWorkerAdapter:
                 runtime_started=False,
             )
 
-        sdk_result = await self._run_with_staged_skills(
-            payload,
-            event_sink=event_sink,
-            sandbox_runtime=sandbox_runtime,
-            execution_owner=execution_owner,
-        )
+        try:
+            sdk_result = await self._run_with_staged_skills(
+                payload,
+                event_sink=event_sink,
+                sandbox_runtime=sandbox_runtime,
+                execution_owner=execution_owner,
+            )
+        except ContextFileContentError as exc:
+            return self._context_file_failure_result(error_code=exc.code)
         if sdk_result is not None:
             return sdk_result
 
@@ -1464,6 +1468,38 @@ class ClaudeAgentWorkerAdapter:
                 "sandbox_runtime_used": runtime_started,
                 "runtime_terminal_status": runtime_terminal_status,
                 "attachment_parser_evidence": evidence if isinstance(evidence, list) else [],
+            },
+        )
+
+    def _context_file_failure_result(self, *, error_code: str) -> ExecutorResult:
+        safe_error_code = (
+            "context_file_too_large"
+            if error_code == "context_file_too_large"
+            else "context_file_preprocessing_failed"
+        )
+        message = (
+            "The input file exceeds the 32 MiB processing limit."
+            if safe_error_code == "context_file_too_large"
+            else "The input file could not be prepared for execution."
+        )
+        return ExecutorResult(
+            status="failed",
+            adapter_version=self.adapter_version,
+            executor_type=self.executor_type,
+            executor_version=self.executor_version,
+            capabilities={**self.capabilities, "platform_skills": True},
+            result={
+                "message": message,
+                "error_code": safe_error_code,
+                "sdk_used": False,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
+            },
+            artifacts=[],
+            executor_payload={
+                "sdk_used": False,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
             },
         )
 

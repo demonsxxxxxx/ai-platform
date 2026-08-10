@@ -244,6 +244,7 @@
     "fileNotFound": "ファイルが見つかりません。",
     "fileReadFailed": "ファイルの読み込みに失敗しました。",
     "fileTooLarge": "ファイルサイズが上限 {{max}}MB を超えています。",
+    "contextFileTooLarge": "ファイルが 32 MB の処理上限を超えています。より小さいファイルを選択して再試行してください。",
     "fileUploadNoPermission": "{{category}} ファイルをアップロードする権限がありません。",
     "fileUrlFailed": "ファイルURLの生成に失敗しました。",
     "instanceNameRequired": "インスタンス名は必須です。",

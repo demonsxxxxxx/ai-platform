@@ -16,6 +16,7 @@ from openpyxl import Workbook
 import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.skills.dependencies as dependency_policy
 import app.worker as worker_module
+from app.context.file_content import ContextFileContentError
 from app.executors import claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -671,6 +672,30 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
         lambda *args, **kwargs: FakeSandboxRuntime(),
     )
     return requests
+
+
+@pytest.mark.asyncio
+async def test_submit_run_classifies_context_file_size_failure_without_starting_runtime(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def reject_large_file(*args, **kwargs):
+        raise ContextFileContentError("context_file_too_large")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", reject_large_file)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(sandbox_writing_payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "context_file_too_large"
+    assert result.result["message"] == "The input file exceeds the 32 MiB processing limit."
+    assert runtime_requests == []
+    assert "context_file_too_large" not in str(result.executor_payload)
 
 
 def sandbox_workspace_path(current_settings, *, run_id="run_1", attempt_id="qat-test-attempt"):

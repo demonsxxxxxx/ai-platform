@@ -287,6 +287,7 @@
     "fileNotFound": "文件不存在",
     "fileReadFailed": "读取文件失败",
     "fileTooLarge": "文件大小超过 {{max}}MB 限制",
+    "contextFileTooLarge": "文件超过 32 MB 处理上限，请选择更小的文件后重试。",
     "fileUploadNoPermission": "没有上传 {{category}} 文件的权限",
     "fileUrlFailed": "生成文件链接失败",
     "instanceNameRequired": "实例名称为必填项",
@@ -574,6 +575,7 @@
         "capabilityNotAuthorized": "能力未获授权",
         "capabilitySelected": "能力已选择",
         "contextSnapshotCreated": "上下文已准备",
+        "contextFileTooLarge": "文件超过处理上限",
         "dependentServiceUnavailable": "依赖服务不可用",
         "executionServiceUnavailable": "执行服务不可用",
         "executionUpdate": "执行状态更新",
@@ -605,6 +607,7 @@
       }
     },
     "runTerminal": {
+      "contextFileTooLarge": "文件超过 32 MB 处理上限，请选择更小的文件后重试。",
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",

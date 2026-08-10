@@ -39,6 +39,34 @@ test("projects the controlled native Skill sandbox admission failure stage", () 
   );
 });
 
+test("projects an actionable bounded file-size terminal without backend detail", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-file-too-large",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "context_file_too_large",
+      message: "private storage path and token",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-file-too-large",
+  );
+
+  assert.equal(result.content, "文件超过 32 MB 处理上限，请选择更小的文件后重试。");
+  const terminal = result.parts[0];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "context_file_too_large");
+  assert.equal(terminal.stage, "file_preprocessing");
+  assert.doesNotMatch(JSON.stringify(result), /private|storage path|token/);
+});
+
 test("keeps safe partial output and adds an actionable terminal failure", () => {
   const parts: MessagePart[] = [
     { type: "text", content: "已完成公开部分；" },

@@ -69,11 +69,13 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
     "required_capability_unavailable": required_tool_public_detail("unavailable")["message"],
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
+    "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
 
 PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
+    "context_file_too_large": "context_file_too_large",
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
     "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",
