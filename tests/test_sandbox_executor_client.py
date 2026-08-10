@@ -3,9 +3,10 @@ import asyncio
 import httpx
 import pytest
 
+import app.runtime.sandbox.executor_client as executor_client_module
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
-from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.tool_permission_lifecycle import tool_permission_budget
 
 
@@ -400,6 +401,132 @@ async def test_executor_client_posts_task_request(monkeypatch):
             tool_permission_budget(120.0).normal_outer_executor_timeout_seconds,
         )
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_payload", "response_content", "expected_code", "expected_detail"),
+    [
+        (
+            {"error_code": "invalid_executor_credential", "detail": "invalid_executor_credential"},
+            b"bounded-json",
+            "invalid_executor_credential",
+            "invalid_executor_credential",
+        ),
+        (
+            {"error_code": "executor_health_timeout", "detail": "executor_health_timeout"},
+            b"bounded-json",
+            "executor_health_timeout",
+            "executor_health_timeout",
+        ),
+        (
+            {
+                "error_code": "token_private-value",
+                "detail": "<html>prompt=private-prompt</html>",
+                "url": "https://executor.test/run?token=private-token",
+            },
+            b"bounded-json",
+            "executor_http_failure",
+            None,
+        ),
+        (
+            {"error_code": "x" * 65, "detail": "x" * 65},
+            b"bounded-json",
+            "executor_http_failure",
+            None,
+        ),
+        (
+            {"error_code": "invalid_executor_credential"},
+            b"x" * 4097,
+            "executor_http_failure",
+            None,
+        ),
+    ],
+)
+async def test_executor_client_non_2xx_error_identity_is_bounded_and_secret_safe(
+    monkeypatch,
+    response_payload,
+    response_content,
+    expected_code,
+    expected_detail,
+):
+    class StubResponse:
+        status_code = 401
+        content = response_content
+
+        def json(self):
+            return response_payload
+
+    class StubAsyncClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def post(self, url, *, json, headers=None):
+            return StubResponse()
+
+    monkeypatch.setattr(executor_client_module.httpx, "AsyncClient", StubAsyncClient)
+
+    with pytest.raises(SandboxExecutorHttpError) as raised:
+        await executor_client_module._default_post_json(
+            "https://executor.test/v1/tasks/execute?token=private-query-token",
+            {"prompt": "private-prompt", "callback_token": "private-callback-token"},
+            3.0,
+            {"Authorization": "Bearer private-header-token"},
+        )
+
+    assert raised.value.status_code == 401
+    assert raised.value.error_code == expected_code
+    assert raised.value.detail == expected_detail
+    projected = str(raised.value)
+    assert len(projected) <= 96
+    for secret in (
+        "private-value",
+        "private-prompt",
+        "private-token",
+        "private-query-token",
+        "private-callback-token",
+        "private-header-token",
+        "<html>",
+    ):
+        assert secret not in projected
+
+
+@pytest.mark.asyncio
+async def test_executor_client_preserves_http_200_reported_failure():
+    async def post_json(url, payload, timeout, headers=None):
+        return {
+            "status": "failed",
+            "error_code": "executor_health_timeout",
+            "error_message": "Executor health timeout",
+        }
+
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+    )
+
+    result = await SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0).execute(
+        "http://executor.test",
+        request,
+    )
+
+    assert result == {
+        "status": "failed",
+        "error_code": "executor_health_timeout",
+        "error_message": "Executor health timeout",
+    }
 
 
 @pytest.mark.asyncio

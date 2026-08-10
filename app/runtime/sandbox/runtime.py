@@ -47,7 +47,7 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
-from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.executor_client import SandboxExecutorClient, normalize_executor_reported_failure
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
     safe_readiness_evidence_payload,
@@ -549,7 +549,9 @@ class SandboxRuntime:
             await self.provider.validate_for_dispatch(lease, request, workspace)
             validation_succeeded = True
             dispatch_started_at = time.monotonic()
-            response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
+            response = normalize_executor_reported_failure(
+                await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
+            )
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
             collection_started = True
             await self.provider.collect_workspace(lease, request, workspace)
