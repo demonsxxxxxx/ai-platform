@@ -795,7 +795,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             "skill_manifests": [
                 {
                     "skill_id": "profile-skill",
-                    "version": "version-a",
+                    "version": locked_version,
                     "content_hash": locked_version,
                 }
             ],
