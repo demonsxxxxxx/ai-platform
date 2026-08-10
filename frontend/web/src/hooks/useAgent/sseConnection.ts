@@ -165,6 +165,7 @@ export async function queryAuthoritativeRunStatus({
   runId,
   isCurrent,
   statusRetryCountRef,
+  allowIdle = false,
   getStatus = sessionApi.getStatus,
   attemptTimeoutMs = AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS,
 }: {
@@ -172,6 +173,7 @@ export async function queryAuthoritativeRunStatus({
   runId: string;
   isCurrent: () => boolean;
   statusRetryCountRef: React.MutableRefObject<number>;
+  allowIdle?: boolean;
   getStatus?: typeof sessionApi.getStatus;
   attemptTimeoutMs?: number;
 }): Promise<AuthoritativeStatusQueryResult> {
@@ -196,7 +198,12 @@ export async function queryAuthoritativeRunStatus({
         return { kind: "stale" };
       }
       const status = authoritativeRunStatus(data);
-      if (status && (isActiveRunStatus(status) || terminalRunStatus(status))) {
+      if (
+        status &&
+        ((allowIdle && status === "idle") ||
+          isActiveRunStatus(status) ||
+          terminalRunStatus(status))
+      ) {
         statusRetryCountRef.current = 0;
         return { kind: "resolved", data, status };
       }

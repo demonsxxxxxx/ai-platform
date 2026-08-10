@@ -1570,6 +1570,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 runId: historyCurrentRunId,
                 isCurrent: isCurrentHistoryLoadRequest,
                 statusRetryCountRef,
+                // A session history candidate can legitimately disappear when
+                // the server proves that the authorized session has no run.
+                allowIdle: true,
               })
             : null;
           if (!isCurrentHistoryLoadRequest()) {
