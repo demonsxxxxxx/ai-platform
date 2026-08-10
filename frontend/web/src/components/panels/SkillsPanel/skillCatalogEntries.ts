@@ -23,6 +23,11 @@ export interface SkillCatalogEntry {
   publishedCatalogName: string | null;
 }
 
+export interface SkillCatalogPage {
+  entries: SkillCatalogEntry[];
+  total: number;
+}
+
 function statusFor(
   adminSkill: AdminSkillCatalogItem | null,
   runtimeSkill: SkillResponse | null,
@@ -108,4 +113,32 @@ export function filterSkillCatalogEntries(
     }
     return selectedTags.every((tag) => entry.tags.includes(tag));
   });
+}
+
+/**
+ * Paginate the complete authorized catalog locally, but never slice a page that
+ * the server already paginated. This keeps the shared panel correct in both
+ * catalog modes.
+ */
+export function resolveSkillCatalogPage({
+  entries,
+  page,
+  pageSize,
+  localPagination,
+  serverTotal,
+}: {
+  entries: SkillCatalogEntry[];
+  page: number;
+  pageSize: number;
+  localPagination: boolean;
+  serverTotal: number;
+}): SkillCatalogPage {
+  if (!localPagination) {
+    return { entries, total: serverTotal };
+  }
+  const start = (page - 1) * pageSize;
+  return {
+    entries: entries.slice(start, start + pageSize),
+    total: entries.length,
+  };
 }

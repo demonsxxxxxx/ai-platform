@@ -15,6 +15,7 @@ import { SkillDistributionGovernancePanel } from "../SkillDistributionGovernance
 import {
   buildSkillCatalogEntries,
   filterSkillCatalogEntries,
+  resolveSkillCatalogPage,
 } from "./skillCatalogEntries";
 
 interface CatalogState {
@@ -88,13 +89,22 @@ export function SkillsPanel({
       ),
     [actions.searchQuery, actions.selectedTags, catalogEntries],
   );
-  const paginatedCatalogEntries = useMemo(
+  const catalogPage = useMemo(
     () =>
-      filteredCatalogEntries.slice(
-        (actions.page - 1) * actions.pageSize,
-        actions.page * actions.pageSize,
-      ),
-    [actions.page, actions.pageSize, filteredCatalogEntries],
+      resolveSkillCatalogPage({
+        entries: filteredCatalogEntries,
+        page: actions.page,
+        pageSize: actions.pageSize,
+        localPagination: allAuthorizedCatalog,
+        serverTotal: actions.total,
+      }),
+    [
+      actions.page,
+      actions.pageSize,
+      actions.total,
+      allAuthorizedCatalog,
+      filteredCatalogEntries,
+    ],
   );
   const selectableNames = useMemo(
     () =>
@@ -198,8 +208,8 @@ export function SkillsPanel({
         setIsFilterOpen={actions.setIsFilterOpen}
         availableTags={actions.availableTags}
         catalogEntries={filteredCatalogEntries}
-        paginatedCatalogEntries={paginatedCatalogEntries}
-        total={filteredCatalogEntries.length}
+        paginatedCatalogEntries={catalogPage.entries}
+        total={catalogPage.total}
         page={actions.page}
         pageSize={actions.pageSize}
         setPage={actions.setPage}

@@ -6,6 +6,7 @@ import type { SkillResponse } from "../../../types/skill.ts";
 import {
   buildSkillCatalogEntries,
   filterSkillCatalogEntries,
+  resolveSkillCatalogPage,
 } from "../SkillsPanel/skillCatalogEntries.ts";
 
 function runtimeSkill(name: string): SkillResponse {
@@ -85,4 +86,46 @@ test("admin draft records remain visible in the canonical list", () => {
   );
   assert.equal(filterSkillCatalogEntries(entries, "draft", []).length, 1);
   assert.equal(filterSkillCatalogEntries(entries, "missing", []).length, 0);
+});
+
+test("a server-paginated catalog is not sliced for a second time", () => {
+  const entries = buildSkillCatalogEntries(
+    [runtimeSkill("skill-21"), runtimeSkill("skill-22")],
+    [],
+  );
+
+  const page = resolveSkillCatalogPage({
+    entries,
+    page: 2,
+    pageSize: 20,
+    localPagination: false,
+    serverTotal: 42,
+  });
+
+  assert.deepEqual(
+    page.entries.map((entry) => entry.id),
+    ["skill-21", "skill-22"],
+  );
+  assert.equal(page.total, 42);
+});
+
+test("the complete authorized catalog is paginated locally", () => {
+  const entries = buildSkillCatalogEntries(
+    Array.from({ length: 22 }, (_, index) => runtimeSkill(`skill-${index + 1}`)),
+    [],
+  );
+
+  const page = resolveSkillCatalogPage({
+    entries,
+    page: 2,
+    pageSize: 20,
+    localPagination: true,
+    serverTotal: 999,
+  });
+
+  assert.deepEqual(
+    page.entries.map((entry) => entry.id),
+    ["skill-21", "skill-22"],
+  );
+  assert.equal(page.total, 22);
 });
