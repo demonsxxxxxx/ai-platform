@@ -338,6 +338,7 @@ def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path
     applied_evaluation = _evaluate(REPO_ROOT, base, head)
     expected = {
         ("functional_hot_file_growth", "app/worker.py"),
+        ("test_hot_file_growth", "tests/test_sandbox_executor_app.py"),
     }
 
     assert {(item.code, item.path) for item in trusted_evaluation.violations} == expected
