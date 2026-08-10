@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "0cb07e950aba6c98a47e76c74bde8fd01d04aa4b",
-    "scope_sha256": "5713dc16e0a1277b5532210825bcaf43d85e54ed76aab3ebcb65dbf91af2ba45"
+    "scope_sha256": "6cea0577cf86acb7e156261d54e5dc98cb307f2fae16101f1270321897fcfc76"
   },
   "expires_on": "2026-08-24",
   "owner": "demonsxxxxxx",
@@ -11,6 +11,10 @@
     {
       "code": "functional_hot_file_growth",
       "path": "app/worker.py"
+    },
+    {
+      "code": "test_hot_file_growth",
+      "path": "tests/test_sandbox_executor_app.py"
     }
   ]
 }
