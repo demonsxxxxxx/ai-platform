@@ -981,19 +981,6 @@ def _is_internal_test_opensandbox(settings: Any) -> bool:
     return _opensandbox_security_profile(settings) == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
 
 
-def _opensandbox_forwards_internal_test_model_credentials(settings: Any) -> bool:
-    if getattr(settings, "opensandbox_internal_test_forward_model_credentials", False) is not True:
-        return False
-    if not _is_internal_test_opensandbox(settings):
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox model credential forwarding is not allowed")
-    if not _env_value(settings, "openai_api_key").strip() or not _env_value(
-        settings,
-        "anthropic_auth_token",
-    ).strip():
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox internal-test model credentials are required")
-    return True
-
-
 def _opensandbox_external_egress_bases(settings: Any) -> _ExecutorEgressBases:
     try:
         return governed_opensandbox_egress_bases(settings)
@@ -4953,12 +4940,7 @@ class OpenSandboxContainerProvider:
             egress_bases=_opensandbox_runtime_egress_bases(settings, capability),
             workspace_container_path=workspace.workspace_container_path,
         )
-        if not _opensandbox_forwards_internal_test_model_credentials(settings):
-            environment = {
-                key: value
-                for key, value in environment.items()
-                if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
-            }
+        environment = environment if getattr(settings, "opensandbox_internal_test_forward_model_credentials", False) is True and _is_internal_test_opensandbox(settings) else {key: value for key, value in environment.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}}
         kwargs = {
             "image": _opensandbox_image(settings),
             "timeout": timedelta(seconds=max(int(getattr(settings, "opensandbox_timeout_seconds", 1800) or 1800), 1)),
