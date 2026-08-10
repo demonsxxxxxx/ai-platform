@@ -1550,6 +1550,15 @@ class ClaudeAgentWorkerAdapter:
                 runtime_terminal_status=runtime_status,
                 evidence=parser_evidence,
             )
+        capability_evidence = (
+            executor_response.get("capability_evidence")
+            if isinstance(executor_response.get("capability_evidence"), list)
+            else []
+        )
+        selected_capability_error = _capability_execution_error(
+            payload,
+            capability_evidence,
+        )
         runtime_sdk_result = type(
             "RuntimeSdkResult",
             (),
@@ -1558,7 +1567,11 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": executor_response.get("used_skills_source", ""),
             },
         )()
-        used_skill_names = _sdk_used_skill_names(runtime_sdk_result, prepared.staged_skill_names)
+        used_skill_names = _sdk_used_skill_names(
+            runtime_sdk_result,
+            prepared.staged_skill_names,
+            allow_platform_controlled_runner=selected_capability_error is None,
+        )
         used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
         inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
         skill_manifests = _skill_manifests(
@@ -1587,16 +1600,8 @@ class ClaudeAgentWorkerAdapter:
             "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
-            "capability_evidence": (
-                executor_response.get("capability_evidence")
-                if isinstance(executor_response.get("capability_evidence"), list)
-                else []
-            ),
+            "capability_evidence": capability_evidence,
         }
-        selected_capability_error = _capability_execution_error(
-            payload,
-            common_payload["capability_evidence"],
-        )
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
                 payload,
@@ -2448,8 +2453,17 @@ def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
     )
 
 
-def _sdk_used_skill_names(sdk_result: object, staged_skill_names: list[str]) -> list[str]:
-    if str(getattr(sdk_result, "used_skills_source", "") or "").strip() != "executor_hook":
+def _sdk_used_skill_names(
+    sdk_result: object,
+    staged_skill_names: list[str],
+    *,
+    allow_platform_controlled_runner: bool = False,
+) -> list[str]:
+    source = str(getattr(sdk_result, "used_skills_source", "") or "").strip()
+    trusted_sources = {"executor_hook"}
+    if allow_platform_controlled_runner:
+        trusted_sources.add("platform_controlled_runner")
+    if source not in trusted_sources:
         return []
     raw = getattr(sdk_result, "used_skills", None)
     if not isinstance(raw, list):
