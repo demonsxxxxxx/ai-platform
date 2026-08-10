@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildCheckpointForkUrl,
-  buildMessageCheckpointUrl,
   buildMessageForkUrl,
   buildRunCancelUrl,
   buildRunControlOperationUrl,
@@ -558,19 +556,5 @@ test("builds the message fork url", () => {
   assert.equal(
     buildMessageForkUrl("session-1", "message-1"),
     "/api/sessions/session-1/messages/message-1/fork",
-  );
-});
-
-test("builds the message checkpoint url", () => {
-  assert.equal(
-    buildMessageCheckpointUrl("session-1", "message-1"),
-    "/api/sessions/session-1/messages/message-1/checkpoints",
-  );
-});
-
-test("builds the checkpoint fork url", () => {
-  assert.equal(
-    buildCheckpointForkUrl("session-1", "checkpoint-1"),
-    "/api/sessions/session-1/checkpoints/checkpoint-1/fork",
   );
 });
