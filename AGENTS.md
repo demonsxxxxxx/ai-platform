@@ -24,6 +24,19 @@ This file applies to the current `ai-platform` repository root.
   non-existing child such as
   `--basetemp .pytest-tmp\run-verify-211-<timestamp>` and report the reason.
 
+## Remote Runtime Access
+
+- Remote access to s72 or s211 is allowed only through SSH MCP.
+- Always call `mcp__ssh_mcp_server__list_servers` first, then use
+  `mcp__ssh_mcp_server__execute_command` with `connectionName='s72'` or
+  `connectionName='s211'`.
+- Never fall back to system `ssh`, `scp`, or `plink`, local SSH configuration,
+  a browser, or local Docker state to infer the remote runtime.
+- If SSH MCP is unavailable or the required connection is not connected, the
+  remote operation is `BLOCKED`.
+- Commands and output must not contain `.env` values, account identifiers,
+  passwords, tokens, or prompts.
+
 ## Authority
 
 - Use the current repository root as the local `ai-platform` source.

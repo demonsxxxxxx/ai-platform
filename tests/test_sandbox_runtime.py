@@ -12,7 +12,7 @@ from app.file_parser_contracts import build_attachment_preprocessing_contract
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
-from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime
@@ -1101,7 +1101,31 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
 
 
 @pytest.mark.asyncio
-async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_failed(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("reported_code", "reported_message", "expected_code", "expected_message"),
+    [
+        (
+            "executor_health_timeout",
+            "Executor health timeout",
+            "executor_health_timeout",
+            "Executor health timeout",
+        ),
+        (
+            "https://executor.test/run?token=private-token<html>private-prompt</html>",
+            "private-prompt",
+            "executor_reported_failure",
+            "Executor reported failure",
+        ),
+    ],
+)
+async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_failed(
+    tmp_path,
+    monkeypatch,
+    reported_code,
+    reported_message,
+    expected_code,
+    expected_message,
+):
     calls = []
 
     class StubSettings:
@@ -1112,8 +1136,11 @@ async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_
         return {
             "status": "failed",
             "run_id": task_request.run_id,
-            "error_code": "executor_health_timeout",
-            "error_message": "Executor health timeout",
+            "error_code": reported_code,
+            "error_message": reported_message,
+            "url": "https://executor.test/run?token=private-token",
+            "path": "/private/workspace",
+            "nested": {"prompt": "private-prompt"},
         }
 
     async def record_lease(lease, request, workspace):
@@ -1137,7 +1164,59 @@ async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_
     result = await runtime.submit(request(sandbox_mode="ephemeral"))
 
     assert result.status == "failed"
+    assert result.executor_response["error_code"] == expected_code
+    assert result.executor_response["error_message"] == expected_message
+    assert "private-token" not in str(result.executor_response)
+    assert "private-prompt" not in str(result.executor_response)
+    assert set(result.executor_response) == {"status", "run_id", "error_code", "error_message"}
     assert calls == [("record", "run-a"), ("release", "run_failed", "lease-created-a")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_typed_executor_http_error_and_cleanup_order(tmp_path, monkeypatch):
+    calls = []
+    expected_error = SandboxExecutorHttpError(
+        status_code=401,
+        error_code="invalid_executor_credential",
+        detail="invalid_executor_credential",
+    )
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class OrderedProvider(FakeContainerProvider):
+        async def stop(self, lease, reason):
+            calls.append(("stop", reason))
+            return await super().stop(lease, reason=reason)
+
+    async def execute(executor_url, task_request):
+        raise expected_error
+
+    async def record_lease(lease, runtime_request, workspace):
+        return {"id": "lease-http-error"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=OrderedProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+
+    with pytest.raises(SandboxExecutorHttpError) as raised:
+        await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert raised.value is expected_error
+    assert calls == [
+        ("stop", "dispatch_failed"),
+        ("release", "dispatch_failed", "lease-http-error"),
+    ]
 
 
 @pytest.mark.asyncio
