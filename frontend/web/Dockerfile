@@ -21,7 +21,7 @@ ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}
 WORKDIR /workspace
 
 COPY frontend/web/eslint.config.js frontend/web/index.html ./frontend/web/
-COPY frontend/web/postcss.config.js frontend/web/tailwind.config.js frontend/web/tsconfig.json frontend/web/vite.config.ts ./frontend/web/
+COPY frontend/web/dev-auth-proxy.ts frontend/web/postcss.config.js frontend/web/tailwind.config.js frontend/web/tsconfig.json frontend/web/vite.config.ts ./frontend/web/
 COPY frontend/web/public ./frontend/web/public
 COPY frontend/web/scripts ./frontend/web/scripts
 COPY frontend/web/src ./frontend/web/src
