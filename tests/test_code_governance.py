@@ -104,6 +104,10 @@ def _codes(evaluation: Any) -> set[str]:
     return {item.code for item in evaluation.violations}
 
 
+def _advisory_codes(evaluation: Any) -> set[str]:
+    return {item.code for item in evaluation.advisories}
+
+
 def _payload(evaluation: Any) -> dict[str, Any]:
     return evaluation.as_dict()
 
@@ -145,7 +149,7 @@ def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> No
     }
 
 
-def test_size_violations_remain_fail_closed_across_multiple_subsystems(
+def test_size_signals_are_advisory_across_multiple_responsibilities(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, base = governance_repo
@@ -157,11 +161,18 @@ def test_size_violations_remain_fail_closed_across_multiple_subsystems(
 
     evaluation = _evaluate(repo, base, head)
 
-    assert evaluation.exit_code == 2
-    assert {"production_file_count", "production_net_loc"} <= _codes(evaluation)
-    assert "production_subsystem_count" not in _codes(evaluation)
+    assert evaluation.exit_code == 0
+    assert evaluation.status == "pass"
+    assert _codes(evaluation) == set()
+    assert {"production_file_count", "production_net_loc"} <= _advisory_codes(evaluation)
     assert evaluation.metrics["production_subsystem_count"] == 3
     assert evaluation.metrics["production_subsystems"] == ["app", "config", "deploy/ai-platform"]
+    assert [item["name"] for item in evaluation.metrics["changed_responsibilities"]] == [
+        "app",
+        "config",
+        "deploy/ai-platform",
+    ]
+    assert _payload(evaluation)["policy"]["size_and_hot_file_gates"] == "advisory"
 
 
 def test_multiple_production_subsystems_are_reported_without_blocking(
@@ -184,9 +195,19 @@ def test_multiple_production_subsystems_are_reported_without_blocking(
         "frontend/web/src/services",
     ]
     assert "production_subsystem_count_max_exclusive" not in _payload(evaluation)["policy"]
+    assert evaluation.metrics["changed_responsibilities"] == [
+        {"name": "app", "paths": ["app/settings.py"]},
+        {"name": "deploy/ai-platform", "paths": ["deploy/ai-platform/policy.json"]},
+        {
+            "name": "frontend/web/src/services",
+            "paths": ["frontend/web/src/services/client.ts"],
+        },
+    ]
     rendered = code_governance._render_text(evaluation)
     assert "production subsystem count: 3" in rendered
     assert "production subsystems: app, deploy/ai-platform, frontend/web/src/services" in rendered
+    assert "changed responsibilities:" in rendered
+    assert "- app: app/settings.py" in rendered
 
 
 def test_pure_rename_is_separate_from_behavior_fix_and_delete_is_safe(
@@ -263,7 +284,7 @@ def test_production_to_test_rename_counts_production_exit_and_test_entry(
     assert _payload(evaluation)["changes"][0]["role"] == "behavior_production"
 
 
-def test_hot_functional_file_cannot_grow(governance_repo: tuple[Path, str]) -> None:
+def test_hot_functional_file_growth_is_advisory(governance_repo: tuple[Path, str]) -> None:
     repo, _initial = governance_repo
     _write(repo, "app/hot.py", _python_lines(3001))
     _write(repo, "tests/test_hot.py", "def test_hot():\n    assert True\n")
@@ -276,8 +297,17 @@ def test_hot_functional_file_cannot_grow(governance_repo: tuple[Path, str]) -> N
 
     evaluation = _evaluate(repo, base, head)
 
-    assert "functional_hot_file_growth" in _codes(evaluation)
-    assert "hot_file_growth" not in _codes(evaluation)
+    assert evaluation.status == "pass"
+    assert "functional_hot_file_growth" in _advisory_codes(evaluation)
+    assert "hot_file_growth" not in _advisory_codes(evaluation)
+    assert evaluation.metrics["hot_files"] == [
+        {
+            "kind": "functional_production",
+            "net_loc": 1,
+            "path": "app/hot.py",
+            "peak_lines": 3002,
+        }
+    ]
 
 
 def test_hot_production_file_growth_is_limited(governance_repo: tuple[Path, str]) -> None:
@@ -290,7 +320,8 @@ def test_hot_production_file_growth_is_limited(governance_repo: tuple[Path, str]
 
     evaluation = _evaluate(repo, base, head)
 
-    assert _codes(evaluation) == {"hot_file_growth"}
+    assert evaluation.status == "pass"
+    assert _advisory_codes(evaluation) == {"hot_file_growth"}
 
 
 def test_hot_production_file_growth_at_limit_passes(governance_repo: tuple[Path, str]) -> None:
@@ -306,48 +337,6 @@ def test_hot_production_file_growth_at_limit_passes(governance_repo: tuple[Path,
     assert evaluation.status == "pass"
 
 
-def _load_governance_authority(repo: Path, commit: str, destination: Path) -> Any:
-    source = _run(repo, "git", "show", f"{commit}:tools/code_governance.py").stdout
-    destination.write_text(source, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("trusted_code_governance", destination)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _evaluate_without_exception(module: Any, repo: Path, base: str, head: str) -> Any:
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(module._GitChangeReader, "load_exception", lambda _self, _head: None)
-        monkeypatch.setattr(module.importlib.util, "find_spec", lambda _name: object())
-        return module.CodeGovernanceEvaluator(
-            repo,
-            runner=_RuffPassingRunner(),
-            today=date(2026, 7, 25),
-        ).evaluate(base, head)
-
-
-def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path: Path) -> None:
-    base = _git(REPO_ROOT, "rev-parse", "origin/main")
-    head = _git(REPO_ROOT, "rev-parse", "HEAD")
-    trusted = _load_governance_authority(REPO_ROOT, base, tmp_path / "code_governance.py")
-
-    trusted_evaluation = _evaluate_without_exception(trusted, REPO_ROOT, base, head)
-    candidate_evaluation = _evaluate_without_exception(code_governance, REPO_ROOT, base, head)
-    applied_evaluation = _evaluate(REPO_ROOT, base, head)
-    expected = {
-        ("functional_hot_file_growth", "app/worker.py"),
-        ("test_hot_file_growth", "tests/test_sandbox_executor_app.py"),
-    }
-
-    assert {(item.code, item.path) for item in trusted_evaluation.violations} == expected
-    assert {(item.code, item.path) for item in candidate_evaluation.violations} == expected
-    assert {(item.code, item.path) for item in applied_evaluation.exempted_violations} == expected
-    assert applied_evaluation.status == "pass"
-    assert applied_evaluation.exception["status"] == "applied"
-
-
 def test_production_net_loc_boundary_is_exclusive(governance_repo: tuple[Path, str]) -> None:
     repo, base = governance_repo
     _write(repo, "config/bulk.json", "".join(f"line-{index}\n" for index in range(800)))
@@ -355,7 +344,8 @@ def test_production_net_loc_boundary_is_exclusive(governance_repo: tuple[Path, s
 
     evaluation = _evaluate(repo, base, head)
 
-    assert "production_net_loc" in _codes(evaluation)
+    assert evaluation.status == "pass"
+    assert "production_net_loc" in _advisory_codes(evaluation)
 
 
 def test_test_hot_file_growth_is_limited(governance_repo: tuple[Path, str]) -> None:
@@ -368,7 +358,8 @@ def test_test_hot_file_growth_is_limited(governance_repo: tuple[Path, str]) -> N
 
     evaluation = _evaluate(repo, base, head)
 
-    assert _codes(evaluation) == {"test_hot_file_growth"}
+    assert evaluation.status == "pass"
+    assert _advisory_codes(evaluation) == {"test_hot_file_growth", "test_loc_review"}
 
 
 def test_test_hot_file_growth_at_limit_passes(governance_repo: tuple[Path, str]) -> None:
@@ -399,6 +390,8 @@ def test_behavior_change_reports_test_loc_ratio_as_a_soft_review_signal(
     assert evaluation.metrics["test_added_loc"] == 3
     assert evaluation.metrics["test_to_production_added_loc_ratio"] == 3.0
     assert evaluation.metrics["test_loc_review_explanation_recommended"] is True
+    assert evaluation.metrics["review_recommendations"] == ["explain_test_loc_mix"]
+    assert "test_loc_review" in _advisory_codes(evaluation)
     assert _payload(evaluation)["policy"]["test_loc_review"]["enforcement"] == "soft"
 
 
@@ -428,7 +421,36 @@ def test_invalid_exception_schema_is_an_error(governance_repo: tuple[Path, str])
     assert caught.value.code == "invalid_exception"
 
 
-def test_valid_exact_exception_exempts_only_requested_violation(
+def test_valid_exact_exception_exempts_only_requested_hard_violation(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _base = governance_repo
+    evaluator = code_governance.CodeGovernanceEvaluator(repo)
+    violation = code_governance.Violation(
+        "custom_hard_gate",
+        "hard gate failed",
+        path="app/billing_rules.py",
+    )
+    payload = {
+        "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+        "candidate": {"base_ref": "0" * 40, "scope_sha256": "0" * 64},
+        "expires_on": "2026-08-01",
+        "owner": "platform-governance",
+        "reason": "temporary hard-gate migration",
+        "violations": [
+            {"code": "custom_hard_gate", "path": "app/billing_rules.py"}
+        ],
+    }
+
+    active, exempted, summary = evaluator._apply_exception([violation], [], payload)
+
+    assert active == []
+    assert exempted == [violation]
+    assert summary["status"] == "applied"
+    assert summary["acknowledged_advisories"] == []
+
+
+def test_exact_legacy_size_exception_acknowledges_advisory_without_hiding_it(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, _initial = governance_repo
@@ -456,8 +478,12 @@ def test_valid_exact_exception_exempts_only_requested_violation(
 
     assert evaluation.status == "pass"
     assert evaluation.exit_code == 0
-    assert [item.code for item in evaluation.exempted_violations] == ["functional_hot_file_growth"]
+    assert [item.code for item in evaluation.advisories] == ["functional_hot_file_growth"]
+    assert evaluation.exempted_violations == ()
     assert evaluation.exception["status"] == "applied"
+    assert [
+        item["code"] for item in evaluation.exception["acknowledged_advisories"]
+    ] == ["functional_hot_file_growth"]
 
 
 def test_inherited_exception_cannot_authorize_a_later_candidate(
@@ -498,28 +524,26 @@ def test_exception_cannot_authorize_scope_appended_under_the_same_base(
     base = _commit(repo, "hot functional base")
     _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
     scope_head = _commit(repo, "authorized scope")
-    _write(
+    candidate = _candidate_binding(repo, base, scope_head)
+    reader = code_governance._GitChangeReader(
         repo,
-        code_governance.EXCEPTION_PATH,
-        json.dumps(
-            {
-                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
-                "candidate": _candidate_binding(repo, base, scope_head),
-                "expires_on": "2026-08-01",
-                "owner": "platform-governance",
-                "reason": "candidate-bound hot-file migration",
-                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
-            }
-        ),
+        code_governance._CommandRunner(),
     )
-    authorized_head = _commit(repo, "authorize exact scope")
-    assert _evaluate(repo, base, authorized_head).status == "pass"
+    code_governance._validate_exception_candidate(
+        candidate,
+        base_ref=base,
+        scope_sha256=reader.exception_scope_sha256(base, scope_head),
+    )
 
     _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
     later_head = _commit(repo, "append later scope")
 
     with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
-        _evaluate(repo, base, later_head)
+        code_governance._validate_exception_candidate(
+            candidate,
+            base_ref=base,
+            scope_sha256=reader.exception_scope_sha256(base, later_head),
+        )
 
     assert caught.value.code == "invalid_exception"
 

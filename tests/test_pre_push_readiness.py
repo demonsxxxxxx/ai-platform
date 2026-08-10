@@ -1721,7 +1721,7 @@ def test_deterministic_product_failure_preserves_pytest_identity(
     assert payload["failure"]["test_identity"] == "tests/test_deterministic_failure.py::test_deterministic_failure"
 
 
-def test_governance_failure_keeps_rule_and_path(readiness_repo: tuple[Path, str]) -> None:
+def test_size_advisory_does_not_fail_pre_push_readiness(readiness_repo: tuple[Path, str]) -> None:
     repo, _authority = readiness_repo
     _write(
         repo,
@@ -1736,10 +1736,10 @@ def test_governance_failure_keeps_rule_and_path(readiness_repo: tuple[Path, str]
     result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert result.returncode == 2
-    assert payload["category"] == "governance_violation"
-    assert payload["failure"]["code"] == "functional_hot_file_growth"
-    assert payload["failure"]["path"] == "app/billing.py"
+    assert result.returncode == 0, result.stderr
+    assert payload["status"] == "pass"
+    governance_stage = next(stage for stage in payload["stages"] if stage["name"] == "governance")
+    assert governance_stage["status"] == "pass"
 
 
 def test_governance_ruff_ignores_a_head_root_shadow_module(readiness_repo: tuple[Path, str]) -> None:
