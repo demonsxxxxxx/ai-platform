@@ -1750,6 +1750,57 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_internal_test_accepts_exact_local_executor_image_id(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    local_image_id = "sha256:" + "c" * 64
+
+    class LocalImageSettings(InternalTestDirectOpenSandboxSettings):
+        opensandbox_executor_image = local_image_id
+        opensandbox_executor_image_digest = local_image_id
+
+    settings = LocalImageSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created[0]["image"] == local_image_id
+    assert lease.labels["ai-platform.executor.requested_image"] == local_image_id
+    assert lease.labels["ai-platform.executor.requested_image_digest"] == local_image_id
+
+    await provider.stop(lease, reason="internal_test_acceptance")
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    (
+        ("deployment_environment", "production"),
+        ("sandbox_container_provider", "docker"),
+        ("sandbox_security_profile", "governed"),
+        ("opensandbox_expected_network_mode", "none"),
+    ),
+)
+def test_opensandbox_rejects_local_executor_image_id_outside_exact_internal_test_contour(
+    attribute,
+    value,
+):
+    from app.runtime.sandbox.opensandbox_policy import (
+        OpenSandboxProfileConfigurationError,
+        requested_opensandbox_image,
+    )
+
+    local_image_id = "sha256:" + "d" * 64
+    settings = InternalTestDirectOpenSandboxSettings()
+    settings.opensandbox_executor_image = local_image_id
+    settings.opensandbox_executor_image_digest = local_image_id
+    setattr(settings, attribute, value)
+
+    with pytest.raises(OpenSandboxProfileConfigurationError, match="immutable sha256 reference"):
+        requested_opensandbox_image(settings)
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_internal_test_explicitly_forwards_model_credentials(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()

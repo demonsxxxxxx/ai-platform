@@ -1095,7 +1095,7 @@ def _opensandbox_entrypoint(settings: Any) -> list[str]:
 def _opensandbox_requested_image(
     settings: Any,
     *,
-    allow_local_image_id: bool = False,
+    allow_local_image_id: bool | None = None,
 ) -> tuple[str, str]:
     """Return the immutable image request and its digest, never an observed runtime subject."""
 
