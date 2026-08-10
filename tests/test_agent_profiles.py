@@ -872,6 +872,25 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
     assert replay_validation_calls[0]["source_identity"]["pinned_version"] == locked_version
     assert replay_validation_calls[1]["manifest_validation"]["pinned_version"] == locked_version
 
+    async def reject_malformed_manifest(*_args, **_kwargs):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        reject_malformed_manifest,
+    )
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        validate_replay_skill_manifests,
+    )
+
     source["input_json"]["release_decision"] = {"selected_version": "c" * 64}
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
         await authority.reauthorize_pinned_run_for_replay(

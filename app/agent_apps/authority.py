@@ -984,7 +984,10 @@ class AgentProfileAuthority:
                         ],
                     )
                 )
-            except repositories.RepositoryAuthorizationError as exc:
+            except (
+                repositories.RepositoryAuthorizationError,
+                repositories.RepositoryConflictError,
+            ) as exc:
                 raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
             skill_version_matches = (
                 bool(snapshot_skill_version)
