@@ -27,6 +27,7 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
     "backendErrors.skillPackageDescriptionRequired",
   skill_package_too_large: "backendErrors.skillPackageTooLarge",
   skill_package_file_too_large: "backendErrors.skillPackageTooLarge",
+  context_file_too_large: "backendErrors.contextFileTooLarge",
   skill_package_path_escape: "backendErrors.skillPackageUnsafe",
   skill_package_mixed_root: "backendErrors.skillPackageUnsafe",
   skill_package_duplicate_path: "backendErrors.skillPackageUnsafe",
