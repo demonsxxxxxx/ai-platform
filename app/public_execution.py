@@ -667,7 +667,7 @@ class PublicExecutionV2Projector:
         )
         if lifecycle == "started":
             self._invocations[invocation_id] = next_state
-        else:
+        elif lifecycle in {"completed", "failed"}:
             state.terminal = lifecycle
         return projected
 
