@@ -149,6 +149,34 @@ def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> No
     }
 
 
+def test_v1_report_keeps_legacy_fields_and_adds_advisories(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, base = governance_repo
+    _write(repo, "docs/governance.md", "additive report\n")
+    head = _commit(repo, "additive report")
+
+    payload = _payload(_evaluate(repo, base, head))
+
+    assert {
+        "base_ref",
+        "changes",
+        "exception",
+        "exempted_violations",
+        "head_ref",
+        "metrics",
+        "mode",
+        "policy",
+        "reserved_gates",
+        "ruff",
+        "schema_version",
+        "status",
+        "violations",
+    } <= payload.keys()
+    assert payload["schema_version"] == "ai-platform.code-governance-report.v1"
+    assert payload["advisories"] == []
+
+
 def test_size_signals_are_advisory_across_multiple_responsibilities(
     governance_repo: tuple[Path, str],
 ) -> None:

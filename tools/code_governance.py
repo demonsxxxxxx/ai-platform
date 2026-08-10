@@ -194,7 +194,7 @@ class Violation:
 
 @dataclass(frozen=True)
 class Evaluation:
-    """Stable result returned across the code-governance seam."""
+    """Stable additive-v1 result returned across the code-governance seam."""
 
     base_ref: str
     head_ref: str
