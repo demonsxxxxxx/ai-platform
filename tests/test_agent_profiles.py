@@ -891,6 +891,15 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         validate_replay_skill_manifests,
     )
 
+    source["input_json"]["input"]["mcp_tool_ids"] = "profile-tool"
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+    source["input_json"]["input"]["mcp_tool_ids"] = ["profile-tool"]
+
     source["input_json"]["release_decision"] = {"selected_version": "c" * 64}
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
         await authority.reauthorize_pinned_run_for_replay(

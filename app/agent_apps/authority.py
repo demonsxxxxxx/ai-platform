@@ -926,6 +926,13 @@ class AgentProfileAuthority:
         )
         profile_snapshot = snapshot.get("agent_profile")
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
+        try:
+            execution_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(execution_input))
+        except (
+            repositories.RepositoryAuthorizationError,
+            repositories.RepositoryConflictError,
+        ) as exc:
+            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
         expected_profile_snapshot = dict(admission.private_execution_input)
         snapshot_skill_version = str(snapshot.get("skill_version") or "")
         authority_skill_id = str(admission.skill.get("skill_id") or "")
@@ -1006,8 +1013,7 @@ class AgentProfileAuthority:
             != str(admission.skill.get("executor_type") or "")
             or str(snapshot.get("model_id") or "") != str(admission.model.get("id") or "")
             or str(snapshot.get("model_value") or "") != str(admission.model.get("value") or "")
-            or tuple(repositories.extract_run_mcp_tool_ids(execution_input))
-            != admission.mcp_tool_ids
+            or execution_mcp_tool_ids != admission.mcp_tool_ids
         ):
             raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
 
