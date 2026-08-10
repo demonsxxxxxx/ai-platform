@@ -464,6 +464,7 @@ def test_opensandbox_internal_test_overlay_is_explicit_direct_and_has_no_gateway
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS"] == "true"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "false"
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""
