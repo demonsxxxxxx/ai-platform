@@ -25,6 +25,8 @@
 - Initial browser pass found the department popover extended below the 768 px viewport after scrolling to the end (P2 clipping).
 - Fix: the desktop/tablet popover now opens above its trigger; the existing fixed mobile treatment remains unchanged.
 - Post-fix evidence: the complete mock-backed route smoke passed 15 route/viewport cases. The focused desktop pass reports the department menu rect fully within the viewport and no horizontal overflow.
+- Independent fixed-head review found that the first implementation selected rows by display name while the authorization writer requires the stable Skill id. The catalog now merges admin lifecycle records and the runtime projection behind the stable id, keeps draft/unpublished records visible, and disables runtime-only actions when no runtime projection exists.
+- Validation was hardened so unstubbed API calls fail the smoke, required controls and requests are asserted per route, and the Skill scenario submits a department-scope save to an opaque Skill id.
 
 **Findings**
 

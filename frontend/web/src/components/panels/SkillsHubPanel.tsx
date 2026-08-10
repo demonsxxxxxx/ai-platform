@@ -234,7 +234,7 @@ export function SkillsHubPanel() {
           {visibleTab === "skills" ? (
             <div data-skill-catalog-shell className="min-h-0">
               <SkillsPanel
-                allAuthorizedCatalog={!isAdmin}
+                allAuthorizedCatalog
                 embedded
                 governedUnavailable={isAdmin && hubGovernance.governedUnavailable}
                 onCatalogStateChange={handleCatalogStateChange}

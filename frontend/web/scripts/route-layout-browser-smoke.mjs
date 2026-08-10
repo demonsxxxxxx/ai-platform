@@ -59,7 +59,7 @@ function bootstrapSource() {
         effective_permissions: ['skill:admin','skill:read','skill:write','skill:delete'], effective_permissions_known: true, catalog_read_resolved: true
       });
       if (url.pathname === '/api/ai/admin/skills') return json({ items: [{
-        skill_id: 'qa-file-reviewer', name: 'qa-file-reviewer', description: skill.description,
+        skill_id: 'skill-opaque-42', name: 'qa-file-reviewer', description: skill.description,
         lifecycle_status: 'active', distribution_status: 'active', visible_to_user: true,
         latest_version: '0.1.0', latest_version_status: 'active', current_version: '0.1.0', rollout_percent: 100
       }] });
@@ -67,9 +67,13 @@ function bootstrapSource() {
         directory_id: '1', authority_id: '运营QA for 工程', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
       }] });
       if (url.pathname === '/api/admin/capability-distributions') return json({ capability_distributions: [{
-        id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'qa-file-reviewer',
+        id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
         status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
       }] });
+      if (url.pathname === '/api/admin/capability-distributions/skill/skill-opaque-42' && method === 'PUT') return json({
+        id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
+        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
+      });
       if (url.pathname === '/api/roles/') return json({ roles: [{ id: 'reviewer', name: 'reviewer', description: 'Reviewer', permissions: [], is_system: false }], total: 1, skip: 0, limit: 100 });
       if (url.pathname === '/api/ai/agent-profiles') return json({ agent_profiles: [profile] });
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
@@ -79,18 +83,73 @@ function bootstrapSource() {
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.includes('notification')) return json([]);
-      if (url.pathname.startsWith('/api/')) return json({ items: [], total: 0, sessions: [] });
+      if (url.pathname.startsWith('/api/')) {
+        state.errors.push('unstubbed_api:' + method + ':' + url.pathname);
+        return json({ detail: 'route_layout_smoke_unstubbed_api' }, 501);
+      }
       return originalFetch(input, init);
     };
   })()`;
 }
 
 const cases = [
-  { path: "/skills", selector: "[data-skills-master-detail]", name: "skills", scroller: "[data-primary-page-scroller]", popover: true },
-  { path: "/agent-market", selector: "[data-agent-market]", name: "market", scroller: "[data-agent-market]" },
-  { path: "/agent-market/agt_support/1", selector: "[data-agent-market-detail]", name: "market-detail", scroller: "[data-agent-market-detail]" },
-  { path: "/agent-market/agt_support/1/chat", selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']", name: "market-workspace" },
-  { path: "/agent-builder", selector: "[data-agent-builder-workbench]", name: "builder", scroller: "[data-agent-builder-workbench] > div:last-child" },
+  {
+    path: "/skills",
+    selector: "[data-skills-master-detail]",
+    name: "skills",
+    scroller: "[data-primary-page-scroller]",
+    popover: true,
+    requiredSelectors: [
+      "[data-skill-catalog-item='skill-opaque-42']",
+      "[data-selected-skill-detail-shell]",
+      "[data-skill-distribution-status]",
+      "[data-skill-distribution-visible]",
+      "[data-skill-distribution-save]",
+      ".department-selector__trigger",
+    ],
+    saveRequest: "/api/admin/capability-distributions/skill/skill-opaque-42",
+    requiredRequests: [
+      "/api/skills/",
+      "/api/ai/admin/skills",
+      "/api/admin/capability-distributions",
+      "/api/admin/capability-distributions/department-directory",
+    ],
+  },
+  {
+    path: "/agent-market",
+    selector: "[data-agent-market]",
+    name: "market",
+    scroller: "[data-agent-market]",
+    requiredSelectors: [
+      "[data-agent-market-search]",
+      "[data-agent-market-filter]",
+      "[data-agent-market-card]",
+    ],
+    requiredRequests: ["/api/ai/agent-profiles"],
+  },
+  {
+    path: "/agent-market/agt_support/1",
+    selector: "[data-agent-market-detail]",
+    name: "market-detail",
+    scroller: "[data-agent-market-detail]",
+    requiredSelectors: ["[data-agent-market-start-chat]"],
+    requiredRequests: ["/api/ai/agent-profiles/agt_support"],
+  },
+  {
+    path: "/agent-market/agt_support/1/chat",
+    selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']",
+    name: "market-workspace",
+    requiredSelectors: ["[data-agent-workspace-welcome]", "[data-agent-workspace-start]"],
+    requiredRequests: ["/api/ai/agent-profiles/agt_support"],
+  },
+  {
+    path: "/agent-builder",
+    selector: "[data-agent-builder-workbench]",
+    name: "builder",
+    scroller: "[data-agent-builder-workbench] > div:last-child",
+    requiredSelectors: ["[data-agent-builder-workbench] input", "[data-agent-builder-save-reason]"],
+    requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
+  },
 ];
 const viewports = [
   { name: "desktop", width: 1440, height: 900, mobile: false },
@@ -115,10 +174,15 @@ async function runCase(viewport, scenario) {
     await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource() });
     await browser.client.send("Page.navigate", { url: `${baseUrl}${scenario.path}` });
     await browser.client.waitFor(`Boolean(document.querySelector(${JSON.stringify(scenario.selector)}))`, `${viewport.name}:${scenario.name}`);
+    await browser.client.waitFor(
+      `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => Boolean(document.querySelector(selector)))`,
+      `${viewport.name}:${scenario.name}:required-controls`,
+    );
     const layout = await browser.client.evaluate(`(() => {
       const target = ${scenario.scroller ? `document.querySelector(${JSON.stringify(scenario.scroller)})` : "document.scrollingElement"};
       if (target) target.scrollTop = target.scrollHeight;
       const rect = target?.getBoundingClientRect();
+      const requestedPaths = new Set(window.__routeLayoutSmoke.requests.map((request) => request.path));
       return {
         bodyScrollWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
@@ -127,11 +191,20 @@ async function runCase(viewport, scenario) {
         clientHeight: target?.clientHeight || 0,
         targetRect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null,
         errors: window.__routeLayoutSmoke.errors,
+        requests: [...requestedPaths],
       };
     })()`);
+    const missingRequests = (scenario.requiredRequests ?? []).filter(
+      (path) => !layout.requests.includes(path),
+    );
     const reachable = layout.scrollHeight <= layout.clientHeight + 1 || layout.scrollTop + layout.clientHeight >= layout.scrollHeight - 2;
-    if (layout.bodyScrollWidth > layout.viewportWidth || !reachable || layout.errors.length) {
-      throw new Error(`layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify({ layout, reachable })}`);
+    if (
+      layout.bodyScrollWidth > layout.viewportWidth ||
+      !reachable ||
+      layout.errors.length ||
+      missingRequests.length
+    ) {
+      throw new Error(`layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify({ layout, reachable, missingRequests })}`);
     }
     let overlay = null;
     if (scenario.popover) {
@@ -139,6 +212,13 @@ async function runCase(viewport, scenario) {
       await browser.client.waitFor("Boolean(document.querySelector('.department-selector__menu'))", `${viewport.name}:department-menu`);
       overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('.department-selector__menu').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
       if (!overlay.visible) throw new Error(`overlay_clipped:${viewport.name}:${JSON.stringify(overlay)}`);
+    }
+    if (scenario.saveRequest) {
+      await browser.client.evaluate(`(() => { const button = document.querySelector('[data-skill-distribution-save]'); if (!button) throw new Error('skill_distribution_save_missing'); button.click(); })()`);
+      await browser.client.waitFor(
+        `window.__routeLayoutSmoke.requests.some((request) => request.path === ${JSON.stringify(scenario.saveRequest)} && request.method === 'PUT')`,
+        `${viewport.name}:skill-distribution-save`,
+      );
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${viewport.name}-${scenario.name}`);
     return { viewport: viewport.name, route: scenario.path, layout, reachable, overlay, screenshot };

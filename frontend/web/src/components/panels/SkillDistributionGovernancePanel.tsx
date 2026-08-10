@@ -372,6 +372,7 @@ export function SkillDistributionGovernancePanel({
                     (departmentScope === "restricted" &&
                       draft.departmentIds.length === 0)
                   }
+                  data-skill-distribution-save
                   onClick={() => void save()}
                   type="button"
                 >

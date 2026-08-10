@@ -12,6 +12,10 @@ import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 import { SkillDistributionGovernancePanel } from "../SkillDistributionGovernancePanel";
+import {
+  buildSkillCatalogEntries,
+  filterSkillCatalogEntries,
+} from "./skillCatalogEntries";
 
 interface CatalogState {
   permissionDenied: boolean;
@@ -67,33 +71,61 @@ export function SkillsPanel({
   const canBatchSkills =
     skillBatchWriteBacked && (canWrite || canDeleteSkill);
 
+  const catalogEntries = useMemo(
+    () =>
+      buildSkillCatalogEntries(
+        actions.skills,
+        showDistributionEditor ? actions.adminCatalogItems : [],
+      ),
+    [actions.adminCatalogItems, actions.skills, showDistributionEditor],
+  );
+  const filteredCatalogEntries = useMemo(
+    () =>
+      filterSkillCatalogEntries(
+        catalogEntries,
+        actions.searchQuery,
+        actions.selectedTags,
+      ),
+    [actions.searchQuery, actions.selectedTags, catalogEntries],
+  );
+  const paginatedCatalogEntries = useMemo(
+    () =>
+      filteredCatalogEntries.slice(
+        (actions.page - 1) * actions.pageSize,
+        actions.page * actions.pageSize,
+      ),
+    [actions.page, actions.pageSize, filteredCatalogEntries],
+  );
+  const selectableNames = useMemo(
+    () =>
+      filteredCatalogEntries.flatMap((entry) =>
+        entry.actionName ? [entry.actionName] : [],
+      ),
+    [filteredCatalogEntries],
+  );
+
   useEffect(() => {
     setSelectedSkillId((current) =>
-      current && actions.filteredSkills.some((skill) => skill.name === current)
+      current && filteredCatalogEntries.some((entry) => entry.id === current)
         ? current
-        : actions.filteredSkills[0]?.name ?? null,
+        : filteredCatalogEntries[0]?.id ?? null,
     );
-  }, [actions.filteredSkills]);
+  }, [filteredCatalogEntries]);
 
-  const selectedSkill = useMemo(
+  const selectedCatalogEntry = useMemo(
     () =>
       selectedSkillId
-        ? actions.filteredSkills.find((skill) => skill.name === selectedSkillId) ?? null
+        ? filteredCatalogEntries.find((entry) => entry.id === selectedSkillId) ?? null
         : null,
-    [actions.filteredSkills, selectedSkillId],
+    [filteredCatalogEntries, selectedSkillId],
   );
-  const selectedAdminSkill = useMemo(
-    () =>
-      selectedSkillId
-        ? actions.adminCatalogItems.find((skill) => skill.skillId === selectedSkillId) ?? null
-        : null,
-    [actions.adminCatalogItems, selectedSkillId],
-  );
+  const selectedSkill = selectedCatalogEntry?.runtimeSkill ?? null;
+  const selectedAdminSkill = selectedCatalogEntry?.adminSkill ?? null;
 
   const selectedDetail = showDistributionEditor ? (
     <SkillDistributionGovernancePanel
       selectedSkill={selectedAdminSkill}
-      selectedSkillId={selectedSkillId}
+      selectedSkillId={selectedAdminSkill?.skillId ?? null}
     />
   ) : selectedSkill ? (
     <section
@@ -165,9 +197,9 @@ export function SkillsPanel({
         isFilterOpen={actions.isFilterOpen}
         setIsFilterOpen={actions.setIsFilterOpen}
         availableTags={actions.availableTags}
-        filteredSkills={actions.filteredSkills}
-        paginatedSkills={actions.paginatedSkills}
-        total={actions.total}
+        catalogEntries={filteredCatalogEntries}
+        paginatedCatalogEntries={paginatedCatalogEntries}
+        total={filteredCatalogEntries.length}
         page={actions.page}
         pageSize={actions.pageSize}
         setPage={actions.setPage}
@@ -190,7 +222,7 @@ export function SkillsPanel({
         onDelete={actions.handleDelete}
         onExportZip={actions.handleExportZip}
         onSelectSkill={actions.handleSelectSkill}
-        onSelectAll={actions.handleSelectAll}
+        onSelectAll={() => actions.handleSelectAll(selectableNames)}
         onSelectDetail={setSelectedSkillId}
         onGithubClick={actions.handleGithubClick}
         onZipClick={actions.handleZipClick}

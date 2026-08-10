@@ -8,7 +8,10 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import type { SkillResponse } from "../../../types";
+import type {
+  SkillCatalogEntry,
+  SkillCatalogStatus,
+} from "./skillCatalogEntries";
 
 interface SkillManagementTableProps {
   canBatch: boolean;
@@ -17,20 +20,21 @@ interface SkillManagementTableProps {
   canExport: boolean;
   canToggle: boolean;
   onDelete: (name: string) => void;
-  onEdit: (skill: SkillResponse) => void;
+  onEdit: (skill: NonNullable<SkillCatalogEntry["runtimeSkill"]>) => void;
   onExportZip: (name: string) => void;
   onSelectDetail: (skillId: string) => void;
   onSelectSkill: (name: string) => void;
   onToggle: (name: string) => void;
   selectedNames: Set<string>;
   selectedSkillId: string | null;
-  skills: SkillResponse[];
+  entries: SkillCatalogEntry[];
 }
 
-function catalogStatusKey(skill: SkillResponse): string {
-  if (skill.marketplace_is_active) return "skills.managementTable.distributed";
-  if (skill.is_published) return "skills.managementTable.distributionDisabled";
-  return "skills.managementTable.notInDirectory";
+function catalogStatusKey(status: SkillCatalogStatus): string {
+  if (status === "available") return "skills.managementTable.distributed";
+  if (status === "hidden") return "skills.managementTable.hidden";
+  if (status === "disabled") return "skills.managementTable.distributionDisabled";
+  return "skills.managementTable.notPublished";
 }
 
 function updatedDateLabel(value?: string): string {
@@ -53,10 +57,9 @@ export function SkillManagementTable({
   onToggle,
   selectedNames,
   selectedSkillId,
-  skills,
+  entries,
 }: SkillManagementTableProps) {
   const { t } = useTranslation();
-  const hasActions = canToggle || canEdit || canExport || canDelete;
 
   return (
     <div
@@ -79,32 +82,43 @@ export function SkillManagementTable({
       </div>
 
       <div role="rowgroup">
-        {skills.map((skill) => (
-          <div
-            aria-selected={skill.name === selectedSkillId}
-            className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""} ${skill.name === selectedSkillId ? "skill-management-table__row--selected" : ""}`}
-            data-skill-catalog-item={skill.name}
-            key={skill.name}
-            onClick={() => onSelectDetail(skill.name)}
+        {entries.map((entry) => {
+          const actionName = entry.actionName;
+          const canAct = actionName !== null && entry.runtimeSkill !== null;
+          const rowCanToggle = canToggle && canAct;
+          const rowCanEdit = canEdit && canAct;
+          const rowCanExport = canExport && canAct;
+          const rowCanDelete = canDelete && canAct;
+          const hasActions =
+            rowCanToggle || rowCanEdit || rowCanExport || rowCanDelete;
+          return (
+            <div
+            aria-selected={entry.id === selectedSkillId}
+            className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""} ${entry.id === selectedSkillId ? "skill-management-table__row--selected" : ""}`}
+            data-skill-catalog-item={entry.id}
+            key={entry.id}
+            onClick={() => onSelectDetail(entry.id)}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                onSelectDetail(skill.name);
+                onSelectDetail(entry.id);
               }
             }}
             role="row"
             tabIndex={0}
           >
-            {canBatch ? (
+            {canBatch && actionName ? (
               <div className="skill-management-table__select" role="cell">
                 <input
-                  aria-label={t("skills.managementTable.selectSkill", { name: skill.name })}
-                  checked={selectedNames.has(skill.name)}
+                  aria-label={t("skills.managementTable.selectSkill", { name: entry.displayName })}
+                  checked={selectedNames.has(actionName)}
                   onClick={(event) => event.stopPropagation()}
-                  onChange={() => onSelectSkill(skill.name)}
+                  onChange={() => onSelectSkill(actionName)}
                   type="checkbox"
                 />
               </div>
+            ) : canBatch ? (
+              <span aria-hidden="true" role="cell" />
             ) : null}
 
             <div
@@ -115,22 +129,22 @@ export function SkillManagementTable({
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-semibold text-[var(--theme-text)]"
-                  title={skill.name}
+                  title={entry.displayName}
                 >
-                  {skill.name}
+                  {entry.displayName}
                 </p>
                 <p
                   className="mt-0.5 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]"
-                  title={skill.description || undefined}
+                  title={entry.description || undefined}
                 >
-                  {skill.description || t("skills.noDescription")}
+                  {entry.description || t("skills.noDescription")}
                 </p>
-                {skill.tags.length > 0 ? (
+                {entry.tags.length > 0 ? (
                   <div
                     aria-label={t("skills.managementTable.tags")}
                     className="mt-1.5 flex max-w-full gap-1 overflow-hidden"
                   >
-                    {skill.tags.slice(0, 2).map((tag) => (
+                    {entry.tags.slice(0, 2).map((tag) => (
                       <span
                         className="skill-management-table__tag"
                         key={tag}
@@ -139,9 +153,9 @@ export function SkillManagementTable({
                         {tag}
                       </span>
                     ))}
-                    {skill.tags.length > 2 ? (
+                    {entry.tags.length > 2 ? (
                       <span className="skill-management-table__tag">
-                        +{skill.tags.length - 2}
+                        +{entry.tags.length - 2}
                       </span>
                     ) : null}
                   </div>
@@ -156,19 +170,23 @@ export function SkillManagementTable({
             >
               <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[var(--theme-text)]">
                 <FileArchive aria-hidden="true" size={14} />
-                {skill.expected_version || "-"}
+                {entry.version || "-"}
               </span>
               <span className="mt-1 block text-[11px] text-[var(--theme-text-secondary)]">
-                {t("skills.managementTable.fileCount", { count: skill.file_count })}
+                {entry.fileCount === null
+                  ? t("skills.managementTable.packageOnly")
+                  : t("skills.managementTable.fileCount", { count: entry.fileCount })}
               </span>
             </div>
 
             <div className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
               <span
-                className={`skill-management-table__status ${skill.enabled ? "skill-management-table__status--active" : ""}`}
+                className={`skill-management-table__status ${entry.runtimeEnabled ? "skill-management-table__status--active" : ""}`}
               >
                 <span aria-hidden="true" />
-                {skill.enabled
+                {entry.runtimeEnabled === null
+                  ? t("skills.managementTable.notPublished")
+                  : entry.runtimeEnabled
                   ? t("skills.managementTable.enabled")
                   : t("skills.managementTable.disabled")}
               </span>
@@ -180,17 +198,17 @@ export function SkillManagementTable({
               role="cell"
             >
               <span
-                className={`skill-management-table__status ${skill.marketplace_is_active ? "skill-management-table__status--distribution" : ""}`}
+                className={`skill-management-table__status ${entry.catalogStatus === "available" ? "skill-management-table__status--distribution" : ""}`}
               >
                 <Store aria-hidden="true" size={13} />
-                {t(catalogStatusKey(skill))}
+                {t(catalogStatusKey(entry.catalogStatus))}
               </span>
-              {skill.published_marketplace_name ? (
+              {entry.publishedCatalogName ? (
                 <span
                   className="mt-1 block truncate text-[11px] text-[var(--theme-text-secondary)]"
-                  title={skill.published_marketplace_name}
+                  title={entry.publishedCatalogName}
                 >
-                  {skill.published_marketplace_name}
+                  {entry.publishedCatalogName}
                 </span>
               ) : null}
             </div>
@@ -200,7 +218,7 @@ export function SkillManagementTable({
               data-label={t("skills.managementTable.updatedAt")}
               role="cell"
             >
-              {updatedDateLabel(skill.updated_at)}
+              {updatedDateLabel(entry.updatedAt ?? undefined)}
             </div>
 
             <div
@@ -208,21 +226,21 @@ export function SkillManagementTable({
               data-label={t("skills.managementTable.actions")}
               role="cell"
             >
-              {canToggle ? (
+              {rowCanToggle ? (
                 <button
                   aria-label={t(
-                    skill.enabled
+                    entry.runtimeEnabled
                       ? "skills.managementTable.disableSkill"
                       : "skills.managementTable.enableSkill",
-                    { name: skill.name },
+                    { name: entry.displayName },
                   )}
                   className="btn-icon"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onToggle(skill.name);
+                    onToggle(actionName);
                   }}
                   title={t(
-                    skill.enabled
+                    entry.runtimeEnabled
                       ? "skills.managementTable.disable"
                       : "skills.managementTable.enable",
                   )}
@@ -231,13 +249,13 @@ export function SkillManagementTable({
                   <Power aria-hidden="true" size={16} />
                 </button>
               ) : null}
-              {canEdit ? (
+              {rowCanEdit ? (
                 <button
-                  aria-label={t("skills.managementTable.editSkill", { name: skill.name })}
+                  aria-label={t("skills.managementTable.editSkill", { name: entry.displayName })}
                   className="btn-icon"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onEdit(skill);
+                    onEdit(entry.runtimeSkill!);
                   }}
                   title={t("skills.managementTable.edit")}
                   type="button"
@@ -245,13 +263,13 @@ export function SkillManagementTable({
                   <Pencil aria-hidden="true" size={16} />
                 </button>
               ) : null}
-              {canExport ? (
+              {rowCanExport ? (
                 <button
-                  aria-label={t("skills.managementTable.exportSkill", { name: skill.name })}
+                  aria-label={t("skills.managementTable.exportSkill", { name: entry.displayName })}
                   className="btn-icon"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onExportZip(skill.name);
+                    onExportZip(actionName);
                   }}
                   title={t("skills.exportZip")}
                   type="button"
@@ -259,13 +277,13 @@ export function SkillManagementTable({
                   <Download aria-hidden="true" size={16} />
                 </button>
               ) : null}
-              {canDelete ? (
+              {rowCanDelete ? (
                 <button
-                  aria-label={t("skills.managementTable.deleteSkill", { name: skill.name })}
+                  aria-label={t("skills.managementTable.deleteSkill", { name: entry.displayName })}
                   className="btn-icon text-[var(--theme-danger)]"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onDelete(skill.name);
+                    onDelete(actionName);
                   }}
                   title={t("skills.managementTable.delete")}
                   type="button"
@@ -279,8 +297,9 @@ export function SkillManagementTable({
                 </span>
               ) : null}
             </div>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

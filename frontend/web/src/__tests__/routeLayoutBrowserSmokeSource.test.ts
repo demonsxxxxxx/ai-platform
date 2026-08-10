@@ -26,4 +26,14 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /target\.scrollTop = target\.scrollHeight/);
   assert.match(source, /overlay_clipped/);
   assert.match(source, /department-selector__menu/);
+  assert.match(source, /route_layout_smoke_unstubbed_api/);
+  assert.match(source, /requiredSelectors/);
+  assert.match(source, /requiredRequests/);
+  assert.match(source, /missingRequests/);
+  assert.match(source, /data-selected-skill-detail-shell/);
+  assert.match(source, /skill-opaque-42/);
+  assert.match(source, /data-skill-distribution-save/);
+  assert.match(source, /skill-distribution-save/);
+  assert.match(source, /data-agent-market-start-chat/);
+  assert.match(source, /data-agent-builder-save-reason/);
 });
