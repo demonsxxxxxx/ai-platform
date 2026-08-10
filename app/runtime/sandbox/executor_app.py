@@ -1575,7 +1575,19 @@ def create_executor_app(
         execute_claimed["value"] = True
         started_at = time.monotonic()
         document_started_at = time.monotonic()
-        marker_path = _write_runtime_marker(resolved_workspace_root, request)
+        try:
+            marker_path = _write_runtime_marker(resolved_workspace_root, request)
+        except OSError:
+            error_message = "Executor runtime marker write failed"
+            return {
+                "status": "failed",
+                "run_id": request.run_id,
+                "message": error_message,
+                "error_code": "executor_runtime_marker_write_failed",
+                "error_message": error_message,
+                "sdk_used": False,
+                "executor_mode": "runtime_marker_write_failed",
+            }
         document_processing_latency_ms = _elapsed_ms(document_started_at)
         callback_errors: list[str] = []
         callback_batch_ids = _CallbackBatchIdFactory()
