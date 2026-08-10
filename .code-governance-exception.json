@@ -1,0 +1,24 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "98da4979077131e69b74213830d1ab120de93fd6",
+    "scope_sha256": "a7e342e7f024daa7ae74ef3a9897845390eeda57bdb2cc0c8327ac2fe907f6bb"
+  },
+  "expires_on": "2026-08-17",
+  "owner": "issue-886-control-plane-ui",
+  "reason": "Bounded single-PR closure of linked Agent Market, Skill administration, Agent Builder, and MCP control-plane regressions, including synchronized locale and acceptance contracts.",
+  "violations": [
+    {
+      "code": "functional_hot_file_growth",
+      "path": "app/repositories.py"
+    },
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "test_hot_file_growth",
+      "path": "tests/test_repositories.py"
+    }
+  ]
+}
