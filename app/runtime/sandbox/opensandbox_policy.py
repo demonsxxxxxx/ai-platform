@@ -159,10 +159,19 @@ def validate_opensandbox_image_reference(
 def requested_opensandbox_image(
     settings: Any,
     *,
-    allow_local_image_id: bool = False,
+    allow_local_image_id: bool | None = None,
 ) -> tuple[str, str]:
     """Return only a validated configured image reference and matching digest."""
 
+    if allow_local_image_id is None:
+        allow_local_image_id = (
+            str(getattr(settings, "deployment_environment", "") or "") == "test"
+            and str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower()
+            == "opensandbox"
+            and str(getattr(settings, "sandbox_security_profile", "") or "")
+            == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+            and str(getattr(settings, "opensandbox_expected_network_mode", "") or "") == "bridge"
+        )
     image = str(getattr(settings, "opensandbox_executor_image", "") or "")
     if not image:
         image = str(getattr(settings, "sandbox_executor_image", "") or "")
