@@ -56,6 +56,11 @@ from app.required_tool_contract import (
     required_tool_completion_for_run,
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.runtime.sandbox.executor_client import (
+    SandboxExecutorHttpError,
+    canonical_executor_reported_failure_code,
+    executor_reported_failure_message,
+)
 from app.settings import get_settings
 from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
 from app.streaming.worker_projection import (
@@ -258,6 +263,9 @@ _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
 
 def _public_executor_failure_message(result: ExecutorResult) -> str:
     generic_message = "Executor reported failure"
+    if result.executor_payload.get("sandbox_runtime_used") is True:
+        safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
+        return executor_reported_failure_message(safe_code)
     for candidate in (
         result.result.get("message"),
         result.result.get("sdk_error"),
@@ -274,11 +282,40 @@ def _public_executor_failure_message(result: ExecutorResult) -> str:
 
 
 def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
-    """Keep native admission distinguishable while sanitizing every other exception."""
+    """Keep typed executor failures distinguishable without projecting private exceptions."""
 
     if isinstance(exc, NativeToolAdmissionError):
         return exc.error_code, "Native tool sandbox admission failed"
-    return "executor_failure", str(exc)
+    if isinstance(exc, SandboxExecutorHttpError):
+        return exc.error_code, exc.public_message
+    return "executor_failure", "Executor failed"
+
+
+def _normalize_sandbox_reported_failure(result: ExecutorResult) -> ExecutorResult:
+    runtime_status = str(result.executor_payload.get("runtime_terminal_status") or "").strip().lower()
+    if (
+        result.status != "failed"
+        or result.executor_payload.get("sandbox_runtime_used") is not True
+        or runtime_status in {"completed", "succeeded"}
+    ):
+        return result
+    safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
+    safe_message = executor_reported_failure_message(safe_code)
+    safe_result = {
+        **result.result,
+        "error_code": safe_code,
+        "message": safe_message,
+    }
+    if "sdk_error" in safe_result:
+        safe_result["sdk_error"] = safe_code
+    safe_executor_payload = dict(result.executor_payload)
+    if "sdk_error" in safe_executor_payload:
+        safe_executor_payload["sdk_error"] = safe_code
+    return replace(
+        result,
+        result=safe_result,
+        executor_payload=safe_executor_payload,
+    )
 
 
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
@@ -2458,6 +2495,7 @@ async def process_run_payload(
         await stream_publisher.aclose()
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
+        result = _normalize_sandbox_reported_failure(result)
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
         required_tool_decision = capability_authorization.required_tool_decision or RequiredCapabilityDecision(
