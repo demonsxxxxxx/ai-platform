@@ -29,7 +29,10 @@ import {
 import { useDragAndDrop } from "./useDragAndDrop";
 import { useWebSocketNotifications } from "./useWebSocketNotifications";
 import { useAgentOptions } from "./useAgentOptions";
-import { useSessionSync } from "./useSessionSync";
+import {
+  shouldClearConversationOnRouteIdentityChange,
+  useSessionSync,
+} from "./useSessionSync";
 import {
   getExternalNavigationTargetFile,
   shouldScrollToBottomAfterExternalNavigation,
@@ -629,6 +632,15 @@ export function ChatAppContent({
       return;
     }
     previousConversationIdentityKeyRef.current = conversationIdentityKey;
+    if (
+      !shouldClearConversationOnRouteIdentityChange({
+        hasAgentWorkspace: Boolean(agentWorkspace),
+        routeSessionId,
+        sessionId,
+      })
+    ) {
+      return;
+    }
     agentWorkspaceSelectionRequestIdRef.current += 1;
     clearMessages();
     // A task Skill is scoped to the composer that selected it.  A route or
@@ -646,6 +658,7 @@ export function ChatAppContent({
     clearSelectedSkill,
     conversationIdentityKey,
     routeSessionId,
+    sessionId,
   ]);
 
   useEffect(() => {

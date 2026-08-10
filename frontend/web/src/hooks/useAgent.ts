@@ -165,8 +165,12 @@ function formatChatSubmissionError(error: unknown): string {
     );
   }
   return error instanceof Error
-    ? translateBackendError(error.message, i18n.t.bind(i18n))
-    : i18n.t("chat.unknownError");
+    ? translateBackendError(
+        error.message,
+        i18n.t.bind(i18n),
+        "chat.sendFailed",
+      )
+    : i18n.t("chat.sendFailed");
 }
 
 function parseChatSubmissionResolution(
@@ -1765,7 +1769,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionAgentAuthorityRef.current = null;
           }
           logHistoryLoadFailure(historyFailurePhase, error);
-          setError(i18n.t("chat.requestFailed"));
+          setError(i18n.t("chat.historyLoadFailed"));
         }
       } finally {
         if (isCurrentHistoryLoadRequest()) {
@@ -1906,7 +1910,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           (sessionAuthority.profile !== null &&
             sessionAuthority.profile.agent_id !== requestAgentId));
       if (invalidSessionAuthority) {
-        setError(i18n.t("chat.requestFailed"));
+        setError(i18n.t("chat.sendFailed"));
         return { status: "failed" };
       }
       const selectedAgentProfileForRequest = requestSessionId

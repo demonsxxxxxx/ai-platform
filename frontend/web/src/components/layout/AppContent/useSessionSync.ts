@@ -50,6 +50,12 @@ interface ShouldLoadSessionFromUrlChangeInput {
   historyLoadEnabled?: boolean;
 }
 
+interface ShouldClearConversationOnRouteIdentityChangeInput {
+  hasAgentWorkspace: boolean;
+  routeSessionId: string | undefined;
+  sessionId: string | null;
+}
+
 export function isChatPath(pathname: string, sessionRouteBasePath = "/chat"): boolean {
   return (
     pathname === sessionRouteBasePath ||
@@ -157,6 +163,20 @@ export function shouldLoadSessionFromUrlChange({
   }
 
   return true;
+}
+
+/**
+ * A generic chat's first accepted submission binds its Session before the URL
+ * is canonicalized. That route-only transition must retain the live authority
+ * and transcript; every other identity transition remains a real clear.
+ */
+export function shouldClearConversationOnRouteIdentityChange({
+  hasAgentWorkspace,
+  routeSessionId,
+  sessionId,
+}: ShouldClearConversationOnRouteIdentityChangeInput): boolean {
+  if (hasAgentWorkspace) return true;
+  return !routeSessionId || routeSessionId !== sessionId;
 }
 
 export function useSessionSync({

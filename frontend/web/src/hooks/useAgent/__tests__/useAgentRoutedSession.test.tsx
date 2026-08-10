@@ -596,9 +596,12 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
   }
 });
 
-test("useAgent carries the routed agent into a same-tab continuation", async () => {
+test("useAgent preserves accepted authority through URL canonicalization for a second submit", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
+  const { shouldClearConversationOnRouteIdentityChange } = await import(
+    "../../../components/layout/AppContent/useSessionSync.ts"
+  );
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
@@ -637,12 +640,24 @@ test("useAgent carries the routed agent into a same-tab continuation", async () 
       await harness.hook.sendMessage("翻译这个文档");
     });
     await settle(harness.act);
+    assert.equal(harness.hook.sessionId, "session-routed");
+    assert.equal(
+      shouldClearConversationOnRouteIdentityChange({
+        hasAgentWorkspace: false,
+        routeSessionId: "session-routed",
+        sessionId: harness.hook.sessionId,
+      }),
+      false,
+    );
+    assert.match(JSON.stringify(harness.hook.messages), /翻译这个文档/);
     await harness.act(async () => {
       await harness.hook.sendMessage("继续处理");
     });
     await settle(harness.act);
 
     assert.equal(submissions.length, 2);
+    assert.equal(submissions[0]?.[1], undefined);
+    assert.equal(submissions[1]?.[1], "session-routed");
     assert.equal(submissions[0]?.[8], "general-agent");
     assert.equal(submissions[1]?.[8], "document-translation");
     assert.equal(harness.hook.sessionId, "session-routed");
@@ -982,6 +997,7 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
       });
     });
     assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.error, "消息发送失败");
 
     await harness.act(async () => {
       assert.deepEqual(await harness.hook.sendMessage("重新提交"), {

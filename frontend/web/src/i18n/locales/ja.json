@@ -448,6 +448,8 @@
     "queued": "順番待ち中 ({{position}}番目)...",
     "rateLimited": "リクエストが多すぎます。しばらくしてからお試しください",
     "requestFailed": "セッションの読み込みに失敗しました",
+    "historyLoadFailed": "セッションの読み込みに失敗しました",
+    "sendFailed": "メッセージの送信に失敗しました",
     "sandbox": {
       "error": "初期化に失敗しました",
       "initializing": "環境を初期化中",
