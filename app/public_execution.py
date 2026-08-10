@@ -688,7 +688,11 @@ class PublicExecutionPhasePublisher:
             return None
         presentation_config = _PLATFORM_PHASE_CONFIG.get(phase)
         lifecycle_config = _V2_LIFECYCLE_CONFIG.get(lifecycle)
-        if presentation_config is None or lifecycle_config is None:
+        if (
+            presentation_config is None
+            or presentation_config not in _V2_PUBLIC_PRESENTATION_CONFIGS
+            or lifecycle_config is None
+        ):
             return None
         terminal = self._phases.get(phase)
         if lifecycle == "started":
