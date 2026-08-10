@@ -4940,7 +4940,7 @@ class OpenSandboxContainerProvider:
             egress_bases=_opensandbox_runtime_egress_bases(settings, capability),
             workspace_container_path=workspace.workspace_container_path,
         )
-        environment = {key: value for key, value in environment.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}}
+        environment = environment if getattr(settings, "opensandbox_internal_test_forward_model_credentials", False) is True and _is_internal_test_opensandbox(settings) else {key: value for key, value in environment.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}}
         kwargs = {
             "image": _opensandbox_image(settings),
             "timeout": timedelta(seconds=max(int(getattr(settings, "opensandbox_timeout_seconds", 1800) or 1800), 1)),

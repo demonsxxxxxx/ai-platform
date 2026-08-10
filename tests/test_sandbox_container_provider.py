@@ -1033,7 +1033,10 @@ class InternalTestDirectOpenSandboxSettings(OpenSandboxSettings):
     opensandbox_external_egress_capability_token = ""
     sandbox_callback_base_url = "http://host.docker.internal:8020"
     openai_base_url = "http://host.docker.internal:18043/openai/v1"
+    openai_api_key = "test-newapi-token"
     anthropic_base_url = "http://host.docker.internal:18043/anthropic"
+    anthropic_auth_token = "test-anthropic-token"
+    opensandbox_internal_test_forward_model_credentials = False
 
 
 
@@ -1731,6 +1734,8 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
     assert lease.labels["ai-platform.executor.requested_image_digest"] == settings.opensandbox_executor_image_digest
     assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
     assert health_calls and identity_calls
+    assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["env"]
 
     await provider.validate_for_dispatch(lease, request(), workspace())
 
@@ -1742,6 +1747,29 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
     assert stopped.status == "stopped"
     assert FakeOpenSandbox.instances[lease.container_id].killed is True
     assert lease.container_id not in provider._sandboxes
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_explicitly_forwards_model_credentials(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class CredentialForwardingSettings(InternalTestDirectOpenSandboxSettings):
+        opensandbox_internal_test_forward_model_credentials = True
+
+    settings = CredentialForwardingSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    environment = FakeOpenSandbox.created[0]["env"]
+    assert environment["OPENAI_API_KEY"] == settings.openai_api_key
+    assert environment["ANTHROPIC_AUTH_TOKEN"] == settings.anthropic_auth_token
+    assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["metadata"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["metadata"]
+
+    await provider.stop(lease, reason="internal_test_acceptance")
 
 
 @pytest.mark.asyncio
