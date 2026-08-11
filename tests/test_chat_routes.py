@@ -2262,6 +2262,10 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []
 
+    def fake_resolve_model_selection(model_id, _settings):
+        assert model_id == "deepseek-v4-pro"
+        return {"id": model_id, "value": model_id}
+
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
             "executor_type": "claude-agent-worker",
@@ -2352,6 +2356,10 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         }
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_model_selection",
+        fake_resolve_model_selection,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_run_capabilities",
