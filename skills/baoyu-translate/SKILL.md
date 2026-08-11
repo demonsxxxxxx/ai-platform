@@ -1,6 +1,7 @@
 ---
 name: baoyu-translate
 description: Use when the user asks to translate, localize, polish, or bilingual-review text or documents.
+visibility: public
 ---
 
 # Baoyu Translate

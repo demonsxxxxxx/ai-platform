@@ -163,7 +163,7 @@ test("hydrates every exact server identity without catalog fallback", () => {
 test("materializes create and update requests with the exact optimistic revision", () => {
   const created = {
     ...createUnsavedAgentEditor(),
-    name: " 新智能体 ",
+    name: " 新专家 ",
     description: " 简介 ",
     welcomeMessage: " 欢迎使用 ",
     starterPrompts: [" 示例问题 "],
@@ -180,7 +180,7 @@ test("materializes create and update requests with the exact optimistic revision
     selectedMcpToolIds: ["mcp:knowledge:search"],
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
-    name: "新智能体",
+    name: "新专家",
     description: "简介",
     welcome_message: "欢迎使用",
     starter_prompts: ["示例问题"],

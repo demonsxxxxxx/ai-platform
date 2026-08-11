@@ -252,8 +252,8 @@ export function AgentWorkspaceRoute() {
         <div className="max-w-md text-center">
           <p>
             {phase === "error"
-              ? "暂时无法校验智能体工作区。"
-              : "正在校验当前智能体与会话权限…"}
+              ? "暂时无法校验专家工作区。"
+              : "正在校验当前专家与会话权限…"}
           </p>
           {phase === "error" ? (
             <div className="mt-4 flex justify-center gap-3">

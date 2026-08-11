@@ -1,6 +1,8 @@
 ---
 name: qa-file-reviewer
 description: Use when the user asks to review, QA check, compliance check, bilingual check, or add comments to a Word .docx document. Produces a reviewed Word document with visible comments and a concise findings summary.
+visibility: public
+dependencies: minimax-docx
 ---
 
 # QA File Reviewer

@@ -18,7 +18,6 @@ def test_claude_single_run_requires_real_sandbox_contract():
 
     decision = module.decide_execution_boundary(
         executor_type="claude-agent-worker",
-        execution_mode="",
         execution_tier="sdk_only_writing",
         mcp_requires_sandbox=False,
     )
@@ -36,7 +35,6 @@ def test_unknown_claude_tier_fails_closed_without_local_execution():
 
     decision = module.decide_execution_boundary(
         executor_type="claude-agent-worker",
-        execution_mode="",
         execution_tier="unknown_writing_tier",
         mcp_requires_sandbox=False,
     )
@@ -46,27 +44,11 @@ def test_unknown_claude_tier_fails_closed_without_local_execution():
     assert decision.local_sdk_allowed is False
 
 
-@pytest.mark.parametrize("mcp_requires_sandbox", [False, True])
-def test_non_parked_multi_agent_fails_closed(mcp_requires_sandbox):
-    module = _module()
-
-    decision = module.decide_execution_boundary(
-        executor_type="claude-agent-worker",
-        execution_mode="multi_agent",
-        execution_tier="heavy_sandbox",
-        mcp_requires_sandbox=mcp_requires_sandbox,
-    )
-
-    assert decision.fail_closed is True
-    assert decision.local_sdk_allowed is False
-
-
 def test_injected_non_harness_test_adapter_keeps_adapter_managed_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
         executor_type="test-adapter",
-        execution_mode="",
         execution_tier="sdk_only_writing",
         mcp_requires_sandbox=False,
     )
@@ -81,7 +63,6 @@ def test_mcp_requirement_forces_real_sandbox_without_synthetic_execution_tier():
 
     decision = module.decide_execution_boundary(
         executor_type="claude-agent-worker",
-        execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=True,
     )
@@ -97,7 +78,6 @@ def test_mcp_requirement_preserves_injected_test_adapter_sandbox_override():
 
     decision = module.decide_execution_boundary(
         executor_type="test-adapter",
-        execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=True,
     )
@@ -113,7 +93,6 @@ def test_invalid_mcp_requirement_fails_closed_without_local_execution():
 
     decision = module.decide_execution_boundary(
         executor_type="test-adapter",
-        execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=None,
     )

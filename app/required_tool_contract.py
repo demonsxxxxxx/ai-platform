@@ -62,17 +62,10 @@ _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
 _AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
 SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
 TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
-CONTROLLED_RUNNER_EVIDENCE_SOURCE = "controlled_skill_runner"
-PROCESS_BOUND_TRUST_BASIS = "process_bound_invocation"
 _EVIDENCE_TRUST_MATRIX = {
     "builtin": frozenset({("executor_private_payload", "attempt_bound_tool_invocation")}),
     "mcp": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
-    "skill": frozenset(
-        {
-            (SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS),
-            (CONTROLLED_RUNNER_EVIDENCE_SOURCE, PROCESS_BOUND_TRUST_BASIS),
-        }
-    ),
+    "skill": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
 }
 _AFFIRMATIVE_EXECUTION = re.compile(
     r"(?:请|帮我|麻烦|立即|现在|直接|please\s+)?"
@@ -248,43 +241,6 @@ class RequiredCapabilityEvidence:
             public_label=unbound["public_label"],
             public_status=unbound["public_status"],
             declaration_sha256=unbound["declaration_sha256"],
-        )
-
-    @classmethod
-    def from_controlled_runner(
-        cls,
-        *,
-        declaration: RequiredCapabilityDeclaration,
-        binding: Mapping[str, object],
-        tool_call_id: str,
-        lifecycle_phase: str,
-    ) -> RequiredCapabilityEvidence:
-        """Create one process-bound Skill fact from the controlled runner."""
-
-        _validate_declaration(declaration)
-        if declaration.capability_kind != "skill":
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        values = {field: binding.get(field) for field in _BINDING_FIELDS}
-        if any(not isinstance(value, str) or not value for value in values.values()):
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if not isinstance(tool_call_id, str) or not tool_call_id:
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        lifecycle_status = dict(_EVIDENCE_LIFECYCLE_PAIRS)[lifecycle_phase]
-        return cls(
-            schema_version=REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
-            **{field: str(values[field]) for field in _BINDING_FIELDS},
-            tool_call_id=tool_call_id,
-            capability_kind="skill",
-            canonical_identity=declaration.canonical_identity,
-            lifecycle_phase=lifecycle_phase,
-            lifecycle_status=lifecycle_status,
-            evidence_source=CONTROLLED_RUNNER_EVIDENCE_SOURCE,
-            trust_basis=PROCESS_BOUND_TRUST_BASIS,
-            public_label=_SAFE_PUBLIC_LABEL,
-            public_status=lifecycle_status,
-            declaration_sha256=declaration.declaration_sha256,
         )
 
     @classmethod

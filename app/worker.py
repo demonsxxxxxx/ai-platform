@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time as _time
 from dataclasses import dataclass, replace
@@ -12,10 +13,10 @@ from pydantic import ValidationError
 
 from app import repositories
 from app.agent_apps.capability_state import (
-    bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
+    exact_invoked_skills,
+    project_agent_capability_state,
 )
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
-from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
@@ -39,6 +40,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
+from app.diagnostics import log_safe_exception, new_diagnostic_id
 from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
@@ -98,6 +100,7 @@ class _WorkerClock:
 
 
 time = _WorkerClock()
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -910,32 +913,10 @@ def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
     return used
 
 
-def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
-    profile = payload.agent_profile
-    if not isinstance(profile, dict):
-        return None
-    required_skill_id = str(profile.get("required_skill_id") or payload.skill_id).strip()
-    required_skill_version = str(
-        profile.get("required_skill_version") or payload.skill_version or ""
-    ).strip()
-    if required_skill_id != payload.skill_id:
-        return ""
-    if required_skill_version and required_skill_version != str(payload.skill_version or ""):
-        return ""
-    return required_skill_id
-
-
-def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
-    source = {**result.result, **result.executor_payload}
-    raw = source.get("inferred_used_skills")
-    if not isinstance(raw, list):
-        return []
-    inferred: list[str] = []
-    for item in raw:
-        skill_name = str(item).strip()
-        if skill_name and skill_name not in inferred:
-            inferred.append(skill_name)
-    return inferred
+def _bound_agent_skill_ids(payload: QueueRunPayload) -> set[str]:
+    if not isinstance(payload.agent_profile, dict):
+        return set()
+    return {payload.skill_id} if payload.skill_id else set()
 
 
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
@@ -944,7 +925,6 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
     if not isinstance(raw, list):
         return []
     used_skills = set(_native_used_skills_from_result(result))
-    inferred_used_skills = set(_inferred_used_skills_from_result(result))
     used_skills_source = str(result.executor_payload.get("used_skills_source") or "").strip()
     manifests: list[dict[str, Any]] = []
     for item in raw:
@@ -955,10 +935,6 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
         manifest["used"] = bool(skill_id and skill_id in used_skills)
         if manifest["used"]:
             manifest["used_skills_source"] = used_skills_source
-            manifest["inferred_used"] = False
-        elif skill_id and skill_id in inferred_used_skills:
-            manifest["used_skills_source"] = "inferred"
-            manifest["inferred_used"] = True
         manifests.append(manifest)
     return manifests
 
@@ -1879,7 +1855,6 @@ def _ordinary_run_uses_runtime_sandbox(
 ) -> bool:
     return decide_execution_boundary(
         executor_type=payload.executor_type,
-        execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_context_execution_tier(context_snapshot),
         mcp_requires_sandbox=bool(repositories.extract_run_mcp_tool_ids(payload.input)),
     ).requires_real_sandbox
@@ -2491,7 +2466,6 @@ async def process_run_payload(
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         result = _normalize_sandbox_reported_failure(result)
-        result = replace(result, executor_payload=bind_validated_controlled_skill_evidence(payload, result, attempt_id, adapter))
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
         required_tool_decision = capability_authorization.required_tool_decision or RequiredCapabilityDecision(
@@ -2518,23 +2492,7 @@ async def process_run_payload(
                     "error_code": required_completion.reason,
                 },
             )
-        required_agent_skill_id = _required_agent_skill_id(payload)
-        if (
-            result.status == "succeeded"
-            and required_agent_skill_id is not None
-            and required_agent_skill_id
-            not in exact_invoked_skills({**result.result, **result.executor_payload})
-        ):
-            result = replace(
-                result,
-                status="failed",
-                artifacts=[],
-                result={
-                    **result.result,
-                    "message": "Required Agent capability execution evidence is unavailable.",
-                    "error_code": "agent_app_required_skill_not_invoked",
-                },
-            )
+        bound_agent_skill_ids = _bound_agent_skill_ids(payload)
     except WorkerRunCancelled:
         await stream_publisher.aclose()
         reconciled_parent = None
@@ -2566,6 +2524,21 @@ async def process_run_payload(
         await stream_publisher.aclose()
         reconciled_parent = None
         failure_code, failure_message = _executor_exception_failure(exc)
+        diagnostic_id = new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="worker_execution_failure",
+            phase="executor",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+            identifiers={
+                "trace_id": trace_id,
+                "run_id": payload.run_id,
+                "attempt_id": attempt_id,
+                "executor_type": payload.executor_type,
+                "error_code": failure_code,
+            },
+        )
         outcome_after_exception = WorkerOutcome(
             "failed", payload.run_id, failure_code, failure_message
         )
@@ -2602,6 +2575,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                     error_code=failure_code,
                     error_message=failure_message,
+                    result_json={"diagnostic_id": diagnostic_id},
                 )
                 if not terminal_written:
                     outcome_after_exception = WorkerOutcome(
@@ -2621,6 +2595,8 @@ async def process_run_payload(
                         payload={
                             "error": failure_message,
                             "executor_type": payload.executor_type,
+                            "diagnostic_id": diagnostic_id,
+                            "trace_id": trace_id,
                             "visible_to_user": False,
                         },
                     )
@@ -2650,20 +2626,20 @@ async def process_run_payload(
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
         project_agent_capability_state(
-            required_skill_id=required_agent_skill_id or "",
+            bound_skill_ids=bound_agent_skill_ids,
             executor_payload={**result.result, **result.executor_payload},
             run_succeeded=result.status == "succeeded",
             durable_artifact_count=0,
         )
-        if required_agent_skill_id is not None
+        if isinstance(payload.agent_profile, dict)
         else None
     )
     public_result = {
         key: value
         for key, value in result.result.items()
-        if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills"}
+        if key not in {"skill_manifests", "used_skills", "used_skills_source"}
     }
-    if required_agent_skill_id is None and (
+    if not isinstance(payload.agent_profile, dict) and (
         "used_skills" in result.result or "used_skills" in result.executor_payload
     ):
         public_result["used_skills"] = skill_snapshot["used_skills"]
@@ -2690,7 +2666,7 @@ async def process_run_payload(
             "capabilities": result.capabilities,
         },
     }
-    if skill_snapshot and required_agent_skill_id is None:
+    if skill_snapshot and not isinstance(payload.agent_profile, dict):
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
@@ -2705,27 +2681,10 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
-            # The selected platform Skill owns this contract.  Preserve an
-            # adapter's additional declared requirements, but never let an
-            # executor omit the capability requirement on resume or retry.
-            required_artifact_types = set(required_artifact_types_for_skill(payload.skill_id)) | {
-                str(value)
-                for value in result.executor_payload.get("required_artifact_types", [])
-                if isinstance(value, str) and value
-            }
-            produced_artifact_types = {artifact.artifact_type for artifact in result.artifacts}
-            missing_required_artifact_types = required_artifact_types - produced_artifact_types
-            missing_required_artifact = result.status == "succeeded" and bool(missing_required_artifact_types)
-            if pending_permission_blocks_success or missing_required_artifact:
-                error_code = (
-                    "tool_permission_pending"
-                    if pending_permission_blocks_success
-                    else "required_artifact_missing"
-                )
+            if pending_permission_blocks_success:
+                error_code = "tool_permission_pending"
                 error_message = (
                     "A pending tool-permission request blocks successful completion."
-                    if pending_permission_blocks_success
-                    else "The file-required Skill did not produce every required artifact type."
                 )
                 result = replace(
                     result,
@@ -2735,7 +2694,6 @@ async def process_run_payload(
                         **result.result,
                         "message": error_message,
                         "error_code": error_code,
-                        "missing_required_artifact_types": sorted(missing_required_artifact_types),
                     },
                 )
                 artifact_records = []
@@ -2753,7 +2711,7 @@ async def process_run_payload(
                 }
             if agent_capability_state is not None:
                 agent_capability_state = project_agent_capability_state(
-                    required_skill_id=required_agent_skill_id or "",
+                    bound_skill_ids=bound_agent_skill_ids,
                     executor_payload={**result.result, **result.executor_payload},
                     run_succeeded=result.status == "succeeded",
                     durable_artifact_count=0,
@@ -2845,7 +2803,7 @@ async def process_run_payload(
                 )
             if agent_capability_state is not None:
                 agent_capability_state = project_agent_capability_state(
-                    required_skill_id=required_agent_skill_id or "",
+                    bound_skill_ids=bound_agent_skill_ids,
                     executor_payload={**result.result, **result.executor_payload},
                     run_succeeded=result.status == "succeeded",
                     durable_artifact_count=len(artifact_records),
@@ -2871,7 +2829,6 @@ async def process_run_payload(
                     staged=bool(item.get("staged")),
                     used=bool(item.get("used")),
                     used_skills_source=str(item.get("used_skills_source") or "").strip(),
-                    inferred_used=bool(item.get("inferred_used")),
                 )
             if result.status == "succeeded":
                 await _attach_multi_agent_result_summary(

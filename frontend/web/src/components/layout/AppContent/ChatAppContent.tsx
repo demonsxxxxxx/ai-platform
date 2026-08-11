@@ -395,7 +395,7 @@ export function AgentWorkspaceWelcome({
             onClick={onOpenDetail}
             type="button"
           >
-            查看智能体详情
+            查看专家详情
             <ArrowRight size={15} aria-hidden="true" />
           </button>
           <button
@@ -1094,7 +1094,7 @@ export function ChatAppContent({
       if (agentWorkspaceCreating) return;
       const startProfile = agentWorkspaceStartProfile;
       if (agentWorkspaceReadOnly || !startProfile) {
-        setAgentWorkspaceError("该智能体已下架，历史会话仅供查看。");
+        setAgentWorkspaceError("该专家已下架，历史会话仅供查看。");
         return;
       }
       if (
@@ -1156,10 +1156,10 @@ export function ChatAppContent({
               : undefined;
           setAgentWorkspaceError(
             status === 403
-              ? "当前账号无权使用该智能体。"
+              ? "当前账号无权使用该专家。"
               : status === 404 || status === 409
-                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
-                : "暂时无法创建智能体对话，请稍后重试。",
+                ? "该专家已不可用或发布版本已更新，请返回市场重新选择。"
+                : "暂时无法创建专家对话，请稍后重试。",
           );
         })
         .finally(() => setAgentWorkspaceCreating(false));

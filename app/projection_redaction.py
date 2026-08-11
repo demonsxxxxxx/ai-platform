@@ -8,36 +8,20 @@ from app.required_tool_contract import public_required_tool_detail
 
 CAPABILITY_BY_SKILL_ID = {
     "general-chat": "general_chat",
-    "qa-file-reviewer": "document_review",
-    "baoyu-translate": "document_translation",
-    "ragflow-knowledge-search": "knowledge_answer",
 }
 
 CAPABILITY_BY_AGENT_ID = {
     "general-agent": "general_chat",
-    "qa-word-review": "document_review",
-    "document-review": "document_review",
-    "baoyu-translate": "document_translation",
-    "sop-assistant": "knowledge_answer",
 }
 
 PUBLIC_AGENT_ID_BY_CAPABILITY = {
     "general_chat": "general-agent",
-    "document_review": "document-review",
-    "document_translation": "document-translation",
-    "knowledge_answer": "knowledge-answer",
 }
 
-INTERNAL_AGENT_ID_BY_PUBLIC_ID = {
-    "document-review": "qa-word-review",
-    "document-translation": "baoyu-translate",
-    "knowledge-answer": "sop-assistant",
-}
+INTERNAL_AGENT_ID_BY_PUBLIC_ID: dict[str, str] = {}
 
 DEFAULT_SKILL_ID_BY_PUBLIC_AGENT_ID = {
-    "document-review": "qa-file-reviewer",
-    "document-translation": "baoyu-translate",
-    "knowledge-answer": "ragflow-knowledge-search",
+    "general-agent": "general-chat",
 }
 
 RAW_SKILL_KEYS = {"allowed_skills", "staged_skills", "used_skills"}

@@ -46,8 +46,8 @@
   "agent": {
     "selectMode": "选择模式",
     "selectModeDesc": "切换助手模式",
-    "searchPlaceholder": "搜索智能体",
-    "noMatchingAgents": "没有匹配的智能体"
+    "searchPlaceholder": "搜索专家",
+    "noMatchingAgents": "没有匹配的专家"
   },
   "frontendStates": {
     "logged-out": {
@@ -1266,9 +1266,9 @@
       "adminGovernanceDescription": "策略库存、全局活跃记录和保留期清理只对具备管理员角色的账号开放。",
       "adminHidden": "当前角色不可查看管理员记忆库存。后端管理员接口保持 fail-closed。",
       "adminProjection": "管理员运行投影",
-      "agent": "智能体",
-      "agentPublicId": "智能体公开 ID",
-      "allAgents": "全部智能体",
+      "agent": "专家",
+      "agentPublicId": "专家公开 ID",
+      "allAgents": "全部专家",
       "allowSessionWrites": "允许会话记忆写入",
       "allowSessionWritesHint": "跨会话长期记忆继续保持 fail-closed。",
       "cleanupDeleted": "保留期清理已删除 {{count}} 条记录",
@@ -1564,7 +1564,7 @@
       "title": "公司导航"
     },
     "chat": {
-      "description": "与 AI 智能体进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和受治理的上下文来源。",
+      "description": "与 AI 专家进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和受治理的上下文来源。",
       "title": "AI 对话"
     },
     "feedback": {
@@ -1576,15 +1576,15 @@
       "title": "文件工作台"
     },
     "marketplace": {
-      "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 智能体功能。",
+      "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 专家功能。",
       "title": "技能市场"
     },
     "mcp": {
-      "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 智能体能力。",
+      "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 专家能力。",
       "title": "MCP 服务器管理"
     },
     "memory": {
-      "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 智能体长期理解。",
+      "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 专家长期理解。",
       "title": "AI 记忆空间"
     },
     "models": {
@@ -1767,7 +1767,7 @@
     "WELCOME_SUGGESTION_TEXT": "文本"
   },
   "share": {
-    "agent": "智能体",
+    "agent": "专家",
     "authenticated": "需要登录",
     "authenticatedDesc": "只有登录用户可以查看",
     "conversationHistory": "对话历史",
@@ -2325,8 +2325,8 @@
   },
   "composerCommand": {
     "agent": {
-      "description": "选择平台批准的智能体或应用模式。",
-      "label": "智能体"
+      "description": "选择平台批准的专家或应用模式。",
+      "label": "专家"
     },
     "file": {
       "description": "从输入框引用允许使用的文件和产物。",

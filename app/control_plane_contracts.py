@@ -74,7 +74,6 @@ FORBIDDEN_PUBLIC_MARKERS = (
     "used_skills_source",
     "executor_hook",
     "executor_native",
-    "inferred_used",
     "tenants/",
     "workspaces/",
 )
@@ -137,8 +136,6 @@ FORBIDDEN_PUBLIC_KEYS = {
     "sdk_session_id",
     "command_sha256",
     "used_skills_source",
-    "inferred_used",
-    "inferred_used_skills",
     "worker_boundary",
     "delegate_used",
     "delegate_executor_type",

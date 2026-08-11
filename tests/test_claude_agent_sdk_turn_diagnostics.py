@@ -9,6 +9,10 @@ import pytest
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 
 
+async def _acknowledge_capability_evidence(_evidence: dict[str, str]) -> bool:
+    return True
+
+
 def _settings(*, timeout_seconds: float = 5.0):
     return types.SimpleNamespace(
         claude_agent_sdk_enabled=True,
@@ -183,7 +187,7 @@ async def test_sdk_timeout_and_missing_terminal_are_distinct(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_selected_skill_not_invoked_and_policy_admission_are_distinct(
+async def test_bound_skill_may_remain_unused_but_policy_admission_is_enforced(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -228,15 +232,16 @@ async def test_selected_skill_not_invoked_and_policy_admission_are_distinct(
         public_skill_metadata=metadata,
     )
 
-    assert not_invoked.error == "claude_agent_sdk_selected_skill_not_invoked"
-    assert not_invoked.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
+    assert not_invoked.error is None
+    assert not_invoked.turn_diagnostics["terminal_class"] == "completed"
     assert not_invoked.turn_diagnostics["selected_skill"] == metadata["review-skill"]
+    assert not_invoked.turn_diagnostics["used_skills"] == []
     assert not_admitted.error == "claude_agent_sdk_selected_skill_not_authorized"
     assert not_admitted.turn_diagnostics["terminal_class"] == "tool_policy_or_admission_failure"
 
 
 @pytest.mark.asyncio
-async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classification(
+async def test_sdk_error_terminal_preserves_upstream_error_classification(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -263,8 +268,8 @@ async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classific
         skills=["review-skill"],
     )
 
-    assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
-    assert result.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
     assert "private upstream detail" not in str(result.turn_diagnostics)
 
 
@@ -274,14 +279,31 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
     tmp_path: Path,
 ):
     async def query(prompt, options):
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
         success_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
         failure_hook = options.kwargs["hooks"]["PostToolUseFailure"][0].hooks[0]
+        await pre_hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "review-skill"},
+                "tool_use_id": "selected-tool-id",
+            }
+        )
         await success_hook(
             {
                 "hook_event_name": "PostToolUse",
                 "tool_name": "Skill",
                 "tool_input": {"skill": "review-skill"},
                 "tool_use_id": "selected-tool-id",
+            }
+        )
+        await pre_hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "minimax-docx"},
+                "tool_use_id": "dependency-tool-id",
             }
         )
         await failure_hook(
@@ -315,6 +337,7 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
         skill_id="review-skill",
         skills=["review-skill", "minimax-docx"],
         public_skill_metadata=metadata,
+        on_capability_evidence=_acknowledge_capability_evidence,
     )
 
     assert result.error == "claude_agent_sdk_upstream_error"
@@ -364,7 +387,16 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
 
     async def query(prompt, options):
         yield sdk_types["AssistantMessage"]([sdk_types["TextBlock"]("working")])
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
         hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        await pre_hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "internal-review-id"},
+                "tool_use_id": "tool-secret-id",
+            }
+        )
         await hook(
             {
                 "hook_event_name": "PostToolUse",
@@ -401,6 +433,7 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         skill_id="internal-review-id",
         skills=["internal-review-id"],
         public_skill_metadata=metadata,
+        on_capability_evidence=_acknowledge_capability_evidence,
     )
 
     diagnostics = result.turn_diagnostics

@@ -19,6 +19,8 @@ from app.skills.pinning import (
 )
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry
 
+SDK_NATIVE_TOOL_IDENTITIES = ["Read", "Glob", "LS", "Bash", "Write", "Edit"]
+
 
 def write_skill(root, name, description):
     skill_dir = root / name
@@ -53,11 +55,11 @@ def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapsh
     assert pins[0]["allowed"] is True
     assert pins[0]["staged"] is False
     assert pins[0]["used"] is False
-    assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
-    assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pins[0]["builtin_tool_identities"] == SDK_NATIVE_TOOL_IDENTITIES
+    assert pins[1]["builtin_tool_identities"] == SDK_NATIVE_TOOL_IDENTITIES
 
 
-def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_input(tmp_path):
+def test_builtin_tool_identity_snapshot_comes_from_platform_profile_not_client_input(tmp_path):
     write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
@@ -68,8 +70,41 @@ def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_
         builtin_skills=skills,
     )
 
-    assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
-    assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pins[0]["builtin_tool_identities"] == SDK_NATIVE_TOOL_IDENTITIES
+    assert pins[1]["builtin_tool_identities"] == SDK_NATIVE_TOOL_IDENTITIES
+
+
+def test_skill_frontmatter_cannot_change_platform_sandbox_local_tool_set(tmp_path):
+    skill_dir = write_skill(tmp_path, "sandbox-skill", "Run inside the sandbox.")
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: sandbox-skill\ndescription: Run inside the sandbox.\n"
+        "allowed-tools: Agent\n---\n\n# sandbox-skill\n",
+        encoding="utf-8",
+    )
+    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
+
+    pins = build_skill_manifest_pins(
+        skill_id="sandbox-skill",
+        input_payload={},
+        builtin_skills=skills,
+    )
+
+    assert pins[0]["builtin_tool_identities"] == SDK_NATIVE_TOOL_IDENTITIES
+
+
+def test_server_selected_skill_ignores_client_skill_ids(tmp_path):
+    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
+    write_skill(tmp_path, "baoyu-translate", "Translate documents.")
+    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
+
+    pins = build_skill_manifest_pins(
+        skill_id="qa-file-reviewer",
+        input_payload={"skill_ids": ["baoyu-translate"]},
+        builtin_skills=skills,
+    )
+
+    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "minimax-docx"]
 
 
 def test_snapshot_source_locks_canonical_builtin_tool_identities(tmp_path):
@@ -83,13 +118,19 @@ def test_snapshot_source_locks_canonical_builtin_tool_identities(tmp_path):
     )[0]
 
     expected = repository_module.run_skill_snapshot_source_json(manifest)
-    reordered = {**manifest, "builtin_tool_identities": ["Write", "Bash", "Write"]}
+    reordered = {
+        **manifest,
+        "builtin_tool_identities": [*reversed(SDK_NATIVE_TOOL_IDENTITIES), "Read"],
+    }
 
     assert repository_module.run_skill_snapshot_source_json(reordered) == expected
     for forged_identity in ("Agent", "WebFetch"):
         with pytest.raises(repository_module.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
             repository_module.run_skill_snapshot_source_json(
-                {**manifest, "builtin_tool_identities": ["Bash", "Write", forged_identity]}
+                {
+                    **manifest,
+                    "builtin_tool_identities": [*SDK_NATIVE_TOOL_IDENTITIES, forged_identity],
+                }
             )
 
 
@@ -228,10 +269,19 @@ def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency
 
 
 def test_build_skill_manifest_pins_rejects_public_skill_dependency(monkeypatch, tmp_path):
-    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    skill_dir = write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: qa-file-reviewer\ndescription: Review Word documents.\n"
+        "dependencies: baoyu-translate\n---\n\n# qa-file-reviewer\n",
+        encoding="utf-8",
+    )
     write_skill(tmp_path, "baoyu-translate", "Translate documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {"qa-file-reviewer": ["baoyu-translate"]})
+    monkeypatch.setattr(
+        dependency_policy,
+        "get_settings",
+        lambda: type("Settings", (), {"platform_skills_root": tmp_path})(),
+    )
 
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal"):
         build_skill_manifest_pins(
@@ -305,13 +355,13 @@ def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
     assert pin["lifecycle_status"] == "released"
     assert pin["execution_profile"] == {
         "schema_version": "ai-platform.skill-execution-profile.v1",
-        "strategy": "platform_controlled",
+        "strategy": "sdk_native",
         "trust_basis": "repository_builtin",
-        "builtin_tool_identities": ["Bash", "Write"],
+        "builtin_tool_identities": SDK_NATIVE_TOOL_IDENTITIES,
         "workspace_contract": "ai-platform.skill-workspace.v1",
-        "command_isolation": "minimal-environment-v1",
+        "command_isolation": "sibling-tool-sandbox-v1",
     }
-    assert pin["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pin["builtin_tool_identities"] == SDK_NATIVE_TOOL_IDENTITIES
 
 
 def test_snapshot_source_rejects_forged_uploaded_execution_profile():

@@ -16,7 +16,7 @@ const INPUT_CLASS =
   "w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60";
 
 const AVATAR_LABELS = {
-  "builtin:agent": "智能体",
+  "builtin:agent": "专家",
   "builtin:assistant": "服务支持",
   "builtin:document": "文档专家",
   "builtin:research": "研究分析",
@@ -129,11 +129,11 @@ export function AgentBuilderEnterpriseFields({
           </h3>
         </div>
         <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
-          这些内容只影响智能体市场卡片和开场体验，不影响执行能力，也不要求填写。
+          这些内容只影响专家市场卡片，不影响执行能力，也不要求填写。
         </p>
         <details className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
           <summary className="cursor-pointer text-sm font-medium">
-            编辑市场卡片与开场内容
+            编辑市场卡片
           </summary>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className="flex flex-col gap-2">
@@ -183,15 +183,6 @@ export function AgentBuilderEnterpriseFields({
                 disabled={disabled}
                 onChange={(event) => onChange({ capabilitySummary: event.target.value })}
                 value={editor.capabilitySummary}
-              />
-            </label>
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">欢迎语</span>
-              <textarea
-                className={`${INPUT_CLASS} min-h-20 resize-y`}
-                disabled={disabled}
-                onChange={(event) => onChange({ welcomeMessage: event.target.value })}
-                value={editor.welcomeMessage}
               />
             </label>
           </div>

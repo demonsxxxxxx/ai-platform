@@ -889,8 +889,6 @@ class AgentProfileAuthority:
                 "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
-                "required_skill_id": str(row["skill_id"]),
-                "required_skill_version": str(row["skill_version"]),
             },
             public_identity=conversation_identity_projection(row),
         )
@@ -936,75 +934,60 @@ class AgentProfileAuthority:
         expected_profile_snapshot = dict(admission.private_execution_input)
         snapshot_skill_version = str(snapshot.get("skill_version") or "")
         authority_skill_id = str(admission.skill.get("skill_id") or "")
-        governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
-            "required_skill_id" in profile_snapshot or "required_skill_version" in profile_snapshot
+        primary_manifest = next(
+            (
+                manifest
+                for manifest in snapshot.get("skill_manifests", [])
+                if isinstance(manifest, dict)
+                and str(manifest.get("skill_id") or "") == authority_skill_id
+            ),
+            None,
         )
-        governed_mcp_tool_ids: tuple[str, ...] | None = None
-        if governed_profile_snapshot:
-            expected_profile_snapshot.update(
-                {
-                    "required_skill_id": authority_skill_id,
-                    "required_skill_version": snapshot_skill_version,
-                }
+        manifest_skill_version = (
+            str(primary_manifest.get("content_hash") or primary_manifest.get("version") or "")
+            if isinstance(primary_manifest, dict)
+            else ""
+        )
+        release_decision = snapshot.get("release_decision")
+        release_skill_version = (
+            str(release_decision.get("selected_version") or "")
+            if isinstance(release_decision, dict)
+            else ""
+        )
+        try:
+            repositories.require_replay_source_identity(
+                pinned_version=snapshot_skill_version,
+                pinned_executor_type=str(snapshot.get("executor_type") or ""),
+                release_decision=release_decision if isinstance(release_decision, dict) else {},
+                skill_manifests=[
+                    dict(item)
+                    for item in snapshot.get("skill_manifests", [])
+                    if isinstance(item, dict)
+                ],
             )
-            primary_manifest = next(
-                (
-                    manifest
-                    for manifest in snapshot.get("skill_manifests", [])
-                    if isinstance(manifest, dict)
-                    and str(manifest.get("skill_id") or "") == authority_skill_id
-                ),
-                None,
-            )
-            manifest_skill_version = (
-                str(primary_manifest.get("content_hash") or primary_manifest.get("version") or "")
-                if isinstance(primary_manifest, dict)
-                else ""
-            )
-            release_decision = snapshot.get("release_decision")
-            release_skill_version = (
-                str(release_decision.get("selected_version") or "")
-                if isinstance(release_decision, dict)
-                else ""
-            )
-            try:
-                repositories.require_replay_source_identity(
+            governed_mcp_tool_ids = tuple(
+                await repositories.validate_replay_skill_manifests(
+                    conn,
+                    skill_id=authority_skill_id,
                     pinned_version=snapshot_skill_version,
                     pinned_executor_type=str(snapshot.get("executor_type") or ""),
-                    release_decision=release_decision if isinstance(release_decision, dict) else {},
                     skill_manifests=[
                         dict(item)
                         for item in snapshot.get("skill_manifests", [])
                         if isinstance(item, dict)
                     ],
                 )
-                governed_mcp_tool_ids = tuple(
-                    await repositories.validate_replay_skill_manifests(
-                        conn,
-                        skill_id=authority_skill_id,
-                        pinned_version=snapshot_skill_version,
-                        pinned_executor_type=str(snapshot.get("executor_type") or ""),
-                        skill_manifests=[
-                            dict(item)
-                            for item in snapshot.get("skill_manifests", [])
-                            if isinstance(item, dict)
-                        ],
-                    )
-                )
-            except (
-                repositories.RepositoryAuthorizationError,
-                repositories.RepositoryConflictError,
-            ) as exc:
-                raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
-            skill_version_matches = (
-                bool(snapshot_skill_version)
-                and snapshot_skill_version == manifest_skill_version == release_skill_version
-                and governed_mcp_tool_ids == admission.mcp_tool_ids
             )
-        else:
-            skill_version_matches = snapshot_skill_version == str(
-                admission.skill.get("skill_version") or ""
-            )
+        except (
+            repositories.RepositoryAuthorizationError,
+            repositories.RepositoryConflictError,
+        ) as exc:
+            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+        skill_version_matches = (
+            bool(snapshot_skill_version)
+            and snapshot_skill_version == manifest_skill_version == release_skill_version
+            and governed_mcp_tool_ids == admission.mcp_tool_ids
+        )
         if (
             profile_snapshot != expected_profile_snapshot
             or str(run.get("skill_id") or "") != str(admission.skill.get("skill_id") or "")

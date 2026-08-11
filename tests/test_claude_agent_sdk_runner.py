@@ -401,7 +401,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
     )
 
     assert sealed_probe == []
-    if outcome in {"success", "multiple_completed"}:
+    if outcome in {"success", "failed", "multiple_completed", "multiple_failed"}:
         assert result.error is None
         assert (deltas, result.message) == ([], "")
         if outcome == "success":
@@ -453,10 +453,10 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     )
 
     joined = "".join(deltas)
-    assert "".join(published_before_hook) == "Before external tool."
-    assert published_after_hook[len(published_before_hook):] == [" After ", "tool invocation."]
+    assert published_before_hook == []
+    assert published_after_hook == [" After ", "tool invocation."]
     assert result.error is None
-    assert joined == "Before external tool. After tool invocation."
+    assert joined == " After tool invocation."
     assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
@@ -521,7 +521,7 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(monkeypatch, tmp_path):
+async def test_sdk_bound_skill_is_available_without_forced_invocation_prompt(monkeypatch, tmp_path):
     captured, deltas = {}, []
     skill_name = "qa-review"
     skill_input = {
@@ -555,7 +555,7 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
         "skill",
     ]
     assert (deltas, result.message) == ([], "")
-    assert "Authoritative platform Skill requirement" in sdk_prompt
+    assert "Authoritative platform Skill requirement" not in sdk_prompt
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
     assert _subject()["identity"] in captured["allowed_tools"]

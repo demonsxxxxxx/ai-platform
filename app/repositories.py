@@ -62,7 +62,7 @@ from app.persistence_limits import (
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app import run_event_repository as _run_event_repository
 from app.run_admission_policy import RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
-from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
+from app.skills.dependencies import is_workbench_skill_public, public_builtin_skill_ids
 from app.skills.execution_profiles import (
     SkillExecutionProfileError,
     canonical_skill_execution_profile,
@@ -1629,15 +1629,9 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
           on previous_skill_versions.skill_id = skills.id
          and previous_skill_versions.version = skill_release_policies.previous_version
         where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')
           and agents.status = 'active'
           and skills.status = 'active'
-        order by case agents.id
-          when 'general-agent' then 1
-          when 'baoyu-translate' then 2
-          when 'qa-word-review' then 3
-          else 99
-        end, agents.id asc
+        order by lower(agents.name), agents.id asc
         """,
         (tenant_id,),
     )
@@ -1755,18 +1749,11 @@ async def list_workbench_skills(conn: AsyncConnection, *, tenant_id: str, includ
           on tenant_capability_distributions.tenant_id = %s
          and tenant_capability_distributions.capability_kind = 'skill'
          and tenant_capability_distributions.capability_id = skills.id
-        where skills.id in ('general-chat', 'qa-file-reviewer', 'baoyu-translate', 'ragflow-knowledge-search')
-          and (%s or (
+        where (%s or (
             skills.status = 'active'
             and tenant_capability_distributions.status = 'active'
           ))
-        order by case skills.id
-          when 'general-chat' then 1
-          when 'qa-file-reviewer' then 2
-          when 'baoyu-translate' then 3
-          when 'ragflow-knowledge-search' then 4
-          else 99
-        end
+        order by lower(skills.name), skills.id
         """,
         (tenant_id, include_disabled),
     )
@@ -1883,6 +1870,7 @@ async def list_public_skill_catalog(
     """Return tenant-visible public Skills/Marketplace catalog rows."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    builtin_skill_ids = public_builtin_skill_ids()
     cursor = await conn.execute(
         """
         select
@@ -1934,7 +1922,7 @@ async def list_public_skill_catalog(
           and skills.status = 'active'
         order by skills.name asc, skills.id asc
         """,
-        (tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)),
+        (tenant_id, tenant_id, builtin_skill_ids),
     )
     rows = []
     for row in list(await cursor.fetchall()):
@@ -2505,6 +2493,8 @@ async def ensure_tenant_capability_distribution_backfill(
     if completion is not None and completion.get("completed_at") is not None:
         return
 
+    builtin_skill_ids = public_builtin_skill_ids()
+
     await conn.execute(
         """
         insert into tenant_capability_distributions(
@@ -2557,7 +2547,7 @@ async def ensure_tenant_capability_distribution_backfill(
         )
         on conflict (tenant_id, capability_kind, capability_id) do nothing
         """,
-        (tenant_id, tenant_id, tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)),
+        (tenant_id, tenant_id, tenant_id, tenant_id, builtin_skill_ids),
     )
     await conn.execute(
         """
@@ -3074,10 +3064,7 @@ def run_mcp_tool_ids_for_skill(skill: dict[str, Any], normalized_input: dict[str
     """Return one canonical MCP authorization set for a Harness-backed Skill."""
 
     requested_tool_ids: list[str] = []
-    skill_id = str(skill.get("skill_id") or "").strip()
     backing_tool_id = str(skill.get("backing_mcp_tool_id") or "").strip()
-    if skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID and not backing_tool_id:
-        raise _capability_not_authorized()
     if backing_tool_id:
         requested_tool_ids.append(backing_tool_id)
     for tool_id in extract_run_mcp_tool_ids(normalized_input):
@@ -3443,11 +3430,6 @@ def pinned_replay_mcp_tool_ids(
     ):
         raise _capability_not_authorized()
     pinned_mcp_tool_ids = list(dict.fromkeys(raw_mcp_tool_ids))
-    if (
-        skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID
-        and _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID not in pinned_mcp_tool_ids
-    ):
-        raise _capability_not_authorized()
     return pinned_mcp_tool_ids
 
 
@@ -3933,10 +3915,7 @@ async def list_admin_tool_policies(
               and tool_policies.visible_to_user = true
             )
           )
-        order by case mcp_tools.id
-          when 'ragflow-knowledge-search' then 1
-          else 99
-        end, mcp_tools.id asc
+        order by lower(mcp_tools.name), mcp_tools.id asc
         limit %s
         """,
         (tenant_id, tenant_id, include_disabled, limit),
@@ -4091,27 +4070,13 @@ async def list_workbench_capabilities(
     cursor = await conn.execute(
         """
         select
-          case agents.id
-            when 'general-agent' then 'general_chat'
-            when 'qa-word-review' then 'document_review'
-            when 'baoyu-translate' then 'document_translation'
-            when 'sop-assistant' then 'knowledge_answer'
-            else agents.id
-          end as capability_id,
+          agents.id as capability_id,
           agents.name as label,
           agents.description,
           case
             when skills.status <> 'active'
               or coalesce(tenant_capability_distributions.status, 'disabled') <> 'active'
               or coalesce(tenant_capability_distributions.visible_to_user, false) = false
-            then 'disabled'
-            when skills.id = 'ragflow-knowledge-search'
-             and (
-               coalesce(mcp_tools.status, 'disabled') <> 'active'
-               or coalesce(tool_policies.status, 'disabled') <> 'active'
-               or coalesce(mcp_tools.visible_to_user, false) = false
-               or coalesce(tool_policies.visible_to_user, false) = false
-             )
             then 'disabled'
             else 'active'
           end as status,
@@ -4121,14 +4086,9 @@ async def list_workbench_capabilities(
           skills.id as skill_id,
           skills.version as skill_version,
           skills.executor_type,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.server_id else null end as mcp_server_id,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.id else null end as mcp_tool_id,
-          case
-            when skills.id <> 'ragflow-knowledge-search' then null
-            when mcp_tools.risk_level = 'high' or tool_policies.risk_level = 'high' then 'high'
-            when mcp_tools.risk_level = 'medium' or tool_policies.risk_level = 'medium' then 'medium'
-            else coalesce(mcp_tools.risk_level, 'low')
-          end as risk_level,
+          null as mcp_server_id,
+          null as mcp_tool_id,
+          null as risk_level,
           0 as recent_failures
         from agents
         join skills on skills.id = agents.default_skill_id
@@ -4136,21 +4096,9 @@ async def list_workbench_capabilities(
           on tenant_capability_distributions.tenant_id = %s
          and tenant_capability_distributions.capability_kind = 'skill'
          and tenant_capability_distributions.capability_id = skills.id
-        left join mcp_tools
-          on mcp_tools.id = skills.id
-        left join tool_policies
-          on tool_policies.tenant_id = agents.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
         where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'qa-word-review', 'baoyu-translate', 'sop-assistant')
           and agents.status = 'active'
-        order by case agents.id
-          when 'general-agent' then 1
-          when 'qa-word-review' then 2
-          when 'baoyu-translate' then 3
-          when 'sop-assistant' then 4
-          else 99
-        end
+        order by lower(agents.name), agents.id
         """,
         (tenant_id, tenant_id),
     )
@@ -7787,15 +7735,14 @@ async def upsert_run_skill_snapshot(
     staged: bool,
     used: bool,
     used_skills_source: str = "",
-    inferred_used: bool = False,
 ) -> None:
     cursor = await conn.execute(
         """
         insert into run_skill_snapshots(
           id, tenant_id, run_id, skill_id, skill_version, content_hash,
-          source_json, dependency_ids, allowed, staged, used, used_skills_source, inferred_used
+          source_json, dependency_ids, allowed, staged, used, used_skills_source
         )
-        values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
         on conflict (tenant_id, run_id, skill_id)
         do update set
           allowed = run_skill_snapshots.allowed or excluded.allowed,
@@ -7806,10 +7753,6 @@ async def upsert_run_skill_snapshot(
             when run_skill_snapshots.used then run_skill_snapshots.used_skills_source
             when excluded.used_skills_source <> '' then excluded.used_skills_source
             else run_skill_snapshots.used_skills_source
-          end,
-          inferred_used = case
-            when run_skill_snapshots.used or excluded.used then false
-            else run_skill_snapshots.inferred_used or excluded.inferred_used
           end
         where run_skill_snapshots.skill_version = excluded.skill_version
           and run_skill_snapshots.content_hash = excluded.content_hash
@@ -7830,7 +7773,6 @@ async def upsert_run_skill_snapshot(
             staged,
             used,
             used_skills_source,
-            inferred_used,
         ),
     )
     if await cursor.fetchone() is None:
@@ -7967,9 +7909,9 @@ async def insert_run_skill_snapshots_at_creation(
             """
             insert into run_skill_snapshots(
               id, tenant_id, run_id, skill_id, skill_version, content_hash,
-              source_json, dependency_ids, allowed, staged, used, used_skills_source, inferred_used
+              source_json, dependency_ids, allowed, staged, used, used_skills_source
             )
-            values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, true, false, false, '', false)
+            values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, true, false, false, '')
             on conflict (tenant_id, run_id, skill_id) do nothing
             returning id
             """,
@@ -8001,7 +7943,6 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
           staged,
           used,
           used_skills_source,
-          inferred_used,
           created_at
         from run_skill_snapshots
         where tenant_id = %s and run_id = %s
@@ -8015,13 +7956,9 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
         source = _sanitize_skill_snapshot_source(row.get("source_json"))
         dependency_ids = row.get("dependency_ids") if isinstance(row.get("dependency_ids"), list) else []
         used_skills_source = str(row.get("used_skills_source") or "").strip()
-        inferred_used = bool(row.get("inferred_used"))
         usage: dict[str, Any] = {}
         if used_skills_source:
             usage["used_skills_source"] = sanitize_public_text(used_skills_source)
-        if inferred_used:
-            usage["inferred_used"] = True
-            usage["inferred_used_skills"] = [str(row["skill_id"])]
         snapshot = {
             "skill_id": row["skill_id"],
             "skill_version": row["skill_version"],
@@ -8663,7 +8600,6 @@ async def get_admin_skill_detail(
           staged,
           used,
           used_skills_source,
-          inferred_used,
           created_at
         from run_skill_snapshots
         where tenant_id = %s and skill_id = %s
@@ -8675,7 +8611,6 @@ async def get_admin_skill_detail(
     snapshots = []
     for row in list(await snapshots_cursor.fetchall()):
         used_skills_source = str(row.get("used_skills_source") or "").strip()
-        inferred_used = bool(row.get("inferred_used"))
         snapshot = {
             "run_id": row["run_id"],
             "skill_id": row["skill_id"],
@@ -8689,9 +8624,6 @@ async def get_admin_skill_detail(
         usage: dict[str, Any] = {}
         if used_skills_source:
             usage["used_skills_source"] = used_skills_source
-        if inferred_used:
-            usage["inferred_used"] = True
-            usage["inferred_used_skills"] = [str(row["skill_id"])]
         if usage:
             snapshot["usage"] = usage
         snapshots.append(snapshot)

@@ -31,7 +31,7 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
   return { key, phase, value, error };
 }
 
-const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的智能体，请稍后重新加载。";
+const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
 const CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
   general: "通用助理", support: "支持服务", writing: "内容写作",
   research: "研究分析", operations: "运营效率",
@@ -267,7 +267,7 @@ function AgentMarketCard({
             </span>
           ) : null}
           <span className="mt-auto inline-flex items-center gap-1.5 pt-4 text-sm font-medium text-[var(--theme-primary)]">
-            打开智能体工作区
+            打开专家工作区
             <span aria-hidden="true">→</span>
           </span>
         </span>
@@ -350,13 +350,13 @@ function AgentMarketCatalog({
               <ShieldCheck size={16} aria-hidden="true" />
               当前发布目录
             </div>
-            <h1 className="mt-2 text-2xl font-semibold">智能体市场</h1>
+            <h1 className="mt-2 text-2xl font-semibold">专家市场</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--theme-text-secondary)]">
-              浏览当前已发布的智能体，查看公开名称与用途。
+              浏览当前已发布的专家，查看公开名称与用途。
             </p>
           </div>
           <button
-            aria-label="刷新智能体目录"
+            aria-label="刷新专家目录"
             className="btn-secondary inline-flex items-center gap-2"
             disabled={catalog.phase === "loading"}
             onClick={handleRefresh}
@@ -374,7 +374,7 @@ function AgentMarketCatalog({
         <div className="sticky top-0 z-10 -mx-1 bg-[var(--theme-workbench-canvas)] px-1 py-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <label className="relative block w-full sm:max-w-md">
-              <span className="sr-only">搜索智能体</span>
+              <span className="sr-only">搜索专家</span>
               <Search
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
                 size={17}
@@ -382,7 +382,7 @@ function AgentMarketCatalog({
               />
               <input
                 data-agent-market-search
-                aria-label="搜索智能体"
+                aria-label="搜索专家"
                 className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
                 onChange={(event) => handleSearch(event.target.value)}
                 placeholder="搜索名称或用途"
@@ -392,7 +392,7 @@ function AgentMarketCatalog({
             </label>
             <div
               data-agent-market-filter
-              aria-label="智能体分类"
+              aria-label="专家分类"
               className="flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-1 text-sm"
               role="group"
             >
@@ -419,24 +419,24 @@ function AgentMarketCatalog({
           <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={handleRefresh} />
         ) : catalog.phase === "loading" ? (
           <p aria-live="polite" className="py-8 text-sm text-[var(--theme-text-secondary)]">
-            正在加载已发布的智能体…
+            正在加载已发布的专家…
           </p>
         ) : catalog.value.length === 0 && !hasActiveFilter ? (
           <section className="border-t border-[var(--theme-border)] py-10 text-sm text-[var(--theme-text-secondary)]">
-            当前没有已发布的智能体，请稍后再试。
+            当前没有已发布的专家，请稍后再试。
           </section>
         ) : visibleProfiles.length === 0 ? (
           <section aria-live="polite" className="border-t border-[var(--theme-border)] py-10">
-            <h2 className="text-base font-semibold">没有匹配的智能体</h2>
+            <h2 className="text-base font-semibold">没有匹配的专家</h2>
             <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">请尝试其他名称或用途关键词。</p>
           </section>
         ) : (
           <>
             <p className="mb-4 text-sm text-[var(--theme-text-secondary)]" aria-live="polite">
-              找到 {visibleProfiles.length} 个智能体
+              找到 {visibleProfiles.length} 个专家
             </p>
             <section
-              aria-label="已发布智能体"
+              aria-label="已发布专家"
               className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
             >
               {visibleProfiles.map((profile) => (
@@ -487,7 +487,7 @@ function AgentMarketDetail({
     >
       <div className="mx-auto w-full max-w-4xl px-4 py-7 sm:px-6 sm:py-10">
         <button
-          aria-label="返回智能体市场"
+          aria-label="返回专家市场"
           className="btn-secondary inline-flex items-center gap-2"
           onClick={handleReturnToCatalog}
           type="button"

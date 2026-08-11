@@ -115,7 +115,7 @@ export function SessionListContent({
     {
       key: "agentMarket",
       icon: Bot,
-      label: "智能体市场",
+      label: "专家市场",
       onClick: () => navigate("/agent-market"),
     },
     ...(isAiAdmin
@@ -123,7 +123,7 @@ export function SessionListContent({
           {
             key: "agentBuilder" as const,
             icon: Bot,
-            label: "智能体管理",
+            label: "专家管理",
             onClick: () => navigate("/agent-builder"),
           },
         ]
@@ -201,7 +201,7 @@ export function SessionListContent({
           className="mx-2 border-b border-[var(--theme-border)]/70 px-2 pb-3 pt-1"
         >
           <p className="text-xs font-medium text-[var(--theme-primary)]">
-            智能体工作区
+            专家工作区
           </p>
           <h2 className="mt-1 truncate text-sm font-semibold text-[var(--theme-text)]">
             {agentWorkspace.name}

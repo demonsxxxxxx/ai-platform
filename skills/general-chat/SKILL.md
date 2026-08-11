@@ -1,6 +1,7 @@
 ---
 name: general-chat
 description: Use as the platform-managed default chat capability when no specialized Skill is required.
+visibility: public
 ---
 
 # General Chat

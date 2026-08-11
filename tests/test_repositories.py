@@ -15,6 +15,7 @@ from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.streaming import redis as streaming_redis
+from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -59,6 +60,37 @@ from app.repositories import (
 
 async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
+
+
+def _profiled_skill_manifest(
+    skill_id: str,
+    version: str,
+    *,
+    source_kind: str = "uploaded",
+    source: dict | None = None,
+    dependency_ids: list[str] | None = None,
+    mcp_tool_ids: list[str] | None = None,
+    **extra,
+):
+    lifecycle_status = "released"
+    profile = resolve_skill_execution_profile(
+        skill_id=skill_id,
+        source_kind=source_kind,
+        lifecycle_status=lifecycle_status,
+    )
+    return {
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "source": dict(source or {"kind": source_kind}),
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": list(dependency_ids or []),
+        "mcp_tool_ids": list(mcp_tool_ids or []),
+        "lifecycle_status": lifecycle_status,
+        "execution_profile": profile,
+        "builtin_tool_identities": profile["builtin_tool_identities"],
+        **extra,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -1183,7 +1215,7 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
         "tenant-a",
         "tenant-a",
         "tenant-a",
-        sorted(repositories.PUBLIC_WORKBENCH_SKILL_IDS),
+        repositories.public_builtin_skill_ids(),
     )
     assert sum("from tenant_workbench_skills" in sql for sql, _ in conn.calls) == 1
     assert sum("from mcp_servers" in sql for sql, _ in conn.calls) == 1
@@ -1458,17 +1490,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
         skill_id="department-review",
         pinned_version="hash-v1",
         pinned_executor_type="claude-agent-worker",
-        skill_manifests=[
-            {
-                "skill_id": "department-review",
-                "version": "hash-v1",
-                "content_hash": "hash-v1",
-                "source": {"kind": "uploaded"},
-                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-                "dependency_ids": [],
-                "mcp_tool_ids": [],
-            }
-        ],
+        skill_manifests=[_profiled_skill_manifest("department-review", "hash-v1")],
         normalized_input={},
         principal_department_id="qa",
         principal_roles=["reviewer"],
@@ -1519,17 +1541,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
             skill_id="department-review",
             pinned_version="hash-v1",
             pinned_executor_type="claude-agent-worker",
-            skill_manifests=[
-                {
-                    "skill_id": "department-review",
-                    "version": "hash-v1",
-                    "content_hash": "hash-v1",
-                    "source": {"kind": "uploaded"},
-                    "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-                    "dependency_ids": [],
-                    "mcp_tool_ids": [],
-                }
-            ],
+            skill_manifests=[_profiled_skill_manifest("department-review", "hash-v1")],
             normalized_input={},
             principal_department_id="qa",
             principal_roles=["reviewer"],
@@ -1569,15 +1581,11 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
         pinned_version="hash-v1",
         pinned_executor_type="claude-agent-worker",
         skill_manifests=[
-            {
-                "skill_id": "knowledge-v1",
-                "version": "hash-v1",
-                "content_hash": "hash-v1",
-                "source": {"kind": "uploaded"},
-                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-                "dependency_ids": [],
-                "mcp_tool_ids": ["historical-search"],
-            }
+            _profiled_skill_manifest(
+                "knowledge-v1",
+                "hash-v1",
+                mcp_tool_ids=["historical-search"],
+            )
         ],
         normalized_input={"message": "search"},
         principal_department_id="qa",
@@ -1606,16 +1614,12 @@ def test_historical_direct_ragflow_replay_fails_closed():
 
 
 def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
-    manifest = {
-        "skill_id": "department-review",
-        "version": "hash-v1",
-        "content_hash": "hash-v1",
-        "source": {"kind": "uploaded", "storage_key": "private/package.zip"},
-        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-        "dependency_ids": [],
-        "mcp_tool_ids": [],
-        "snapshot_governance": {"selected_files": [{"sha256": "caller-controlled"}]},
-    }
+    manifest = _profiled_skill_manifest(
+        "department-review",
+        "hash-v1",
+        source={"kind": "uploaded", "storage_key": "private/package.zip"},
+        snapshot_governance={"selected_files": [{"sha256": "caller-controlled"}]},
+    )
 
     locked = repositories.run_skill_snapshot_source_json(
         manifest,
@@ -2954,9 +2958,9 @@ async def test_harness_skill_authorization_derives_canonical_backing_tool_withou
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "denial",
-    ["backing_missing", "tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
+    ["tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
 )
-async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_current_parent_and_tool_state(
+async def test_harness_backed_skill_authorization_fails_closed_for_current_parent_and_tool_state(
     monkeypatch,
     denial,
 ):
@@ -2965,7 +2969,7 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
             "skill_id": skill_id,
             "skill_status": "active",
             "executor_type": "claude-agent-worker",
-            "backing_mcp_tool_id": None if denial == "backing_missing" else "tenant-search",
+            "backing_mcp_tool_id": "tenant-search",
         }
 
     async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
@@ -3006,8 +3010,8 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
         await repositories.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
-            agent_id="sop-assistant",
-            skill_id="ragflow-knowledge-search",
+            agent_id="knowledge-agent",
+            skill_id="knowledge-skill",
             normalized_input={},
             principal_department_id="qa",
             principal_roles=["qa_operator"],
@@ -6581,7 +6585,7 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
 
 
 @pytest.mark.asyncio
-async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
+async def test_chat_catalog_query_accepts_only_current_tenant_published_catalog():
     class Cursor:
         async def fetchall(self):
             return []
@@ -6599,9 +6603,10 @@ async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tena
     conn = Connection()
     assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
 
-    assert "ragflow-knowledge-search" in conn.sql
     assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_server.catalog_status = 'available'" in conn.sql
     assert "catalog_any" not in conn.sql
+    assert "ragflow-knowledge-search" not in conn.sql
     assert conn.params == ("tenant-a", "tenant-a")
 
 
@@ -9987,7 +9992,6 @@ async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
         staged=True,
         used=True,
         used_skills_source="executor_hook",
-        inferred_used=False,
     )
 
     sql, params = conn.calls[0]
@@ -9998,9 +10002,7 @@ async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
     assert any('"kind": "builtin"' in str(item) for item in params)
     assert any("minimax-docx" in str(item) for item in params)
     assert "used_skills_source" in sql
-    assert "inferred_used" in sql
     assert "executor_hook" in params
-    assert False in params
 
 
 @pytest.mark.asyncio
@@ -10065,22 +10067,19 @@ async def test_upsert_run_skill_snapshot_fails_closed_on_immutable_identity_mism
 async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact():
     conn = RecordingConnection()
     manifests = [
-        {
-            "skill_id": "department-review",
-            "version": "hash-v1",
-            "content_hash": "hash-v1",
-            "source": {"kind": "uploaded", "storage_key": "must-not-persist"},
-            "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-            "dependency_ids": ["dependency-a"],
-            "mcp_tool_ids": [],
-            "snapshot_governance": {
+        _profiled_skill_manifest(
+            "department-review",
+            "hash-v1",
+            source={"kind": "uploaded", "storage_key": "must-not-persist"},
+            dependency_ids=["dependency-a"],
+            snapshot_governance={
                 "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
                 "selected_files": [{"relative_path": "SKILL.md", "size_bytes": 5, "sha256": "hash-file"}],
             },
-            "allowed": True,
-            "staged": False,
-            "used": False,
-        }
+            allowed=True,
+            staged=False,
+            used=False,
+        )
     ]
 
     await repositories.insert_run_skill_snapshots_at_creation(
@@ -10106,23 +10105,17 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
 @pytest.mark.asyncio
 async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_execution_mcp_pin():
     conn = RecordingConnection()
-    primary = {
-        "skill_id": "department-review",
-        "version": "hash-v1",
-        "content_hash": "hash-v1",
-        "source": {"kind": "uploaded"},
-        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-        "dependency_ids": ["document-helper"],
-        "mcp_tool_ids": [],
-    }
-    dependency = {
-        "skill_id": "document-helper",
-        "version": "hash-helper",
-        "content_hash": "hash-helper",
-        "source": {"kind": "builtin", "asset_dir": "document-helper"},
-        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-        "dependency_ids": [],
-    }
+    primary = _profiled_skill_manifest(
+        "department-review",
+        "hash-v1",
+        dependency_ids=["document-helper"],
+    )
+    dependency = _profiled_skill_manifest(
+        "document-helper",
+        "hash-helper",
+        source_kind="builtin",
+        source={"kind": "builtin", "asset_dir": "document-helper"},
+    )
 
     await repositories.insert_run_skill_snapshots_at_creation(
         conn,
@@ -10284,8 +10277,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
                     "allowed": True,
                     "staged": True,
                     "used": False,
-                    "used_skills_source": "inferred",
-                    "inferred_used": True,
+                    "used_skills_source": "",
                     "created_at": None,
                 }
             ]
@@ -10293,7 +10285,6 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
     class SnapshotConnection:
         async def execute(self, sql, params):
             assert "used_skills_source" in sql
-            assert "inferred_used" in sql
             assert params == ("default", "run-a")
             return SnapshotCursor()
 
@@ -10338,11 +10329,6 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
             "staged": True,
             "used": False,
             "created_at": None,
-            "usage": {
-                "used_skills_source": "inferred",
-                "inferred_used": True,
-                "inferred_used_skills": ["qa-file-reviewer"],
-            },
         }
     ]
     serialized = json.dumps(snapshots, ensure_ascii=False)

@@ -26,10 +26,9 @@ def _string_list(value: object) -> list[str]:
 
 
 def _requested_skill_ids(skill_id: str, input_payload: dict[str, Any]) -> list[str]:
-    requested = _string_list(input_payload.get("skill_ids"))
     if skill_id:
-        requested.insert(0, skill_id)
-    return list(dict.fromkeys(requested))
+        return [skill_id]
+    return list(dict.fromkeys(_string_list(input_payload.get("skill_ids"))))
 
 
 def _snapshot_files(path: Path) -> list[dict[str, Any]]:

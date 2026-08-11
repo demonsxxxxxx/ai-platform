@@ -11,8 +11,6 @@ import re
 from typing import Any
 
 from app.skills.dependencies import (
-    INTERNAL_DEPENDENCY_SKILL_IDS,
-    PUBLIC_WORKBENCH_SKILL_IDS,
     skill_dependency_policy,
 )
 from app.skills.release_dashboard_readiness import (
@@ -1340,8 +1338,8 @@ def build_skill_release_readiness(
         skill_items.append(
             {
                 "skill_id": skill.name,
-                "public": skill.name in PUBLIC_WORKBENCH_SKILL_IDS,
-                "internal_dependency": skill.name in INTERNAL_DEPENDENCY_SKILL_IDS,
+                "public": dependency_policy["public"],
+                "internal_dependency": dependency_policy["internal_dependency"],
                 "content_hash": skill.version,
                 "manifest": {
                     "present": True,

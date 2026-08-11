@@ -77,7 +77,7 @@ def test_schema_declares_principal_department_auth_snapshot():
     assert "alter table runs add column if not exists principal_department_id text not null default '';" in schema
 
 
-def test_schema_seeds_first_agent_apps():
+def test_schema_seeds_skills_and_retires_fixed_workflow_agents():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
     assert "qa-file-reviewer" in schema
@@ -86,12 +86,12 @@ def test_schema_seeds_first_agent_apps():
     assert "ragflow-knowledge-search" in schema
     assert "ragflow_search" in schema
     assert "tenant_workbench_skills" in schema
-    assert "'translate', 'default'" in schema
-    assert "'document-review', 'default'" in schema
-    assert "qa-word-review" in schema
-    assert "sop-assistant" in schema
-    assert "Legacy alias for qa-word-review" in schema
-    assert "'qa-word-review', 'default', '文档审核', 'file'" in schema
+    agent_seed = schema[schema.index("update agents\nset status = 'inactive'"):]
+    assert "where id in ('translate', 'document-review', 'qa-word-review', 'baoyu-translate', 'sop-assistant')" in agent_seed
+    assert "('general-agent', 'default', '通用聊天 Agent', 'chat'" in agent_seed
+    assert "('qa-word-review', 'default'" not in agent_seed
+    assert "('baoyu-translate', 'default'" not in agent_seed
+    assert "('sop-assistant', 'default'" not in agent_seed
 
 
 def test_schema_enables_read_only_ragflow_mcp_tool_poc():
@@ -367,7 +367,6 @@ def test_schema_declares_run_skill_snapshots():
     assert "staged boolean not null default false" in schema
     assert "used boolean not null default false" in schema
     assert "used_skills_source text not null default ''" in schema
-    assert "inferred_used boolean not null default false" in schema
     assert "unique(tenant_id, run_id, skill_id)" in schema
     assert "idx_run_skill_snapshots_run" in schema
 

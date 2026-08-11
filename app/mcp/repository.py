@@ -19,9 +19,6 @@ from app.validation import SAFE_ID_PATTERN
 
 
 MCP_CATALOG_SYNC_LEASE_SECONDS = 120
-TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
-TRUSTED_BUILTIN_MCP_SERVER_ID = "ragflow"
-TRUSTED_BUILTIN_MCP_REMOTE_NAME = "ragflow_search"
 MCP_CATALOG_MANAGED_POLICY_REASONS = [
     "mcp_catalog_read_only",
     "mcp_catalog_write_capable",
@@ -31,48 +28,23 @@ MCP_CATALOG_MANAGED_POLICY_REASONS = [
 
 
 def mcp_tool_tenant_authority_sql() -> str:
-    """Return the fixed tenant authority predicate for builtin or current catalog tools."""
+    """Return the tenant authority predicate for current catalog tools."""
 
-    return f"""
-      (
-        (
-          mcp_tools.id = '{TRUSTED_BUILTIN_MCP_TOOL_ID}'
-          and mcp_tools.server_id = '{TRUSTED_BUILTIN_MCP_SERVER_ID}'
-          and mcp_tools.transport_type = 'http'
-          and mcp_tools.endpoint = ''
-          and mcp_tools.auth_mode = 'platform-managed'
-          and mcp_tools.allowed_tools = '[\"{TRUSTED_BUILTIN_MCP_REMOTE_NAME}\"]'::jsonb
-          and mcp_tools.write_capable = false
-        )
-        or exists (
-          select 1
-          from mcp_tool_catalog_entries catalog_entry
-          join mcp_servers catalog_server
-            on catalog_server.tenant_id = catalog_entry.tenant_id
-           and catalog_server.name = catalog_entry.server_name
-          where catalog_entry.tool_id = mcp_tools.id
-            and catalog_entry.tenant_id = %s
-            and catalog_entry.status = 'active'
-            and catalog_entry.catalog_generation = catalog_server.catalog_generation
-            and catalog_server.status = 'active'
-            and catalog_server.catalog_status = 'available'
-        )
+    return """
+      exists (
+        select 1
+        from mcp_tool_catalog_entries catalog_entry
+        join mcp_servers catalog_server
+          on catalog_server.tenant_id = catalog_entry.tenant_id
+         and catalog_server.name = catalog_entry.server_name
+        where catalog_entry.tool_id = mcp_tools.id
+          and catalog_entry.tenant_id = %s
+          and catalog_entry.status = 'active'
+          and catalog_entry.catalog_generation = catalog_server.catalog_generation
+          and catalog_server.status = 'active'
+          and catalog_server.catalog_status = 'available'
       )
     """
-
-
-def is_trusted_builtin_mcp_tool(tool: dict[str, Any]) -> bool:
-    """Recognize only the code-owned RAGFlow registry provenance, never a legacy fallback."""
-
-    return (
-        str(tool.get("tool_id") or tool.get("id") or "") == TRUSTED_BUILTIN_MCP_TOOL_ID
-        and str(tool.get("server_id") or "") == TRUSTED_BUILTIN_MCP_SERVER_ID
-        and str(tool.get("transport_type") or "") == "http"
-        and str(tool.get("endpoint") or "") == ""
-        and str(tool.get("auth_mode") or "") == "platform-managed"
-        and tool.get("allowed_tools") == [TRUSTED_BUILTIN_MCP_REMOTE_NAME]
-        and bool(tool.get("write_capable")) is False
-    )
 
 
 def _repositories():
@@ -98,9 +70,6 @@ def _catalog_manifest_policy_reason(existing_reason: Any, desired_reason: str) -
 
 def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
     """Return whether one catalog or builtin row can be sandbox-registered."""
-
-    if is_trusted_builtin_mcp_tool(tool):
-        return True
 
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
@@ -153,7 +122,7 @@ async def list_workbench_mcp_tools(
           and tool_policies.visible_to_user = true
           and """ + mcp_tool_tenant_authority_sql() + """
           and (%s or (mcp_tools.status = 'active' and tool_policies.status = 'active'))
-        order by case mcp_tools.id when 'ragflow-knowledge-search' then 1 else 99 end, mcp_tools.id asc
+        order by lower(mcp_tools.name), mcp_tools.id asc
         """,
         (tenant_id, tenant_id, include_disabled),
     )

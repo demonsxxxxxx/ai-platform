@@ -39,6 +39,7 @@ from app.routes.chat import (
     retry_chat_submission_admission,
 )
 from app.settings import Settings
+from app.skills.execution_profiles import resolve_skill_execution_profile
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
@@ -184,8 +185,8 @@ def test_retry_admission_unhandled_error_is_private_no_store_over_http(
     assert "submission_disposition" not in detail
     assert response.headers["cache-control"] == "private, no-store"
     assert detail["diagnostic_id"] in caplog.text
-    assert "phase=resolver" in caplog.text
-    assert "exception_type=RuntimeError" in caplog.text
+    assert '"phase":"resolver"' in caplog.text
+    assert '"exception_type":"RuntimeError"' in caplog.text
     assert "unexpected persistence failure" not in caplog.text
 
 
@@ -544,7 +545,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         (
             "请执行 Bash 命令 pwd", False, ["admin"], {},
             {"agent_id": "qa-word-review", "skill_id": "qa-file-reviewer"},
-            ["Bash", "Write"],
+            ["Read", "Glob", "LS", "Bash", "Write", "Edit"],
         ),
         ("只解释 Bash 命令 pwd 是什么，不要执行", False, [], {}, {}, []),
         ("不要执行 Bash 命令 pwd", False, [], {}, {}, []),
@@ -1802,6 +1803,11 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
     digest.update(len(content).to_bytes(8, "big"))
     digest.update(content)
     version = digest.hexdigest()
+    execution_profile = resolve_skill_execution_profile(
+        skill_id=skill_id,
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
     return {
         "skill_id": skill_id,
         "description": description,
@@ -1810,6 +1816,9 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
         "source": {"kind": "builtin", "asset_dir": skill_id, "version": version},
         "files": files,
         "dependency_ids": [],
+        "lifecycle_status": "released",
+        "execution_profile": execution_profile,
+        "builtin_tool_identities": execution_profile["builtin_tool_identities"],
         "allowed": True,
         "staged": False,
         "used": False,
@@ -2089,7 +2098,7 @@ async def test_create_chat_session_uses_platform_principal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_chat_session_maps_public_agent_id_before_persisting(monkeypatch):
+async def test_create_chat_session_preserves_selected_agent_id_without_workflow_mapping(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -2107,7 +2116,7 @@ async def test_create_chat_session_maps_public_agent_id_before_persisting(monkey
             {
                 "id": "ses_public_review",
                 "workspace_id": "default",
-                "agent_id": "qa-word-review",
+                "agent_id": "document-review",
                 "title": "Review",
                 "created_at": None,
                 "updated_at": None,
@@ -2125,7 +2134,7 @@ async def test_create_chat_session_maps_public_agent_id_before_persisting(monkey
         principal=principal(),
     )
 
-    assert calls == [("session", "qa-word-review")]
+    assert calls == [("session", "document-review")]
     assert response.agent_id == "document-review"
 
 
@@ -2215,7 +2224,7 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(metadata)
     assert "/var/lib/ai-platform" not in str(metadata)
     assert metadata["intent"]["selected_capability"] == "document_review"
-    assert metadata["intent"]["capability_id"] == "document_review"
+    assert "capability_id" not in metadata["intent"]
     assert response.messages[1].content == ""
 
 
@@ -2459,15 +2468,19 @@ async def test_chat_stream_capability_distribution_denial_precedes_create_run(mo
         raise AssertionError("authorization denial must precede create_run")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", deny)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                agent_id="document-review",
+                agent_id="general-agent",
                 message="review this document",
                 file_ids=["file_1"],
+                selected_skill={
+                    "skill_id": "qa-file-reviewer",
+                    "expected_version": "hash-v1",
+                },
             ),
             principal=principal(department_id="finance", roles=["user"]),
         )
@@ -2516,15 +2529,19 @@ async def test_chat_stream_audits_capability_denial_after_source_transaction_rol
         return "aud-denied"
 
     monkeypatch.setattr("app.routes.chat.transaction", ordered_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", deny)
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                agent_id="document-review",
+                agent_id="general-agent",
                 message="review this document",
                 file_ids=["file_1"],
+                selected_skill={
+                    "skill_id": "qa-file-reviewer",
+                    "expected_version": "hash-v1",
+                },
             ),
             principal=principal(department_id="finance", roles=["user"]),
         )
@@ -2538,38 +2555,6 @@ async def test_chat_stream_audits_capability_denial_after_source_transaction_rol
         ("audit", "conn-2", "chat_stream", "qa-file-reviewer"),
         ("exit", 2),
     ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified_authorizer(monkeypatch):
-    calls = []
-
-    async def deny(*args, **kwargs):
-        calls.append(kwargs)
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
-
-    async def fail_create_run(*args, **kwargs):
-        raise AssertionError("direct ragflow denial must precede create_run")
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await chat_stream(
-            ChatStreamRequest(
-                agent_id="sop-assistant",
-                message="search the knowledge base",
-            ),
-            principal=principal(department_id="qa", roles=["user"]),
-        )
-
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "capability_not_authorized"
-    assert len(calls) == 1
-    assert calls[0]["agent_id"] == "sop-assistant"
-    assert calls[0]["skill_id"] == "ragflow-knowledge-search"
-    assert "mcp_tool_ids" not in calls[0]["normalized_input"]
 
 
 @pytest.mark.asyncio
@@ -2848,12 +2833,12 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_developer_fixture_general_chat_uses_builtin_manifest_pin(monkeypatch):
+async def test_chat_stream_general_chat_uses_builtin_manifest_pin(monkeypatch):
     calls = {}
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         assert tenant_id == "frc-test-a"
-        assert agent_id == "frc_agent_83ebaed7aa4c5f49"
+        assert agent_id == "general-agent"
         assert skill_id == "general-chat"
         return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
 
@@ -2902,7 +2887,7 @@ async def test_chat_stream_developer_fixture_general_chat_uses_builtin_manifest_
     response = await chat_stream(
         ChatStreamRequest(
             workspace_id="frc_test_a_default",
-            agent_id="frc_agent_83ebaed7aa4c5f49",
+            agent_id="general-agent",
             message="alice 并发创建运行验收，请简短回复。",
         ),
         principal=principal(user_id="alice", tenant_id="frc-test-a", roles=["developer"]),
@@ -3066,6 +3051,16 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
             "input_modes": ["chat"],
         }
 
+    async def fake_authorize_selected(conn, **kwargs):
+        assert kwargs["skill_id"] == "qa-file-reviewer"
+        assert kwargs["expected_version"] == "hash-uploaded"
+        return await fake_resolve_agent_skill(
+            conn,
+            tenant_id=kwargs["tenant_id"],
+            agent_id=kwargs["agent_id"],
+            skill_id=kwargs["skill_id"],
+        )
+
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
         assert skill_id == "qa-file-reviewer"
         assert version == "hash-uploaded"
@@ -3099,7 +3094,10 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        fake_authorize_selected,
+    )
     monkeypatch.setattr(
         "app.routes.chat.repositories.get_effective_skill_version_for_policy",
         fake_get_effective_skill_version_for_policy,
@@ -3114,7 +3112,11 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
 
     response = await chat_stream(
         ChatStreamRequest(
-            agent_id="document-review",
+            agent_id="general-agent",
+            selected_skill={
+                "skill_id": "qa-file-reviewer",
+                "expected_version": "hash-uploaded",
+            },
             message="review this document",
             input={"note": "uploaded policy"},
         ),
@@ -3168,6 +3170,16 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
             "input_modes": ["chat"],
         }
 
+    async def fake_authorize_selected(conn, **kwargs):
+        assert kwargs["skill_id"] == "qa-file-reviewer"
+        assert kwargs["expected_version"] == "hash-new"
+        return await fake_resolve_agent_skill(
+            conn,
+            tenant_id=kwargs["tenant_id"],
+            agent_id=kwargs["agent_id"],
+            skill_id=kwargs["skill_id"],
+        )
+
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
         assert skill_id == "qa-file-reviewer"
         assert version == "hash-old"
@@ -3196,7 +3208,10 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        fake_authorize_selected,
+    )
     monkeypatch.setattr(
         "app.routes.chat.repositories.get_effective_skill_version_for_policy",
         fake_get_effective_skill_version_for_policy,
@@ -3211,7 +3226,11 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
 
     response = await chat_stream(
         ChatStreamRequest(
-            agent_id="document-review",
+            agent_id="general-agent",
+            selected_skill={
+                "skill_id": "qa-file-reviewer",
+                "expected_version": "hash-new",
+            },
             message="review this document",
             input={"note": "rollout policy"},
         ),
@@ -3367,7 +3386,7 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
         "skill_release_decision",
     ]
     assert product_events[0]["payload"]["visible_to_user"] is True
-    assert product_events[1]["payload"]["selected_capability"] == "document_review"
+    assert product_events[1]["payload"]["selected_capability"] is None
     assert product_events[3]["payload"]["skill_id"] == "qa-file-reviewer"
     assert product_events[4]["payload"]["file_ids"] == ["file_doc"]
     assert any(
@@ -3479,8 +3498,9 @@ async def test_chat_stream_redacts_raw_skill_id_from_ordinary_user_response(monk
     )
 
     assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "document_review"
+    assert response.intent_decision.selected_capability is None
     assert response.intent_decision.skill_id is None
+    assert "qa-file-reviewer" not in response.intent_decision.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -3615,446 +3635,6 @@ async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
     assert ("run_input", "claude-agent-worker") in calls
     assert ("queue", "claude-agent-worker", "user-a", "hello") in calls
 
-
-
-@pytest.mark.asyncio
-async def test_lambchat_word_review_attachment_routes_to_qa_agent(monkeypatch):
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_review"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_review"
-
-    async def fake_bind_files_to_run(conn, **kwargs):
-        calls.append(("files", kwargs["file_ids"]))
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="审核一下这个文档",
-            attachments=[
-                {
-                    "key": "file_review",
-                    "name": "TR(G)-AD-IP321-1-031-1.0 IP321.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-        ),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_review"
-    assert ("resolve", "qa-word-review", "qa-file-reviewer") in calls
-    assert ("session", "qa-word-review") in calls
-    assert ("run", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
-    assert ("files", ["file_review"]) in calls
-    assert ("queue", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_word_review_file_id_routes_to_qa_agent(monkeypatch):
-    calls = []
-
-    async def fake_get_file(conn, *, tenant_id, file_id):
-        calls.append(("get_file", tenant_id, file_id))
-        return {
-            "id": file_id,
-            "tenant_id": "tenant-a",
-            "workspace_id": "default",
-            "user_id": "user-a",
-            "session_id": None,
-            "run_id": None,
-            "original_name": "TR(G)-AD-IP321-1-031-1.0 IP321.docx",
-            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_review_file_id"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_review_file_id"
-
-    async def fake_bind_files_to_run(conn, **kwargs):
-        calls.append(("files", kwargs["file_ids"]))
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_file", fake_get_file)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="审核一下这个文档", file_ids=["file_review"]),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_review_file_id"
-    assert ("get_file", "tenant-a", "file_review") in calls
-    assert ("resolve", "qa-word-review", "qa-file-reviewer") in calls
-    assert ("session", "qa-word-review") in calls
-    assert ("run", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
-    assert ("files", ["file_review"]) in calls
-    assert ("queue", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
-
-
-@pytest.mark.parametrize(
-    "row_overrides",
-    [
-        pytest.param({}, id="missing-scope"),
-        pytest.param({"tenant_id": "tenant-b", "workspace_id": "default", "user_id": "user-a", "session_id": None, "run_id": None}, id="tenant-mismatch"),
-        pytest.param({"tenant_id": "tenant-a", "workspace_id": "other", "user_id": "user-a", "session_id": None, "run_id": None}, id="workspace-mismatch"),
-        pytest.param({"tenant_id": "tenant-a", "workspace_id": "default", "user_id": "user-b", "session_id": None, "run_id": None}, id="user-mismatch"),
-        pytest.param({"tenant_id": "tenant-a", "workspace_id": "default", "user_id": "user-a", "session_id": "ses_other", "run_id": None}, id="session-mismatch"),
-        pytest.param({"tenant_id": "tenant-a", "workspace_id": "default", "user_id": "user-a", "session_id": None, "run_id": "run_bound"}, id="already-bound"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_chat_stream_ignores_file_id_metadata_outside_request_scope(monkeypatch, row_overrides):
-    calls = []
-
-    async def fake_get_file(conn, *, tenant_id, file_id):
-        calls.append(("get_file", tenant_id, file_id))
-        row = {
-            "id": file_id,
-            "original_name": "review.docx",
-            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }
-        row.update(row_overrides)
-        return row
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_scope_guard"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_scope_guard"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_file", fake_get_file)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="审核一下这个文档", file_ids=["file_review"]),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_scope_guard"
-    assert ("get_file", "tenant-a", "file_review") in calls
-    assert ("resolve", "general-agent", "general-chat") in calls
-    assert ("session", "general-agent") in calls
-    assert ("run", "general-agent", "general-chat", ["file_review"]) in calls
-    assert ("queue", "general-agent", "general-chat", ["file_review"]) in calls
-    assert not any(item == ("resolve", "qa-word-review", "qa-file-reviewer") for item in calls)
-
-
-@pytest.mark.asyncio
-async def test_lambchat_translate_agent_defaults_to_translate_skill(monkeypatch):
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_translate"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_translate"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="翻译一下这个文档",
-            attachments=[
-                {
-                    "key": "file_translate",
-                    "name": "demo.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-        ),
-        agent_id="document-translation",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_translate"
-    assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
-    assert ("queue", "baoyu-translate", "baoyu-translate", ["file_translate"]) in calls
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "document_translation"
-    assert "baoyu-translate" not in response.intent_decision.model_dump_json()
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(monkeypatch):
-    """A routed file-capable Skill reuses its snapshot-authorized session input."""
-
-    calls = []
-    run_ids = iter(["run_routed_first", "run_routed_second"])
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {
-            "executor_type": "claude-agent-worker",
-            "skill_version": "0.1.0",
-            "input_modes": ["docx"],
-        }
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(
-            ("session", kwargs["session_id"], kwargs["agent_id"], kwargs["workspace_id"])
-        )
-        return kwargs["session_id"]
-
-    async def fake_get_authorized_session(
-        conn,
-        *,
-        tenant_id,
-        user_id,
-        session_id,
-        workspace_id=None,
-        for_update=False,
-    ):
-        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_routed")
-        calls.append(("session_lookup", workspace_id, for_update))
-        return {"id": session_id, "agent_id": "general-agent", "workspace_id": "workspace-routed"}
-
-    async def fake_list_authorized_session_runs(
-        conn,
-        *,
-        tenant_id,
-        user_id,
-        session_id,
-        workspace_id=None,
-        limit=20,
-    ):
-        calls.append(("continuation_runs", tenant_id, user_id, session_id, workspace_id, limit))
-        return [{"agent_id": "general-agent", "skill_id": "baoyu-translate"}]
-
-    async def fake_create_run(conn, **kwargs):
-        run_id = next(run_ids)
-        calls.append(
-            (
-                "run",
-                kwargs["session_id"],
-                kwargs["agent_id"],
-                kwargs["skill_id"],
-                kwargs["workspace_id"],
-                run_id,
-            )
-        )
-        return run_id
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_workspace(conn, *, tenant_id, workspace_id):
-        calls.append(("workspace", workspace_id))
-
-    async def fake_authorize_files(conn, **kwargs):
-        calls.append(("files", kwargs["workspace_id"], kwargs["file_ids"]))
-
-    async def fake_list_authorized_session_input_files(conn, **kwargs):
-        calls.append(
-            (
-                "session_files",
-                kwargs["tenant_id"],
-                kwargs["workspace_id"],
-                kwargs["user_id"],
-                kwargs["session_id"],
-            )
-        )
-        return [
-            {
-                "id": "file_routed",
-                "original_name": "demo.docx",
-                "content_type": (
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                ),
-                "created_at": "2026-08-11T00:00:00Z",
-            }
-        ]
-
-    async def fake_bind_files(conn, **kwargs):
-        calls.append(("bind", kwargs["file_ids"]))
-
-    async def fake_enqueue_run(payload):
-        calls.append(
-            (
-                "queue",
-                payload["session_id"],
-                payload["agent_id"],
-                payload["skill_id"],
-                payload["workspace_id"],
-                payload["file_ids"],
-            )
-        )
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_runs",
-        fake_list_authorized_session_runs,
-    )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace_belongs_to_tenant", fake_workspace)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", fake_authorize_files)
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_input_files",
-        fake_list_authorized_session_input_files,
-    )
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.new_id",
-        lambda kind: "ses_routed" if kind == "ses" else f"{kind}_unexpected",
-    )
-
-    first = await chat_stream(
-        ChatStreamRequest(
-            message="翻译这个 Word 文档",
-            attachments=[
-                {
-                    "key": "file_routed",
-                    "name": "demo.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-        ),
-        agent_id="document-translation",
-        principal=principal(),
-    )
-
-    assert first.session_id == "ses_routed"
-    assert first.intent_decision is not None
-    assert first.intent_decision.agent_id == "document-translation"
-
-    second = await chat_stream(
-        ChatStreamRequest(
-            message="继续处理同一份文档",
-            session_id=first.session_id,
-        ),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert second.session_id == first.session_id
-    assert second.intent_decision is not None
-    assert second.intent_decision.agent_id == "document-translation"
-    assert calls == [
-        ("resolve", "baoyu-translate", "baoyu-translate"),
-        ("workspace", "default"),
-        ("files", "default", ["file_routed"]),
-        ("session", "ses_routed", "baoyu-translate", "default"),
-        ("run", "ses_routed", "baoyu-translate", "baoyu-translate", "default", "run_routed_first"),
-        ("bind", ["file_routed"]),
-        ("queue", "ses_routed", "baoyu-translate", "baoyu-translate", "default", ["file_routed"]),
-        ("session_lookup", None, False),
-        ("session_lookup", "workspace-routed", True),
-        ("continuation_runs", "tenant-a", "user-a", "ses_routed", "workspace-routed", 1),
-        ("resolve", "general-agent", "baoyu-translate"),
-        ("session_files", "tenant-a", "workspace-routed", "user-a", "ses_routed"),
-        ("workspace", "workspace-routed"),
-        ("files", "workspace-routed", []),
-        ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
-        ("bind", []),
-        (
-            "queue",
-            "ses_routed",
-            "general-agent",
-            "baoyu-translate",
-            "workspace-routed",
-            ["file_routed"],
-        ),
-    ]
 
 
 @pytest.mark.asyncio
@@ -4233,7 +3813,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             content_hash="a" * 64,
             skill={
                 "skill_id": "profile-specialist",
-                "skill_version": "version-profile",
+                "skill_version": profile_manifest["content_hash"],
                 "executor_type": "claude-agent-worker",
                 "input_modes": [],
             },
@@ -4244,8 +3824,6 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 "revision": 7,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instructions",
-                "required_skill_id": "profile-specialist",
-                "required_skill_version": "version-profile",
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -4267,7 +3845,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         calls.append("skill_auth")
         return {
             "skill_id": "profile-specialist",
-            "skill_version": "version-profile",
+            "skill_version": profile_manifest["content_hash"],
             "executor_type": "claude-agent-worker",
             "input_modes": [],
         }
@@ -4571,8 +4149,6 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "private profile instructions",
-        "required_skill_id": "profile-specialist",
-        "required_skill_version": profile_manifest["content_hash"],
     }
     if enqueue_failure_mode is None:
         assert response.status == "queued"
@@ -4893,66 +4469,6 @@ async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_rout
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_word_translate_file_id_routes_from_general_agent(monkeypatch):
-    calls = []
-
-    async def fake_get_file(conn, *, tenant_id, file_id):
-        calls.append(("get_file", tenant_id, file_id))
-        return {
-            "id": file_id,
-            "tenant_id": "tenant-a",
-            "workspace_id": "default",
-            "user_id": "user-a",
-            "session_id": None,
-            "run_id": None,
-            "original_name": "demo.docx",
-            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_translate_file_id"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_translate_file_id"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_file", fake_get_file)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="translate this Word file", file_ids=["file_word_translate"]),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_translate_file_id"
-    assert ("get_file", "tenant-a", "file_word_translate") in calls
-    assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
-    assert ("run", "baoyu-translate", "baoyu-translate", ["file_word_translate"]) in calls
-    assert ("queue", "baoyu-translate", "baoyu-translate", ["file_word_translate"]) in calls
-
-
-@pytest.mark.asyncio
 async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
     calls = []
 
@@ -5001,555 +4517,6 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
     assert ("resolve", "general-agent", "general-chat") in calls
     assert ("run", "general-agent", "general-chat", ["file_txt"]) in calls
     assert ("queue", "general-agent", "general-chat", ["file_txt"]) in calls
-
-
-@pytest.mark.asyncio
-async def test_lambchat_word_translate_attachment_routes_from_general_agent(monkeypatch):
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_translate_inferred"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_translate_inferred"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="translate this Word file",
-            attachments=[
-                {
-                    "key": "file_word_translate",
-                    "name": "demo.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-        ),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_translate_inferred"
-    assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
-    assert ("queue", "baoyu-translate", "baoyu-translate", ["file_word_translate"]) in calls
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creating_run(monkeypatch):
-    calls = []
-
-    async def admission_lock(conn, *, tenant_id, user_id):
-        calls.append(("admission_lock", tenant_id, user_id))
-
-    async def forbidden_limit_check(*_args, **_kwargs):
-        raise AssertionError("needs_confirmation must precede active-run limit rejection")
-
-    async def fail_resolve_agent_skill(*args, **kwargs):
-        calls.append("resolve")
-        raise AssertionError("ambiguous request must not resolve skill")
-
-    async def fail_create_run(*args, **kwargs):
-        calls.append("create_run")
-        raise AssertionError("ambiguous request must not create run")
-
-    async def fail_enqueue_run(payload):
-        calls.append("enqueue")
-        raise AssertionError("ambiguous request must not enqueue run")
-
-    async def all_principal_agents(conn, **kwargs):
-        return [
-            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
-            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
-            {"id": "general-agent", "default_skill_id": "general-chat"},
-        ]
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fail_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
-        admission_lock,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
-        forbidden_limit_check,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.list_principal_lambchat_agents",
-        all_principal_agents,
-        raising=False,
-    )
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            attachments=[{"key": "file_docx", "name": "demo.docx"}],
-        ),
-        principal=principal(),
-    )
-
-    assert response.status == "needs_confirmation"
-    assert response.run_id is None
-    assert [item.capability_id for item in response.suggestions] == [
-        "document_review",
-        "document_translation",
-        "general_chat",
-    ]
-    assert calls == [("admission_lock", "tenant-a", "user-a")]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_filters_confirmation_suggestions_through_principal_projection(monkeypatch):
-    calls = []
-
-    async def principal_agents(conn, **kwargs):
-        calls.append(kwargs)
-        return [
-            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
-            {"id": "general-agent", "default_skill_id": "general-chat"},
-        ]
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.list_principal_lambchat_agents",
-        principal_agents,
-        raising=False,
-    )
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            attachments=[{"key": "file_docx", "name": "demo.docx"}],
-        ),
-        principal=principal(department_id="QA", roles=["QA-OPERATOR"]),
-    )
-
-    assert response.status == "needs_confirmation"
-    assert [item.capability_id for item in response.suggestions] == [
-        "document_translation",
-        "general_chat",
-    ]
-    assert [item.capability_id for item in response.intent_decision.suggestions] == [
-        "document_translation",
-        "general_chat",
-    ]
-    assert calls == [
-        {
-            "tenant_id": "tenant-a",
-            "actor_user_id": "user-a",
-            "department_id": "QA",
-            "roles": ["QA-OPERATOR"],
-            "is_admin": False,
-            "permissions": [],
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_falls_back_to_general_chat_when_implicit_knowledge_admission_fails(monkeypatch):
-    """An unavailable implicit route must not expose or execute its capability."""
-
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        if (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search"):
-            raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
-        assert (agent_id, skill_id) == ("general-agent", "general-chat")
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_implicit_fallback"
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"]))
-        return "run_implicit_fallback"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "general_chat"
-    assert response.intent_decision.reason == "已使用通用对话处理"
-    assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
-    assert ("resolve", "sop-assistant", "ragflow-knowledge-search") in calls
-    assert ("resolve", "general-agent", "general-chat") in calls
-    assert ("run", "general-agent", "general-chat") in calls
-    assert ("queue", "general-agent", "general-chat") in calls
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_keeps_implicit_knowledge_intent_when_rag_admission_succeeds(monkeypatch):
-    """Authorized RAG remains the selected implicit knowledge capability."""
-
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        assert (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search")
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_implicit_rag"
-
-    async def fake_create_run(conn, **kwargs):
-        return "run_implicit_rag"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "knowledge_answer"
-    assert ("resolve", "sop-assistant", "ragflow-knowledge-search") in calls
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_safe_fallback(monkeypatch):
-    """A missing general-chat capability must not silently reroute a denied intent."""
-
-    calls = []
-
-    async def deny(conn, **kwargs):
-        calls.append(("authorize", kwargs["agent_id"], kwargs["skill_id"]))
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
-
-    async def fail_create_run(*args, **kwargs):
-        raise AssertionError("denied implicit routing must not create a run")
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await chat_stream(
-            ChatStreamRequest(message="这个权限申请要怎么做？"),
-            principal=principal(),
-        )
-
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "capability_not_authorized"
-    assert calls == [
-        ("authorize", "sop-assistant", "ragflow-knowledge-search"),
-        ("authorize", "general-agent", "general-chat"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_admin_implicit_disabled_knowledge_falls_back_with_strict_admission(monkeypatch):
-    """Implicit routing must not use the administrator distribution bypass."""
-
-    calls = []
-
-    async def authorize(conn, **kwargs):
-        calls.append((kwargs["agent_id"], kwargs["skill_id"], kwargs["is_admin"]))
-        assert kwargs["is_admin"] is False
-        if kwargs["skill_id"] == "ragflow-knowledge-search":
-            raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_admin_implicit_fallback"
-
-    async def fake_create_run(conn, **kwargs):
-        return "run_admin_implicit_fallback"
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", authorize)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(roles=["admin"]),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "general_chat"
-    assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
-    assert calls == [
-        ("sop-assistant", "ragflow-knowledge-search", False),
-        ("general-agent", "general-chat", False),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_general_chat(monkeypatch):
-    """The candidate admission includes backing MCP/server health before selection."""
-
-    calls = []
-
-    async def authorize(conn, **kwargs):
-        calls.append((kwargs["agent_id"], kwargs["skill_id"], kwargs["is_admin"]))
-        if kwargs["skill_id"] == "ragflow-knowledge-search":
-            return await _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES(conn, **kwargs)
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        assert (tenant_id, agent_id, skill_id) == (
-            "tenant-a",
-            "sop-assistant",
-            "ragflow-knowledge-search",
-        )
-        return {
-            "skill_id": skill_id,
-            "skill_status": "active",
-            "executor_type": "ragflow",
-            "backing_mcp_tool_id": "tenant-search",
-        }
-
-    async def get_distribution(conn, *, tenant_id, capability_kind, capability_id):
-        return {
-            "status": "active",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": [],
-            "allowed_roles": [],
-        }
-
-    async def get_tool(conn, *, tenant_id, tool_id):
-        assert (tenant_id, tool_id) == ("tenant-a", "tenant-search")
-        return {
-            "tool_id": tool_id,
-            "server_id": "tenant-search-server",
-            "effective_status": "active",
-            "server_status": "disabled",
-            "visible_to_user": True,
-        }
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_mcp_fallback"
-
-    async def fake_create_run(conn, **kwargs):
-        return "run_mcp_fallback"
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", authorize)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.get_capability_distribution_row", get_distribution)
-    monkeypatch.setattr("app.routes.chat.repositories.get_mcp_tool_registry_entry", get_tool)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(department_id="qa", roles=["qa_operator"]),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "general_chat"
-    assert calls == [
-        ("sop-assistant", "ragflow-knowledge-search", False),
-        ("general-agent", "general-chat", False),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_never_suggests_archived_default_skill_from_principal_projection(monkeypatch):
-    async def fake_list_agents(conn, *, tenant_id):
-        assert tenant_id == "tenant-a"
-        return [
-            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate", "status": "active"},
-            {"id": "general-agent", "default_skill_id": "general-chat", "status": "active"},
-            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer", "status": "active"},
-        ]
-
-    async def fake_list_distributions(conn, **kwargs):
-        return [
-            {
-                "capability_kind": "skill",
-                "capability_id": "baoyu-translate",
-                "status": "active",
-                "visible_to_user": True,
-                "scope_mode": "allowlist",
-                "department_ids": [],
-                "allowed_roles": [],
-                "metadata_json": {},
-            },
-            {
-                "capability_kind": "skill",
-                "capability_id": "general-chat",
-                "status": "active",
-                "visible_to_user": True,
-                "scope_mode": "allowlist",
-                "department_ids": [],
-                "allowed_roles": [],
-                "metadata_json": {},
-            },
-            {
-                "capability_kind": "skill",
-                "capability_id": "qa-file-reviewer",
-                "status": "disabled",
-                "visible_to_user": False,
-                "scope_mode": "allowlist",
-                "department_ids": [],
-                "allowed_roles": [],
-                "metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"},
-            },
-        ]
-
-    async def fake_append_audit(conn, **kwargs):
-        return "audit"
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(repository_module, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(repository_module, "append_audit_log", fake_append_audit)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            attachments=[{"key": "file_docx", "name": "demo.docx"}],
-        ),
-        principal=principal(department_id="platform", roles=["admin"]),
-    )
-
-    assert response.status == "needs_confirmation"
-    assert [item.capability_id for item in response.suggestions] == [
-        "document_translation",
-        "general_chat",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypatch):
-    events = []
-    run_inputs = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        assert agent_id == "qa-word-review"
-        assert skill_id == "qa-file-reviewer"
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_confirmed"
-
-    async def fake_create_run(conn, **kwargs):
-        run_inputs.append(kwargs["input_json"])
-        return "run_confirmed"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_append_event(conn, **kwargs):
-        events.append(kwargs["event_type"])
-        return f"evt_{len(events)}"
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            confirmed_capability_id="document_review",
-            attachments=[{"key": "file_review", "name": "demo.docx"}],
-        ),
-        principal=principal(),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision.selected_capability == "document_review"
-    assert response.intent_decision.confirmed_by_user is True
-    assert run_inputs[0]["intent"]["selected_capability"] == "document_review"
-    assert "intent_detected" in events
-    assert "intent_confirmed" in events
 
 
 @pytest.mark.asyncio

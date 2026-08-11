@@ -2,6 +2,7 @@
 name: reference-fact-extraction
 description: >-
   当用户需要从参考资料/来源文件中抽取结构化事实、生成或校验带引用的事实包、把 PDF/Word/Excel/文本转换为有证据支撑的 JSON、核验抽取事实是否被来源支持，或为下游写作、渲染、分析及其他 skill 准备已验证事实时，使用本 skill。遇到“事实抽取”“生成事实包”“提取带来源的 JSON”“从参考资料整理证据”“validate extracted facts”“build a source-grounded fact packet”“诊断缺失/冲突证据”等请求时应触发。不要用本 skill 直接生成最终 Word/PDF/幻灯片交付物；本 skill 负责产出这些交付物所需的已验证事实。
+visibility: internal
 ---
 
 # 参考资料事实抽取

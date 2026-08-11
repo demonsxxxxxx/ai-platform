@@ -955,17 +955,16 @@ class QueueRunPayload(BaseModel):
 
     @field_validator("agent_profile")
     @classmethod
-    def validate_private_agent_profile(cls, value: dict[str, Any] | None, info):
+    def validate_private_agent_profile(cls, value: dict[str, Any] | None):
         if value is None:
             return None
+        allowed_fields = {"agent_id", "revision", "content_hash", "instructions"}
+        if set(value) - allowed_fields:
+            raise ValueError("agent_profile_fields_invalid")
         agent_id = value.get("agent_id")
         revision = value.get("revision")
         content_hash = value.get("content_hash")
         instructions = value.get("instructions")
-        required_skill_id = str(value.get("required_skill_id") or info.data.get("skill_id") or "").strip()
-        required_skill_version = str(
-            value.get("required_skill_version") or info.data.get("skill_version") or ""
-        ).strip()
         if not isinstance(agent_id, str):
             raise ValueError("agent_profile_agent_id_invalid")
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
@@ -978,20 +977,11 @@ class QueueRunPayload(BaseModel):
             or len(instructions) > MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
         ):
             raise ValueError("agent_profile_instructions_invalid")
-        if not required_skill_id or required_skill_id != str(info.data.get("skill_id") or ""):
-            raise ValueError("agent_profile_required_skill_invalid")
-        if required_skill_version != str(info.data.get("skill_version") or ""):
-            raise ValueError("agent_profile_required_skill_version_invalid")
         return {
             "agent_id": assert_safe_id(agent_id, "agent_profile.agent_id"),
             "revision": revision,
             "content_hash": content_hash,
             "instructions": instructions,
-            "required_skill_id": assert_safe_id(
-                required_skill_id,
-                "agent_profile.required_skill_id",
-            ),
-            "required_skill_version": required_skill_version,
         }
 
     @field_validator("schema_version")

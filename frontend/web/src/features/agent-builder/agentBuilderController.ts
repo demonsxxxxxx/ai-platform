@@ -81,7 +81,7 @@ function safeErrorCopy(
     return "服务端 revision 已变化，请刷新列表后重新编辑。";
   }
   if (code === "agent_profile_revision_invalid" || code === "agent_id_invalid") {
-    return "服务端拒绝了当前智能体版本标识，请刷新列表后重试。";
+    return "服务端拒绝了当前专家版本标识，请刷新列表后重试。";
   }
   if (code === "agent_profile_capability_not_available") {
     return "所选 Skill 或 MCP 工具已不可用，请刷新目录后重新选择。";
@@ -90,15 +90,15 @@ function safeErrorCopy(
     return "所选模型已不可用，请刷新目录后重新选择。";
   }
   if (code === "not_ai_admin" || status === 403) {
-    return "当前账号没有管理智能体的权限。";
+    return "当前账号没有管理专家的权限。";
   }
   if (status === 401) return "登录状态已失效，请重新登录后重试。";
   if (status === 409) return "服务端版本发生冲突，请刷新列表后重试。";
   if (status === 422) return "配置未通过服务端校验，请检查各项后重试。";
-  if (action === "load") return "暂时无法加载服务端智能体列表，请稍后重试。";
-  if (action === "save") return "暂时无法保存智能体草稿，请稍后重试。";
-  if (action === "publish") return "暂时无法发布智能体草稿，请稍后重试。";
-  if (action === "unpublish") return "暂时无法下架当前智能体，请稍后重试。";
+  if (action === "load") return "暂时无法加载服务端专家列表，请稍后重试。";
+  if (action === "save") return "暂时无法保存专家草稿，请稍后重试。";
+  if (action === "publish") return "暂时无法发布专家草稿，请稍后重试。";
+  if (action === "unpublish") return "暂时无法下架当前专家，请稍后重试。";
   return "暂时无法创建受控测试运行，请稍后重试。";
 }
 

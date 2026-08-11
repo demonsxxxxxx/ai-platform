@@ -214,7 +214,7 @@ test("dirty editors require explicit discard before selecting or creating", asyn
 
 test("successful create materializes server identity and enables publish", async () => {
   const saveCalls: Array<{ draft: AgentProfileDraftRequest; agentId?: string }> = [];
-  const saved = profile({ revision: 1, name: "新智能体" });
+  const saved = profile({ revision: 1, name: "新专家" });
   const controller = new AgentBuilderController(fakeApi({
     saveDraft: async (draft, agentId) => {
       saveCalls.push({ draft, agentId });
@@ -224,7 +224,7 @@ test("successful create materializes server identity and enables publish", async
   controller.createNewAgent();
   controller.updateActiveEditor((editor) => ({
     ...editor,
-    name: "新智能体",
+    name: "新专家",
     capabilitySummary: "在授权范围内处理企业任务。",
     recommendedTasks: ["企业任务处理"],
     expectedOutputs: ["处理建议"],

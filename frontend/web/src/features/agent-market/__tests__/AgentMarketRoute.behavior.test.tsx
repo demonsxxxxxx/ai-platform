@@ -619,7 +619,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const categoryGroup = container.querySelector("[data-agent-market-filter]");
     assert.ok(categoryGroup);
     assert.equal(categoryGroup.getAttribute("role"), "group");
-    assert.equal(categoryGroup.getAttribute("aria-label"), "智能体分类");
+    assert.equal(categoryGroup.getAttribute("aria-label"), "专家分类");
     assert.equal(categoryGroup.querySelectorAll('[role="tab"]').length, 0);
     const categoryButtons = categoryGroup.querySelectorAll("button");
     assert.equal(

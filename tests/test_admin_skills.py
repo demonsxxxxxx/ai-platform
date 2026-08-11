@@ -379,7 +379,16 @@ def test_dependency_policy_allows_ctd_stability_reference_dependency():
 
 
 def test_dependency_policy_reports_public_dependency_without_allowing_it(monkeypatch):
-    monkeypatch.setitem(skill_dependencies.SKILL_DEPENDENCIES, "qa-file-reviewer", ["baoyu-translate"])
+    metadata = {
+        "qa-file-reviewer": {"visibility": "public", "dependencies": "baoyu-translate"},
+        "baoyu-translate": {"visibility": "public"},
+        "minimax-docx": {"visibility": "internal"},
+    }
+    monkeypatch.setattr(
+        skill_dependencies,
+        "_builtin_skill_metadata",
+        lambda skill_id: metadata.get(skill_id, {}),
+    )
 
     policy = skill_dependency_policy(
         "qa-file-reviewer",

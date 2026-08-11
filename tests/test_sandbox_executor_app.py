@@ -4,7 +4,7 @@ import gc
 import hashlib
 import io
 import json
-import shutil
+import re
 import threading
 import time
 import zipfile
@@ -15,7 +15,6 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.file_parser_contracts import (
     MaterializedAttachmentFact,
     build_attachment_preprocessing_contract,
@@ -142,33 +141,6 @@ def create_test_client(tmp_path, **kwargs) -> TestClient:
     )
 
 
-def write_minimal_docx(path: Path) -> None:
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
-            "[Content_Types].xml",
-            """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
-  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
-  <Default Extension=\"xml\" ContentType=\"application/xml\"/>
-  <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>
-</Types>""",
-        )
-        archive.writestr(
-            "_rels/.rels",
-            """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">
-  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>
-</Relationships>""",
-        )
-        archive.writestr(
-            "word/document.xml",
-            """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">
-  <w:body><w:p><w:r><w:t>translated</w:t></w:r></w:p></w:body>
-</w:document>""",
-        )
-
-
 def write_minimal_xlsx(path: Path, *, formula: str = "=1+2") -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -206,27 +178,6 @@ def write_dimensionless_validation_xlsx(path: Path) -> None:
     with zipfile.ZipFile(path, "r") as archive:
         root = ElementTree.fromstring(archive.read(worksheet_path))
         assert root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension") is None
-
-
-def selected_baoyu_skill_policy() -> list[dict[str, object]]:
-    return [
-        {
-            "identity": identity,
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "identity_authorized": True,
-            "object_authorized": True,
-            "parameters_authorized": True,
-            "allowed_skill_names": ["baoyu-translate"] if identity == "Skill" else [],
-        }
-        for identity in ("Bash", "Write", "Skill")
-    ]
-
-
-def skill_only_baoyu_policy() -> list[dict[str, object]]:
-    return [subject for subject in selected_baoyu_skill_policy() if subject["identity"] == "Skill"]
 
 
 def context_stage_policy() -> list[dict[str, object]]:
@@ -1068,8 +1019,8 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
             "claude_agent_sdk_unavailable",
         ),
         ("claude_agent_sdk_missing_structured_terminal", True, "claude_agent_sdk_missing_structured_terminal"),
-        ("claude_agent_sdk_selected_skill_not_invoked", True, "claude_agent_sdk_selected_skill_not_invoked"),
-        ("claude_agent_sdk_selected_skill_hook_failed", True, "claude_agent_sdk_selected_skill_hook_failed"),
+        ("claude_agent_sdk_selected_skill_not_invoked", True, "claude_agent_sdk_runtime_error"),
+        ("claude_agent_sdk_selected_skill_hook_failed", True, "claude_agent_sdk_runtime_error"),
         ("claude_agent_sdk_selected_skill_not_authorized", True, "claude_agent_sdk_selected_skill_not_authorized"),
         ("claude_agent_sdk_turn_limit_exceeded", True, "claude_agent_sdk_turn_limit_exceeded"),
         ("claude_agent_sdk_timeout", True, "claude_agent_sdk_timeout"),
@@ -1112,7 +1063,28 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
     assert body["status"] == "failed"
     assert body["sdk_used"] is used_sdk
     assert body["error_code"] == expected_error_code
-    assert body["error_message"] == sdk_error
+    expected_messages = {
+        "claude_agent_sdk_disabled": "Claude Agent SDK is disabled",
+        "claude_agent_sdk_unavailable": "Claude Agent SDK is unavailable",
+        "claude_agent_sdk_missing_structured_terminal": (
+            "The executor ended without an authoritative terminal result"
+        ),
+        "claude_agent_sdk_selected_skill_not_authorized": (
+            "The selected Skill was not admitted by platform policy"
+        ),
+        "claude_agent_sdk_turn_limit_exceeded": "Claude Agent SDK reached its turn limit",
+        "claude_agent_sdk_timeout": "Claude Agent SDK execution timed out",
+        "claude_agent_sdk_tool_admission_failed": (
+            "A requested capability was not admitted by platform policy"
+        ),
+    }
+    assert body["error_message"] == expected_messages.get(
+        expected_error_code,
+        "Claude Agent SDK execution failed",
+    )
+    assert re.fullmatch(r"diag_[0-9a-f]{16}", body["diagnostic_id"])
+    if sdk_error not in {body["error_code"], body["error_message"]}:
+        assert sdk_error not in response.text
     assert body["used_skills"] == []
     assert body["sdk_turn_diagnostics"] == {
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
@@ -1250,552 +1222,8 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert not any("tool-permission" in str(callback) for callback in callbacks)
 
 
-def test_executor_runs_selected_authorized_baoyu_docx_skill_without_sdk_discretion(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        """import shutil
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1])
-output = Path(sys.argv[2])
-output.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(source, output / \"translated.docx\")
-(output / \"target-language.txt\").write_text(
-    sys.argv[sys.argv.index(\"--target-language\") + 1], encoding=\"utf-8\"
-)
-""",
-        encoding="utf-8",
-    )
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("selected file Skill must not be left to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["prompt"] = build_skill_prompt(
-        skill_id="baoyu-translate",
-        user_message="请将此文档翻译为中文",
-        file_names=["source.docx"],
-    )
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "completed"
-    assert body["sdk_used"] is False
-    assert body["executor_mode"] == "platform_controlled_runner"
-    assert body["used_skills"] == ["baoyu-translate"]
-    assert body["used_skills_source"] == "platform_controlled_runner"
-    assert [item["lifecycle_phase"] for item in body["capability_evidence"]] == [
-        "invocation_requested",
-        "completed",
-    ]
-    assert {
-        (item["evidence_source"], item["trust_basis"])
-        for item in body["capability_evidence"]
-    } == {("controlled_skill_runner", "process_bound_invocation")}
-    assert all(
-        item["run_id"] == payload["run_id"]
-        and item["attempt_id"] == payload["attempt_id"]
-        for item in body["capability_evidence"]
-    )
-    assert (workspace / "output" / "translated.docx").is_file()
-    assert "Controlled fast path" not in payload["prompt"]
-    assert (workspace / "output" / "target-language.txt").read_text(encoding="utf-8") == "Chinese"
-
-
-def test_executor_fails_closed_for_skill_only_authorization(tmp_path, monkeypatch):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        """from pathlib import Path
-
-Path("untrusted-runner-executed").write_text("unexpected", encoding="utf-8")
-""",
-        encoding="utf-8",
-    )
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("incomplete controlled authorization must not fall back to SDK")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = skill_only_baoyu_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert body["error_code"] == "controlled_skill_authorization_incomplete"
-    assert body["used_skills"] == []
-    assert not (workspace / "untrusted-runner-executed").exists()
-
-
-def test_executor_uses_minimal_secret_free_environment_for_controlled_runner(tmp_path, monkeypatch):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        """import json
-import os
-import shutil
-import sys
-from pathlib import Path
-
-output = Path(sys.argv[2])
-output.mkdir(parents=True, exist_ok=True)
-json.dump(
-    {key: os.environ.get(key) for key in ("ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "UNRELATED_SECRET")},
-    (output / "child-env.json").open("w", encoding="utf-8"),
-)
-shutil.copyfile(sys.argv[1], output / "translated.docx")
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "model-token")
-    monkeypatch.setenv("OPENAI_API_KEY", "api-key")
-    monkeypatch.setenv("AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "executor-token")
-    monkeypatch.setenv("UNRELATED_SECRET", "must-not-inherit")
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    assert json.loads((workspace / "output" / "child-env.json").read_text(encoding="utf-8")) == {
-        "ANTHROPIC_AUTH_TOKEN": None,
-        "OPENAI_API_KEY": None,
-        "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": None,
-        "UNRELATED_SECRET": None,
-    }
-
-
-def test_executor_uses_worker_materialized_docx_order_without_sorting(tmp_path):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "z.docx")
-    write_minimal_docx(workspace / "a.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        """import shutil
-import sys
-from pathlib import Path
-
-output = Path(sys.argv[2])
-output.mkdir(parents=True, exist_ok=True)
-(output / "selected-input.txt").write_text(Path(sys.argv[1]).name, encoding="utf-8")
-shutil.copyfile(sys.argv[1], output / "translated.docx")
-""",
-        encoding="utf-8",
-    )
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["z.docx", "a.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    assert (workspace / "output" / "selected-input.txt").read_text(encoding="utf-8") == "z.docx"
-
-
-def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_path, monkeypatch):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text("from pathlib import Path\nPath('unexpected').write_text('ran')\n", encoding="utf-8")
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("invalid materialized filename must fail closed")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["../escape.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["error_code"] == "controlled_skill_input_name_invalid"
-    assert not (workspace / "unexpected").exists()
-
-
-def test_executor_runs_real_staged_baoyu_entrypoint_and_produces_translated_docx(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    source_script = Path(__file__).parents[1] / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    staged_script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    staged_script.parent.mkdir(parents=True)
-    staged_script.write_bytes(source_script.read_bytes())
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("the real staged file Skill must not be left to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["prompt"] = build_skill_prompt(
-        skill_id="baoyu-translate",
-        user_message="translate this document to English",
-        file_names=["source.docx"],
-    )
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    output_docx = workspace / "output" / "source_translated.docx"
-    assert output_docx.is_file()
-    with zipfile.ZipFile(output_docx) as archive:
-        assert "word/document.xml" in archive.namelist()
-
-
-def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_path, monkeypatch):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    skills_root = Path(__file__).parents[1] / "skills"
-    staged_skills = workspace / ".claude" / "skills"
-    shutil.copytree(skills_root / "qa-file-reviewer", staged_skills / "qa-file-reviewer")
-    shutil.copytree(skills_root / "minimax-docx", staged_skills / "minimax-docx")
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("the real staged QA Skill must not be left to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "model-token")
-    payload = task_payload()
-    payload["prompt"] = build_skill_prompt(
-        skill_id="qa-file-reviewer",
-        user_message="review this document",
-        file_names=["source.docx"],
-    )
-    payload["config"]["skill_ids"] = ["qa-file-reviewer", "minimax-docx"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    qa_policy = selected_baoyu_skill_policy()
-    next(subject for subject in qa_policy if subject["identity"] == "Skill")["allowed_skill_names"] = [
-        "qa-file-reviewer"
-    ]
-    payload["config"]["tool_policy_subjects"] = qa_policy
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    output_docx = workspace / "output" / "source_reviewed.docx"
-    assert output_docx.is_file()
-    with zipfile.ZipFile(output_docx) as archive:
-        assert "word/document.xml" in archive.namelist()
-
-
-def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text("raise SystemExit(7)\n", encoding="utf-8")
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("failed controlled Skill must not fall back to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert body["error_code"] == "controlled_skill_execution_failed"
-    assert body["sdk_used"] is False
-    assert body["used_skills"] == []
-    assert not (workspace / "output" / "translated.docx").exists()
-
-
-def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("missing staged Skill runner must not fall back to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert body["error_code"] == "controlled_skill_runner_missing"
-    assert body["sdk_used"] is False
-    assert body["used_skills"] == []
-
-
 @pytest.mark.asyncio
-async def test_selected_file_skill_cancellation_terminates_the_controlled_process(tmp_path):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    child = script.with_name("late_child.py")
-    child.write_text(
-        """import sys
-import time
-from pathlib import Path
-
-time.sleep(0.15)
-output = Path(sys.argv[1])
-output.mkdir(parents=True, exist_ok=True)
-(output / \"translated.docx\").write_bytes(b\"late artifact\")
-""",
-        encoding="utf-8",
-    )
-    script.write_text(
-        """import subprocess
-import sys
-import time
-from pathlib import Path
-
-Path(\"runner-started\").write_text(\"started\", encoding=\"utf-8\")
-subprocess.Popen([sys.executable, str(Path(__file__).with_name(\"late_child.py\")), sys.argv[2]])
-time.sleep(10)
-""",
-        encoding="utf-8",
-    )
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    request = ExecutorTaskRequest.model_validate(payload)
-    invocation_admitted = asyncio.Event()
-
-    async def emit_event(event):
-        if event.type == "capability_invoking":
-            invocation_admitted.set()
-        return True
-
-    task = asyncio.create_task(_default_executor_runner(request, workspace, emit_event))
-    await asyncio.wait_for(invocation_admitted.wait(), timeout=1.0)
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await asyncio.sleep(0.3)
-    assert not (workspace / "output" / "translated.docx").exists()
-
-
-@pytest.mark.asyncio
-async def test_executor_deadline_stops_controlled_runner_descendants_before_terminal_response(
-    tmp_path,
-    monkeypatch,
-):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    runner_entered = asyncio.Event()
-    descendant_entered = asyncio.Event()
-    process_group_assigned = asyncio.Event()
-
-    async def observe_runner_entry(reader, writer):
-        try:
-            subject = await reader.readline()
-            if subject == b"runner\n":
-                runner_entered.set()
-                await process_group_assigned.wait()
-                writer.write(b"go\n")
-                await writer.drain()
-            elif subject == b"descendant\n":
-                descendant_entered.set()
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    handshake_server = await asyncio.start_server(observe_runner_entry, "127.0.0.1", 0)
-    handshake_port = handshake_server.sockets[0].getsockname()[1]
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    child = script.with_name("late_child.py")
-    child.write_text(
-        f"""import socket
-import sys
-import time
-from pathlib import Path
-
-with socket.create_connection(("127.0.0.1", {handshake_port}), timeout=1) as handshake:
-    handshake.sendall(b"descendant\\n")
-time.sleep(0.3)
-output = Path(sys.argv[1])
-output.mkdir(parents=True, exist_ok=True)
-(output / \"translated.docx\").write_bytes(b\"late artifact\")
-(output / \"late-marker\").write_text(\"late\", encoding=\"utf-8\")
-""",
-        encoding="utf-8",
-    )
-    script.write_text(
-        f"""import socket
-import subprocess
-import sys
-import time
-from pathlib import Path
-
-with socket.create_connection(("127.0.0.1", {handshake_port}), timeout=1) as handshake:
-    handshake.sendall(b"runner\\n")
-    if handshake.recv(3) != b"go\\n":
-        raise RuntimeError("controlled runner handshake failed")
-subprocess.Popen([sys.executable, str(Path(__file__).with_name(\"late_child.py\")), sys.argv[2]])
-time.sleep(10)
-""",
-        encoding="utf-8",
-    )
-    original_await_with_deadline = executor_app._await_with_deadline
-    original_assign_windows_process_job = executor_app._assign_windows_process_job
-
-    async def await_after_runner_handshake(awaitable, *, timeout_seconds, on_timeout=None):
-        runner_task = asyncio.ensure_future(awaitable)
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(runner_entered.wait(), descendant_entered.wait()),
-                timeout=1.0,
-            )
-        except BaseException:
-            runner_task.cancel()
-            await asyncio.gather(runner_task, return_exceptions=True)
-            raise
-        return await original_await_with_deadline(
-            runner_task,
-            timeout_seconds=timeout_seconds,
-            on_timeout=on_timeout,
-        )
-
-    def assign_windows_process_job(process):
-        job = original_assign_windows_process_job(process)
-        if job is not None:
-            process_group_assigned.set()
-        return job
-
-    if executor_app.os.name != "nt":
-        process_group_assigned.set()
-    monkeypatch.setattr(executor_app, "_assign_windows_process_job", assign_windows_process_job)
-    monkeypatch.setattr(executor_app, "_await_with_deadline", await_after_runner_handshake)
-    payload = task_payload()
-    payload["config"]["resource_limits"] = {"max_seconds": 0.15}
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    app = create_executor_app(
-        workspace_root=workspace,
-        callback_sender=lambda url, callback_payload, token: callback_ack(callback_payload),
-        executor_auth_token=EXECUTOR_AUTH_TOKEN,
-        expected_session_id="session-a",
-        expected_run_id="run-a",
-        expected_attempt_id="qat-attempt-a",
-        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
-    )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    try:
-        result = await endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN)
-
-        assert runner_entered.is_set()
-        assert descendant_entered.is_set()
-        assert result["status"] == "failed"
-        assert result["error_code"] == "executor_deadline_exceeded"
-        await asyncio.sleep(0.45)
-        assert not (workspace / "output" / "translated.docx").exists()
-        assert not (workspace / "output" / "late-marker").exists()
-    finally:
-        handshake_server.close()
-        await handshake_server.wait_closed()
-
-
-def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, monkeypatch):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text("raise AssertionError('unauthorized script executed')\n", encoding="utf-8")
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("denied controlled Skill must not fall back to SDK")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    denied_policy = selected_baoyu_skill_policy()
-    next(subject for subject in denied_policy if subject["identity"] == "Skill")["allowed_skill_names"] = [
-        "qa-file-reviewer"
-    ]
-    payload["config"]["tool_policy_subjects"] = denied_policy
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "failed"
-    assert response.json()["error_code"] == "controlled_skill_authorization_incomplete"
-    assert not (workspace / "output" / "translated.docx").exists()
-
-
-@pytest.mark.asyncio
-async def test_executor_routes_uploaded_controlled_id_collision_to_sdk_native(monkeypatch, tmp_path):
+async def test_executor_routes_uploaded_skill_id_to_sdk_native(monkeypatch, tmp_path):
     captured = {}
 
     class StubSettings:
@@ -2547,55 +1975,6 @@ async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever
         await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
 
 
-@pytest.mark.asyncio
-async def test_stop_controlled_process_bounds_post_kill_wait(monkeypatch):
-    release_waiters = asyncio.Event()
-    signals = []
-
-    class StuckProcess:
-        pid = 4242
-        returncode = None
-
-        async def wait(self):
-            await release_waiters.wait()
-
-        def send_signal(self, signal_value):
-            signals.append(("graceful", signal_value))
-
-        def terminate(self):
-            signals.append(("terminate", None))
-
-        def kill(self):
-            signals.append(("kill", None))
-
-    if executor_app.os.name == "nt":
-        interrupt = getattr(executor_app.signal, "CTRL_BREAK_EVENT", None)
-        expected_signals = [
-            ("graceful", interrupt) if interrupt is not None else ("terminate", None),
-            ("kill", None),
-        ]
-    else:
-        monkeypatch.setattr(
-            executor_app.os,
-            "killpg",
-            lambda pid, signal_value: signals.append((pid, signal_value)),
-        )
-        expected_signals = [
-            (StuckProcess.pid, executor_app.signal.SIGTERM),
-            (StuckProcess.pid, executor_app.signal.SIGKILL),
-        ]
-    monkeypatch.setattr("app.runtime.sandbox.executor_app._CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS", 0.01)
-    process = StuckProcess()
-
-    try:
-        with pytest.raises(TimeoutError, match="Controlled process"):
-            await executor_app._stop_controlled_process(process)
-        assert signals == expected_signals
-    finally:
-        release_waiters.set()
-        await asyncio.sleep(0)
-
-
 def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path):
     callbacks = []
     payload = task_payload()
@@ -2634,7 +2013,9 @@ def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "executor_runner_failed"
-    assert response.json()["error_message"] == "runner dependency timed out"
+    assert response.json()["error_message"] == "Executor runner failed"
+    assert re.fullmatch(r"diag_[0-9a-f]{16}", response.json()["diagnostic_id"])
+    assert "runner dependency timed out" not in response.text
     assert "requested_max_seconds" not in response.json()
     assert "timeout_elapsed_ms" not in response.json()
 
@@ -2754,7 +2135,9 @@ def test_executor_execute_classifies_decorated_runner_timeout_as_internal_failur
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "executor_runner_failed"
-    assert response.json()["error_message"] == "decorated runner dependency timed out"
+    assert response.json()["error_message"] == "Executor runner failed"
+    assert re.fullmatch(r"diag_[0-9a-f]{16}", response.json()["diagnostic_id"])
+    assert "decorated runner dependency timed out" not in response.text
     assert "requested_max_seconds" not in response.json()
     assert "timeout_elapsed_ms" not in response.json()
 

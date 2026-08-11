@@ -1,6 +1,7 @@
 # ruff: noqa: B008
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
+from app.diagnostics import log_safe_exception, new_diagnostic_id
 from app.model_catalog import build_model_catalog
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
@@ -66,6 +68,7 @@ from app.streaming.redis import (
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
 
 
@@ -1602,8 +1605,30 @@ async def chat_session_stream(
                         yield _sse(public_event, public_data, entry.cursor.event_id)
                     else:
                         raise StreamContractError("stream_public_event_unmapped")
-        except (StreamTransportUnavailable, StreamContractError):
-            yield _sse("error", {"error": "sse_stream_unavailable"})
+        except (StreamTransportUnavailable, StreamContractError) as exc:
+            diagnostic_id = new_diagnostic_id()
+            log_safe_exception(
+                logger,
+                event="sse_stream_failure",
+                phase="stream",
+                diagnostic_id=diagnostic_id,
+                exc=exc,
+                identifiers={
+                    "trace_id": standard_trace_id(run_id),
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "last_event_id": last_event_id,
+                },
+            )
+            yield _sse(
+                "error",
+                {
+                    "error": "sse_stream_unavailable",
+                    "code": "sse_stream_unavailable",
+                    "diagnostic_id": diagnostic_id,
+                    "run_id": run_id,
+                },
+            )
         finally:
             await bridge.aclose()
             try:

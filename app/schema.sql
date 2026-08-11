@@ -1432,13 +1432,11 @@ create table if not exists run_skill_snapshots (
   staged boolean not null default false,
   used boolean not null default false,
   used_skills_source text not null default '',
-  inferred_used boolean not null default false,
   created_at timestamptz not null default now(),
   unique(tenant_id, run_id, skill_id)
 );
 
 alter table run_skill_snapshots add column if not exists used_skills_source text not null default '';
-alter table run_skill_snapshots add column if not exists inferred_used boolean not null default false;
 
 create index if not exists idx_run_skill_snapshots_run on run_skill_snapshots(tenant_id, run_id);
 
@@ -2171,9 +2169,9 @@ on conflict (id) do nothing;
 
 insert into skills(id, name, version, description, input_modes, output_modes, executor_type)
 values
-  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
+  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
+  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["result_docx"]'::jsonb, 'claude-agent-worker'),
   ('general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker.', '["chat"]'::jsonb, '["answer"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
@@ -2236,14 +2234,13 @@ values
   ('default', 'ragflow-knowledge-search', 'active', false, 'low', true, 'Schema-seeded read-only RAGFlow tool policy for the default tenant.')
 on conflict (tenant_id, tool_id) do nothing;
 
+update agents
+set status = 'inactive'
+where id in ('translate', 'document-review', 'qa-word-review', 'baoyu-translate', 'sop-assistant');
+
 insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
 values
-  ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
-  ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
-  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat agent backed by ai-platform sessions and Claude Agent SDK worker.', 'general-chat', 'active'),
-  ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
-  ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
-  ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')
+  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat agent backed by ai-platform sessions and Claude Agent SDK worker.', 'general-chat', 'active')
 on conflict (id) do update set
   tenant_id = excluded.tenant_id,
   name = excluded.name,

@@ -442,44 +442,6 @@ def test_sdk_pre_tool_hook_evidence_rejects_empty_tool_call_identity(tool_call_i
 
 
 @pytest.mark.parametrize(
-    ("phase", "status"),
-    [("invocation_requested", "invoking"), ("completed", "succeeded"), ("failed", "failed")],
-)
-def test_controlled_runner_skill_evidence_uses_process_bound_trust(phase, status):
-    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-        capability_kind="skill",
-        canonical_identity="document-reviewer",
-    )
-
-    evidence = RequiredCapabilityEvidence.from_controlled_runner(
-        declaration=declaration,
-        binding=_binding(),
-        tool_call_id="process-a",
-        lifecycle_phase=phase,
-    )
-
-    assert evidence.lifecycle_status == status
-    assert evidence.evidence_source == "controlled_skill_runner"
-    assert evidence.trust_basis == "process_bound_invocation"
-    assert RequiredCapabilityEvidence.from_payload(evidence.__dict__) == evidence
-
-
-def test_controlled_runner_evidence_rejects_mcp_identity():
-    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-        capability_kind="mcp",
-        canonical_identity="mcp__github__search_issues",
-    )
-
-    with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
-        RequiredCapabilityEvidence.from_controlled_runner(
-            declaration=declaration,
-            binding=_binding(),
-            tool_call_id="process-a",
-            lifecycle_phase="invocation_requested",
-        )
-
-
-@pytest.mark.parametrize(
     ("capability_kind", "source", "trust"),
     [
         ("builtin", "claude_agent_sdk_hook", "tool_call_bound_invocation"),
@@ -487,6 +449,7 @@ def test_controlled_runner_evidence_rejects_mcp_identity():
         ("mcp", "controlled_skill_runner", "process_bound_invocation"),
         ("mcp", "claude_agent_sdk_hook", "process_bound_invocation"),
         ("skill", "arbitrary_source", "arbitrary_trust"),
+        ("skill", "controlled_skill_runner", "process_bound_invocation"),
         ("skill", "controlled_skill_runner", "tool_call_bound_invocation"),
         ("skill", "claude_agent_sdk_hook", "process_bound_invocation"),
     ],

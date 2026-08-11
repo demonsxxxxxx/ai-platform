@@ -1,18 +1,19 @@
 # Runtime Authority Map
 
-AI Platform is an internal enterprise Agent (Harness) application centered on
+AI Platform is an internal enterprise Expert application centered on a governed
+Agent Harness and
 governed Skills. Platform code owns identity, authorization, release policy,
 persistence, context snapshots, file and artifact facts, run admission, and
-public projections. A selected Harness SDK owns only the model and tool loop
-behind an adapter.
+public projections. A selected Harness SDK owns the model and tool loop,
+including the choice to invoke an available Skill, behind an adapter.
 
 ## Authorities
 
 | Capability | Business authority | Allowed adapters and projections |
 | --- | --- | --- |
-| Agent definition | Immutable `agent_profiles` revisions and publication lifecycle | Public/admin profile projections |
+| Expert definition | Immutable `agent_profiles` revisions and publication lifecycle | Public/admin Expert projections |
 | Skill release | Admin Skill review, materialization, promote, and rollback lifecycle | Marketplace read and tenant distribution routes |
-| Harness execution | The registered Harness adapter selected by run admission | Claude Agent SDK today; a future Pi adapter must implement the same platform contract |
+| Harness execution | The registered Harness adapter selected by run admission | Claude Agent SDK today; it chooses among authorized bound Skills, and a future adapter must implement the same platform contract |
 | MCP and external knowledge | Governed MCP server and tool catalog | RAGFlow is an MCP/tool capability, never an independent chat executor |
 | Streaming | `app.streaming` event replay, cursor, heartbeat, and terminal contract | Chat and compatibility routes only translate the shared stream |
 | Context | Pinned platform context snapshot and governed memory selection | Engine adapters receive the snapshot; they do not rebuild platform context |

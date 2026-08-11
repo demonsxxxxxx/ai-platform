@@ -1,25 +1,11 @@
+from pathlib import Path
+
+from app.settings import get_settings
+from app.skills.registry import BuiltinSkillRegistry, parse_skill_markdown_front_matter
 from app.validation import assert_safe_id
 
 
 INVALID_DEPENDENCY_ID = "[invalid-skill-id]"
-
-PUBLIC_WORKBENCH_SKILL_IDS = {
-    "general-chat",
-    "qa-file-reviewer",
-    "baoyu-translate",
-    "ragflow-knowledge-search",
-    "ctd-32s73-stability-template-fill",
-}
-
-INTERNAL_DEPENDENCY_SKILL_IDS = {
-    "minimax-docx",
-    "reference-fact-extraction",
-}
-
-SKILL_DEPENDENCIES = {
-    "qa-file-reviewer": ["minimax-docx"],
-    "ctd-32s73-stability-template-fill": ["reference-fact-extraction"],
-}
 
 
 class SkillDependencyPolicyError(ValueError):
@@ -33,24 +19,76 @@ def _safe_dependency_id(dependency_id: str) -> str | None:
         return None
 
 
+def _builtin_skill_metadata(skill_id: str) -> dict[str, str]:
+    try:
+        safe_id = assert_safe_id(skill_id, "skill_id")
+    except ValueError:
+        return {}
+    root = Path(get_settings().platform_skills_root).resolve(strict=False)
+    manifest = (root / safe_id / "SKILL.md").resolve(strict=False)
+    try:
+        manifest.relative_to(root)
+    except ValueError:
+        return {}
+    if not manifest.is_file() or manifest.is_symlink():
+        return {}
+    try:
+        return parse_skill_markdown_front_matter(manifest.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+
+
+def _declared_dependency_ids(skill_id: str) -> list[str]:
+    raw = _builtin_skill_metadata(skill_id).get("dependencies", "")
+    if not raw:
+        return []
+    dependency_ids = [item.strip() for item in raw.split(",") if item.strip()]
+    if len(dependency_ids) != len(set(dependency_ids)):
+        raise SkillDependencyPolicyError("skill_dependency_duplicate")
+    return dependency_ids
+
+
 def is_workbench_skill_public(skill_id: str) -> bool:
-    return skill_id in PUBLIC_WORKBENCH_SKILL_IDS
+    """Uploaded Skills are public by distribution; builtins may declare internal visibility."""
+
+    return _builtin_skill_metadata(skill_id).get("visibility", "public") != "internal"
 
 
-def _assert_dependency_allowed(skill_id: str, dependency_id: str, available_skill_ids: set[str]) -> None:
+def public_builtin_skill_ids() -> list[str]:
+    """Return public built-in Skill IDs from repository-owned manifests."""
+
+    root = Path(get_settings().platform_skills_root).resolve(strict=False)
+    return [
+        skill.name
+        for skill in BuiltinSkillRegistry(root).list_builtin_skills()
+        if is_workbench_skill_public(skill.name)
+    ]
+
+
+def _is_internal_dependency(skill_id: str) -> bool:
+    return _builtin_skill_metadata(skill_id).get("visibility") == "internal"
+
+
+def _assert_dependency_allowed(
+    skill_id: str,
+    dependency_id: str,
+    available_skill_ids: set[str],
+) -> None:
     if _safe_dependency_id(dependency_id) is None:
         raise SkillDependencyPolicyError("skill_dependency_invalid_id")
     if dependency_id == skill_id:
         raise SkillDependencyPolicyError(f"skill_dependency_cycle: {skill_id}")
-    if dependency_id in PUBLIC_WORKBENCH_SKILL_IDS:
+    if not _is_internal_dependency(dependency_id):
         raise SkillDependencyPolicyError(f"skill_dependency_not_internal: {dependency_id}")
-    if dependency_id not in INTERNAL_DEPENDENCY_SKILL_IDS:
-        raise SkillDependencyPolicyError(f"skill_dependency_not_allowed: {dependency_id}")
     if dependency_id not in available_skill_ids:
         raise SkillDependencyPolicyError(f"skill_dependency_missing: {dependency_id}")
 
 
-def _dependency_policy_detail(skill_id: str, dependency_id: str, available_skill_ids: set[str]) -> dict[str, object]:
+def _dependency_policy_detail(
+    skill_id: str,
+    dependency_id: str,
+    available_skill_ids: set[str],
+) -> dict[str, object]:
     safe_dependency_id = _safe_dependency_id(dependency_id)
     if safe_dependency_id is None:
         return {
@@ -62,18 +100,17 @@ def _dependency_policy_detail(skill_id: str, dependency_id: str, available_skill
             "available": False,
         }
 
+    internal = _is_internal_dependency(safe_dependency_id)
+    available = safe_dependency_id in available_skill_ids
     reason = "declared_internal_dependency"
     status = "allowed"
-    if dependency_id == skill_id:
+    if safe_dependency_id == skill_id:
         reason = "skill_dependency_cycle"
         status = "blocked"
-    elif dependency_id in PUBLIC_WORKBENCH_SKILL_IDS:
+    elif not internal:
         reason = "skill_dependency_not_internal"
         status = "blocked"
-    elif dependency_id not in INTERNAL_DEPENDENCY_SKILL_IDS:
-        reason = "skill_dependency_not_allowed"
-        status = "blocked"
-    elif dependency_id not in available_skill_ids:
+    elif not available:
         reason = "skill_dependency_missing"
         status = "blocked"
 
@@ -81,32 +118,30 @@ def _dependency_policy_detail(skill_id: str, dependency_id: str, available_skill
         "skill_id": safe_dependency_id,
         "status": status,
         "reason": reason,
-        "public": safe_dependency_id in PUBLIC_WORKBENCH_SKILL_IDS,
-        "internal_dependency": safe_dependency_id in INTERNAL_DEPENDENCY_SKILL_IDS,
-        "available": safe_dependency_id in available_skill_ids,
+        "public": is_workbench_skill_public(safe_dependency_id),
+        "internal_dependency": internal,
+        "available": available,
     }
 
 
 def skill_dependency_ids(skill_id: str, available_skill_ids: set[str]) -> list[str]:
     dependency_ids: list[str] = []
-    for dependency_id in SKILL_DEPENDENCIES.get(skill_id, []):
+    for dependency_id in _declared_dependency_ids(skill_id):
         _assert_dependency_allowed(skill_id, dependency_id, available_skill_ids)
         dependency_ids.append(dependency_id)
     return dependency_ids
 
 
 def skill_dependency_policy(skill_id: str, available_skill_ids: set[str]) -> dict[str, object]:
-    dependency_ids: list[str] = []
-    dependency_details: list[dict[str, object]] = []
-    for dependency_id in SKILL_DEPENDENCIES.get(skill_id, []):
-        detail = _dependency_policy_detail(skill_id, dependency_id, available_skill_ids)
-        dependency_ids.append(str(detail["skill_id"]))
-        dependency_details.append(detail)
+    dependency_details = [
+        _dependency_policy_detail(skill_id, dependency_id, available_skill_ids)
+        for dependency_id in _declared_dependency_ids(skill_id)
+    ]
     return {
         "skill_id": skill_id,
-        "public": skill_id in PUBLIC_WORKBENCH_SKILL_IDS,
-        "internal_dependency": skill_id in INTERNAL_DEPENDENCY_SKILL_IDS,
-        "dependency_ids": dependency_ids,
+        "public": is_workbench_skill_public(skill_id),
+        "internal_dependency": _is_internal_dependency(skill_id),
+        "dependency_ids": [str(detail["skill_id"]) for detail in dependency_details],
         "dependency_details": dependency_details,
     }
 

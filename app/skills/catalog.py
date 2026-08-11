@@ -17,8 +17,8 @@ from app.capability_distribution import (
 from app.context_manifest import truncate_utf8_text
 from app.control_plane_contracts import sanitize_public_text
 from app.skills.dependencies import (
-    INTERNAL_DEPENDENCY_SKILL_IDS,
     SkillDependencyPolicyError,
+    is_workbench_skill_public,
 )
 from app.skills.lifecycle import is_user_runnable_status, normalize_skill_version_status
 from app.skills.pinning import (
@@ -314,7 +314,7 @@ def parse_authorized_skill_catalog_snapshot(
     skill_ids = [entry.skill_id for entry in entries]
     if len(skill_ids) != len(set(skill_ids)):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_duplicate_skill")
-    if any(skill_id in INTERNAL_DEPENDENCY_SKILL_IDS for skill_id in skill_ids):
+    if any(not is_workbench_skill_public(skill_id) for skill_id in skill_ids):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_private_dependency_exposed")
     truncated = value.get("truncated")
     omitted_count = value.get("omitted_count")
@@ -497,7 +497,7 @@ def load_runtime_authorized_skill_catalog(
             not entry.available or str(manifest.get("version") or "") != entry.version
         ):
             raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
-        if entry is None and skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS:
+        if entry is None and is_workbench_skill_public(skill_id):
             raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
         dependency_ids = manifest.get("dependency_ids") or []
         if any(dependency_id not in manifest_by_id for dependency_id in dependency_ids):
@@ -741,7 +741,7 @@ def _selected_materialization_candidates(
 
     if (
         selected_skill_id == "general-chat"
-        or selected_skill_id in INTERNAL_DEPENDENCY_SKILL_IDS
+        or not is_workbench_skill_public(selected_skill_id)
     ):
         return []
     routed = candidates.get(selected_skill_id)
@@ -866,7 +866,7 @@ async def resolve_authorized_skill_catalog(
     discoverable_candidates = {
         skill_id: candidate
         for skill_id, candidate in candidates.items()
-        if skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS
+        if is_workbench_skill_public(skill_id)
     }
 
     selected, omitted_count = _bounded_candidates(

@@ -9,6 +9,7 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import ChatStreamRequest
 from app.routes.chat import chat_stream
+from app.skills.execution_profiles import resolve_skill_execution_profile
 
 
 @asynccontextmanager
@@ -38,6 +39,11 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
     digest.update(len(content).to_bytes(8, "big"))
     digest.update(content)
     version = digest.hexdigest()
+    profile = resolve_skill_execution_profile(
+        skill_id=skill_id,
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
     return {
         "skill_id": skill_id,
         "description": description,
@@ -46,6 +52,9 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
         "source": {"kind": "builtin", "asset_dir": skill_id, "version": version},
         "files": files,
         "dependency_ids": [],
+        "lifecycle_status": "released",
+        "execution_profile": profile,
+        "builtin_tool_identities": profile["builtin_tool_identities"],
         "allowed": True,
         "staged": False,
         "used": False,
@@ -62,6 +71,13 @@ def default_chat_stream_dependencies(monkeypatch):
 
     async def ensure_workspace(*_args, **_kwargs):
         return None
+
+    async def ensure_submission_principal(*_args, **kwargs):
+        return {
+            "id": kwargs["user_id"],
+            "tenant_id": kwargs["tenant_id"],
+            "status": "active",
+        }
 
     async def no_latest_run_input(*_args, **_kwargs):
         return None
@@ -100,6 +116,11 @@ def default_chat_stream_dependencies(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(repository_module, "get_chat_submission", no_submission)
+    monkeypatch.setattr(
+        repository_module,
+        "ensure_submission_principal",
+        ensure_submission_principal,
+    )
     monkeypatch.setattr(repository_module, "authorize_files_for_run", authorize_files, raising=False)
     monkeypatch.setattr(
         repository_module,

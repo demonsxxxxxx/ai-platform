@@ -97,7 +97,6 @@ class ExecutionBoundaryDecision:
 def decide_execution_boundary(
     *,
     executor_type: str,
-    execution_mode: str,
     execution_tier: str,
     mcp_requires_sandbox: bool,
 ) -> ExecutionBoundaryDecision:
@@ -128,12 +127,6 @@ def decide_execution_boundary(
             reason="non_claude_adapter",
         )
 
-    if executor_type == CLAUDE_WORKER_EXECUTOR and execution_mode == "multi_agent":
-        return ExecutionBoundaryDecision(
-            **real_sandbox,
-            fail_closed=True,
-            reason="multi_agent_adapter_execution_disabled",
-        )
     if mcp_requires_sandbox:
         return ExecutionBoundaryDecision(
             **real_sandbox,

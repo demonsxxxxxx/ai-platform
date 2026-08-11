@@ -248,9 +248,7 @@ PUBLIC_ARTIFACT_TYPES = frozenset(
         "result_docx",
         "result_json",
         "reveal_project",
-        "reviewed_docx",
         "test_json",
-        "translated_docx",
         "txt",
         "xlsx",
     }

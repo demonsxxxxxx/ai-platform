@@ -453,7 +453,7 @@ async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monk
     ]
 
 
-async def test_workbench_capability_status_follows_disabled_mcp_tool(monkeypatch):
+async def test_workbench_capability_projection_has_no_skill_specific_mcp_branch(monkeypatch):
     from app.repositories import list_workbench_capabilities
 
     async def no_backfill(conn, *, tenant_id):
@@ -479,10 +479,9 @@ async def test_workbench_capability_status_follows_disabled_mcp_tool(monkeypatch
 
     assert rows == []
     sql, params = conn.executed[-1]
-    assert "when skills.id = 'ragflow-knowledge-search'" in sql
-    assert "coalesce(mcp_tools.status, 'disabled') <> 'active'" in sql
-    assert "coalesce(tool_policies.status, 'disabled') <> 'active'" in sql
-    assert "coalesce(tool_policies.visible_to_user, false) = false" in sql
+    assert "ragflow-knowledge-search" not in sql
+    assert "mcp_tools" not in sql
+    assert "tool_policies" not in sql
     assert "tenant_workbench_skills" not in sql
     assert "join tenant_capability_distributions" in sql
     assert "then 'disabled'" in sql

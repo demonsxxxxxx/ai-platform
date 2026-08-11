@@ -33,6 +33,7 @@ from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
+from app.diagnostics import log_safe_exception, new_diagnostic_id
 from app.intent_router import (
     FileSummary,
     classify_execution_polarity,
@@ -117,29 +118,6 @@ _MESSAGE_CURSOR_VERSION = 1
 
 def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
     return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
-
-
-def _new_submission_diagnostic_id() -> str:
-    return f"diag_{uuid4().hex[:16]}"
-
-
-def _log_safe_submission_exception(
-    *,
-    phase: str,
-    diagnostic_id: str,
-    exc: BaseException,
-) -> None:
-    frames: list[str] = []
-    traceback_cursor = exc.__traceback__
-    while traceback_cursor is not None:
-        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
-        if module_name == "app" or module_name.startswith("app."):
-            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
-        traceback_cursor = traceback_cursor.tb_next
-    logger.error(
-        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
-        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
-    )
 
 
 def _submission_error_detail(
@@ -1175,52 +1153,18 @@ def _normalize_request_selector(
 
 
 def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, object] | None:
-    if not skill_id and agent_id == "general-agent":
+    # A raw agent id is not Expert admission. Custom Experts enter through a
+    # revision-bound profile, which always supplies an authorized Skill.
+    if not skill_id:
         return None
-    if skill_id == "qa-file-reviewer" or agent_id in {"qa-word-review", "document-review"}:
-        return {
-            "status": "selected",
-            "intent": "document_review",
-            "confidence": 1.0,
-            "reason": "请求指定了文档审核能力",
-            "selected_capability": "document_review",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "qa-file-reviewer",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
-    if skill_id == "baoyu-translate" or agent_id == "baoyu-translate":
-        return {
-            "status": "selected",
-            "intent": "document_translation",
-            "confidence": 1.0,
-            "reason": "请求指定了文档翻译能力",
-            "selected_capability": "document_translation",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "baoyu-translate",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
-    if skill_id == "ragflow-knowledge-search" or agent_id == "sop-assistant":
-        return {
-            "status": "selected",
-            "intent": "knowledge_answer",
-            "confidence": 1.0,
-            "reason": "请求指定了知识库问答能力",
-            "selected_capability": "knowledge_answer",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "ragflow-knowledge-search",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
     return {
         "status": "selected",
-        "intent": "general_chat",
+        "intent": "explicit_selection",
         "confidence": 1.0,
-        "reason": "请求指定了通用聊天能力",
-        "selected_capability": "general_chat",
+        "reason": "请求指定了可用能力",
+        "selected_capability": None,
         "agent_id": agent_id,
-        "skill_id": skill_id or "general-chat",
+        "skill_id": skill_id,
         "confirmed_by_user": True,
         "suggestions": [],
     }
@@ -1786,7 +1730,21 @@ async def chat_stream(
                 ).strip()
                 requested_skill_id = prior_skill_id or None
 
-            explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
+            explicit_payload = (
+                {
+                    "status": "selected",
+                    "intent": "expert_chat",
+                    "confidence": 1.0,
+                    "reason": "会话已绑定专家",
+                    "selected_capability": None,
+                    "agent_id": requested_agent_id,
+                    "skill_id": requested_skill_id,
+                    "confirmed_by_user": True,
+                    "suggestions": [],
+                }
+                if admitted_agent_profile is not None
+                else _explicit_intent_payload(requested_agent_id, requested_skill_id)
+            )
             is_terminal_implicit_decision = False
             if explicit_payload is None:
                 continuation_capability = (
@@ -1941,7 +1899,12 @@ async def chat_stream(
                 )
             input_modes = list(skill.get("input_modes") or [])
             reusable_file_rows = []
-            if request.session_id and not requested_file_ids and has_file_input_mode(input_modes):
+            if (
+                admitted_agent_profile is None
+                and request.session_id
+                and not requested_file_ids
+                and has_file_input_mode(input_modes)
+            ):
                 reusable_file_rows = await repositories.list_authorized_session_input_files(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1954,7 +1917,11 @@ async def chat_stream(
                 reusable_rows=[dict(row) for row in reusable_file_rows],
                 input_modes=input_modes,
             )
-            if has_file_input_mode(input_modes) and not primary_file_ids:
+            if (
+                admitted_agent_profile is None
+                and has_file_input_mode(input_modes)
+                and not primary_file_ids
+            ):
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
                 conn,
@@ -1997,11 +1964,9 @@ async def chat_stream(
             )
             agent_profile_execution_input = None
             if admitted_agent_profile is not None:
-                agent_profile_execution_input = {
-                    **admitted_agent_profile.private_execution_input,
-                    "required_skill_id": resolved_skill_id,
-                    "required_skill_version": skill_version,
-                }
+                agent_profile_execution_input = dict(
+                    admitted_agent_profile.private_execution_input
+                )
             if (
                 required_tool_declaration is not None
                 and required_tool_declaration.capability_kind == "builtin"
@@ -2352,11 +2317,17 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
     except Exception as exc:
-        diagnostic_id = _new_submission_diagnostic_id()
-        _log_safe_submission_exception(
+        diagnostic_id = new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="chat_submission_failure",
             phase="admission_transaction",
             diagnostic_id=diagnostic_id,
             exc=exc,
+            identifiers={
+                "submission_id": submission_id,
+                "session_id": request.session_id,
+            },
         )
         try:
             await _persist_pre_persistence_rejection(
@@ -2369,10 +2340,13 @@ async def chat_stream(
                 code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
             )
         except Exception as persistence_exc:
-            _log_safe_submission_exception(
+            log_safe_exception(
+                logger,
+                event="chat_submission_failure",
                 phase="rejection_ledger",
                 diagnostic_id=diagnostic_id,
                 exc=persistence_exc,
+                identifiers={"submission_id": submission_id},
             )
         if submission_id is not None:
             raise _chat_submission_http_error(
@@ -2408,6 +2382,20 @@ async def chat_stream(
     try:
         queue_admission = await _enqueue_chat_run(queue_payload)
     except Exception as exc:
+        diagnostic_id = new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="chat_queue_failure",
+            phase="queue",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+            identifiers={
+                "submission_id": submission_id,
+                "session_id": session_id,
+                "run_id": run_id,
+                "trace_id": standard_trace_id(run_id),
+            },
+        )
         async with transaction() as conn:
             await repositories.mark_run_enqueue_failed(
                 conn,
@@ -2416,7 +2404,13 @@ async def chat_stream(
                 run_id=run_id,
                 trace_id=standard_trace_id(run_id),
             )
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "queue_enqueue_failed",
+                "diagnostic_id": diagnostic_id,
+            },
+        ) from None
     queue_position = int(queue_admission.queue_position)
     async with transaction() as conn:
         await repositories.append_event(
@@ -2486,6 +2480,24 @@ async def retry_chat_submission_admission(
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc
+    except Exception as exc:
+        diagnostic_id = new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="chat_submission_failure",
+            phase="resolver",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+            identifiers={"submission_id": str(submission_id)},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": _CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                "diagnostic_id": diagnostic_id,
+            },
+            headers={"Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL},
+        ) from None
 
 
 router.add_api_route(

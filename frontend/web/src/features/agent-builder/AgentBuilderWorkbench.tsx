@@ -239,9 +239,9 @@ export function AgentBuilderWorkbench({
         <div className="flex max-w-md items-start gap-3 border-l-2 border-l-[var(--theme-danger)] py-2 pl-4">
           <ShieldAlert size={20} className="mt-0.5 shrink-0 text-[var(--theme-danger)]" aria-hidden="true" />
           <div>
-            <h1 className="text-base font-semibold">仅管理员可访问智能体管理</h1>
+            <h1 className="text-base font-semibold">仅管理员可访问专家管理</h1>
             <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
-              当前账号没有管理智能体配置与版本的权限。
+              当前账号没有管理专家配置与版本的权限。
             </p>
           </div>
         </div>
@@ -258,21 +258,21 @@ export function AgentBuilderWorkbench({
         <div className="flex min-w-0 items-center gap-3">
           <Bot size={20} className="shrink-0 text-[var(--theme-primary)]" aria-hidden="true" />
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold">智能体管理</h1>
+            <h1 className="truncate text-lg font-semibold">专家管理</h1>
             <p className="text-sm text-[var(--theme-text-secondary)]">
               {workbench.listPhase === "loading"
                 ? "正在同步服务端列表"
-                : `${workbench.profiles.length} 个服务端智能体`}
+                : `${workbench.profiles.length} 个服务端专家`}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button
-            aria-label="刷新智能体与授权目录"
+            aria-label="刷新专家与授权目录"
             className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={workbench.listPhase === "loading" || catalog.isLoading || interactionBusy}
             onClick={refresh}
-            title="刷新智能体与授权目录"
+            title="刷新专家与授权目录"
             type="button"
           >
             <RefreshCw
@@ -289,7 +289,7 @@ export function AgentBuilderWorkbench({
             type="button"
           >
             <Plus size={16} aria-hidden="true" />
-            新建智能体
+            新建专家
           </button>
         </div>
       </header>
@@ -297,7 +297,7 @@ export function AgentBuilderWorkbench({
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[17rem_minmax(0,1fr)] lg:overflow-hidden">
         <aside className="max-h-72 overflow-y-auto overscroll-contain border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:max-h-none lg:border-b-0 lg:border-r">
           <div className="flex items-center justify-between px-4 py-3">
-            <h2 className="text-sm font-semibold">智能体列表</h2>
+            <h2 className="text-sm font-semibold">专家列表</h2>
             <span className="text-xs tabular-nums text-[var(--theme-text-secondary)]">
               {workbench.profiles.length}
             </span>
@@ -314,7 +314,7 @@ export function AgentBuilderWorkbench({
 
           {workbench.listPhase === "loading" && workbench.profiles.length === 0 ? (
             <p className="border-t border-[var(--theme-border)] px-4 py-4 text-sm text-[var(--theme-text-secondary)]">
-              正在加载智能体…
+              正在加载专家…
             </p>
           ) : null}
 
@@ -330,7 +330,7 @@ export function AgentBuilderWorkbench({
                 <Bot size={16} className="mt-0.5 shrink-0 text-[var(--theme-text-secondary)]" aria-hidden="true" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">
-                    {workbench.localEditor.name.trim() || "未命名智能体"}
+                    {workbench.localEditor.name.trim() || "未命名专家"}
                   </span>
                   <span className="mt-1 block text-xs text-[var(--theme-text-secondary)]">
                     本地未保存
@@ -344,7 +344,7 @@ export function AgentBuilderWorkbench({
               return (
                 <button
                   key={profile.agent_id}
-                  aria-label={`编辑智能体 ${profile.name}，${profileStatusLabel(profile.status)}，revision ${profile.revision}`}
+                  aria-label={`编辑专家 ${profile.name}，${profileStatusLabel(profile.status)}，revision ${profile.revision}`}
                   aria-pressed={selected}
                   className={`flex w-full items-start gap-3 border-b border-l-2 border-b-[var(--theme-border)] px-4 py-3 text-left disabled:cursor-not-allowed disabled:opacity-60 ${profile.status === "published" ? "border-l-[var(--theme-success)]" : "border-l-[var(--theme-warning)]"} ${selected ? "bg-[var(--theme-hover)]" : "hover:bg-[var(--theme-hover)]"}`}
                   disabled={interactionBusy}
@@ -366,10 +366,10 @@ export function AgentBuilderWorkbench({
 
           {workbench.listPhase === "ready" && workbench.profiles.length === 0 && !workbench.localEditor ? (
             <div className="px-4 py-6 text-sm text-[var(--theme-text-secondary)]">
-              <p>当前没有服务端智能体。</p>
+              <p>当前没有服务端专家。</p>
               <button className="btn-secondary mt-3 inline-flex items-center gap-2" onClick={requestNewAgent} type="button">
                 <Plus size={16} aria-hidden="true" />
-                新建智能体
+                新建专家
               </button>
             </div>
           ) : null}
@@ -379,9 +379,9 @@ export function AgentBuilderWorkbench({
           {!activeEditor ? (
             <div className="flex min-h-72 items-center justify-center px-6 py-12">
               <div className="max-w-sm border-l-2 border-l-[var(--theme-primary)] py-2 pl-4">
-                <h2 className="text-base font-semibold">尚未选择智能体</h2>
+                <h2 className="text-base font-semibold">尚未选择专家</h2>
                 <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
-                  从服务端列表选择一个智能体，或新建智能体。
+                  从服务端列表选择一个专家，或新建专家。
                 </p>
               </div>
             </div>
@@ -390,7 +390,7 @@ export function AgentBuilderWorkbench({
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--theme-border)] pb-5">
                 <div className="min-w-0">
                   <h2 className="truncate text-xl font-semibold">
-                    {activeEditor.name.trim() || "未命名智能体"}
+                    {activeEditor.name.trim() || "未命名专家"}
                   </h2>
                   <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
                     {activeEditor.agentId ?? "尚未分配服务端 agent_id"}
@@ -416,7 +416,7 @@ export function AgentBuilderWorkbench({
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-medium">名称</span>
                     <input
-                      aria-label="智能体名称"
+                      aria-label="专家名称"
                       className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
                       disabled={interactionBusy}
                       onChange={(event) => updateEditor((editor) => ({ ...editor, name: event.target.value }))}
@@ -427,11 +427,41 @@ export function AgentBuilderWorkbench({
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-medium">简介</span>
                     <textarea
-                      aria-label="智能体简介"
+                      aria-label="专家简介"
                       className="min-h-20 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
                       disabled={interactionBusy}
                       onChange={(event) => updateEditor((editor) => ({ ...editor, description: event.target.value }))}
                       value={activeEditor.description}
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <section aria-labelledby="expert-conversation-heading" className="border-b border-[var(--theme-border)] py-6">
+                <div className="mb-4 flex items-center gap-2">
+                  <FileText size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
+                  <h3 id="expert-conversation-heading" className="text-sm font-semibold">对话设置</h3>
+                </div>
+                <div className="grid grid-cols-1 gap-5">
+                  <label className="flex flex-col gap-2">
+                    <span className="text-sm font-medium">专家开场白</span>
+                    <textarea
+                      aria-label="专家开场白"
+                      className="min-h-24 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                      disabled={interactionBusy}
+                      onChange={(event) => updateEditor((editor) => ({ ...editor, welcomeMessage: event.target.value }))}
+                      value={activeEditor.welcomeMessage}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-2">
+                    <span className="text-sm font-medium">专家指令</span>
+                    <textarea
+                      aria-label="专家指令"
+                      className="min-h-48 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                      disabled={interactionBusy}
+                      onChange={(event) => updateEditor((editor) => ({ ...editor, instructions: event.target.value }))}
+                      required
+                      value={activeEditor.instructions}
                     />
                   </label>
                 </div>
@@ -448,21 +478,6 @@ export function AgentBuilderWorkbench({
                 }
               />
 
-              <section aria-labelledby="agent-instructions-heading" className="border-b border-[var(--theme-border)] py-6">
-                <div className="mb-4 flex items-center gap-2">
-                  <FileText size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                  <h3 id="agent-instructions-heading" className="text-sm font-semibold">系统说明</h3>
-                </div>
-                <textarea
-                    aria-label="智能体系统说明"
-                  className="min-h-48 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
-                  disabled={interactionBusy}
-                  onChange={(event) => updateEditor((editor) => ({ ...editor, instructions: event.target.value }))}
-                  required
-                  value={activeEditor.instructions}
-                />
-              </section>
-
               <section aria-labelledby="agent-model-heading" className="border-b border-[var(--theme-border)] py-6">
                 <div className="mb-4 flex items-center gap-2">
                   <Cpu size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
@@ -471,7 +486,7 @@ export function AgentBuilderWorkbench({
                 <label className="flex max-w-xl flex-col gap-2">
                   <span className="text-sm font-medium">当前模型</span>
                   <select
-                    aria-label="智能体模型"
+                    aria-label="专家模型"
                     className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
                     disabled={catalog.isLoading || !modelCatalogResolved || interactionBusy}
                     onChange={(event) => updateEditor((editor) => ({ ...editor, modelId: event.target.value }))}
@@ -531,7 +546,7 @@ export function AgentBuilderWorkbench({
                   <p className="text-sm text-[var(--theme-text-secondary)]">未选择主 Skill</p>
                 )}
                 <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  一个智能体固定一个主 Skill；该 Skill 声明的依赖会由系统自动装载。
+                  一个专家固定一个主 Skill；该 Skill 声明的依赖会由系统自动装载。
                 </p>
               </section>
 
@@ -743,8 +758,8 @@ export function AgentBuilderWorkbench({
           <CircleAlert size={19} className="mt-0.5 shrink-0 text-[var(--theme-warning)]" aria-hidden="true" />
           <p className="text-sm leading-6 text-[var(--theme-text-secondary)]">
             {pendingEditorAction?.kind === "refresh"
-              ? "当前智能体有未保存的更改。仅在服务端列表成功返回后，才会加载最新服务端版本并放弃这些更改。"
-              : "当前智能体有未保存的更改。切换后这些更改将无法恢复。"}
+              ? "当前专家有未保存的更改。仅在服务端列表成功返回后，才会加载最新服务端版本并放弃这些更改。"
+              : "当前专家有未保存的更改。切换后这些更改将无法恢复。"}
           </p>
         </div>
         <div className="mt-6 flex flex-wrap justify-end gap-2">

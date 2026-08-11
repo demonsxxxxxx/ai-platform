@@ -2,6 +2,8 @@
 name: ctd-32s73-stability-template-fill
 description: >-
   Use this skill whenever the user asks to generate, fill, revise, validate, resume, or diagnose a CTD 3.2.S.7.3 stability-data Word section, including Chinese requests such as 填写/生成/重写/修订 `3.2.S.7.3 稳定性数据`, 生成申报资料稳定性章节, 把稳定性 Excel/报告/方案写入 Word 模板, 扩展批次表格, 保持 Word 模板格式不变, or 排查生成 DOCX 与模板不一致. Always drive the work through `scripts/skill_step.py` and its step response; do not bypass the step/FSM runtime for generation, validation, recovery, resume, or final-delivery decisions.
+visibility: public
+dependencies: reference-fact-extraction
 ---
 
 # CTD 3.2.S.7.3 稳定性数据模板填充

@@ -1,44 +1,56 @@
-# Agent App Domain Language
+# Expert Domain Language
 
-This glossary names the business facts used by Agent App governance. It does
+This glossary names the business facts used by Expert governance. It does
 not describe storage, routes, frameworks, or current runtime state.
 
 ## Core Terms
 
-**Agent Profile Revision**
+**Expert Revision**
 : An immutable, tenant-owned definition of one enterprise expert. Its identity
   binds the user-facing profile, private execution definition, publication
   scope, and access policy with one content hash.
 
-**Agent App**
-: The published enterprise-expert product backed by an Agent Profile Revision.
+**Expert**
+: The published enterprise product backed by an Expert Revision.
   It is discoverable only to an authorized principal and may create new work
   only while that exact publication remains authorized.
 
-**Agent Workspace**
-: The dedicated user experience for one Agent App. Entering it does not create
+**Expert Workspace**
+: The dedicated user experience for one Expert. Entering it does not create
   a conversation. It shows only safe profile facts and never lets the client
-  replace the Agent App's fixed model, Skill, tools, or private instructions.
+  replace the Expert's fixed model, bound Skills, tools, or private instructions.
 
-**Agent Conversation**
-: A user-owned conversation pinned to one Agent App identity, Agent Profile
-  Revision, and content hash when the user explicitly starts it. Later profile
+**Expert Conversation**
+: A user-owned conversation pinned to one Expert identity, Expert Revision,
+  and content hash when the user explicitly starts it. Later Expert
   revisions never migrate that conversation.
 
-**Agent Run**
-: One admitted execution attempt for an Agent Conversation. Every new run,
+**Expert Run**
+: One admitted execution attempt for an Expert Conversation. Every new run,
   retry, resume, or copy must reauthorize the current principal and the pinned
   capabilities before any work is dispatched.
 
-**Builder Test Conversation**
-: An administrator-owned Agent Conversation created only for a controlled test.
+**Expert Instruction**
+: A private administrator-authored instruction in an Expert Revision. It is
+  authoritative for every Expert Run and is never supplied or overridden by a client.
+
+**Welcome Message**
+: Public presentation content shown once when an Expert Conversation starts.
+  It is not an Expert Instruction and does not enter model context.
+
+**Bound Skill**
+: A governed Skill Revision made available to an Expert Run. Binding grants an
+  authorized choice to the Harness; it never requires invocation.
+
+**Expert Test Conversation**
+: An administrator-owned Expert Conversation created only for a controlled test.
   Its runs use the normal governed execution path and its records remain
   explicitly distinguishable from ordinary-user conversations.
 
 ## Capability Truth
 
-**Capability Selected**
-: The immutable Agent Profile Revision names a capability. Selection is intent,
+**Capability Bound**
+: The immutable Expert Revision names a capability. Binding is availability,
   not evidence that execution prepared or used it.
 
 **Capability Staged**
@@ -56,8 +68,8 @@ not describe storage, routes, frameworks, or current runtime state.
 
 **Capability Completed**
 : An actually invoked capability reached its verified terminal outcome. A
-  required capability must reach the required verified outcome before the Agent
-  Run may succeed; an optional capability may remain truthfully uninvoked.
+  Bound Skill may remain truthfully uninvoked without preventing an Expert Run
+  from succeeding.
 
 **Artifact Ready**
 : A durable artifact record exists and an authorized download contract can
@@ -66,6 +78,6 @@ not describe storage, routes, frameworks, or current runtime state.
 
 ## Lifecycle Rule
 
-Withdrawing an Agent App denies new conversations and all new Agent Runs. It
+Withdrawing an Expert denies new conversations and all new Expert Runs. It
 does not rewrite pinned history: authorized users may still read historical
 messages and durable artifacts under their current read permissions.

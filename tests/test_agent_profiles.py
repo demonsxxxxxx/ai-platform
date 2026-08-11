@@ -695,7 +695,13 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
             "executor_type": "claude-agent-worker",
             "skill_version": "version-a",
             "release_decision": {"selected_version": "version-a"},
-            "skill_manifests": [{"skill_id": "profile-skill", "content_hash": "version-a"}],
+                "skill_manifests": [
+                    {
+                        "skill_id": "profile-skill",
+                        "version": "version-a",
+                        "content_hash": "version-a",
+                    }
+                ],
             "model_id": "model-a",
             "model_value": "provider-model-a",
             "agent_profile": {
@@ -748,6 +754,13 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
         )
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    async def validate_replay_skill_manifests(*_args, **_kwargs):
+        return ["profile-tool"]
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        validate_replay_skill_manifests,
+    )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
 
@@ -801,14 +814,12 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             ],
             "model_id": "model-a",
             "model_value": "provider-model-a",
-            "agent_profile": {
-                "agent_id": "agt_support",
-                "revision": 4,
-                "content_hash": "a" * 64,
-                "instructions": "private profile instruction",
-                "required_skill_id": "profile-skill",
-                "required_skill_version": locked_version,
-            },
+                "agent_profile": {
+                    "agent_id": "agt_support",
+                    "revision": 4,
+                    "content_hash": "a" * 64,
+                    "instructions": "private profile instruction",
+                },
         },
     }
 
@@ -827,14 +838,12 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             },
             model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=("profile-tool",),
-            private_execution_input={
-                "agent_id": "agt_support",
-                "revision": 4,
-                "content_hash": "a" * 64,
-                "instructions": "private profile instruction",
-                "required_skill_id": "profile-skill",
-                "required_skill_version": "version-a",
-            },
+                private_execution_input={
+                    "agent_id": "agt_support",
+                    "revision": 4,
+                    "content_hash": "a" * 64,
+                    "instructions": "private profile instruction",
+                },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
                 revision=4,

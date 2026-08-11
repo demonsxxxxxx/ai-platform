@@ -1,6 +1,7 @@
 ---
 name: ragflow-knowledge-search
 description: Use for read-only company SOP and policy knowledge answering through the platform-managed RAGFlow MCP tool.
+visibility: public
 ---
 
 # RAGFlow Knowledge Search

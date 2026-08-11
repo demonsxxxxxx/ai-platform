@@ -62,7 +62,11 @@ def test_skill_dependencies_do_not_invent_missing_dependencies():
 
 
 def test_skill_dependencies_reject_public_skill_as_dependency(monkeypatch):
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {"qa-file-reviewer": ["baoyu-translate"]})
+    metadata = {
+        "qa-file-reviewer": {"visibility": "public", "dependencies": "baoyu-translate"},
+        "baoyu-translate": {"visibility": "public"},
+    }
+    monkeypatch.setattr(dependency_policy, "_builtin_skill_metadata", lambda skill_id: metadata.get(skill_id, {}))
 
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal"):
         skill_dependency_ids("qa-file-reviewer", {"qa-file-reviewer", "baoyu-translate"})
@@ -81,28 +85,39 @@ def test_skill_dependencies_reject_public_skill_as_dependency(monkeypatch):
     ]
 
 
-def test_skill_dependencies_reject_unknown_internal_dependency(monkeypatch):
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {"qa-file-reviewer": ["custom-helper"]})
+def test_skill_dependencies_accept_manifest_declared_internal_dependency(monkeypatch):
+    metadata = {
+        "qa-file-reviewer": {"visibility": "public", "dependencies": "custom-helper"},
+        "custom-helper": {"visibility": "internal"},
+    }
+    monkeypatch.setattr(dependency_policy, "_builtin_skill_metadata", lambda skill_id: metadata.get(skill_id, {}))
 
-    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_allowed"):
-        skill_dependency_ids("qa-file-reviewer", {"qa-file-reviewer", "custom-helper"})
+    assert skill_dependency_ids("qa-file-reviewer", {"qa-file-reviewer", "custom-helper"}) == [
+        "custom-helper"
+    ]
 
     assert skill_dependency_policy("qa-file-reviewer", {"qa-file-reviewer", "custom-helper"})[
         "dependency_details"
     ] == [
         {
             "skill_id": "custom-helper",
-            "status": "blocked",
-            "reason": "skill_dependency_not_allowed",
+            "status": "allowed",
+            "reason": "declared_internal_dependency",
             "public": False,
-            "internal_dependency": False,
+            "internal_dependency": True,
             "available": True,
         }
     ]
 
 
 def test_skill_dependencies_reject_self_dependency(monkeypatch):
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {"qa-file-reviewer": ["qa-file-reviewer"]})
+    monkeypatch.setattr(
+        dependency_policy,
+        "_builtin_skill_metadata",
+        lambda skill_id: {"visibility": "public", "dependencies": "qa-file-reviewer"}
+        if skill_id == "qa-file-reviewer"
+        else {},
+    )
 
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_cycle"):
         with_skill_dependencies(["qa-file-reviewer"], {"qa-file-reviewer"})
@@ -134,7 +149,13 @@ def test_skill_dependency_policy_reports_missing_dependency():
 
 def test_skill_dependencies_reject_path_like_dependency_without_projecting_raw_value(monkeypatch):
     malicious_dependency_id = "../runtime/.claude/skills/token=secret"
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {"qa-file-reviewer": [malicious_dependency_id]})
+    monkeypatch.setattr(
+        dependency_policy,
+        "_builtin_skill_metadata",
+        lambda skill_id: {"visibility": "public", "dependencies": malicious_dependency_id}
+        if skill_id == "qa-file-reviewer"
+        else {},
+    )
 
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_invalid_id") as exc_info:
         skill_dependency_ids("qa-file-reviewer", {"qa-file-reviewer", malicious_dependency_id})

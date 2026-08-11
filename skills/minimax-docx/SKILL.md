@@ -1,6 +1,7 @@
 ﻿---
 name: minimax-docx
 description: "Enterprise-grade Word document generation. Creates validated .docx files with professional formatting, visual hierarchy, and cross-application compatibility."
+visibility: internal
 ---
 
 <role>
@@ -89,4 +90,3 @@ python3 <skill-path>/docx_engine.py residual <file.docx>
 ## Review Copy Output
 
 When producing a review copy from an existing DOCX, preserve existing Word comments by default and report comment counts before and after in the handoff summary. If new QA comments are required, they must be inserted by the caller workflow (for example `qa-file-reviewer` comment writer) before this skill runs validation.
-

@@ -122,7 +122,7 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
     card = artifact_card(
         {
             "id": "artifact-a",
-            "artifact_type": "reviewed_docx",
+            "artifact_type": "result_docx",
             "label": "reviewed.docx",
             "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "storage_key": "tenants/private/reviewed.docx",
@@ -138,7 +138,7 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
         principal=principal(),
     )
     assert card["preview_url"] == "/api/ai/artifacts/artifact-a/preview"
-    assert card["label"] == "reviewed_docx"
+    assert card["label"] == "result_docx"
     assert card["lineage"] == {}
     assert card["manifest"] == {}
     assert "source_run_id" not in str(card)

@@ -404,7 +404,7 @@ export function buildAgentProfileDraftRequest(
 export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): string {
   switch (issue.code) {
     case "no_selection":
-      return "请先选择或新建一个智能体。";
+      return "请先选择或新建一个专家。";
     case "name_required":
       return "缺少名称，请填写后再保存。";
     case "capability_summary_required":
@@ -424,7 +424,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "skill_required":
       return "缺少 Skill，请选择一个已授权版本。";
     case "profile_revision_missing":
-      return "当前智能体缺少可用于版本锁定的服务端 revision，请刷新列表。";
+      return "当前专家缺少可用于版本锁定的服务端 revision，请刷新列表。";
     case "catalog_unavailable":
       return "授权目录尚未完整加载，暂不能保存或发布。";
     case "selected_model_stale":

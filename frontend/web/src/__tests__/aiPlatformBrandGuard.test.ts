@@ -87,6 +87,8 @@ test("public SEO copy does not advertise ordinary-user multi-agent orchestration
     /multi-agent collaboration/i,
     /编排多智能体工作流/,
     /多智能体协作/,
+    /编排多专家工作流/,
+    /多专家协作/,
     /マルチエージェントワークフロー/,
     /マルチエージェント連携/,
     /멀티 에이전트 워크플로우/,

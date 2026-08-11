@@ -7,12 +7,10 @@ import functools
 import hmac
 import inspect
 import json
+import logging
 import math
 import os
 import re
-import signal
-import subprocess
-import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -26,10 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.context.retrieval import ContextRetrievalDenied
+from app.diagnostics import log_safe_exception, log_safe_failure, new_diagnostic_id
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
-    _translation_target_language,
     run_claude_agent_sdk,
 )
 from app.file_parser_contracts import (
@@ -61,12 +59,13 @@ from app.runtime.sandbox.contracts import (
     build_trusted_callback_target,
 )
 from app.settings import get_settings
-from app.skills.execution_profiles import PLATFORM_CONTROLLED
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
+
+logger = logging.getLogger(__name__)
 
 
 class _CallbackBatchIdFactory:
@@ -227,14 +226,6 @@ def _private_capability_fact(
     )
 
 
-_CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
-_CONTROLLED_FILE_SKILL_CAPABILITIES = {
-    # These exactly mirror the server-owned builtin declarations in skills.pinning.
-    "baoyu-translate": frozenset({"Bash", "Write"}),
-    "qa-file-reviewer": frozenset({"Bash", "Write"}),
-}
-_CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
-_CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
 _ACTIVE_PROGRESS_INTERVAL_SECONDS = 12.0
 _SDK_PRESERVED_FAILURE_CODES = frozenset(
@@ -242,8 +233,6 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
         "claude_agent_sdk_disabled",
         "claude_agent_sdk_unavailable",
         "claude_agent_sdk_missing_structured_terminal",
-        "claude_agent_sdk_selected_skill_not_invoked",
-        "claude_agent_sdk_selected_skill_hook_failed",
         "claude_agent_sdk_selected_skill_not_authorized",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_timeout",
@@ -251,6 +240,23 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
         "claude_agent_sdk_upstream_error",
     }
 )
+_SDK_FAILURE_MESSAGES = {
+    "claude_agent_sdk_disabled": "Claude Agent SDK is disabled",
+    "claude_agent_sdk_unavailable": "Claude Agent SDK is unavailable",
+    "claude_agent_sdk_missing_structured_terminal": (
+        "The executor ended without an authoritative terminal result"
+    ),
+    "claude_agent_sdk_selected_skill_not_authorized": (
+        "The selected Skill was not admitted by platform policy"
+    ),
+    "claude_agent_sdk_turn_limit_exceeded": "Claude Agent SDK reached its turn limit",
+    "claude_agent_sdk_timeout": "Claude Agent SDK execution timed out",
+    "claude_agent_sdk_tool_admission_failed": (
+        "A requested capability was not admitted by platform policy"
+    ),
+    "claude_agent_sdk_upstream_error": "Claude Agent SDK execution failed",
+    "claude_agent_sdk_runtime_error": "Claude Agent SDK execution failed",
+}
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
 
 
@@ -365,7 +371,11 @@ def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
         return "claude_agent_sdk_turn_limit_exceeded"
     if used_sdk:
         return "claude_agent_sdk_runtime_error"
-    return raw_error
+    return "claude_agent_sdk_unavailable"
+
+
+def _canonical_sdk_failure_message(error_code: str) -> str:
+    return _SDK_FAILURE_MESSAGES.get(error_code, "Claude Agent SDK execution failed")
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -583,46 +593,6 @@ def _attachment_stage_subject_authorized(request: ExecutorTaskRequest) -> bool:
     )
 
 
-def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[str | None, str | None]:
-    """Return a controlled Skill only with its canonical builtin execution identities."""
-
-    selected_skill_ids = _task_skill_ids(request)
-    selected_skill_id = selected_skill_ids[0] if selected_skill_ids else ""
-    subjects = _task_tool_policy_subjects(request)
-    skill_subject = next(
-        (
-            subject
-            for subject in subjects
-            if str(subject.get("identity") or "") == "Skill"
-            and selected_skill_id in _safe_id_list(subject.get("allowed_skill_names"))
-        ),
-        None,
-    )
-    if not isinstance(skill_subject, dict):
-        if selected_skill_id in _CONTROLLED_FILE_SKILLS:
-            return None, "controlled_skill_authorization_incomplete"
-        return None, None
-    if selected_skill_id not in _CONTROLLED_FILE_SKILLS:
-        if str(skill_subject.get("execution_strategy") or "") == PLATFORM_CONTROLLED:
-            return None, "controlled_skill_identity_invalid"
-        return None, None
-    execution_strategy = str(skill_subject.get("execution_strategy") or "")
-    if execution_strategy and execution_strategy != PLATFORM_CONTROLLED:
-        return None, None
-    if not _authorized_capability_subject(skill_subject):
-        return None, "controlled_skill_authorization_incomplete"
-    required_identities = _CONTROLLED_FILE_SKILL_CAPABILITIES[selected_skill_id]
-    authorized_identities = {
-        str(subject.get("identity") or "")
-        for subject in subjects
-        if _authorized_capability_subject(subject)
-    }
-    if not required_identities.issubset(authorized_identities):
-        return None, "controlled_skill_authorization_incomplete"
-    # Empty strategy is a compatibility path for already queued, canonical
-    # builtin pins. Uploaded legacy pins never carry the required identities.
-    return selected_skill_id, None
-
 
 def _resolved_workspace_file(workspace_root: Path, candidate: Path) -> Path | None:
     try:
@@ -719,418 +689,6 @@ async def _preprocess_typed_attachments(
         )
     return contexts, None
 
-
-def _user_message_from_skill_prompt(prompt: str) -> str:
-    _, marker, remainder = str(prompt or "").partition("User request: ")
-    if not marker:
-        return ""
-    for workspace_marker in (
-        "\nWorkspace input files (under inputs/):\n",
-        "\nWorkspace files:\n",
-    ):
-        user_message, separator, _workspace = remainder.partition(workspace_marker)
-        if separator:
-            return user_message
-    return remainder
-
-
-def _safe_materialized_basename(value: object) -> str | None:
-    if not isinstance(value, str) or not value or "\x00" in value:
-        return None
-    candidate = Path(value)
-    if candidate.is_absolute() or candidate.name != value or any(separator in value for separator in ("/", "\\")):
-        return None
-    return value
-
-
-def _ordered_materialized_docx(request: ExecutorTaskRequest, workspace_root: Path) -> tuple[Path | None, str | None]:
-    file_names = request.config.get("materialized_file_names")
-    if not isinstance(file_names, list) or not file_names:
-        return None, "controlled_skill_input_order_missing"
-    for raw_name in file_names:
-        name = _safe_materialized_basename(raw_name)
-        if name is None:
-            return None, "controlled_skill_input_name_invalid"
-        materialized = _resolved_workspace_file(workspace_root, workspace_root / name)
-        if materialized is None:
-            return None, "controlled_skill_input_file_invalid"
-        if materialized.suffix.lower() == ".docx":
-            return materialized, None
-    return None, "controlled_skill_input_docx_missing"
-
-
-def _controlled_file_skill_command(
-    request: ExecutorTaskRequest,
-    skill_id: str,
-    workspace_root: Path,
-    *,
-    user_message: str,
-) -> tuple[list[str] | None, str | None]:
-    workspace = workspace_root.resolve(strict=False)
-    input_path, input_error = _ordered_materialized_docx(request, workspace)
-    if input_path is None:
-        return None, input_error or "controlled_skill_input_docx_missing"
-    output_dir = workspace / "output"
-    if output_dir.exists() and output_dir.is_symlink():
-        return None, "controlled_skill_output_path_invalid"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        output_dir.resolve(strict=True).relative_to(workspace.resolve(strict=True))
-    except (OSError, ValueError):
-        return None, "controlled_skill_output_path_invalid"
-    script_name = "run_translation.py" if skill_id == "baoyu-translate" else "run_qa_review.py"
-    script = _resolved_workspace_file(
-        workspace,
-        workspace / ".claude" / "skills" / skill_id / "scripts" / script_name,
-    )
-    if script is None:
-        return None, "controlled_skill_runner_missing"
-    command = [sys.executable, str(script), str(input_path), str(output_dir)]
-    if skill_id == "baoyu-translate":
-        command.extend(["--target-language", _translation_target_language(user_message)])
-    else:
-        command.append("--with-comments")
-    command.extend(["--original-filename", input_path.name])
-    return command, None
-
-
-def _controlled_runner_environment(workspace_root: Path) -> dict[str, str]:
-    workspace = workspace_root.resolve(strict=True)
-    home = workspace / ".home"
-    temp = workspace / ".tmp"
-    home.mkdir(parents=True, exist_ok=True)
-    temp.mkdir(parents=True, exist_ok=True)
-    environment = {
-        "HOME": str(home),
-        "PATH": os.defpath,
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1",
-        "TMP": str(temp),
-        "TEMP": str(temp),
-        "TMPDIR": str(temp),
-    }
-    if os.name == "nt":
-        for name in ("SystemRoot", "WINDIR", "COMSPEC"):
-            value = os.environ.get(name)
-            if value:
-                environment[name] = value
-    else:
-        environment["LANG"] = "C.UTF-8"
-    return environment
-
-
-def _controlled_runner_process_kwargs() -> dict[str, object]:
-    if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        return {"creationflags": creationflags} if creationflags else {}
-    return {"start_new_session": True}
-
-
-def _assign_windows_process_job(process: asyncio.subprocess.Process) -> object | None:
-    """Attach the controlled process tree to a kill-on-close Windows job object."""
-
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        transport = getattr(process, "_transport", None)
-        popen = transport.get_extra_info("subprocess") if transport is not None else None
-        process_handle = getattr(popen, "_handle", None)
-        if not process_handle:
-            return None
-
-        class IoCounters(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_uint64) for name in (
-                "ReadOperationCount",
-                "WriteOperationCount",
-                "OtherOperationCount",
-                "ReadTransferCount",
-                "WriteTransferCount",
-                "OtherTransferCount",
-            )]
-
-        class BasicLimitInformation(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", ctypes.c_int64),
-                ("PerJobUserTimeLimit", ctypes.c_int64),
-                ("LimitFlags", wintypes.DWORD),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-
-        class ExtendedLimitInformation(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", BasicLimitInformation),
-                ("IoInfo", IoCounters),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t),
-            ]
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel32.SetInformationJobObject.argtypes = [
-            wintypes.HANDLE,
-            wintypes.INT,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-        ]
-        kernel32.SetInformationJobObject.restype = wintypes.BOOL
-        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return None
-        limits = ExtendedLimitInformation()
-        limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
-            kernel32.CloseHandle(job)
-            return None
-        if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process_handle)):
-            kernel32.CloseHandle(job)
-            return None
-        return job
-    except (AttributeError, OSError):
-        return None
-
-
-def _close_windows_process_job(process: asyncio.subprocess.Process) -> None:
-    job = getattr(process, "_controlled_job_handle", None)
-    if not job:
-        return
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        if not kernel32.CloseHandle(job):
-            raise OSError(ctypes.get_last_error(), "CloseHandle failed for controlled process job")
-    finally:
-        process._controlled_job_handle = None
-
-
-async def _wait_for_controlled_process_exit(process: asyncio.subprocess.Process) -> None:
-    wait_task = asyncio.ensure_future(process.wait())
-    await _await_task_completion(
-        wait_task,
-        timeout_seconds=_CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS,
-        timeout_message="Controlled process cleanup exceeded its deadline",
-    )
-
-
-async def _stop_controlled_process(process: asyncio.subprocess.Process) -> None:
-    if os.name == "nt":
-        if getattr(process, "_controlled_job_handle", None):
-            _close_windows_process_job(process)
-        elif process.returncode is None:
-            interrupt = getattr(signal, "CTRL_BREAK_EVENT", None)
-            try:
-                if interrupt is not None:
-                    process.send_signal(interrupt)
-                else:
-                    process.terminate()
-            except ProcessLookupError:
-                return
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-    try:
-        await _wait_for_controlled_process_exit(process)
-    except TimeoutError:
-        if os.name == "nt":
-            try:
-                process.kill()
-            except ProcessLookupError:
-                return
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return
-        await _wait_for_controlled_process_exit(process)
-
-
-async def _cleanup_controlled_process(process: asyncio.subprocess.Process) -> None:
-    try:
-        await _stop_controlled_process(process)
-    except asyncio.CancelledError:
-        raise
-    except _ExecutorCleanupError:
-        raise
-    except TimeoutError as exc:
-        raise _ExecutorCleanupError(
-            "executor_cleanup_timeout",
-            "Executor cleanup exceeded its deadline",
-        ) from exc
-    except Exception as exc:
-        raise _ExecutorCleanupError(
-            "executor_cleanup_failed",
-            "Executor cleanup failed",
-        ) from exc
-
-
-def _controlled_skill_result(
-    *,
-    status: str,
-    message: str,
-    error_code: str | None = None,
-    capability_evidence: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    result = {
-        "status": status,
-        "message": message,
-        "sdk_used": False,
-        "executor_mode": "platform_controlled_runner",
-        "used_skills": [],
-        "used_skills_source": "none",
-    }
-    if error_code:
-        result.update(error_code=error_code, error_message=message)
-    if capability_evidence is not None:
-        result["capability_evidence"] = capability_evidence
-    return result
-
-
-async def _run_selected_authorized_file_skill(
-    request: ExecutorTaskRequest,
-    workspace_root: Path,
-    emit_event: ExecutorEventEmitter,
-) -> dict[str, Any] | None:
-    skill_id, authorization_error = _selected_authorized_file_skill_id(request)
-    if authorization_error:
-        return _controlled_skill_result(
-            status="failed",
-            message="Selected file Skill is not authorized for controlled execution",
-            error_code=authorization_error,
-        )
-    if skill_id is None:
-        return None
-    command, command_error = _controlled_file_skill_command(
-        request,
-        skill_id,
-        workspace_root,
-        user_message=_user_message_from_skill_prompt(request.prompt),
-    )
-    if command is None:
-        return _controlled_skill_result(
-            status="failed",
-            message="Selected file Skill cannot be prepared in the sandbox workspace",
-            error_code=command_error or "controlled_skill_runner_unavailable",
-        )
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(workspace_root),
-            env=_controlled_runner_environment(workspace_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **_controlled_runner_process_kwargs(),
-        )
-    except OSError:
-        return _controlled_skill_result(
-            status="failed",
-            message="Selected file Skill failed to start",
-            error_code="controlled_skill_runner_start_failed",
-        )
-    if os.name == "nt":
-        job = _assign_windows_process_job(process)
-        if job is None:
-            await _cleanup_controlled_process(process)
-            return _controlled_skill_result(
-                status="failed",
-                message="Selected file Skill process group is unavailable",
-                error_code="controlled_skill_process_group_unavailable",
-            )
-        process._controlled_job_handle = job
-    invocation_id = f"controlled-{uuid.uuid4().hex}"
-    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-        capability_kind="skill",
-        canonical_identity=skill_id,
-    )
-    capability_evidence: list[dict[str, Any]] = []
-
-    async def publish_lifecycle(lifecycle_phase: str) -> bool:
-        evidence = RequiredCapabilityEvidence.from_controlled_runner(
-            declaration=declaration,
-            binding=_evidence_binding(request),
-            tool_call_id=invocation_id,
-            lifecycle_phase=lifecycle_phase,
-        )
-        acknowledged = await emit_event(
-            _private_capability_fact(
-                evidence=evidence,
-                callback_label="Skill",
-                timeline_label="Authorized file processing",
-            )
-        )
-        if acknowledged is not True:
-            return False
-        capability_evidence.append(asdict(evidence))
-        return True
-
-    if not await publish_lifecycle("invocation_requested"):
-        await _cleanup_controlled_process(process)
-        return _controlled_skill_result(
-            status="failed",
-            message="Capability lifecycle callback was not acknowledged",
-            error_code="capability_callback_not_acknowledged",
-            capability_evidence=[],
-        )
-    try:
-        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=_CONTROLLED_RUNNER_TIMEOUT_SECONDS)
-    except asyncio.CancelledError:
-        await _cleanup_controlled_process(process)
-        raise
-    except TimeoutError:
-        await _cleanup_controlled_process(process)
-        await publish_lifecycle("failed")
-        return _controlled_skill_result(
-            status="failed",
-            message="Selected file Skill exceeded its execution deadline",
-            error_code="controlled_skill_execution_timeout",
-            capability_evidence=capability_evidence,
-        )
-    if process.returncode != 0:
-        await _cleanup_controlled_process(process)
-        await publish_lifecycle("failed")
-        return _controlled_skill_result(
-            status="failed",
-            message="Selected file Skill failed",
-            error_code="controlled_skill_execution_failed",
-            capability_evidence=capability_evidence,
-        )
-    await _cleanup_controlled_process(process)
-    if not await publish_lifecycle("completed"):
-        return _controlled_skill_result(
-            status="failed",
-            message="Capability lifecycle callback was not acknowledged",
-            error_code="capability_callback_not_acknowledged",
-            capability_evidence=[],
-        )
-    return {
-        "status": "completed",
-        "message": stdout.decode("utf-8", errors="replace").strip()
-        or "Controlled file Skill completed.",
-        "sdk_used": False,
-        "executor_mode": "platform_controlled_runner",
-        "used_skills": [skill_id],
-        "used_skills_source": "platform_controlled_runner",
-        "capability_evidence": capability_evidence,
-    }
 
 
 def _configured_executor_auth_token(explicit_value: str | None) -> str:
@@ -1281,15 +839,6 @@ async def _default_executor_runner(
         _PlatformExecutionPhaseFact("attachment_materialization", "completed")
     )
 
-    if not attachment_contexts:
-        controlled_result = await _run_selected_authorized_file_skill(
-            request,
-            workspace_root,
-            emit_event,
-        )
-        if controlled_result is not None:
-            controlled_result["attachment_parser_evidence"] = parser_evidence
-            return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         return {
             "status": "failed",
@@ -1445,13 +994,27 @@ async def _default_executor_runner(
         sdk_result = await run_claude_agent_sdk(
             **sdk_kwargs,
         )
-    except ClaudeAgentSdkNotAvailable:
+    except ClaudeAgentSdkNotAvailable as exc:
+        diagnostic_id = str(getattr(exc, "diagnostic_id", "") or "") or new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="sandbox_executor_failure",
+            phase="sdk_import",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+            identifiers={
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "session_id": request.session_id,
+            },
+        )
         await emit_event(_PlatformExecutionPhaseFact("model_wait", "failed"))
         return {
             "status": "failed",
             "error_code": "claude_agent_sdk_unavailable",
             "error_message": "Claude Agent SDK is unavailable",
             "sdk_used": False,
+            "diagnostic_id": diagnostic_id,
             "attachment_parser_evidence": parser_evidence,
         }
 
@@ -1485,11 +1048,43 @@ async def _default_executor_runner(
     }
     if error:
         raw_error = str(error)
-        response["error_code"] = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
-        response["error_message"] = raw_error
+        error_code = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
+        diagnostic_id = (
+            str(getattr(sdk_result, "diagnostic_id", "") or "") or new_diagnostic_id()
+        )
+        log_safe_failure(
+            logger,
+            event="claude_sdk_terminal_failure",
+            phase="sdk_query",
+            diagnostic_id=diagnostic_id,
+            error_code=error_code,
+            identifiers={
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "session_id": request.session_id,
+            },
+        )
+        response["error_code"] = error_code
+        response["error_message"] = _canonical_sdk_failure_message(error_code)
+        response["diagnostic_id"] = diagnostic_id
     elif not used_sdk:
-        response["error_code"] = "claude_agent_sdk_disabled"
-        response["error_message"] = "Claude Agent SDK is disabled"
+        error_code = "claude_agent_sdk_disabled"
+        diagnostic_id = new_diagnostic_id()
+        log_safe_failure(
+            logger,
+            event="claude_sdk_terminal_failure",
+            phase="sdk_admission",
+            diagnostic_id=diagnostic_id,
+            error_code=error_code,
+            identifiers={
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "session_id": request.session_id,
+            },
+        )
+        response["error_code"] = error_code
+        response["error_message"] = _canonical_sdk_failure_message(error_code)
+        response["diagnostic_id"] = diagnostic_id
     if capability_evidence_error["code"]:
         response["status"] = "failed"
         response["message"] = ""
@@ -1891,10 +1486,24 @@ def create_executor_app(
                             "error_message": exc.error_message,
                         }
                     except Exception as exc:
+                        diagnostic_id = new_diagnostic_id()
+                        log_safe_exception(
+                            logger,
+                            event="sandbox_executor_failure",
+                            phase="runner",
+                            diagnostic_id=diagnostic_id,
+                            exc=exc,
+                            identifiers={
+                                "run_id": request.run_id,
+                                "attempt_id": request.attempt_id,
+                                "session_id": request.session_id,
+                            },
+                        )
                         runner_result = {
                             "status": "failed",
                             "error_code": "executor_runner_failed",
-                            "error_message": str(exc),
+                            "error_message": "Executor runner failed",
+                            "diagnostic_id": diagnostic_id,
                         }
         finally:
             await drain_active_progress()
@@ -1996,6 +1605,7 @@ def create_executor_app(
             "sdk_turn_diagnostics",
             "attachment_parser_evidence",
             "capability_evidence",
+            "diagnostic_id",
         ):
             if key in runner_result and runner_result[key] is not None:
                 response[key] = runner_result[key]

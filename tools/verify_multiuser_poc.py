@@ -867,7 +867,7 @@ def build_foundation_runtime_fixture_sql(
             f"{_sql_literal(skill_snapshot_id)}, {_sql_literal(tenant_id)}, {_sql_literal(run_id)}, "
             "'general-chat', '0.1.0', '0.1.0', "
             f"{_sql_literal(json.dumps({'kind': 'foundation_runtime_fixture'}, ensure_ascii=False))}::jsonb, "
-            "'[]'::jsonb, true, true, true, 'fixture', false"
+            "'[]'::jsonb, true, true, true, 'fixture'"
             ")"
         )
 
@@ -1037,7 +1037,7 @@ on conflict (id) do update set status = excluded.status, released_at = excluded.
 
 insert into run_skill_snapshots(
   id, tenant_id, run_id, skill_id, skill_version, content_hash, source_json,
-  dependency_ids, allowed, staged, used, used_skills_source, inferred_used
+  dependency_ids, allowed, staged, used, used_skills_source
 )
 values {", ".join(skill_snapshot_rows)}
 on conflict (tenant_id, run_id, skill_id) do update
