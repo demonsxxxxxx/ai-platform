@@ -139,6 +139,30 @@ def test_resolve_run_selector_uses_selected_skill_without_opening_raw_selector()
     assert resolve_run_selector(request, principal()) == ("general-agent", "department-review")
 
 
+def test_resolve_run_selector_maps_general_chat_to_skillless_harness():
+    request = CreateRunRequest(
+        workspace_id="workspace-a",
+        agent_id="general-agent",
+        capability_id="general_chat",
+    )
+
+    assert resolve_run_selector(request, principal()) == ("general-agent", None)
+
+
+def test_resolve_run_selector_rejects_legacy_general_chat_skill_even_for_admin():
+    request = CreateRunRequest(
+        workspace_id="workspace-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_selector(request, principal(roles=["admin"]))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "general_chat_is_not_a_skill"
+
+
 def capability_denial_error() -> repository_module.RepositoryAuthorizationError:
     return repository_module.RepositoryAuthorizationError(
         "capability_not_authorized",
@@ -718,6 +742,27 @@ def test_run_playback_summary_projects_public_agent_id_for_ordinary_user():
     assert "qa-file-reviewer" not in str(summary)
     assert "qa-word-review" not in str(summary)
     assert "opaque-4711" not in str(summary)
+
+
+def test_run_playback_summary_preserves_skillless_harness_identity_for_admin():
+    summary = run_playback_summary(
+        {
+            "id": "run-harness",
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "status": "running",
+            "error_code": None,
+            "error_message": None,
+        },
+        principal=principal(roles=["admin"]),
+    )
+
+    assert summary["execution_kind"] == "harness_chat"
+    assert summary["skill_id"] is None
+    assert summary["capability_id"] == "general_chat"
 
 
 @pytest.mark.asyncio
@@ -2102,6 +2147,50 @@ async def test_get_run_includes_artifacts_events_and_progress(monkeypatch):
     assert response.progress == 100
     assert response.artifacts[0]["id"] == "artifact-a"
     assert response.events[0]["stage"] == "status"
+
+
+@pytest.mark.asyncio
+async def test_get_run_preserves_skillless_harness_identity_for_admin(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "status": "running",
+            "input_json": {"input": {"message": "hello"}},
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def no_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_run_artifacts",
+        no_rows,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_run_events",
+        no_rows,
+    )
+
+    response = await get_run(
+        "run-harness",
+        principal=principal(roles=["admin"]),
+    )
+
+    assert response.execution_kind == "harness_chat"
+    assert response.skill_id is None
+    assert response.capability_id == "general_chat"
 
 
 def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeypatch):
@@ -3719,8 +3808,80 @@ async def test_create_run_selected_skill_maps_stale_lock_to_stable_409_before_wr
 
 
 @pytest.mark.asyncio
+async def test_create_run_queues_skillless_harness_without_skill_authority(monkeypatch):
+    calls = {"events": []}
+
+    async def active_harness_agent(conn, *, tenant_id, agent_id):
+        calls["agent"] = (tenant_id, agent_id)
+        return {"agent_type": "chat"}
+
+    async def authorize_mcp(conn, **kwargs):
+        calls["mcp"] = kwargs["tool_ids"]
+        return []
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return kwargs["session_id"]
+
+    async def fake_create_run(conn, **kwargs):
+        calls["create_run"] = kwargs
+        return kwargs["run_id"]
+
+    async def record_event(conn, **kwargs):
+        calls["events"].append(kwargs["event_type"])
+
+    async def fake_enqueue(payload):
+        calls["queue"] = payload
+        return 1
+
+    async def fail_skill_path(*args, **kwargs):
+        raise AssertionError("Harness chat must not resolve, snapshot, or stage a Skill")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
+    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", fail_skill_path)
+    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", fail_skill_path)
+    monkeypatch.setattr(repository_module, "insert_run_skill_snapshots_at_creation", fail_skill_path)
+    monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_skill_path)
+    monkeypatch.setattr(repository_module, "ensure_user", noop)
+    monkeypatch.setattr(repository_module, "create_session", fake_create_session)
+    monkeypatch.setattr(repository_module, "create_run", fake_create_run)
+    monkeypatch.setattr(repository_module, "bind_files_to_run", noop)
+    monkeypatch.setattr(repository_module, "append_event", record_event)
+    monkeypatch.setattr(runs_module, "enqueue_run", fake_enqueue)
+
+    response = await create_run(
+        CreateRunRequest(
+            workspace_id="default",
+            agent_id="general-agent",
+            capability_id="general_chat",
+            input={"message": "hello"},
+        ),
+        principal=principal(),
+    )
+
+    assert response.status == "queued"
+    assert calls["agent"] == ("tenant-a", "general-agent")
+    assert calls["mcp"] == []
+    assert calls["create_run"]["execution_kind"] == "harness_chat"
+    assert calls["create_run"]["skill_id"] is None
+    assert calls["create_run"]["input_json"]["skill_manifests"] == []
+    assert calls["queue"]["schema_version"] == "ai-platform.run-payload.v2"
+    assert calls["queue"]["execution_kind"] == "harness_chat"
+    assert calls["queue"]["skill_id"] is None
+    assert calls["queue"]["skill_manifests"] == []
+    assert calls["events"] == ["queued"]
+
+
+@pytest.mark.asyncio
 async def test_create_run_file_admission_denial_precedes_identity_and_run_writes(monkeypatch):
     writes = []
+
+    async def active_harness_agent(*args, **kwargs):
+        return {"agent_type": "chat"}
 
     async def deny_files(*args, **kwargs):
         raise RepositoryConflictError("file_scope_mismatch")
@@ -3730,6 +3891,7 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
         raise AssertionError("file admission must precede writes")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
     monkeypatch.setattr(repository_module, "authorize_files_for_run", deny_files, raising=False)
     monkeypatch.setattr(repository_module, "ensure_user", record_write)
     monkeypatch.setattr(repository_module, "create_session", record_write)
@@ -4277,15 +4439,15 @@ async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypa
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="general-agent",
-                capability_id="general_chat",
+                agent_id="qa-word-review",
+                capability_id="document_review",
             ),
             principal=principal(user_id="user-skill-status", tenant_id="default"),
         )
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "skill_version_not_released"
-    assert calls == [("resolve", "default", "general-agent", "general-chat")]
+    assert calls == [("resolve", "default", "qa-word-review", "qa-file-reviewer")]
 
 
 @pytest.mark.asyncio
@@ -4309,7 +4471,7 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
         "skill_status": "active",
         "skill_version_status": "active",
         "executor_type": "claude-agent-worker",
-        "default_skill_id": "general-chat",
+        "default_skill_id": "qa-file-reviewer",
     }
     row[row_field] = row_value
     execute_params = []
@@ -4355,8 +4517,8 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="general-agent",
-                capability_id="general_chat",
+                agent_id="qa-word-review",
+                capability_id="document_review",
             ),
             principal=principal(
                 user_id="user-skill-status",
@@ -4368,8 +4530,8 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
-    assert execute_params == [("general-chat", "default", "general-agent")]
-    assert audits == [("create_run", "general-chat", "capability_not_authorized")]
+    assert execute_params == [("qa-file-reviewer", "default", "qa-word-review")]
+    assert audits == [("create_run", "qa-file-reviewer", "capability_not_authorized")]
 
 
 
@@ -4486,9 +4648,9 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
 async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     calls = []
 
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append("resolve")
-        return skill()
+    async def fake_get_agent(conn, *, tenant_id, agent_id):
+        calls.append("get_agent")
+        return {"agent_type": "chat"}
 
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         calls.append(("admit", tenant_id, user_id, limit))
@@ -4503,7 +4665,7 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
 
     monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.runs.repositories.get_agent", fake_get_agent)
     monkeypatch.setattr(
         "app.routes.runs.repositories.enforce_user_active_run_admission",
         fake_enforce_user_active_run_admission,
@@ -4519,7 +4681,7 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
+    assert calls == ["get_agent", ("admit", "tenant-a", "user-limit", 3)]
 
 
 @pytest.mark.asyncio
@@ -5082,6 +5244,7 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
     assert getattr(exc_info.value, "status_code", None) == 500
     assert getattr(exc_info.value, "detail", None) == {
         "code": "queue_payload_invalid",
+        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["release_decision"],
@@ -5690,6 +5853,7 @@ async def test_copy_run_validates_queue_payload_before_snapshot_update(monkeypat
     assert getattr(exc_info.value, "status_code", None) == 500
     assert getattr(exc_info.value, "detail", None) == {
         "code": "queue_payload_invalid",
+        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["skill_manifests", 0],

@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
+from app.control_plane_contracts import (
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    sanitize_public_payload,
+    sanitize_public_text,
+)
 from app.required_tool_contract import public_required_tool_detail
 
 CAPABILITY_BY_SKILL_ID = {
-    "general-chat": "general_chat",
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID: "general_chat",
     "qa-file-reviewer": "document_review",
     "baoyu-translate": "document_translation",
     "ragflow-knowledge-search": "knowledge_answer",

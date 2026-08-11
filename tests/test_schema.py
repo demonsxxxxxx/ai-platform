@@ -346,12 +346,31 @@ def test_schema_adds_run_event_sequence_before_sequence_index_for_existing_datab
     assert schema.index(add_column) < schema.index(create_index)
 
 
-def test_general_chat_seed_uses_platform_owned_claude_worker_not_poco_fact_source():
+def test_runs_schema_separates_harness_chat_from_skill_identity():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    runs_table = schema.split("create table if not exists runs (", 1)[1].split(
+        "create index if not exists idx_runs_tenant_created", 1
+    )[0]
+
+    assert "execution_kind text not null default 'skill'" in runs_table
+    assert "skill_id text references skills(id)" in runs_table
+    assert "skill_id text not null references skills(id)" not in runs_table
+    assert "(execution_kind = 'harness_chat' and skill_id is null)" in runs_table
+    assert "(execution_kind = 'skill' and skill_id is not null)" in runs_table
+    assert "alter table runs alter column skill_id drop not null" in schema
+
+
+def test_general_chat_is_not_seeded_as_a_skill():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "'general-chat', 'General Chat Agent'" in schema
-    assert "'general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker." in schema
-    assert "'general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by embedded Poco runtime kernel." not in schema
+    assert "'general-chat', 'General Chat Agent'" not in schema
+    assert "'general-chat', 'Legacy General Chat Skill'" not in schema
+    assert "'skv_seed_general_chat" not in schema
+    assert (
+        "backed by the governed Harness without a Skill identity.', null, 'active')"
+        in schema
+    )
+    assert "('default', 'general-chat', 'active', true)" not in schema
 
 
 def test_schema_declares_run_skill_snapshots():
@@ -462,7 +481,7 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     skill_version_seed = schema[schema.index("insert into skill_versions"):]
     assert "'qa-file-reviewer', '0.1.0'" in schema
     assert "'minimax-docx', '0.1.0'" in schema
-    assert "'general-chat', '0.1.0'" in schema
+    assert "'general-chat', '0.1.0'" not in schema
     assert "'baoyu-translate', '0.1.0'" in schema
     assert "'ragflow-knowledge-search', '0.1.0'" in schema
     assert "on conflict (skill_id, version) do nothing" in skill_version_seed

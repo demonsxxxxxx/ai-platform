@@ -12,8 +12,18 @@ from pydantic import (
     model_validator,
 )
 
-from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
-from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
+from app.control_plane_contracts import (
+    HARNESS_CHAT_EXECUTOR_TYPE,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
+    RUN_PAYLOAD_SCHEMA_VERSION,
+    RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
+)
+from app.skills.release_policy import (
+    validate_release_decision_lock,
+    validate_release_decision_payload,
+)
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
 from app.validation import (
@@ -649,6 +659,7 @@ class RunResponse(BaseModel):
     run_id: str
     session_id: str
     agent_id: str
+    execution_kind: Literal["harness_chat", "skill"] = RUN_EXECUTION_KIND_SKILL
     skill_id: str | None = None
     capability_id: str | None = None
     trace_id: str = ""
@@ -904,7 +915,8 @@ class QueueRunPayload(BaseModel):
     session_id: str
     run_id: str
     agent_id: str
-    skill_id: str
+    execution_kind: Literal["harness_chat", "skill"] = RUN_EXECUTION_KIND_SKILL
+    skill_id: str | None = None
     file_ids: list[str] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)
     executor_type: str
@@ -918,10 +930,17 @@ class QueueRunPayload(BaseModel):
     agent_profile: dict[str, Any] | None = None
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
-    @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "skill_id", "executor_type")
+    @field_validator(
+        "tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "executor_type"
+    )
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
+
+    @field_validator("skill_id")
+    @classmethod
+    def validate_optional_skill_id(cls, value: str | None):
+        return assert_safe_id(value, "skill_id") if value is not None else None
 
     @field_validator("user_id")
     @classmethod
@@ -962,7 +981,11 @@ class QueueRunPayload(BaseModel):
         revision = value.get("revision")
         content_hash = value.get("content_hash")
         instructions = value.get("instructions")
-        required_skill_id = str(value.get("required_skill_id") or info.data.get("skill_id") or "").strip()
+        if info.data.get("execution_kind") != RUN_EXECUTION_KIND_SKILL:
+            raise ValueError("agent_profile_execution_kind_invalid")
+        required_skill_id = str(
+            value.get("required_skill_id") or info.data.get("skill_id") or ""
+        ).strip()
         required_skill_version = str(
             value.get("required_skill_version") or info.data.get("skill_version") or ""
         ).strip()
@@ -997,12 +1020,30 @@ class QueueRunPayload(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, value: str):
-        if value != RUN_PAYLOAD_SCHEMA_VERSION:
+        if value not in SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS:
             raise ValueError("run_payload_schema_version_invalid")
         return value
 
     @model_validator(mode="after")
-    def validate_release_decision_matches_skill_version(self):
+    def validate_execution_contract(self):
+        if self.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+            if self.schema_version != RUN_PAYLOAD_SCHEMA_VERSION_V2:
+                raise ValueError("harness_chat_payload_schema_version_invalid")
+            if self.skill_id is not None:
+                raise ValueError("harness_chat_skill_id_forbidden")
+            if self.skill_version not in {None, ""}:
+                raise ValueError("harness_chat_skill_version_forbidden")
+            if self.release_decision:
+                raise ValueError("harness_chat_release_decision_forbidden")
+            if self.skill_manifests:
+                raise ValueError("harness_chat_skill_manifests_forbidden")
+            if self.agent_profile is not None:
+                raise ValueError("harness_chat_agent_profile_forbidden")
+            if self.executor_type != HARNESS_CHAT_EXECUTOR_TYPE:
+                raise ValueError("harness_chat_executor_invalid")
+            return self
+        if self.execution_kind != RUN_EXECUTION_KIND_SKILL or self.skill_id is None:
+            raise ValueError("skill_execution_identity_invalid")
         validate_release_decision_lock(
             release_decision=self.release_decision,
             skill_version=self.skill_version,
@@ -1431,7 +1472,8 @@ class AdminRunSummaryResponse(BaseModel):
     workspace_id: str
     status: str
     agent_id: str
-    skill_id: str
+    execution_kind: Literal["harness_chat", "skill"] = RUN_EXECUTION_KIND_SKILL
+    skill_id: str | None = None
     created_at: Any | None = None
     queued_at: Any | None = None
     started_at: Any | None = None

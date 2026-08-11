@@ -403,8 +403,26 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
     async def ensure_workspace(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(repository_module, "authorize_files_for_run", authorize_files, raising=False)
-    monkeypatch.setattr(repository_module, "ensure_workspace_belongs_to_tenant", ensure_workspace, raising=False)
+    async def active_harness_chat_agent(_conn, *, tenant_id, agent_id):
+        return {
+            "id": agent_id,
+            "tenant_id": tenant_id,
+            "agent_type": "chat",
+            "status": "active",
+        }
+
+    monkeypatch.setattr(
+        repository_module, "authorize_files_for_run", authorize_files, raising=False
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repository_module, "get_agent", active_harness_chat_agent, raising=False
+    )
 
     async def no_latest_run_input(*_args, **_kwargs):
         return None
@@ -640,7 +658,7 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
             assert first == replay == race == (403, public_detail)
             assert mismatch == (409, "submission_payload_mismatch")
             assert ledger_principal.await_count == 4
-            assert authorize.await_count == 1
+            assert authorize.await_count == 0
         else:
             assert first[0] == 403 and first[1]["detail_code"] == "required_capability_unavailable"
         assert not any(mock.await_count for mock in business.values())
@@ -2848,7 +2866,7 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_developer_fixture_general_chat_uses_builtin_manifest_pin(monkeypatch):
+async def test_chat_stream_developer_fixture_uses_skillless_harness_chat(monkeypatch):
     calls = {}
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -2910,16 +2928,21 @@ async def test_chat_stream_developer_fixture_general_chat_uses_builtin_manifest_
 
     assert response.run_id == "run_frc_general"
     queue_payload = calls["queue"]
-    assert queue_payload["skill_id"] == "general-chat"
-    assert queue_payload["skill_manifests"][0]["skill_id"] == "general-chat"
-    assert queue_payload["skill_manifests"][0]["source"]["kind"] == "builtin"
-    assert queue_payload["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
-    assert queue_payload["skill_version"] == queue_payload["skill_manifests"][0]["content_hash"]
-    assert queue_payload["release_decision"]["selected_version"] == queue_payload["skill_version"]
-    assert queue_payload["release_decision"]["selected_track"] == "manifest_pin"
-    assert calls["create_run"]["input_json"]["skill_version"] == queue_payload["skill_version"]
+    assert queue_payload["execution_kind"] == "harness_chat"
+    assert queue_payload["schema_version"] == "ai-platform.run-payload.v2"
+    assert queue_payload["skill_id"] is None
+    assert queue_payload["skill_version"] is None
+    assert queue_payload["skill_manifests"] == []
+    assert queue_payload["release_decision"] == {}
+    assert calls["create_run"]["execution_kind"] == "harness_chat"
+    assert calls["create_run"]["skill_id"] is None
     assert calls["context"]["workspace_id"] == "frc_test_a_default"
+    assert calls["context"]["skill_id"] is None
     assert calls["context"]["source"] == "chat_stream"
+    assert not any(event["event_type"] == "skill_selected" for event in calls["events"])
+    assert not any(
+        event["event_type"] == "skill_release_decision" for event in calls["events"]
+    )
 
 
 @pytest.mark.asyncio
@@ -3385,7 +3408,11 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lambchat_chat_stream_defaults_to_general_agent(monkeypatch):
+@pytest.mark.parametrize("requested_agent_id", ["general-agent", "team-chat"])
+async def test_lambchat_chat_stream_uses_skillless_harness_for_chat_agents(
+    monkeypatch,
+    requested_agent_id,
+):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -3393,7 +3420,9 @@ async def test_lambchat_chat_stream_defaults_to_general_agent(monkeypatch):
         return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
 
     async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"]))
+        calls.append(
+            ("run", kwargs["agent_id"], kwargs["execution_kind"], kwargs["skill_id"])
+        )
         return "run_general"
 
     async def noop(*args, **kwargs):
@@ -3403,7 +3432,14 @@ async def test_lambchat_chat_stream_defaults_to_general_agent(monkeypatch):
         return "ses_general"
 
     async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"]))
+        calls.append(
+            (
+                "queue",
+                payload["agent_id"],
+                payload["execution_kind"],
+                payload["skill_id"],
+            )
+        )
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
@@ -3418,13 +3454,32 @@ async def test_lambchat_chat_stream_defaults_to_general_agent(monkeypatch):
 
     response = await chat_stream(
         ChatStreamRequest(message="hello"),
-        agent_id="general-agent",
+        agent_id=requested_agent_id,
         principal=principal(),
     )
 
     assert response.run_id == "run_general"
-    assert ("resolve", "general-agent", "general-chat") in calls
-    assert ("queue", "general-agent", "general-chat") in calls
+    assert not any(call[0] == "resolve" for call in calls)
+    assert ("run", requested_agent_id, "harness_chat", None) in calls
+    assert ("queue", requested_agent_id, "harness_chat", None) in calls
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_legacy_general_chat_as_selected_skill():
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="hello",
+                selected_skill={
+                    "skill_id": "general-chat",
+                    "expected_version": "0.1.0",
+                },
+            ),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "general_chat_is_not_a_skill"
 
 
 @pytest.mark.asyncio
@@ -3571,9 +3626,9 @@ async def test_chat_stream_ignores_raw_skill_like_agent_id_for_ordinary_user(mon
     )
 
     assert response.status == "queued"
-    assert ("resolve", "general-agent", "general-chat") in calls
-    assert ("run", "general-agent", "general-chat") in calls
-    assert ("queue", "general-agent", "general-chat") in calls
+    assert not any(call[0] == "resolve" for call in calls)
+    assert ("run", "general-agent", None) in calls
+    assert ("queue", "general-agent", None) in calls
 
 
 @pytest.mark.asyncio
@@ -3804,11 +3859,15 @@ async def test_chat_stream_ignores_file_id_metadata_outside_request_scope(monkey
 
     assert response.run_id == "run_scope_guard"
     assert ("get_file", "tenant-a", "file_review") in calls
-    assert ("resolve", "general-agent", "general-chat") in calls
+    assert not any(
+        item == ("resolve", "general-agent", "general-chat") for item in calls
+    )
     assert ("session", "general-agent") in calls
-    assert ("run", "general-agent", "general-chat", ["file_review"]) in calls
-    assert ("queue", "general-agent", "general-chat", ["file_review"]) in calls
-    assert not any(item == ("resolve", "qa-word-review", "qa-file-reviewer") for item in calls)
+    assert ("run", "general-agent", None, ["file_review"]) in calls
+    assert ("queue", "general-agent", None, ["file_review"]) in calls
+    assert not any(
+        item == ("resolve", "qa-word-review", "qa-file-reviewer") for item in calls
+    )
 
 
 @pytest.mark.asyncio
@@ -4998,9 +5057,11 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
     )
 
     assert response.run_id == "run_txt"
-    assert ("resolve", "general-agent", "general-chat") in calls
-    assert ("run", "general-agent", "general-chat", ["file_txt"]) in calls
-    assert ("queue", "general-agent", "general-chat", ["file_txt"]) in calls
+    assert not any(
+        item == ("resolve", "general-agent", "general-chat") for item in calls
+    )
+    assert ("run", "general-agent", None, ["file_txt"]) in calls
+    assert ("queue", "general-agent", None, ["file_txt"]) in calls
 
 
 @pytest.mark.asyncio
@@ -5218,9 +5279,9 @@ async def test_chat_stream_falls_back_to_general_chat_when_implicit_knowledge_ad
     assert response.intent_decision.reason == "已使用通用对话处理"
     assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
     assert ("resolve", "sop-assistant", "ragflow-knowledge-search") in calls
-    assert ("resolve", "general-agent", "general-chat") in calls
-    assert ("run", "general-agent", "general-chat") in calls
-    assert ("queue", "general-agent", "general-chat") in calls
+    assert ("resolve", "general-agent", "general-chat") not in calls
+    assert ("run", "general-agent", None) in calls
+    assert ("queue", "general-agent", None) in calls
 
 
 @pytest.mark.asyncio
@@ -5268,8 +5329,10 @@ async def test_chat_stream_keeps_implicit_knowledge_intent_when_rag_admission_su
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_safe_fallback(monkeypatch):
-    """A missing general-chat capability must not silently reroute a denied intent."""
+async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_safe_fallback(
+    monkeypatch,
+):
+    """A missing Harness chat agent must not silently reroute a denied intent."""
 
     calls = []
 
@@ -5280,8 +5343,12 @@ async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_sa
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("denied implicit routing must not create a run")
 
+    async def missing_harness_agent(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.chat.repositories.get_agent", missing_harness_agent)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -5290,11 +5357,10 @@ async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_sa
             principal=principal(),
         )
 
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "capability_not_authorized"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "harness_chat_agent_unavailable"
     assert calls == [
         ("authorize", "sop-assistant", "ragflow-knowledge-search"),
-        ("authorize", "general-agent", "general-chat"),
     ]
 
 
@@ -5344,7 +5410,6 @@ async def test_chat_stream_admin_implicit_disabled_knowledge_falls_back_with_str
     assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
     assert calls == [
         ("sop-assistant", "ragflow-knowledge-search", False),
-        ("general-agent", "general-chat", False),
     ]
 
 
@@ -5427,7 +5492,6 @@ async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_genera
     assert response.intent_decision.selected_capability == "general_chat"
     assert calls == [
         ("sop-assistant", "ragflow-knowledge-search", False),
-        ("general-agent", "general-chat", False),
     ]
 
 
@@ -5599,7 +5663,6 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
     assert calls == [
         ("lock", "tenant-a", "user-limit"),
-        "resolve",
         ("admit", "tenant-a", "user-limit", 3),
     ]
 
@@ -5622,13 +5685,15 @@ async def test_chat_stream_maps_unreleased_skill_version_conflict_to_409(monkeyp
 
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
-            ChatStreamRequest(message="hello", confirmed_capability_id="general_chat"),
+            ChatStreamRequest(
+                message="审核这个文档", confirmed_capability_id="document_review"
+            ),
             principal=principal(user_id="user-skill-status", tenant_id="tenant-a"),
         )
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "skill_version_not_released"
-    assert calls == [("resolve", "tenant-a", "general-agent", "general-chat")]
+    assert calls == [("resolve", "tenant-a", "qa-word-review", "qa-file-reviewer")]
 
 
 @pytest.mark.asyncio
@@ -5652,7 +5717,7 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
         "skill_status": "active",
         "skill_version_status": "active",
         "executor_type": "claude-agent-worker",
-        "default_skill_id": "general-chat",
+        "default_skill_id": "qa-file-reviewer",
     }
     row[row_field] = row_value
     execute_params = []
@@ -5696,7 +5761,9 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
-            ChatStreamRequest(message="hello"),
+            ChatStreamRequest(
+                message="审核这个文档", confirmed_capability_id="document_review"
+            ),
             principal=principal(
                 user_id="user-skill-status",
                 tenant_id="tenant-a",
@@ -5707,5 +5774,5 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
-    assert execute_params == [("general-chat", "tenant-a", "general-agent")]
-    assert audits == [("chat_stream", "general-chat", "capability_not_authorized")]
+    assert execute_params == [("qa-file-reviewer", "tenant-a", "qa-word-review")]
+    assert audits == [("chat_stream", "qa-file-reviewer", "capability_not_authorized")]

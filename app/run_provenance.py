@@ -4,6 +4,7 @@ from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import (
     ARTIFACT_LINEAGE_ID_PREFIXES,
     HASH_LIKE_VALUE_PATTERN,
+    RUN_EXECUTION_KIND_SKILL,
     artifact_lineage_contract,
     sanitize_public_text,
     standard_trace_id,
@@ -291,8 +292,10 @@ def _ordinary_run_summary_error_message(
     return ""
 
 
-def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
-    raw_skill_id = str(run["skill_id"])
+def run_playback_summary(
+    run: dict[str, object], principal: AuthPrincipal
+) -> dict[str, object]:
+    raw_skill_id = str(run.get("skill_id") or "")
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
     terminal_projection = (
@@ -303,8 +306,11 @@ def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> di
     return {
         "run_id": str(run["id"]),
         "session_id": str(run["session_id"]),
-        "agent_id": raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
-        "skill_id": raw_skill_id if show_raw_skill else None,
+        "agent_id": raw_agent_id
+        if show_raw_skill
+        else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
+        "execution_kind": str(run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL),
+        "skill_id": (raw_skill_id or None) if show_raw_skill else None,
         "capability_id": capability_id_from_skill(raw_skill_id, raw_agent_id),
         "trace_id": (
             str(run.get("trace_id") or standard_trace_id(str(run["id"])))

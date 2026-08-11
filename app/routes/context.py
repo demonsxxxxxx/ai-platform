@@ -4,9 +4,23 @@ from urllib.parse import unquote, unquote_plus
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import repositories
-from app.auth import BREAK_GLASS_ADMIN_ROLE, PLATFORM_ADMIN_ROLE, TENANT_ADMIN_ROLE, AuthPrincipal, normalized_roles, require_principal
-from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
-from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, public_context_manifest_projection
+from app.auth import (
+    BREAK_GLASS_ADMIN_ROLE,
+    PLATFORM_ADMIN_ROLE,
+    TENANT_ADMIN_ROLE,
+    AuthPrincipal,
+    normalized_roles,
+    require_principal,
+)
+from app.control_plane_contracts import (
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    sanitize_public_payload,
+    standard_trace_id,
+)
+from app.context_manifest import (
+    CONTEXT_MANIFEST_SCHEMA_VERSION,
+    public_context_manifest_projection,
+)
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.context_builder import ensure_public_context_provenance
@@ -35,7 +49,7 @@ MEMORY_PREVIEW_FORBIDDEN_TEXT_MARKERS = (
     "sandbox_workdir",
 )
 MEMORY_PREVIEW_INTERNAL_ID_MARKERS = (
-    "general-chat",
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     "qa-word-review",
     "qa-file-reviewer",
     "baoyu-translate",

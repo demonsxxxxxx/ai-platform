@@ -20,6 +20,9 @@ from app.context_manifest import (
 )
 from app.context.retrieval import ContextRetrievalAuthority
 from app.control_plane_contracts import (
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
     artifact_lineage_contract,
     standard_trace_id,
 )
@@ -46,6 +49,7 @@ from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
+from app.executors.claude.prompts import build_harness_chat_prompt
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     MaterializedAttachmentFact,
@@ -199,7 +203,12 @@ def _capability_execution_error(payload: RunPayload, evidence: object) -> str | 
 
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
-        required_skill_identity=payload.skill_id if payload.skill_id != "general-chat" else None,
+        required_skill_identity=(
+            payload.skill_id
+            if payload.execution_kind == RUN_EXECUTION_KIND_SKILL
+            and payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+            else None
+        ),
     )
     decision = _capability_completion_decision(
         plan,
@@ -343,11 +352,23 @@ def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] 
     return manifest
 
 
-def _runtime_request_skill_ids(payload: RunPayload, prepared: PreparedSdkRun) -> list[str]:
-    return list(dict.fromkeys([payload.skill_id, *prepared.staged_skill_names]))
+def _runtime_request_skill_ids(
+    payload: RunPayload, prepared: PreparedSdkRun
+) -> list[str]:
+    return list(
+        dict.fromkeys(
+            skill_id
+            for skill_id in [payload.skill_id, *prepared.staged_skill_names]
+            if skill_id
+        )
+    )
 
 
-def _authorized_skill_catalog_binding(payload: RunPayload) -> AuthorizedSkillCatalogBinding:
+def _authorized_skill_catalog_binding(
+    payload: RunPayload,
+) -> AuthorizedSkillCatalogBinding:
+    if payload.skill_id is None:
+        raise AuthorizedSkillCatalogError("authorized_skill_catalog_binding_invalid")
     return AuthorizedSkillCatalogBinding(
         tenant_id=payload.tenant_id,
         workspace_id=payload.workspace_id,
@@ -362,6 +383,8 @@ def _authorized_skill_catalog_binding(payload: RunPayload) -> AuthorizedSkillCat
 def _runtime_authorized_skill_catalog(
     payload: RunPayload,
 ) -> AuthorizedSkillCatalogResolution | None:
+    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+        return None
     return load_runtime_authorized_skill_catalog(
         payload.input,
         expected_binding=_authorized_skill_catalog_binding(payload),
@@ -394,7 +417,12 @@ def _public_sdk_turn_diagnostics(
     return project_sdk_turn_diagnostics(
         value,
         error_code=error_code,
-        selected_skill_id=(payload.skill_id if payload.skill_id != "general-chat" else ""),
+        selected_skill_id=(
+            payload.skill_id
+            if payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+            else ""
+        )
+        or "",
         used_skill_ids=used_skill_ids,
         public_skill_metadata=public_skill_metadata,
     )
@@ -439,9 +467,19 @@ def _attachment_preprocessing_contract(
 def _requires_typed_attachment_preprocessing(payload: RunPayload) -> bool:
     """Use only server-selected capability/Skill facts to require typed parsing."""
 
-    if payload.skill_id != "general-chat":
+    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+        return False
+    if payload.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+        return bool(_string_list(payload.input.get("skill_ids")))
+    return True
+
+
+def _allows_context_file_tools(payload: RunPayload) -> bool:
+    """Allow scoped on-demand file access without implying typed preprocessing."""
+
+    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         return True
-    return bool(_string_list(payload.input.get("skill_ids")))
+    return _requires_typed_attachment_preprocessing(payload)
 
 
 def _context_manifest_with_attachment_metadata(
@@ -550,6 +588,12 @@ class ClaudeAgentWorkerAdapter:
         "skills": True,
     }
 
+    def _run_capabilities(self, payload: RunPayload) -> dict[str, bool]:
+        return {
+            **self.capabilities,
+            "platform_skills": payload.execution_kind == RUN_EXECUTION_KIND_SKILL,
+        }
+
     async def submit_run(
         self,
         payload: RunPayload,
@@ -563,7 +607,7 @@ class ClaudeAgentWorkerAdapter:
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
                 executor_version=self.executor_version,
-                capabilities=self.capabilities,
+                capabilities=self._run_capabilities(payload),
                 result={
                     "message": "Claude worker execution boundary rejected the run.",
                     "error_code": decision.reason,
@@ -582,6 +626,7 @@ class ClaudeAgentWorkerAdapter:
         configured_provider = str(getattr(settings, "sandbox_container_provider", "") or "").strip()
         if decision.requires_real_sandbox and configured_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
+                payload=payload,
                 sandbox_provider=configured_provider,
                 runtime_started=False,
             )
@@ -591,6 +636,7 @@ class ClaudeAgentWorkerAdapter:
         actual_provider = _sandbox_runtime_provider(sandbox_runtime)
         if actual_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
+                payload=payload,
                 sandbox_provider=actual_provider,
                 runtime_started=False,
             )
@@ -603,7 +649,9 @@ class ClaudeAgentWorkerAdapter:
                 execution_owner=execution_owner,
             )
         except ContextFileContentError as exc:
-            return self._context_file_failure_result(error_code=exc.code)
+            return self._context_file_failure_result(
+                payload=payload, error_code=exc.code
+            )
         if sdk_result is not None:
             return sdk_result
 
@@ -624,7 +672,7 @@ class ClaudeAgentWorkerAdapter:
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
                 executor_version=self.executor_version,
-                capabilities=self.capabilities,
+                capabilities=self._run_capabilities(payload),
                 result={
                     "message": sdk_result.message or "任务完成",
                     "sdk_used": True,
@@ -660,7 +708,7 @@ class ClaudeAgentWorkerAdapter:
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
-            capabilities=self.capabilities,
+            capabilities=self._run_capabilities(payload),
             result={
                 "message": self._sdk_failure_message(sdk_result),
                 "error_code": error_code,
@@ -712,9 +760,9 @@ class ClaudeAgentWorkerAdapter:
             "claude_agent_sdk_upstream_error": (
                 "The execution service failed. Please retry later."
             ),
-            "claude_agent_sdk_disabled": "Claude Agent SDK is required for general chat runs.",
-            "claude_agent_sdk_required": "Claude Agent SDK is required for general chat runs.",
-            "claude_agent_sdk_unavailable": "Claude Agent SDK is required for general chat runs.",
+            "claude_agent_sdk_disabled": "Claude Agent SDK is required for this run.",
+            "claude_agent_sdk_required": "Claude Agent SDK is required for this run.",
+            "claude_agent_sdk_unavailable": "Claude Agent SDK is required for this run.",
         }
         return messages.get(error_code, "Claude Agent SDK execution failed")
 
@@ -746,9 +794,13 @@ class ClaudeAgentWorkerAdapter:
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
-            capabilities=self.capabilities,
+            capabilities=self._run_capabilities(payload),
             result={
-                "message": "Claude Agent SDK with platform-managed Skills is required for ai-platform runs.",
+                "message": (
+                    "Claude Agent SDK is required for Harness chat."
+                    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+                    else "Claude Agent SDK with the authorized Skill is required for this run."
+                ),
                 "error_code": error_code,
                 "skill_id": payload.skill_id,
                 "sdk_used": sdk_used,
@@ -1183,38 +1235,53 @@ class ClaudeAgentWorkerAdapter:
             else list(file_names)
         )
 
-        try:
-            authorized_catalog = _runtime_authorized_skill_catalog(payload)
-            pinned_manifests = _merged_pinned_skill_manifests(payload, authorized_catalog)
-        except AuthorizedSkillCatalogError:
-            return None, self._authorized_skill_catalog_failure_result(
-                "authorized_skill_catalog_invalid"
+        if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+            authorized_catalog = None
+            pinned_manifests: dict[str, dict[str, Any]] = {}
+            skills: list[BuiltinSkill] = []
+            allowed_skill_names: list[str] = []
+            selected_skills: list[BuiltinSkill] = []
+            pin_mismatches: list[dict[str, str]] = []
+        else:
+            try:
+                authorized_catalog = _runtime_authorized_skill_catalog(payload)
+                pinned_manifests = _merged_pinned_skill_manifests(
+                    payload,
+                    authorized_catalog,
+                )
+            except AuthorizedSkillCatalogError:
+                return None, self._authorized_skill_catalog_failure_result(
+                    "authorized_skill_catalog_invalid"
+                )
+            if (
+                authorized_catalog is not None
+                and payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                and payload.skill_id not in authorized_catalog.materialized_skill_ids
+            ):
+                return None, self._authorized_skill_catalog_failure_result(
+                    "authorized_skill_selected_unavailable"
+                )
+            skills = (
+                []
+                if authorized_catalog is not None
+                else BuiltinSkillRegistry(
+                    settings.platform_skills_root
+                ).list_builtin_skills()
             )
-        if (
-            authorized_catalog is not None
-            and payload.skill_id != "general-chat"
-            and payload.skill_id not in authorized_catalog.materialized_skill_ids
-        ):
-            return None, self._authorized_skill_catalog_failure_result(
-                "authorized_skill_selected_unavailable"
+            available_names = list(
+                dict.fromkeys([skill.name for skill in skills] + list(pinned_manifests))
             )
-        skills = (
-            []
-            if authorized_catalog is not None
-            else BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
-        )
-        available_names = list(dict.fromkeys([skill.name for skill in skills] + list(pinned_manifests)))
-        allowed_skill_names = _allowed_skill_names(
-            payload,
-            available_names,
-            authorized_catalog=authorized_catalog,
-        )
-        selected_skills, pin_mismatches = _select_pinned_skills(
-            skills,
-            allowed_skill_names,
-            pinned_manifests,
-            _pinned_snapshot_root(resolved_workspace),
-        )
+            allowed_skill_names = _allowed_skill_names(
+                payload,
+                available_names,
+                authorized_catalog=authorized_catalog,
+            )
+            selected_skills, pin_mismatches = _select_pinned_skills(
+                skills,
+                allowed_skill_names,
+                pinned_manifests,
+                _pinned_snapshot_root(resolved_workspace),
+            )
         if pin_mismatches:
             if event_sink is not None:
                 await event_sink(
@@ -1258,9 +1325,13 @@ class ClaudeAgentWorkerAdapter:
                     "pin_mismatches": pin_mismatches,
                 },
             )
-        staged_skill_names = SkillStager(settings.skill_staging_subdir).stage_skills(
-            workspace=resolved_workspace,
-            skills=selected_skills,
+        staged_skill_names = (
+            []
+            if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+            else SkillStager(settings.skill_staging_subdir).stage_skills(
+                workspace=resolved_workspace,
+                skills=selected_skills,
+            )
         )
         if selected_skills:
             await _emit_public_progress_event(
@@ -1278,17 +1349,28 @@ class ClaudeAgentWorkerAdapter:
                 _context_manifest_with_attachment_metadata(
                     prompt_context_manifest,
                     attachment_metadata,
-                    allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
+                    allow_file_content_tools=_allows_context_file_tools(payload),
                 )
             )
-        prompt = build_skill_prompt(
-            skill_id=payload.skill_id,
-            user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
-            file_names=file_names,
-            context_pack=prompt_context_pack,
-            authorized_skill_catalog=(
-                authorized_catalog.snapshot if authorized_catalog is not None else None
+        prompt_builder_kwargs = {
+            "user_message": str(
+                payload.input.get("message") or payload.input.get("prompt") or ""
             ),
+            "file_names": file_names,
+            "context_pack": prompt_context_pack,
+        }
+        prompt = (
+            build_harness_chat_prompt(**prompt_builder_kwargs)
+            if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+            else build_skill_prompt(
+                skill_id=str(payload.skill_id),
+                authorized_skill_catalog=(
+                    authorized_catalog.snapshot
+                    if authorized_catalog is not None
+                    else None
+                ),
+                **prompt_builder_kwargs,
+            )
         )
         return (
             PreparedSdkRun(
@@ -1330,7 +1412,7 @@ class ClaudeAgentWorkerAdapter:
         runtime_context_manifest = _context_manifest_with_attachment_metadata(
             context_manifest,
             prepared.attachment_metadata,
-            allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
+            allow_file_content_tools=_allows_context_file_tools(payload),
         )
         runtime_context_manifest = dict(runtime_context_manifest or {})
         runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
@@ -1412,6 +1494,7 @@ class ClaudeAgentWorkerAdapter:
     def _sandbox_provider_required_result(
         self,
         *,
+        payload: RunPayload,
         sandbox_provider: str,
         runtime_started: bool,
         runtime_terminal_status: str = "",
@@ -1421,7 +1504,7 @@ class ClaudeAgentWorkerAdapter:
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
+            capabilities=self._run_capabilities(payload),
             result={
                 "message": "A real sandbox provider is required for Claude worker execution.",
                 "error_code": "sandbox_real_provider_required",
@@ -1471,7 +1554,12 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
-    def _context_file_failure_result(self, *, error_code: str) -> ExecutorResult:
+    def _context_file_failure_result(
+        self,
+        *,
+        payload: RunPayload,
+        error_code: str,
+    ) -> ExecutorResult:
         safe_error_code = (
             "context_file_too_large"
             if error_code == "context_file_too_large"
@@ -1487,7 +1575,7 @@ class ClaudeAgentWorkerAdapter:
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
+            capabilities=self._run_capabilities(payload),
             result={
                 "message": message,
                 "error_code": safe_error_code,
@@ -1521,6 +1609,7 @@ class ClaudeAgentWorkerAdapter:
         decision = _execution_boundary_decision(payload)
         if sandbox_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
+                payload=payload,
                 sandbox_provider=sandbox_provider,
                 runtime_started=True,
                 runtime_terminal_status=runtime_status,
@@ -1615,7 +1704,7 @@ class ClaudeAgentWorkerAdapter:
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
                 executor_version=self.executor_version,
-                capabilities={**self.capabilities, "platform_skills": True},
+                capabilities=self._run_capabilities(payload),
                 result={
                     "message": "Capability execution evidence was incomplete. Please retry.",
                     "error_code": selected_capability_error,
@@ -1651,7 +1740,7 @@ class ClaudeAgentWorkerAdapter:
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
                 executor_version=self.executor_version,
-                capabilities={**self.capabilities, "platform_skills": True},
+                capabilities=self._run_capabilities(payload),
                 result={
                     "message": message,
                     "error_code": error_code,
@@ -1698,7 +1787,7 @@ class ClaudeAgentWorkerAdapter:
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
                 executor_version=self.executor_version,
-                capabilities={**self.capabilities, "platform_skills": True},
+                capabilities=self._run_capabilities(payload),
                 result={
                     "message": message,
                     "error_code": error_code,
@@ -1733,7 +1822,7 @@ class ClaudeAgentWorkerAdapter:
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
+            capabilities=self._run_capabilities(payload),
             result={
                 "message": str(executor_response.get("message") or "任务完成"),
                 "artifact_count": len(artifacts),
@@ -1838,7 +1927,7 @@ class ClaudeAgentWorkerAdapter:
                     adapter_version=self.adapter_version,
                     executor_type=self.executor_type,
                     executor_version=self.executor_version,
-                    capabilities={**self.capabilities, "platform_skills": True},
+                    capabilities=self._run_capabilities(payload),
                     result={
                         "message": "Capability execution evidence was incomplete. Please retry.",
                         "error_code": selected_skill_error,
@@ -1886,7 +1975,7 @@ class ClaudeAgentWorkerAdapter:
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
                 executor_version=self.executor_version,
-                capabilities={**self.capabilities, "platform_skills": True},
+                capabilities=self._run_capabilities(payload),
                 result={
                     "message": sdk_result.message or "任务完成",
                     "artifact_count": len(artifacts),
@@ -1942,7 +2031,7 @@ class ClaudeAgentWorkerAdapter:
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
+            capabilities=self._run_capabilities(payload),
             result={
                 "message": self._sdk_failure_message(sdk_result) if sdk_result else "Claude Agent SDK execution failed",
                 "error_code": failure_code,
@@ -2016,32 +2105,55 @@ class ClaudeAgentWorkerAdapter:
         context_manifest = _context_manifest_from_pack(context_pack)
         if context_manifest is not None:
             context_pack = dict(context_pack)
-            context_pack["context_manifest"] = _context_manifest_with_attachment_metadata(
-                context_manifest,
-                attachment_metadata,
-                allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
+            context_pack["context_manifest"] = (
+                _context_manifest_with_attachment_metadata(
+                    context_manifest,
+                    attachment_metadata,
+                    allow_file_content_tools=_allows_context_file_tools(payload),
+                )
             )
         if not prompt:
-            try:
-                authorized_catalog = _runtime_authorized_skill_catalog(payload)
-            except AuthorizedSkillCatalogError:
-                return type("SdkFailed", (), {
-                    "used_sdk": False,
-                    "message": "",
-                    "session_id": None,
-                    "usage": {},
-                    "error": "authorized_skill_catalog_invalid",
-                    "turn_diagnostics": {},
-                })()
-            prompt = build_skill_prompt(
-                skill_id=payload.skill_id,
-                user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
-                file_names=file_names,
-                context_pack=context_pack,
-                authorized_skill_catalog=(
-                    authorized_catalog.snapshot if authorized_catalog is not None else None
-                ),
-            )
+            if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+                prompt = build_harness_chat_prompt(
+                    user_message=str(
+                        payload.input.get("message")
+                        or payload.input.get("prompt")
+                        or ""
+                    ),
+                    file_names=file_names,
+                    context_pack=context_pack,
+                )
+            else:
+                try:
+                    authorized_catalog = _runtime_authorized_skill_catalog(payload)
+                except AuthorizedSkillCatalogError:
+                    return type(
+                        "SdkFailed",
+                        (),
+                        {
+                            "used_sdk": False,
+                            "message": "",
+                            "session_id": None,
+                            "usage": {},
+                            "error": "authorized_skill_catalog_invalid",
+                            "turn_diagnostics": {},
+                        },
+                    )()
+                prompt = build_skill_prompt(
+                    skill_id=str(payload.skill_id),
+                    user_message=str(
+                        payload.input.get("message")
+                        or payload.input.get("prompt")
+                        or ""
+                    ),
+                    file_names=file_names,
+                    context_pack=context_pack,
+                    authorized_skill_catalog=(
+                        authorized_catalog.snapshot
+                        if authorized_catalog is not None
+                        else None
+                    ),
+                )
         if system_prompt is None:
             system_prompt = self._agent_profile_system_prompt(payload)
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack, workspace)
@@ -2076,7 +2188,9 @@ class ClaudeAgentWorkerAdapter:
                 capability_kind="skill",
                 canonical_identity=payload.skill_id,
             )
-            if payload.skill_id != "general-chat"
+            if payload.execution_kind == RUN_EXECUTION_KIND_SKILL
+            and payload.skill_id is not None
+            and payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
             and (staged_skill_names is None or payload.skill_id in staged_skill_names)
             else None
         )
@@ -2143,7 +2257,11 @@ class ClaudeAgentWorkerAdapter:
                 "skill_id": payload.skill_id,
                 "session_id": sdk_session_id_for_run(payload.run_id),
                 "model_id": payload.model_value or payload.model_id or None,
-                "skills": staged_skill_names,
+                "skills": (
+                    []
+                    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+                    else staged_skill_names
+                ),
                 "on_text": on_text,
                 "on_skill_use": on_skill_use,
                 "public_skill_metadata": public_skill_metadata,

@@ -1344,7 +1344,7 @@ async def test_materialize_files_rejects_duplicate_basename_before_object_read_o
 
 
 @pytest.mark.asyncio
-async def test_general_chat_attachment_refs_are_metadata_only_without_object_reads_or_workspace_files(
+async def test_harness_chat_attachment_refs_are_metadata_only_without_object_reads_or_workspace_files(
     monkeypatch,
     tmp_path,
 ):
@@ -1353,7 +1353,9 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
 
     class FakeStorage:
         def get_bytes(self, *, storage_key):
-            raise AssertionError("metadata-only general chat must not fetch object bytes")
+            raise AssertionError(
+                "metadata-only harness chat must not fetch object bytes"
+            )
 
     @asynccontextmanager
     async def fake_transaction():
@@ -1375,9 +1377,14 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
     prepared_files = await adapter._materialize_files(
         payload(
             agent_id="general-agent",
-            skill_id="general-chat",
+            execution_kind="harness_chat",
+            skill_id=None,
             file_ids=["file_1"],
             input={"message": "hello"},
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
         ),
         workspace,
     )
@@ -1390,8 +1397,43 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
     assert list(workspace.iterdir()) == []
 
 
+def test_harness_chat_keeps_scoped_file_tools_without_eager_preprocessing():
+    harness_payload = payload(
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=["file_1"],
+        input={"message": "summarize"},
+        schema_version="ai-platform.run-payload.v2",
+        skill_manifests=[],
+        skill_version="",
+        release_decision={},
+    )
+
+    assert not claude_agent_worker._requires_typed_attachment_preprocessing(
+        harness_payload
+    )
+    assert claude_agent_worker._allows_context_file_tools(harness_payload)
+    manifest = claude_agent_worker._context_manifest_with_attachment_metadata(
+        {
+            "available_retrieval_tools": [
+                "read_context_file",
+                "stage_context_file_to_workspace",
+            ]
+        },
+        [],
+        allow_file_content_tools=claude_agent_worker._allows_context_file_tools(
+            harness_payload
+        ),
+    )
+    assert manifest["available_retrieval_tools"] == [
+        "read_context_file",
+        "stage_context_file_to_workspace",
+    ]
+
+
 @pytest.mark.asyncio
-async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materialization(
+async def test_legacy_general_chat_with_explicit_skill_keeps_typed_attachment_materialization(
     monkeypatch,
     tmp_path,
 ):

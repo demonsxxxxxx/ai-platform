@@ -544,8 +544,7 @@ def _timing_value(value: object) -> int:
 
 
 def _task_skill_ids(request: ExecutorTaskRequest) -> list[str]:
-    skill_ids = _safe_id_list(request.config.get("skill_ids"))
-    return skill_ids or ["general-chat"]
+    return _safe_id_list(request.config.get("skill_ids"))
 
 
 def _task_tool_policy_subjects(request: ExecutorTaskRequest) -> list[dict[str, Any]]:
@@ -1301,9 +1300,10 @@ async def _default_executor_runner(
             "attachment_parser_evidence": parser_evidence,
         }
 
-    await emit_event(_PlatformExecutionPhaseFact("skill_staging", "started"))
     skill_ids = _task_skill_ids(request)
-    await emit_event(_PlatformExecutionPhaseFact("skill_staging", "completed"))
+    if skill_ids:
+        await emit_event(_PlatformExecutionPhaseFact("skill_staging", "started"))
+        await emit_event(_PlatformExecutionPhaseFact("skill_staging", "completed"))
     model_id = str(request.config.get("model") or "") or None
 
     async def on_text(delta: str) -> None:
@@ -1425,7 +1425,7 @@ async def _default_executor_runner(
         sdk_kwargs = {
             "prompt": request.prompt,
             "cwd": workspace_root,
-            "skill_id": skill_ids[0],
+            "skill_id": skill_ids[0] if skill_ids else None,
             "session_id": request.sdk_session_id,
             "model_id": model_id,
             "skills": skill_ids,

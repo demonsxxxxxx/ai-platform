@@ -33,8 +33,12 @@ from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
     HASH_LIKE_VALUE_PATTERN,
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_CONTRACT_VERSION,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
+    RUN_PAYLOAD_SCHEMA_VERSION_V2,
     artifact_lineage_contract,
     artifact_manifest_contract,
     sanitize_public_payload,
@@ -1616,7 +1620,7 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
           skills.input_modes,
           skills.output_modes
         from agents
-        join skills on skills.id = agents.default_skill_id
+        left join skills on skills.id = agents.default_skill_id
         left join skill_release_policies
           on skill_release_policies.tenant_id = agents.tenant_id
          and skill_release_policies.skill_id = skills.id
@@ -1631,7 +1635,7 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
         where agents.tenant_id = %s
           and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')
           and agents.status = 'active'
-          and skills.status = 'active'
+          and (agents.default_skill_id is null or skills.status = 'active')
         order by case agents.id
           when 'general-agent' then 1
           when 'baoyu-translate' then 2
@@ -1654,7 +1658,7 @@ async def list_principal_lambchat_agents(
     is_admin: bool,
     permissions: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """Return canonical Agent rows whose default Skills are discoverable by the principal."""
+    """Return canonical Agent rows discoverable by the principal."""
 
     rows = await list_lambchat_agents(conn, tenant_id=tenant_id)
     distributions = await list_capability_distribution_rows(
@@ -1678,6 +1682,22 @@ async def list_principal_lambchat_agents(
     for row in rows:
         projected = dict(row)
         skill_id = str(projected.get("default_skill_id") or "")
+        if not skill_id:
+            if str(projected.get("agent_type") or "") != "chat":
+                continue
+            projected["skill_version"] = None
+            projected["skill_version_status"] = None
+            projected["input_modes"] = ["chat"]
+            projected["output_modes"] = ["answer"]
+            for field in (
+                "release_policy_version",
+                "release_policy_previous_version",
+                "release_policy_rollout_percent",
+                "release_policy_previous_version_status",
+            ):
+                projected.pop(field, None)
+            authorized_rows.append(projected)
+            continue
         release_decision = _principal_skill_release_decision(
             projected,
             tenant_id=tenant_id,
@@ -1755,16 +1775,15 @@ async def list_workbench_skills(conn: AsyncConnection, *, tenant_id: str, includ
           on tenant_capability_distributions.tenant_id = %s
          and tenant_capability_distributions.capability_kind = 'skill'
          and tenant_capability_distributions.capability_id = skills.id
-        where skills.id in ('general-chat', 'qa-file-reviewer', 'baoyu-translate', 'ragflow-knowledge-search')
+        where skills.id in ('qa-file-reviewer', 'baoyu-translate', 'ragflow-knowledge-search')
           and (%s or (
             skills.status = 'active'
             and tenant_capability_distributions.status = 'active'
           ))
         order by case skills.id
-          when 'general-chat' then 1
-          when 'qa-file-reviewer' then 2
-          when 'baoyu-translate' then 3
-          when 'ragflow-knowledge-search' then 4
+          when 'qa-file-reviewer' then 1
+          when 'baoyu-translate' then 2
+          when 'ragflow-knowledge-search' then 3
           else 99
         end
         """,
@@ -1931,10 +1950,16 @@ async def list_public_skill_catalog(
           on previous_skill_versions.skill_id = skills.id
          and previous_skill_versions.version = skill_release_policies.previous_version
         where (skills.id = any(%s) or tenant_capability_distributions.capability_id is not null)
+          and skills.id <> %s
           and skills.status = 'active'
         order by skills.name asc, skills.id asc
         """,
-        (tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)),
+        (
+            tenant_id,
+            tenant_id,
+            sorted(PUBLIC_WORKBENCH_SKILL_IDS),
+            LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+        ),
     )
     rows = []
     for row in list(await cursor.fetchall()):
@@ -4101,6 +4126,7 @@ async def list_workbench_capabilities(
           agents.name as label,
           agents.description,
           case
+            when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'
             when skills.status <> 'active'
               or coalesce(tenant_capability_distributions.status, 'disabled') <> 'active'
               or coalesce(tenant_capability_distributions.visible_to_user, false) = false
@@ -4115,12 +4141,12 @@ async def list_workbench_capabilities(
             then 'disabled'
             else 'active'
           end as status,
-          skills.input_modes,
-          skills.output_modes,
+          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["chat"]'::jsonb else skills.input_modes end as input_modes,
+          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["answer"]'::jsonb else skills.output_modes end as output_modes,
           agents.id as agent_id,
           skills.id as skill_id,
           skills.version as skill_version,
-          skills.executor_type,
+          case when agents.agent_type = 'chat' and agents.default_skill_id is null then 'claude-agent-worker' else skills.executor_type end as executor_type,
           case when skills.id = 'ragflow-knowledge-search' then mcp_tools.server_id else null end as mcp_server_id,
           case when skills.id = 'ragflow-knowledge-search' then mcp_tools.id else null end as mcp_tool_id,
           case
@@ -4131,7 +4157,7 @@ async def list_workbench_capabilities(
           end as risk_level,
           0 as recent_failures
         from agents
-        join skills on skills.id = agents.default_skill_id
+        left join skills on skills.id = agents.default_skill_id
         left join tenant_capability_distributions
           on tenant_capability_distributions.tenant_id = %s
          and tenant_capability_distributions.capability_kind = 'skill'
@@ -4373,7 +4399,8 @@ async def create_run(
     session_id: str,
     user_id: str | None,
     agent_id: str,
-    skill_id: str,
+    skill_id: str | None,
+    execution_kind: str = RUN_EXECUTION_KIND_SKILL,
     input_json: dict[str, Any],
     principal_roles: list[str] | None = None,
     principal_department_id: str = "",
@@ -4385,7 +4412,19 @@ async def create_run(
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
 ) -> str:
-    _require_json_size(input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
+    _require_json_size(
+        input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large"
+    )
+    if (
+        (execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT and skill_id is not None)
+        or (execution_kind == RUN_EXECUTION_KIND_SKILL and not skill_id)
+        or execution_kind
+        not in {
+            RUN_EXECUTION_KIND_HARNESS_CHAT,
+            RUN_EXECUTION_KIND_SKILL,
+        }
+    ):
+        raise RepositoryConflictError("run_execution_skill_identity_mismatch")
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
@@ -4400,7 +4439,7 @@ async def create_run(
     cursor = await conn.execute(
         """
         insert into runs(
-          id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
+          id, tenant_id, workspace_id, session_id, user_id, agent_id, execution_kind, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
           authz_policy_version, authority_source, authority_checked_at,
@@ -4409,7 +4448,7 @@ async def create_run(
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -4425,6 +4464,7 @@ async def create_run(
             session_id,
             user_id,
             agent_id,
+            execution_kind,
             skill_id,
             trace_id,
             RUN_CONTRACT_VERSION,
@@ -4460,6 +4500,9 @@ async def update_run_auth_snapshot(
     principal_roles: list[str] | None,
     principal_department_id: str,
     auth_source: str | None,
+    authz_policy_version: int,
+    authority_source: str,
+    authority_checked_at: str | datetime | None,
 ) -> None:
     """Refresh the server-owned authorization snapshot for one tenant run."""
 
@@ -4468,7 +4511,10 @@ async def update_run_auth_snapshot(
         update runs
         set principal_roles = %s::jsonb,
             principal_department_id = %s,
-            auth_source = %s
+            auth_source = %s,
+            authz_policy_version = %s,
+            authority_source = %s,
+            authority_checked_at = %s
         where tenant_id = %s
           and id = %s
         """,
@@ -4476,6 +4522,9 @@ async def update_run_auth_snapshot(
             dumps_json(normalize_roles(principal_roles or [])),
             str(principal_department_id or ""),
             auth_source,
+            int(authz_policy_version),
+            str(authority_source or auth_source or ""),
+            authority_checked_at,
             tenant_id,
             run_id,
         ),
@@ -9392,6 +9441,7 @@ async def list_admin_runs(
           workspace_id,
           status,
           agent_id,
+          execution_kind,
           skill_id,
           created_at,
           queued_at,
@@ -9744,6 +9794,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
             "workspace_id": run["workspace_id"],
             "status": run["status"],
             "agent_id": run["agent_id"],
+            "execution_kind": run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL,
             "skill_id": run["skill_id"],
             "created_at": run["created_at"],
             "queued_at": run.get("queued_at"),
@@ -10122,48 +10173,90 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     inherited_roles = normalize_roles(source.get("principal_roles") or [])
     inherited_department_id = str(source.get("principal_department_id") or "")
     inherited_auth_source = source.get("auth_source")
-    source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
+    inherited_authz_policy_version = int(source.get("authz_policy_version") or 1)
+    inherited_authority_source = str(
+        source.get("authority_source") or inherited_auth_source or ""
+    )
+    inherited_authority_checked_at = source.get("authority_checked_at")
+    source_execution_input = (
+        source_input.get("input")
+        if isinstance(source_input.get("input"), dict)
+        else source_input
+    )
     if isinstance(source_execution_input, dict):
         source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
         source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
-    admitted_profile_revision, admitted_profile_hash = admitted_agent_profile_pins_for_copy(
-        source,
-        source_execution_snapshot,
+    execution_kind = str(
+        source.get("execution_kind")
+        or source_execution_snapshot.get("execution_kind")
+        or RUN_EXECUTION_KIND_SKILL
+    )
+    admitted_profile_revision, admitted_profile_hash = (
+        admitted_agent_profile_pins_for_copy(
+            source,
+            source_execution_snapshot,
+        )
     )
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
     executor_type = str(source_execution_snapshot.get("executor_type") or "")
-    require_replay_source_identity(
-        pinned_version=skill_version,
-        pinned_executor_type=executor_type,
-        release_decision=release_decision_payload,
-        skill_manifests=skill_manifests,
-    )
-    await validate_run_skill_snapshots_for_dispatch(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        skill_manifests=skill_manifests,
-        release_decision=release_decision_payload,
-    )
-    await authorize_replay_run_capabilities(
-        conn,
-        tenant_id=tenant_id,
-        agent_id=source["agent_id"],
-        skill_id=source["skill_id"],
-        pinned_version=skill_version,
-        pinned_executor_type=executor_type,
-        skill_manifests=skill_manifests,
-        normalized_input=source_execution_input,
-        principal_department_id=inherited_department_id,
-        principal_roles=inherited_roles,
-        is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
-        permissions=[],
-    )
+    if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+        if (
+            source.get("skill_id") is not None
+            or skill_version
+            or release_decision_payload
+            or skill_manifests
+            or executor_type != "claude-agent-worker"
+        ):
+            raise RepositoryConflictError("run_execution_skill_identity_mismatch")
+        await authorize_selected_chat_mcp_tools(
+            conn,
+            tenant_id=tenant_id,
+            tool_ids=extract_run_mcp_tool_ids(source_execution_input),
+            principal_department_id=inherited_department_id,
+            principal_roles=inherited_roles,
+            is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
+            permissions=[],
+        )
+    elif execution_kind == RUN_EXECUTION_KIND_SKILL:
+        if (
+            not isinstance(source.get("skill_id"), str)
+            or not str(source.get("skill_id")).strip()
+        ):
+            raise RepositoryConflictError("run_execution_skill_identity_mismatch")
+        require_replay_source_identity(
+            pinned_version=skill_version,
+            pinned_executor_type=executor_type,
+            release_decision=release_decision_payload,
+            skill_manifests=skill_manifests,
+        )
+        await validate_run_skill_snapshots_for_dispatch(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            skill_manifests=skill_manifests,
+            release_decision=release_decision_payload,
+        )
+        await authorize_replay_run_capabilities(
+            conn,
+            tenant_id=tenant_id,
+            agent_id=source["agent_id"],
+            skill_id=source["skill_id"],
+            pinned_version=skill_version,
+            pinned_executor_type=executor_type,
+            skill_manifests=skill_manifests,
+            normalized_input=source_execution_input,
+            principal_department_id=inherited_department_id,
+            principal_roles=inherited_roles,
+            is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
+            permissions=[],
+        )
+    else:
+        raise RepositoryConflictError("run_execution_skill_identity_mismatch")
     new_run_id = new_id("run")
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
     completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
@@ -10185,13 +10278,21 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "copied_from_run_id": run_id,
     }
     copied_input_json.update(
+        execution_kind=execution_kind,
         executor_type=executor_type,
         skill_version=skill_version,
         release_decision=release_decision_payload,
         skill_manifests=skill_manifests,
         context_snapshot_id=None,
         context_snapshot={},
-        schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
+        schema_version=(
+            RUN_PAYLOAD_SCHEMA_VERSION_V2
+            if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+            else str(
+                source_execution_snapshot.get("schema_version")
+                or RUN_PAYLOAD_SCHEMA_VERSION
+            )
+        ),
     )
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
@@ -10208,13 +10309,14 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     await conn.execute(
         """
         insert into runs(
-          id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
+          id, tenant_id, workspace_id, session_id, user_id, agent_id, execution_kind, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -10223,6 +10325,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             source["session_id"],
             user_id,
             source["agent_id"],
+            execution_kind,
             source["skill_id"],
             standard_trace_id(new_run_id),
             RUN_CONTRACT_VERSION,
@@ -10230,6 +10333,9 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             dumps_json(inherited_roles),
             inherited_department_id,
             inherited_auth_source,
+            inherited_authz_policy_version,
+            inherited_authority_source,
+            inherited_authority_checked_at,
             admitted_profile_revision,
             admitted_profile_hash,
             dumps_json(copied_input_json),
@@ -10237,13 +10343,14 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             session_generation,
         ),
     )
-    await insert_run_skill_snapshots_at_creation(
-        conn,
-        tenant_id=tenant_id,
-        run_id=new_run_id,
-        skill_manifests=skill_manifests,
-        release_decision=release_decision_payload,
-    )
+    if execution_kind == RUN_EXECUTION_KIND_SKILL:
+        await insert_run_skill_snapshots_at_creation(
+            conn,
+            tenant_id=tenant_id,
+            run_id=new_run_id,
+            skill_manifests=skill_manifests,
+            release_decision=release_decision_payload,
+        )
     await append_event(
         conn,
         tenant_id=tenant_id,
@@ -10271,6 +10378,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "session_id": source["session_id"],
         "run_id": new_run_id,
         "agent_id": source["agent_id"],
+        "execution_kind": execution_kind,
         "skill_id": source["skill_id"],
         "workspace_id": source["workspace_id"],
         "principal_roles": inherited_roles,
@@ -10411,10 +10519,17 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
     model_value = source.get("model_value")
     agent_profile = source.get("agent_profile")
     schema_version = source.get("schema_version")
+    execution_kind = source.get("execution_kind")
     snapshot = {
         "file_ids": list(file_ids) if isinstance(file_ids, list) else [],
         "input": dict(execution_input) if isinstance(execution_input, dict) else {},
         "executor_type": str(source.get("executor_type") or ""),
+        "execution_kind": (
+            str(execution_kind)
+            if execution_kind
+            in {RUN_EXECUTION_KIND_HARNESS_CHAT, RUN_EXECUTION_KIND_SKILL}
+            else RUN_EXECUTION_KIND_SKILL
+        ),
         "skill_version": skill_version if isinstance(skill_version, str) else None,
         "release_decision": dict(release_decision) if isinstance(release_decision, dict) else {},
         "skill_manifests": [dict(item) for item in skill_manifests if isinstance(item, dict)]
@@ -11338,7 +11453,8 @@ async def list_authorized_session_runs(
     params.append(limit)
     cursor = await conn.execute(
         f"""
-        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id, runs.skill_id,
+        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id,
+               runs.execution_kind, runs.skill_id,
                runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
                runs.started_at, runs.finished_at, runs.result_json,
                runs.session_generation, queue_admission.queue_admission_ordinal

@@ -1939,7 +1939,60 @@ async def test_capability_distribution_projection_rejects_malformed_department_i
 
 
 @pytest.mark.asyncio
-async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_bypass(monkeypatch):
+async def test_principal_agent_projection_keeps_skillless_chat_without_skill_distribution(
+    monkeypatch,
+):
+    async def fake_list_agents(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+        return [
+            {
+                "id": "general-agent",
+                "agent_type": "chat",
+                "default_skill_id": None,
+                "status": "active",
+                "skill_version": None,
+            }
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return []
+
+    async def fail_audit(*args, **kwargs):
+        raise AssertionError(
+            "skillless Harness discovery must not audit a Skill bypass"
+        )
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(
+        repositories,
+        "list_capability_distribution_rows",
+        fake_list_distributions,
+    )
+    monkeypatch.setattr(repositories, "append_audit_log", fail_audit)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="user-a",
+        department_id="",
+        roles=[],
+        is_admin=False,
+        permissions=["chat:read"],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "general-agent"
+    assert rows[0]["default_skill_id"] is None
+    assert rows[0]["skill_version"] is None
+    assert rows[0]["skill_version_status"] is None
+    assert rows[0]["input_modes"] == ["chat"]
+    assert rows[0]["output_modes"] == ["answer"]
+
+
+@pytest.mark.asyncio
+async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_bypass(
+    monkeypatch,
+):
     rows = [
         {
             "id": "general-agent",
@@ -3879,12 +3932,12 @@ async def test_list_workbench_skills_projects_distribution_without_legacy_status
         async def fetchall(self):
             return [
                 {
-                    "skill_id": "general-chat",
-                    "name": "General Chat",
+                    "skill_id": "qa-file-reviewer",
+                    "name": "QA Word Review",
                     "version": "0.1.0",
-                    "description": "Chat",
-                    "input_modes": ["chat"],
-                    "output_modes": ["answer"],
+                    "description": "Review",
+                    "input_modes": ["docx"],
+                    "output_modes": ["reviewed_docx"],
                     "executor_type": "claude-agent-worker",
                     "lifecycle_status": "active",
                     "status": "disabled",
@@ -3905,6 +3958,7 @@ async def test_list_workbench_skills_projects_distribution_without_legacy_status
     assert "tenant_capability_distributions" in conn.sql
     assert "tenant_workbench_skills" not in conn.sql
     assert "skills.status as lifecycle_status" in conn.sql
+    assert "general-chat" not in conn.sql
 
 
 @pytest.mark.asyncio
@@ -3937,6 +3991,11 @@ async def test_list_workbench_capabilities_uses_global_lifecycle_and_distributio
     assert "skills.status" in conn.sql
     assert "tenant_capability_distributions.status" in conn.sql
     assert "tenant_capability_distributions.visible_to_user" in conn.sql
+    assert "left join skills on skills.id = agents.default_skill_id" in conn.sql
+    assert (
+        "when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'"
+        in conn.sql
+    )
     assert conn.params == ("tenant-a", "tenant-a")
 
 
@@ -4821,6 +4880,59 @@ async def test_create_run_persists_g2_contract_fields():
 
 
 @pytest.mark.asyncio
+async def test_create_run_persists_skillless_harness_identity():
+    conn = RecordingConnection()
+
+    await create_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        input_json={"execution_kind": "harness_chat"},
+    )
+
+    sql, params = conn.calls[-1]
+    assert "execution_kind, skill_id" in sql
+    assert "harness_chat" in params
+    harness_index = params.index("harness_chat")
+    assert params[harness_index + 1] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("execution_kind", "skill_id"),
+    [
+        ("harness_chat", "general-chat"),
+        ("skill", None),
+        ("unknown", None),
+    ],
+)
+async def test_create_run_rejects_execution_skill_identity_mismatch(
+    execution_kind,
+    skill_id,
+):
+    with pytest.raises(
+        repositories.RepositoryConflictError,
+        match="run_execution_skill_identity_mismatch",
+    ):
+        await create_run(
+            RecordingConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            execution_kind=execution_kind,
+            skill_id=skill_id,
+            input_json={},
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_run_binds_normalized_auth_snapshot():
     conn = RecordingConnection()
 
@@ -5137,6 +5249,9 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
         principal_roles=[" QA-Operator ", "qa operator", "User"],
         principal_department_id="qa",
         auth_source="trusted-header",
+        authz_policy_version=7,
+        authority_source="identity-gateway",
+        authority_checked_at="2026-08-12T01:02:03Z",
     )
 
     sql, params = conn.calls[-1]
@@ -5144,10 +5259,16 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
     assert "principal_roles = %s::jsonb" in sql
     assert "principal_department_id = %s" in sql
     assert "auth_source = %s" in sql
+    assert "authz_policy_version = %s" in sql
+    assert "authority_source = %s" in sql
+    assert "authority_checked_at = %s" in sql
     assert params == (
         json.dumps(["qa-operator", "qa operator", "user"], ensure_ascii=False),
         "qa",
         "trusted-header",
+        7,
+        "identity-gateway",
+        "2026-08-12T01:02:03Z",
         "tenant-a",
         "run-a",
     )
@@ -10483,6 +10604,7 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
         "model_id": "model-catalog-a",
         "model_value": "provider-model-a",
         "schema_version": "ai-platform.run-payload.v1",
+        "execution_kind": "skill",
     }
 
 

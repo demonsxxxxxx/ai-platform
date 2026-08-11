@@ -277,7 +277,7 @@ class ContextPlanner:
         session_id: str,
         run_id: str,
         agent_id: str,
-        skill_id: str,
+        skill_id: str | None,
         current_message: str,
         recent_messages: list[dict[str, Any]] | None = None,
         context_chips: list[str] | None = None,

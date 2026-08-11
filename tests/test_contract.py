@@ -4,6 +4,7 @@ from app.main import create_app
 from app.routes import health as health_routes
 from app.executors.base import RunPayload
 from app.models import CreateRunRequest, QueueRunPayload, SkillDefinition
+from app.product_events import initial_run_event_specs
 from app.control_plane_contracts import sanitize_public_payload
 from app.repositories import new_id
 from fastapi.testclient import TestClient
@@ -275,6 +276,173 @@ def test_queue_payload_requires_release_decision_and_executor_type():
         assert "Extra inputs are not permitted" in str(exc)
     else:
         raise AssertionError("queue payload should reject legacy files field")
+
+
+def test_queue_payload_accepts_skillless_harness_chat_v2():
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "file_ids": ["file-a"],
+            "input": {"message": "summarize the attachment"},
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v2",
+        }
+    )
+
+    assert payload.execution_kind == "harness_chat"
+    assert payload.skill_id is None
+    assert payload.skill_version is None
+    assert payload.release_decision == {}
+    assert payload.skill_manifests == []
+
+
+def test_queue_payload_keeps_legacy_v1_general_chat_replay_shape():
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-legacy",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "file_ids": [],
+            "input": {"message": "historical replay"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-legacy",
+            "release_decision": release_decision("hash-legacy"),
+            "skill_manifests": [primary_manifest("general-chat", "hash-legacy")],
+            "schema_version": "ai-platform.run-payload.v1",
+        }
+    )
+
+    assert payload.execution_kind == "skill"
+    assert payload.skill_id == "general-chat"
+    assert payload.schema_version == "ai-platform.run-payload.v1"
+
+
+def test_queue_payload_rejects_skill_authority_on_harness_chat():
+    base = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+        "file_ids": [],
+        "input": {"message": "hello"},
+        "executor_type": "claude-agent-worker",
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+    invalid_overrides = (
+        ({"skill_id": "general-chat"}, "harness_chat_skill_id_forbidden"),
+        ({"skill_version": "hash-a"}, "harness_chat_skill_version_forbidden"),
+        (
+            {"release_decision": release_decision("hash-a")},
+            "harness_chat_release_decision_forbidden",
+        ),
+        (
+            {"skill_manifests": [{"skill_id": "general-chat"}]},
+            "harness_chat_skill_manifests_forbidden",
+        ),
+        ({"executor_type": "embedded-poco"}, "harness_chat_executor_invalid"),
+        (
+            {"schema_version": "ai-platform.run-payload.v1"},
+            "harness_chat_payload_schema_version_invalid",
+        ),
+    )
+
+    for override, expected_error in invalid_overrides:
+        try:
+            QueueRunPayload.model_validate({**base, **override})
+        except ValueError as exc:
+            assert expected_error in str(exc)
+        else:
+            raise AssertionError(f"harness payload should reject {override}")
+
+
+def test_run_payload_accepts_skillless_harness_chat_v2():
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=["file-a"],
+        input={"message": "summarize"},
+        schema_version="ai-platform.run-payload.v2",
+    )
+
+    assert payload.execution_kind == "harness_chat"
+    assert payload.skill_id is None
+
+
+def test_run_payload_rejects_skill_identity_on_harness_chat():
+    try:
+        RunPayload(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            agent_id="general-agent",
+            execution_kind="harness_chat",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "hello"},
+            schema_version="ai-platform.run-payload.v2",
+        )
+    except ValueError as exc:
+        assert "harness_chat_skill_id_forbidden" in str(exc)
+    else:
+        raise AssertionError("harness RunPayload must not carry a Skill identity")
+
+
+def test_harness_initial_events_contain_no_skill_fact():
+    events = initial_run_event_specs(
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        skill_version=None,
+        executor_type="claude-agent-worker",
+        file_ids=["file-a"],
+        source="test",
+    )
+
+    assert [event["event_type"] for event in events] == ["queued", "file_bound"]
+    assert all(event["payload"]["execution_kind"] == "harness_chat" for event in events)
+    assert all("skill_id" not in event["payload"] for event in events)
+    assert all("skill_version" not in event["payload"] for event in events)
+
+
+def test_skill_initial_events_keep_exact_skill_fact():
+    events = initial_run_event_specs(
+        agent_id="qa-word-review",
+        execution_kind="skill",
+        skill_id="qa-file-reviewer",
+        skill_version="hash-a",
+        executor_type="claude-agent-worker",
+        file_ids=[],
+        source="test",
+    )
+
+    assert [event["event_type"] for event in events] == ["queued", "skill_selected"]
+    assert all(event["payload"]["skill_id"] == "qa-file-reviewer" for event in events)
+    assert all(event["payload"]["skill_version"] == "hash-a" for event in events)
 
 
 def test_queue_run_payload_rejects_unsupported_schema_version():

@@ -286,6 +286,34 @@ def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
 
 
 @pytest.mark.asyncio
+async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, _stream_steps("done"), result_text="done"),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        skills=[],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[],
+    )
+
+    assert result.error is None
+    assert captured["skills"] == []
+    assert "Skill" not in captured["tools"]
+    assert "Skill" not in captured["allowed_tools"]
+
+
+@pytest.mark.asyncio
 async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks(
     monkeypatch,
     tmp_path,

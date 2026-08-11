@@ -12,7 +12,12 @@ import uuid
 
 from app import queue
 from app import repositories
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
+from app.control_plane_contracts import (
+    RUN_EXECUTION_KIND_SKILL,
+    sanitize_public_payload,
+    sanitize_public_text,
+    standard_trace_id,
+)
 from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
@@ -507,6 +512,9 @@ async def _terminalize_escaped_process_exception(
             "session_id": str(locked_run.get("session_id") or ""),
             "run_id": str(locked_run.get("id") or ""),
             "agent_id": str(locked_run.get("agent_id") or ""),
+            "execution_kind": str(
+                locked_run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL
+            ),
             "skill_id": str(locked_run.get("skill_id") or ""),
         }
         payload_identity = {
@@ -516,7 +524,8 @@ async def _terminalize_escaped_process_exception(
             "session_id": payload.session_id,
             "run_id": payload.run_id,
             "agent_id": payload.agent_id,
-            "skill_id": payload.skill_id,
+            "execution_kind": payload.execution_kind,
+            "skill_id": str(payload.skill_id or ""),
         }
         if locked_identity != payload_identity:
             return WorkerOutcome("dead_letter", run_id, error_code, error_message)

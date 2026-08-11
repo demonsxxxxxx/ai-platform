@@ -11,6 +11,18 @@ from app.validation import assert_safe_id
 
 RUN_CONTRACT_VERSION = "ai-platform.run.v1"
 RUN_PAYLOAD_SCHEMA_VERSION = "ai-platform.run-payload.v1"
+RUN_PAYLOAD_SCHEMA_VERSION_V2 = "ai-platform.run-payload.v2"
+SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS = frozenset(
+    {RUN_PAYLOAD_SCHEMA_VERSION, RUN_PAYLOAD_SCHEMA_VERSION_V2}
+)
+RUN_EXECUTION_KIND_SKILL = "skill"
+RUN_EXECUTION_KIND_HARNESS_CHAT = "harness_chat"
+RUN_EXECUTION_KINDS = frozenset(
+    {RUN_EXECUTION_KIND_SKILL, RUN_EXECUTION_KIND_HARNESS_CHAT}
+)
+HARNESS_CHAT_EXECUTOR_TYPE = "claude-agent-worker"
+# Read/replay compatibility only. New requests must never select this as a Skill.
+LEGACY_SYNTHETIC_CHAT_SKILL_ID = "general-chat"
 EXECUTOR_RESULT_SCHEMA_VERSION = "ai-platform.executor-result.v1"
 EVENT_ENVELOPE_SCHEMA_VERSION = "ai-platform.event-envelope.v1"
 ARTIFACT_MANIFEST_SCHEMA_VERSION = "ai-platform.artifact-manifest.v1"
