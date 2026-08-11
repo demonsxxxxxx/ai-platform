@@ -3868,8 +3868,8 @@ async def test_lambchat_translate_agent_defaults_to_translate_skill(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_keeps_routed_skill_without_reusing_a_prior_turn_file(monkeypatch):
-    """A routed file-capable Skill remains conversational without carrying the prior file."""
+async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(monkeypatch):
+    """A routed file-capable Skill reuses its snapshot-authorized session input."""
 
     calls = []
     run_ids = iter(["run_routed_first", "run_routed_second"])
@@ -3937,7 +3937,25 @@ async def test_chat_stream_keeps_routed_skill_without_reusing_a_prior_turn_file(
         calls.append(("files", kwargs["workspace_id"], kwargs["file_ids"]))
 
     async def fake_list_authorized_session_input_files(conn, **kwargs):
-        raise AssertionError("chat turns must not implicitly reuse session input files")
+        calls.append(
+            (
+                "session_files",
+                kwargs["tenant_id"],
+                kwargs["workspace_id"],
+                kwargs["user_id"],
+                kwargs["session_id"],
+            )
+        )
+        return [
+            {
+                "id": "file_routed",
+                "original_name": "demo.docx",
+                "content_type": (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                "created_at": "2026-08-11T00:00:00Z",
+            }
+        ]
 
     async def fake_bind_files(conn, **kwargs):
         calls.append(("bind", kwargs["file_ids"]))
@@ -4023,11 +4041,19 @@ async def test_chat_stream_keeps_routed_skill_without_reusing_a_prior_turn_file(
         ("session_lookup", "workspace-routed", True),
         ("continuation_runs", "tenant-a", "user-a", "ses_routed", "workspace-routed", 1),
         ("resolve", "general-agent", "baoyu-translate"),
+        ("session_files", "tenant-a", "workspace-routed", "user-a", "ses_routed"),
         ("workspace", "workspace-routed"),
         ("files", "workspace-routed", []),
         ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
         ("bind", []),
-        ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", []),
+        (
+            "queue",
+            "ses_routed",
+            "general-agent",
+            "baoyu-translate",
+            "workspace-routed",
+            ["file_routed"],
+        ),
     ]
 
 
