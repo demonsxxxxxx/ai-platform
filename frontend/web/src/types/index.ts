@@ -170,7 +170,9 @@ export type {
 export type {
   FileCategory,
   MessageAttachment,
+  LegacyUploadLimits,
   UploadConfig,
+  UploadLimitsBytes,
   UploadResult,
 } from "./upload";
 

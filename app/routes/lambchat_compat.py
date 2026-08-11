@@ -36,7 +36,7 @@ from app.public_execution import (
     validate_public_agent_progress_payload,
 )
 from app.routes.auth import _login_principal
-from app.routes.files import upload_file as upload_platform_file
+from app.routes.files import MAX_UPLOAD_BYTES, upload_file as upload_platform_file
 from app.routes.runs import (
     artifact_card,
     event_visible_to_principal,
@@ -1054,18 +1054,26 @@ async def projects() -> list[object]:
 
 @router.get("/upload/config")
 async def upload_config() -> dict[str, object]:
-    max_file_size = 52428800
+    upload_limits_bytes = {
+        "image": MAX_UPLOAD_BYTES,
+        "video": MAX_UPLOAD_BYTES,
+        "audio": MAX_UPLOAD_BYTES,
+        "document": MAX_UPLOAD_BYTES,
+    }
+    max_files = 10
     return {
         "enabled": True,
         "provider": "ai-platform",
+        "uploadLimitsBytes": upload_limits_bytes,
+        "maxFiles": max_files,
+        # Preserve the pre-existing byte-valued wire aliases. Older frontends
+        # remain bounded by the canonical server-side 413 during rollout.
         "uploadLimits": {
-            "image": max_file_size,
-            "video": max_file_size,
-            "audio": max_file_size,
-            "document": max_file_size,
-            "maxFiles": 10,
+            **upload_limits_bytes,
+            "maxFiles": max_files,
         },
-        "max_file_size": max_file_size,
+        "max_file_size_bytes": MAX_UPLOAD_BYTES,
+        "max_file_size": MAX_UPLOAD_BYTES,
         "allowed_extensions": ["docx", "txt", "pdf"],
         "categories": ["document"],
     }

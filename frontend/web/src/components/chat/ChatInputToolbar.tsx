@@ -2,8 +2,7 @@ import { useRef, useCallback, useEffect, useState } from "react";
 import { ArrowUp, Square, Lock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
-import type { FileCategory } from "../../types";
-import type { UploadLimits } from "../../hooks/useFileUpload";
+import type { FileCategory, UploadLimitsBytes } from "../../types";
 
 export interface ChatInputToolbarProps {
   activePanel: FeaturePanel;
@@ -20,7 +19,7 @@ export interface ChatInputToolbarProps {
   thinkingLabel?: string;
   thinkingLevel?: string;
   uploadCategories: FileCategory[];
-  uploadLimits: UploadLimits | null;
+  uploadLimitsBytes: UploadLimitsBytes | null;
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
   onFileCommandReady?: (openFileCommand: () => void) => void;
   onStopClick: () => void;
@@ -49,7 +48,7 @@ export function ChatInputToolbar({
   thinkingLabel,
   thinkingLevel,
   uploadCategories,
-  uploadLimits,
+  uploadLimitsBytes,
   uploadFiles,
   onFileCommandReady,
   onStopClick,
@@ -107,7 +106,7 @@ export function ChatInputToolbar({
           totalSkillsCount={totalSkillsCount}
           hasThinkingOption={hasThinkingOption}
           uploadCategories={uploadCategories}
-          uploadLimits={uploadLimits}
+          uploadLimitsBytes={uploadLimitsBytes}
           onFileCategorySelect={handleFileCategorySelect}
           thinkingLabel={thinkingLabel}
           thinkingLevel={thinkingLevel}

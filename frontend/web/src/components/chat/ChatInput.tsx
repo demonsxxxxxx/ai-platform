@@ -162,7 +162,7 @@ export const ChatInput = memo(function ChatInput({
   const attachments = externalAttachments ?? internalAttachments;
   const setAttachments = externalOnAttachmentsChange ?? setInternalAttachments;
 
-  const { uploadFiles, uploadLimits, validateCount, cancelUpload } =
+  const { uploadFiles, uploadLimitsBytes, validateCount, cancelUpload } =
     useFileUpload({
       attachments,
       onAttachmentsChange: setAttachments,
@@ -885,7 +885,7 @@ export const ChatInput = memo(function ChatInput({
                 thinkingLabel={thinkingLabel}
                 thinkingLevel={thinkingLevel}
                 uploadCategories={uploadCategories}
-                uploadLimits={uploadLimits}
+                uploadLimitsBytes={uploadLimitsBytes}
                 uploadFiles={uploadFiles}
                 onFileCommandReady={(openFileCommand) => {
                   openFileCommandRef.current = openFileCommand;
