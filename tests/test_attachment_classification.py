@@ -115,6 +115,18 @@ def test_stale_storage_identity_fails_before_type_admission(
     assert result.rejection_code == expected_code
 
 
+def test_storage_hash_identity_rejects_non_string_values_before_classification():
+    with pytest.raises(ValueError, match="expected_sha256 must be a string"):
+        AttachmentBytesForClassification(
+            file_id="file-xlsx",
+            raw_bytes=b"payload",
+            source_filename="report.xlsx",
+            declared_media_type="application/octet-stream",
+            expected_size_bytes=7,
+            expected_sha256=object(),  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize("payload", [b"MZ\x00\x00", b"#!/bin/sh\necho unsafe", b"<html><script>x</script></html>"])
 def test_active_or_dangerous_payloads_fail_closed(payload):
     result = classify_attachment_bytes(_input(payload, source_filename="report.xlsx"))

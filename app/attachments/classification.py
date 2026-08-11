@@ -30,6 +30,17 @@ ATTACHMENT_CLASSIFIER_VERSION = "ai-platform.attachment-byte-classifier.v1"
 MAX_ATTACHMENT_CLASSIFICATION_BYTES = MAX_XLSX_FILE_BYTES
 CLASSIFICATION_CLASSIFIED = "classified"
 CLASSIFICATION_REJECTED = "rejected"
+ATTACHMENT_CLASSIFICATION_REJECTION_CODES = frozenset(
+    {
+        "attachment_classification_file_too_large",
+        "attachment_classification_stale_size",
+        "attachment_classification_stale_hash",
+        "attachment_classification_active_or_dangerous",
+        "attachment_classification_type_unsupported",
+        "attachment_classification_xlsx_invalid",
+        "attachment_classification_extension_incompatible",
+    }
+)
 ClassificationState: TypeAlias = Literal["classified", "rejected"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -51,6 +62,8 @@ class AttachmentBytesForClassification:
             raise ValueError("raw_bytes must be bytes")
         if type(self.expected_size_bytes) is not int or self.expected_size_bytes < 0:
             raise ValueError("expected_size_bytes must be a non-negative integer")
+        if not isinstance(self.expected_sha256, str):
+            raise ValueError("expected_sha256 must be a string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +81,11 @@ class AttachmentClassification:
         details = (self.media_type, self.verified_extension, self.classifier_version)
         if classified and self.rejection_code is None and all(details):
             return
-        if self.state == CLASSIFICATION_REJECTED and self.rejection_code and not any(details):
+        if (
+            self.state == CLASSIFICATION_REJECTED
+            and self.rejection_code in ATTACHMENT_CLASSIFICATION_REJECTION_CODES
+            and not any(details)
+        ):
             return
         raise ValueError("classification decision is invalid")
 
@@ -103,7 +120,7 @@ def _classify_attachment(
     if len(raw) != source.expected_size_bytes:
         return _rejected("attachment_classification_stale_size")
     actual_sha256 = hashlib.sha256(raw).hexdigest()
-    expected_sha256 = str(source.expected_sha256).casefold()
+    expected_sha256 = source.expected_sha256.casefold()
     if not _SHA256.fullmatch(expected_sha256) or actual_sha256 != expected_sha256:
         return _rejected("attachment_classification_stale_hash")
     if _looks_active_or_dangerous(raw):

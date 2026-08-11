@@ -8,35 +8,85 @@ facts.  It never trusts caller MIME, names, parser facts, or Skill text.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Literal, Protocol, TypeAlias
 
 from app.attachments.classification import (
-    ATTACHMENT_CLASSIFIER_VERSION,
+    ATTACHMENT_CLASSIFICATION_REJECTION_CODES,
     AttachmentBytesForClassification,
     _ClassifiedAttachment,
     _classify_attachment,
 )
-from app.file_parser_contracts import MAX_XLSX_FILE_BYTES, XLSX_CONTENT_TYPE, XLSX_PARSER_ID, XLSX_PARSER_VERSION
+from app.attachments.file_capabilities import (
+    CAPABILITY_AGENT_INPUT,
+    FILE_CAPABILITY_REGISTRY,
+    FILE_CAPABILITY_REGISTRY_DIGEST,
+    FILE_CAPABILITY_REGISTRY_VERSION,
+    FILE_CAPABILITY_AGENT_BINDING_REQUIRED,
+    FILE_CAPABILITY_AGENT_PROFILE_INCOMPATIBLE,
+    FILE_CAPABILITY_CALLER_SELECTION_INCOMPATIBLE,
+    FILE_CAPABILITY_COMBINATION_UNSUPPORTED,
+    FILE_CAPABILITY_INTENT_AMBIGUOUS,
+    FILE_CAPABILITY_NOT_AUTHORIZED,
+    FILE_CAPABILITY_PARSER_AMBIGUOUS,
+    FILE_CAPABILITY_PARSER_UNAVAILABLE,
+    FILE_CAPABILITY_REQUIRED_ARTIFACT_INCOMPATIBLE,
+    FILE_CAPABILITY_REJECTION_CODES,
+    FILE_CAPABILITY_RUNTIME_DEPENDENCY_UNAVAILABLE,
+    FILE_CAPABILITY_SIZE_EXCEEDED,
+    FILE_CAPABILITY_SKILL_AMBIGUOUS,
+    FILE_CAPABILITY_SKILL_UNAVAILABLE,
+    FILE_CAPABILITY_TYPE_UNSUPPORTED,
+    FILE_CAPABILITY_VERSION_STALE,
+    FILE_CAPABILITY_WORKSPACE_SKILL_MISMATCH,
+    AgentFileAuthorizationPort,
+    FileCapabilityProfile,
+    ParserIdentity as ParserIdentity,
+    RuntimeDependencyKind as RuntimeDependencyKind,
+    RuntimeDependencyRequirement,
+    ServerAuthorizedAgentFileBinding,
+    VerifiedFileIdentity,
+    _check_file_capabilities,
+    _resolve_authorized_agent_file_binding,
+    matching_file_capability_profiles,
+    registry_digest as _registry_digest,
+)
 from app.projection_redaction import public_skill_display_label
 from app.validation import assert_safe_id
 
 
-FILE_CAPABILITY_REGISTRY_VERSION = "ai-platform.file-capability-registry.v2"
 ADMISSION_NOT_APPLICABLE = "not_applicable"
 ADMISSION_REQUIRED = "required"
 ADMISSION_REJECTED = "rejected"
 AdmissionState: TypeAlias = Literal["not_applicable", "required", "rejected"]
-FileTaskIntent: TypeAlias = Literal["analyze", "extract", "review", "transform", "generate_artifact", "non_execution", "unspecified"]
-AuthorizationStatus: TypeAlias = Literal["authorized", "ambiguous", "unavailable", "unauthorized", "stale"]
-RuntimeDependencyKind: TypeAlias = Literal["python_runtime", "prebuilt_python", "node_npm"]
-_EXECUTION_INTENTS = frozenset({"analyze", "extract", "review", "transform", "generate_artifact"})
+FileTaskIntent: TypeAlias = Literal[
+    "analyze",
+    "extract",
+    "review",
+    "transform",
+    "generate_artifact",
+    "non_execution",
+    "unspecified",
+]
+AuthorizationStatus: TypeAlias = Literal[
+    "authorized", "ambiguous", "unavailable", "unauthorized", "stale"
+]
+_EXECUTION_INTENTS = frozenset(
+    {"analyze", "extract", "review", "transform", "generate_artifact"}
+)
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
+FILE_CAPABILITY_ADMISSION_REJECTION_CODES = frozenset(
+    FILE_CAPABILITY_REJECTION_CODES | ATTACHMENT_CLASSIFICATION_REJECTION_CODES
+)
+
+
+def registry_digest(registry: tuple[FileCapabilityProfile, ...]) -> str:
+    """Compatibility export for callers of the original admission module."""
+
+    return _registry_digest(registry)
 
 
 def _valid_label(value: object) -> str | None:
@@ -52,31 +102,9 @@ def _version_satisfies(actual: str, minimum: str | None) -> bool:
     except ValueError:
         return actual == minimum
     width = max(len(current), len(required))
-    return current + (0,) * (width - len(current)) >= required + (0,) * (width - len(required))
-
-
-@dataclass(frozen=True, slots=True)
-class ParserIdentity:
-    """Private parser requirement selected only from the reviewed registry."""
-
-    parser_id: str
-    parser_version: str
-    max_bytes: int
-    public_label: str
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeDependencyRequirement:
-    """A prerequisite that must already exist in the immutable image."""
-
-    kind: RuntimeDependencyKind
-    dependency_id: str
-    minimum_version: str | None = None
-    require_non_root: bool = False
-
-    def __post_init__(self) -> None:
-        if self.kind not in {"python_runtime", "prebuilt_python", "node_npm"} or not _TOKEN.fullmatch(self.dependency_id):
-            raise ValueError("runtime dependency requirement is invalid")
+    return current + (0,) * (width - len(current)) >= required + (0,) * (
+        width - len(required)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +116,14 @@ class RuntimeDependencyIdentity:
     version: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"prebuilt_python", "node_npm"} or not _TOKEN.fullmatch(self.dependency_id):
+        if (
+            not isinstance(self.kind, str)
+            or self.kind not in {"prebuilt_python", "node_npm"}
+            or not isinstance(self.dependency_id, str)
+            or not _TOKEN.fullmatch(self.dependency_id)
+            or not isinstance(self.version, str)
+            or not _TOKEN.fullmatch(self.version)
+        ):
             raise ValueError("runtime dependency identity is invalid")
 
 
@@ -125,25 +160,67 @@ class RuntimeImageInventory:
         object.__setattr__(self, "dependencies", tuple(self.dependencies))
         object.__setattr__(self, "workspace_skills", tuple(self.workspace_skills))
         object.__setattr__(self, "artifact_types", frozenset(self.artifact_types))
-        if not _DIGEST.fullmatch(self.image_digest) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", self.python_version):
+        if (
+            not isinstance(self.image_digest, str)
+            or not _DIGEST.fullmatch(self.image_digest)
+            or not isinstance(self.python_version, str)
+            or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", self.python_version)
+            or (
+                self.node_version is not None
+                and (
+                    not isinstance(self.node_version, str)
+                    or not re.fullmatch(
+                        r"[0-9]+(?:\.[0-9]+){1,3}", self.node_version
+                    )
+                )
+            )
+        ):
             raise ValueError("runtime image inventory is invalid")
-        if not all(isinstance(item, RuntimeDependencyIdentity) for item in self.dependencies) or not all(isinstance(item, WorkspaceSkillPin) for item in self.workspace_skills):
+        if not all(
+            isinstance(item, RuntimeDependencyIdentity) for item in self.dependencies
+        ) or not all(
+            isinstance(item, WorkspaceSkillPin) for item in self.workspace_skills
+        ):
             raise ValueError("runtime inventory facts are invalid")
-        if any(not isinstance(item, str) or not _TOKEN.fullmatch(item) for item in self.artifact_types):
+        if any(
+            not isinstance(item, str) or not _TOKEN.fullmatch(item)
+            for item in self.artifact_types
+        ):
             raise ValueError("runtime artifact types are invalid")
-        if type(self.runs_as_non_root) is not bool or type(self.npm_source_install_allowed) is not bool or type(self.public_package_registry_egress) is not bool:
+        if (
+            type(self.runs_as_non_root) is not bool
+            or type(self.npm_source_install_allowed) is not bool
+            or type(self.public_package_registry_egress) is not bool
+        ):
             raise ValueError("runtime execution policy is invalid")
 
-    def missing_requirements(self, requirements: tuple[RuntimeDependencyRequirement, ...]) -> tuple[RuntimeDependencyRequirement, ...]:
+    def missing_requirements(
+        self, requirements: tuple[RuntimeDependencyRequirement, ...]
+    ) -> tuple[RuntimeDependencyRequirement, ...]:
         """Return unmet requirements without attempting package installation."""
 
         missing: list[RuntimeDependencyRequirement] = []
         for requirement in requirements:
             if requirement.kind == "python_runtime":
-                present = requirement.dependency_id == "python" and _version_satisfies(self.python_version, requirement.minimum_version) and (not requirement.require_non_root or self.runs_as_non_root)
+                present = (
+                    requirement.dependency_id == "python"
+                    and _version_satisfies(
+                        self.python_version, requirement.minimum_version
+                    )
+                    and (not requirement.require_non_root or self.runs_as_non_root)
+                )
             else:
-                present = requirement.kind != "node_npm" or self.node_version is not None
-                present = present and any(dependency.kind == requirement.kind and dependency.dependency_id == requirement.dependency_id and _version_satisfies(dependency.version, requirement.minimum_version) for dependency in self.dependencies)
+                present = (
+                    requirement.kind != "node_npm" or self.node_version is not None
+                )
+                present = present and any(
+                    dependency.kind == requirement.kind
+                    and dependency.dependency_id == requirement.dependency_id
+                    and _version_satisfies(
+                        dependency.version, requirement.minimum_version
+                    )
+                    for dependency in self.dependencies
+                )
             if not present:
                 missing.append(requirement)
         return tuple(missing)
@@ -152,63 +229,6 @@ class RuntimeImageInventory:
         """Require id, version, and content hash equality for a staged Skill."""
 
         return pin in self.workspace_skills
-
-
-@dataclass(frozen=True, slots=True)
-class FileCapabilityProfile:
-    """Reviewed type, parser, Skill, runtime, artifact, and multi-file policy."""
-
-    profile_id: str
-    category_label: str
-    pairs: tuple[tuple[str, str], ...]
-    enabled: bool = False
-    parser: ParserIdentity | None = None
-    logical_skill_id: str | None = None
-    runtime_requirements: tuple[RuntimeDependencyRequirement, ...] = ()
-    operations: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    homogeneous: bool = False
-
-
-def _disabled(profile_id: str, label: str, *pairs: tuple[str, str]) -> FileCapabilityProfile:
-    return FileCapabilityProfile(profile_id, label, pairs)
-
-
-FILE_CAPABILITY_REGISTRY = (
-    FileCapabilityProfile(
-        "tabular.xlsx", "Spreadsheet files", ((XLSX_CONTENT_TYPE, ".xlsx"),), True,
-        ParserIdentity(XLSX_PARSER_ID, XLSX_PARSER_VERSION, MAX_XLSX_FILE_BYTES, "Spreadsheet analysis"),
-        "qa-rag-skill",
-        (RuntimeDependencyRequirement("python_runtime", "python", "3.11", True), RuntimeDependencyRequirement("prebuilt_python", "openpyxl", "3.1")),
-        (("analyze", ()), ("generate_artifact", ("xlsx",))), True,
-    ),
-    _disabled("tabular.xls", "Spreadsheet files", ("application/vnd.ms-excel", ".xls")),
-    _disabled("tabular.csv", "Tabular files", ("text/csv", ".csv")),
-    _disabled("tabular.tsv", "Tabular files", ("text/tab-separated-values", ".tsv")),
-    _disabled("document.pdf", "Document files", ("application/pdf", ".pdf")),
-    _disabled("document.docx", "Document files", ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx")),
-    _disabled("document.txt", "Document files", ("text/plain", ".txt")),
-    _disabled("document.md", "Document files", ("text/markdown", ".md")),
-    _disabled("document.html", "Document files", ("text/html", ".html")),
-    _disabled("presentation.pptx", "Presentation files", ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx")),
-    _disabled("image.png", "Image files", ("image/png", ".png")),
-    _disabled("image.jpeg", "Image files", ("image/jpeg", ".jpeg"), ("image/jpeg", ".jpg")),
-    _disabled("image.tiff", "Image files", ("image/tiff", ".tiff"), ("image/tiff", ".tif")),
-    _disabled("structured.json", "Structured data", ("application/json", ".json")),
-    _disabled("structured.xml", "Structured data", ("application/xml", ".xml")),
-    _disabled("archive.reviewed", "Archive files", ("application/zip", ".zip")),
-    _disabled("media.audio", "Audio files", ("audio/mpeg", ".mp3")),
-    _disabled("media.video", "Video files", ("video/mp4", ".mp4")),
-)
-
-
-def registry_digest(registry: tuple[FileCapabilityProfile, ...]) -> str:
-    """Return a deterministic digest of the reviewed profile policy."""
-
-    descriptor = {"version": FILE_CAPABILITY_REGISTRY_VERSION, "classifier": ATTACHMENT_CLASSIFIER_VERSION, "profiles": [asdict(profile) for profile in registry]}
-    return hashlib.sha256(json.dumps(descriptor, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-FILE_CAPABILITY_REGISTRY_DIGEST = registry_digest(FILE_CAPABILITY_REGISTRY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,13 +245,26 @@ class SkillSelection:
 
 @dataclass(frozen=True, slots=True)
 class AgentSkillBinding:
-    """Immutable Agent constraint that file admission cannot broaden."""
+    """Untrusted exact-revision locator; never an authorization fact by itself.
+
+    The historical symbol is retained for import compatibility, but its shape
+    intentionally cannot self-attest the Agent's selected Skill or file types.
+    ``admit_file_capability`` must resolve it through ``AgentFileAuthorizationPort``.
+    """
 
     agent_id: str
-    selected_skill: SkillSelection
+    expected_revision: int
+    expected_profile_sha256: str
 
     def __post_init__(self) -> None:
         assert_safe_id(self.agent_id, "agent_id")
+        if (
+            type(self.expected_revision) is not int
+            or self.expected_revision < 0
+            or not isinstance(self.expected_profile_sha256, str)
+            or not _HASH.fullmatch(self.expected_profile_sha256)
+        ):
+            raise ValueError("Agent revision locator is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,16 +278,27 @@ class AuthorizedSkillPin:
     public_label: str
 
     def __post_init__(self) -> None:
-        for value, field_name in ((self.logical_skill_id, "logical_skill_id"), (self.skill_id, "skill_id"), (self.expected_version, "expected_version")):
+        for value, field_name in (
+            (self.logical_skill_id, "logical_skill_id"),
+            (self.skill_id, "skill_id"),
+            (self.expected_version, "expected_version"),
+        ):
             assert_safe_id(value, field_name)
         label = _valid_label(self.public_label)
-        if not _HASH.fullmatch(self.manifest_sha256) or label is None or label.casefold() in {self.logical_skill_id.casefold(), self.skill_id.casefold()}:
+        if (
+            not _HASH.fullmatch(self.manifest_sha256)
+            or label is None
+            or label.casefold()
+            in {self.logical_skill_id.casefold(), self.skill_id.casefold()}
+        ):
             raise ValueError("authorized Skill pin is invalid")
 
     def workspace_pin(self) -> WorkspaceSkillPin:
         """Return the exact workspace distribution this authorized pin requires."""
 
-        return WorkspaceSkillPin(self.skill_id, self.expected_version, self.manifest_sha256)
+        return WorkspaceSkillPin(
+            self.skill_id, self.expected_version, self.manifest_sha256
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,14 +310,28 @@ class SkillAuthorizationResolution:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pins", tuple(self.pins))
-        if self.status not in {"authorized", "ambiguous", "unavailable", "unauthorized", "stale"}:
+        if self.status not in {
+            "authorized",
+            "ambiguous",
+            "unavailable",
+            "unauthorized",
+            "stale",
+        }:
             raise ValueError("authorization status is invalid")
+        if not all(isinstance(pin, AuthorizedSkillPin) for pin in self.pins):
+            raise ValueError("authorization pins are invalid")
 
 
 class SkillAuthorizationPort(Protocol):
     """Repository-owned authorization and published-distribution resolution seam."""
 
-    async def resolve_exactly_one(self, *, logical_skill_ids: tuple[str, ...], selection: SkillSelection | None, binding: AgentSkillBinding | None) -> SkillAuthorizationResolution:
+    async def resolve_exactly_one(
+        self,
+        *,
+        logical_skill_ids: tuple[str, ...],
+        selection: SkillSelection | None,
+        binding: ServerAuthorizedAgentFileBinding | None,
+    ) -> SkillAuthorizationResolution:
         """Resolve exactly one authorized immutable distribution without model authority."""
 
 
@@ -289,11 +347,25 @@ class FileCapabilityAdmissionRequest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attachments", tuple(self.attachments))
-        if not all(isinstance(item, AttachmentBytesForClassification) for item in self.attachments):
+        if not all(
+            isinstance(item, AttachmentBytesForClassification)
+            for item in self.attachments
+        ):
             raise ValueError("attachments must be AttachmentBytesForClassification")
         if not isinstance(self.runtime_inventory, RuntimeImageInventory):
             raise ValueError("runtime_inventory must be RuntimeImageInventory")
-        if self.task_intent not in _EXECUTION_INTENTS | {"non_execution", "unspecified"}:
+        if self.explicit_selection is not None and not isinstance(
+            self.explicit_selection, SkillSelection
+        ):
+            raise ValueError("explicit_selection must be SkillSelection")
+        if self.agent_binding is not None and not isinstance(
+            self.agent_binding, AgentSkillBinding
+        ):
+            raise ValueError("agent_binding must be AgentSkillBinding")
+        if self.task_intent not in _EXECUTION_INTENTS | {
+            "non_execution",
+            "unspecified",
+        }:
             raise ValueError("task_intent is invalid")
 
 
@@ -310,6 +382,22 @@ class PrivateParserRequirement:
     parser_version: str
     max_bytes: int
 
+    def __post_init__(self) -> None:
+        assert_safe_id(self.file_id, "file_id")
+        VerifiedFileIdentity(self.verified_media_type, self.verified_extension)
+        if (
+            type(self.expected_size_bytes) is not int
+            or self.expected_size_bytes < 0
+            or not isinstance(self.expected_sha256, str)
+            or not _HASH.fullmatch(self.expected_sha256)
+            or not _TOKEN.fullmatch(self.parser_id)
+            or not _TOKEN.fullmatch(self.parser_version)
+            or type(self.max_bytes) is not int
+            or self.max_bytes < 1
+            or self.expected_size_bytes > self.max_bytes
+        ):
+            raise ValueError("private parser requirement is invalid")
+
 
 @dataclass(frozen=True, slots=True)
 class PublicProgressFact:
@@ -323,15 +411,31 @@ class PublicProgressFact:
     total: int
 
     def __post_init__(self) -> None:
-        if self.kind not in {"file_category", "parser", "skill"} or self.stage != "admission" or self.status != "completed":
+        if (
+            self.kind not in {"file_category", "parser", "skill"}
+            or self.stage != "admission"
+            or self.status != "completed"
+        ):
             raise ValueError("public progress fact is invalid")
-        if _valid_label(self.label) is None or type(self.current) is not int or type(self.total) is not int or self.total < 1 or not 0 <= self.current <= self.total:
+        if (
+            _valid_label(self.label) is None
+            or type(self.current) is not int
+            or type(self.total) is not int
+            or self.total < 1
+            or not 0 <= self.current <= self.total
+        ):
             raise ValueError("public progress progress is invalid")
 
     def to_public_payload(self) -> dict[str, object]:
         """Serialize only the safe public progress contract."""
 
-        return {"kind": self.kind, "stage": self.stage, "status": self.status, "label": self.label, "progress": {"current": self.current, "total": self.total}}
+        return {
+            "kind": self.kind,
+            "stage": self.stage,
+            "status": self.status,
+            "label": self.label,
+            "progress": {"current": self.current, "total": self.total},
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,19 +457,107 @@ class FileCapabilityAdmission:
     public_progress_facts: tuple[PublicProgressFact, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("skill_pins", "parser_requirements", "runtime_requirements", "required_artifact_types", "public_progress_facts"):
+        for name in (
+            "skill_pins",
+            "parser_requirements",
+            "runtime_requirements",
+            "required_artifact_types",
+            "public_progress_facts",
+        ):
             object.__setattr__(self, name, tuple(getattr(self, name)))
-        private = (self.selected_skill, self.skill_pins, self.workspace_skill_pin, self.parser_requirements, self.runtime_image_digest, self.runtime_requirements, self.required_artifact_types, self.public_progress_facts)
-        if self.state == ADMISSION_NOT_APPLICABLE and not self.fallback_prohibited and self.rejection_code is None and not any(private):
+        private = (
+            self.selected_skill,
+            self.skill_pins,
+            self.workspace_skill_pin,
+            self.parser_requirements,
+            self.runtime_image_digest,
+            self.runtime_requirements,
+            self.required_artifact_types,
+            self.public_progress_facts,
+        )
+        fields_valid = (
+            self.registry_version == FILE_CAPABILITY_REGISTRY_VERSION
+            and self.registry_digest == FILE_CAPABILITY_REGISTRY_DIGEST
+            and self.state
+            in {ADMISSION_NOT_APPLICABLE, ADMISSION_REQUIRED, ADMISSION_REJECTED}
+            and type(self.fallback_prohibited) is bool
+            and (
+                self.selected_skill is None
+                or isinstance(self.selected_skill, SkillSelection)
+            )
+            and all(isinstance(item, AuthorizedSkillPin) for item in self.skill_pins)
+            and (
+                self.workspace_skill_pin is None
+                or isinstance(self.workspace_skill_pin, WorkspaceSkillPin)
+            )
+            and all(
+                isinstance(item, PrivateParserRequirement)
+                for item in self.parser_requirements
+            )
+            and (
+                self.runtime_image_digest is None
+                or (
+                    isinstance(self.runtime_image_digest, str)
+                    and _DIGEST.fullmatch(self.runtime_image_digest)
+                )
+            )
+            and all(
+                isinstance(item, RuntimeDependencyRequirement)
+                for item in self.runtime_requirements
+            )
+            and all(
+                isinstance(item, str) and _TOKEN.fullmatch(item)
+                for item in self.required_artifact_types
+            )
+            and all(
+                isinstance(item, PublicProgressFact)
+                for item in self.public_progress_facts
+            )
+            and len({item.file_id for item in self.parser_requirements})
+            == len(self.parser_requirements)
+            and len(set(self.required_artifact_types))
+            == len(self.required_artifact_types)
+        )
+        if not fields_valid:
+            raise ValueError("admission state violates its fallback invariant")
+        if (
+            self.state == ADMISSION_NOT_APPLICABLE
+            and not self.fallback_prohibited
+            and self.rejection_code is None
+            and not any(private)
+        ):
             return
-        if self.state == ADMISSION_REJECTED and self.fallback_prohibited and self.rejection_code and not any(private):
+        if (
+            self.state == ADMISSION_REJECTED
+            and self.fallback_prohibited
+            and self.rejection_code in FILE_CAPABILITY_ADMISSION_REJECTION_CODES
+            and not any(private)
+        ):
             return
-        if self.state == ADMISSION_REQUIRED and self.fallback_prohibited and self.rejection_code is None and self.selected_skill and len(self.skill_pins) == 1 and self.workspace_skill_pin and self.parser_requirements and self.runtime_image_digest:
+        if (
+            self.state == ADMISSION_REQUIRED
+            and self.fallback_prohibited
+            and self.rejection_code is None
+            and self.selected_skill
+            and len(self.skill_pins) == 1
+            and self.workspace_skill_pin
+            and self.parser_requirements
+            and self.runtime_image_digest
+            and self.skill_pins[0].skill_id == self.selected_skill.skill_id
+            and self.skill_pins[0].expected_version
+            == self.selected_skill.expected_version
+            and self.workspace_skill_pin == self.skill_pins[0].workspace_pin()
+        ):
             return
         raise ValueError("admission state violates its fallback invariant")
 
 
-async def admit_file_capability(request: FileCapabilityAdmissionRequest, *, authorization_port: SkillAuthorizationPort) -> FileCapabilityAdmission:
+async def admit_file_capability(
+    request: FileCapabilityAdmissionRequest,
+    *,
+    authorization_port: SkillAuthorizationPort,
+    agent_authorization_port: AgentFileAuthorizationPort | None = None,
+) -> FileCapabilityAdmission:
     """Classify bounded bytes and return the one fail-closed file-capability decision."""
 
     if not request.attachments:
@@ -374,104 +566,240 @@ async def admit_file_capability(request: FileCapabilityAdmissionRequest, *, auth
     for source in request.attachments:
         attachment, classification = _classify_attachment(source)
         if attachment is None:
-            return _rejected(classification.rejection_code or "attachment_classification_type_unsupported")
+            return _rejected(
+                classification.rejection_code
+                or "attachment_classification_type_unsupported"
+            )
         attachments.append(attachment)
     profile, rejection = _profile_for(attachments)
     if rejection:
         return _rejected(rejection)
     assert profile is not None
     if not profile.enabled:
-        return _rejected("file_capability_type_unsupported")
+        return _rejected(FILE_CAPABILITY_TYPE_UNSUPPORTED)
     if len(attachments) > 1 and not profile.homogeneous:
-        return _rejected("file_capability_combination_unsupported")
+        return _rejected(FILE_CAPABILITY_COMBINATION_UNSUPPORTED)
     if request.task_intent == "non_execution":
         return _not_applicable()
     artifacts = dict(profile.operations).get(request.task_intent)
     if artifacts is None:
-        return _rejected("file_capability_intent_ambiguous")
-    if profile.parser is None or any(item.size_bytes > profile.parser.max_bytes for item in attachments):
-        return _rejected("file_capability_parser_unavailable" if profile.parser is None else "file_capability_size_exceeded")
+        return _rejected(FILE_CAPABILITY_INTENT_AMBIGUOUS)
+    if profile.parser is None or any(
+        item.size_bytes > profile.parser.max_bytes for item in attachments
+    ):
+        return _rejected(
+            FILE_CAPABILITY_PARSER_UNAVAILABLE
+            if profile.parser is None
+            else FILE_CAPABILITY_SIZE_EXCEEDED
+        )
     if request.runtime_inventory.missing_requirements(profile.runtime_requirements):
-        return _rejected("file_capability_runtime_dependency_unavailable")
+        return _rejected(FILE_CAPABILITY_RUNTIME_DEPENDENCY_UNAVAILABLE)
     if not set(artifacts) <= request.runtime_inventory.artifact_types:
-        return _rejected("file_capability_required_artifact_incompatible")
-    selection, rejection = _selection(profile, request)
+        return _rejected(FILE_CAPABILITY_REQUIRED_ARTIFACT_INCOMPATIBLE)
+    authorized_agent_binding: ServerAuthorizedAgentFileBinding | None = None
+    if request.agent_binding is not None:
+        if agent_authorization_port is None:
+            return _rejected(FILE_CAPABILITY_AGENT_BINDING_REQUIRED)
+        (
+            authorized_agent_binding,
+            rejection,
+        ) = await _resolve_authorized_agent_file_binding(
+            agent_id=request.agent_binding.agent_id,
+            expected_revision=request.agent_binding.expected_revision,
+            expected_profile_sha256=request.agent_binding.expected_profile_sha256,
+            authorization_port=agent_authorization_port,
+        )
+        if rejection:
+            return _rejected(rejection)
+        assert authorized_agent_binding is not None
+        agent_decision = _check_file_capabilities(
+            tuple(
+                VerifiedFileIdentity(item.media_type, item.verified_extension)
+                for item in attachments
+            ),
+            capability=CAPABILITY_AGENT_INPUT,
+            agent_binding=authorized_agent_binding,
+        )
+        if agent_decision.rejection_code:
+            return _rejected(agent_decision.rejection_code)
+    selection, rejection = _selection(profile, request, authorized_agent_binding)
     if rejection:
         return _rejected(rejection)
-    resolution = await authorization_port.resolve_exactly_one(logical_skill_ids=(profile.logical_skill_id or "",), selection=selection, binding=request.agent_binding)
+    try:
+        resolution = await authorization_port.resolve_exactly_one(
+            logical_skill_ids=(profile.logical_skill_id or "",),
+            selection=selection,
+            binding=authorized_agent_binding,
+        )
+    except Exception:
+        return _rejected(FILE_CAPABILITY_SKILL_UNAVAILABLE)
+    if not isinstance(resolution, SkillAuthorizationResolution):
+        return _rejected(FILE_CAPABILITY_SKILL_UNAVAILABLE)
     rejection = _authorization_rejection(resolution)
     if rejection:
         return _rejected(rejection)
     pin = resolution.pins[0]
-    rejection = _pin_rejection(pin, profile, selection, request.agent_binding)
+    rejection = _pin_rejection(pin, profile, selection, authorized_agent_binding)
     if rejection:
         return _rejected(rejection)
     workspace_pin = pin.workspace_pin()
     if not request.runtime_inventory.has_workspace_skill(workspace_pin):
-        return _rejected("file_capability_workspace_skill_mismatch")
+        return _rejected(FILE_CAPABILITY_WORKSPACE_SKILL_MISMATCH)
     return FileCapabilityAdmission(
-        ADMISSION_REQUIRED, True, None, FILE_CAPABILITY_REGISTRY_VERSION, FILE_CAPABILITY_REGISTRY_DIGEST,
-        SkillSelection(pin.skill_id, pin.expected_version), (pin,), workspace_pin,
-        tuple(PrivateParserRequirement(item.file_id, item.media_type, item.verified_extension, item.size_bytes, item.sha256, profile.parser.parser_id, profile.parser.parser_version, profile.parser.max_bytes) for item in attachments),
-        request.runtime_inventory.image_digest, profile.runtime_requirements, artifacts,
+        ADMISSION_REQUIRED,
+        True,
+        None,
+        FILE_CAPABILITY_REGISTRY_VERSION,
+        FILE_CAPABILITY_REGISTRY_DIGEST,
+        SkillSelection(pin.skill_id, pin.expected_version),
+        (pin,),
+        workspace_pin,
+        tuple(
+            PrivateParserRequirement(
+                item.file_id,
+                item.media_type,
+                item.verified_extension,
+                item.size_bytes,
+                item.sha256,
+                profile.parser.parser_id,
+                profile.parser.parser_version,
+                profile.parser.max_bytes,
+            )
+            for item in attachments
+        ),
+        request.runtime_inventory.image_digest,
+        profile.runtime_requirements,
+        artifacts,
         _public_facts(profile, pin, len(attachments)),
     )
 
 
-def _profile_for(attachments: list[_ClassifiedAttachment]) -> tuple[FileCapabilityProfile | None, str | None]:
+def _profile_for(
+    attachments: list[_ClassifiedAttachment],
+) -> tuple[FileCapabilityProfile | None, str | None]:
     profiles: list[FileCapabilityProfile] = []
     for attachment in attachments:
-        matches = [profile for profile in FILE_CAPABILITY_REGISTRY if (attachment.media_type, attachment.verified_extension) in profile.pairs]
+        identity = VerifiedFileIdentity(
+            attachment.media_type, attachment.verified_extension
+        )
+        matches = matching_file_capability_profiles(
+            identity, registry=FILE_CAPABILITY_REGISTRY
+        )
         if len(matches) != 1:
-            return None, "file_capability_parser_ambiguous" if matches else "file_capability_type_unsupported"
+            return (
+                None,
+                FILE_CAPABILITY_PARSER_AMBIGUOUS
+                if matches
+                else FILE_CAPABILITY_TYPE_UNSUPPORTED,
+            )
         profiles.append(matches[0])
-    return (profiles[0], None) if all(profile == profiles[0] for profile in profiles) else (None, "file_capability_combination_unsupported")
+    return (
+        (profiles[0], None)
+        if all(profile == profiles[0] for profile in profiles)
+        else (None, FILE_CAPABILITY_COMBINATION_UNSUPPORTED)
+    )
 
 
-def _selection(profile: FileCapabilityProfile, request: FileCapabilityAdmissionRequest) -> tuple[SkillSelection | None, str | None]:
-    if request.agent_binding:
-        bound = request.agent_binding.selected_skill
-        if bound.skill_id != profile.logical_skill_id or request.explicit_selection not in {None, bound}:
-            return None, "file_capability_agent_profile_incompatible"
+def _selection(
+    profile: FileCapabilityProfile,
+    request: FileCapabilityAdmissionRequest,
+    binding: ServerAuthorizedAgentFileBinding | None,
+) -> tuple[SkillSelection | None, str | None]:
+    if binding:
+        bound = SkillSelection(
+            binding.selected_skill_id,
+            binding.selected_skill_version,
+        )
+        if (
+            bound.skill_id != profile.logical_skill_id
+            or request.explicit_selection not in {None, bound}
+        ):
+            return None, FILE_CAPABILITY_AGENT_PROFILE_INCOMPATIBLE
         return bound, None
-    if request.explicit_selection and request.explicit_selection.skill_id != profile.logical_skill_id:
-        return None, "file_capability_caller_selection_incompatible"
+    if (
+        request.explicit_selection
+        and request.explicit_selection.skill_id != profile.logical_skill_id
+    ):
+        return None, FILE_CAPABILITY_CALLER_SELECTION_INCOMPATIBLE
     return request.explicit_selection, None
 
 
 def _authorization_rejection(resolution: SkillAuthorizationResolution) -> str | None:
     if resolution.status == "authorized":
-        return None if len(resolution.pins) == 1 else "file_capability_skill_ambiguous"
-    return {"ambiguous": "file_capability_skill_ambiguous", "unavailable": "file_capability_skill_unavailable", "unauthorized": "file_capability_not_authorized", "stale": "file_capability_version_stale"}.get(resolution.status, "file_capability_skill_unavailable")
+        return None if len(resolution.pins) == 1 else FILE_CAPABILITY_SKILL_AMBIGUOUS
+    return {
+        "ambiguous": FILE_CAPABILITY_SKILL_AMBIGUOUS,
+        "unavailable": FILE_CAPABILITY_SKILL_UNAVAILABLE,
+        "unauthorized": FILE_CAPABILITY_NOT_AUTHORIZED,
+        "stale": FILE_CAPABILITY_VERSION_STALE,
+    }.get(resolution.status, FILE_CAPABILITY_SKILL_UNAVAILABLE)
 
 
-def _pin_rejection(pin: AuthorizedSkillPin, profile: FileCapabilityProfile, selection: SkillSelection | None, binding: AgentSkillBinding | None) -> str | None:
+def _pin_rejection(
+    pin: AuthorizedSkillPin,
+    profile: FileCapabilityProfile,
+    selection: SkillSelection | None,
+    binding: ServerAuthorizedAgentFileBinding | None,
+) -> str | None:
     if pin.logical_skill_id != profile.logical_skill_id:
-        return "file_capability_skill_unavailable"
-    if selection and (pin.skill_id != selection.skill_id or pin.expected_version != selection.expected_version):
-        return "file_capability_agent_profile_incompatible" if binding else "file_capability_caller_selection_incompatible"
+        return FILE_CAPABILITY_SKILL_UNAVAILABLE
+    if selection and (
+        pin.skill_id != selection.skill_id
+        or pin.expected_version != selection.expected_version
+    ):
+        return (
+            FILE_CAPABILITY_AGENT_PROFILE_INCOMPATIBLE
+            if binding
+            else FILE_CAPABILITY_CALLER_SELECTION_INCOMPATIBLE
+        )
     return None
 
 
-def _public_facts(profile: FileCapabilityProfile, pin: AuthorizedSkillPin, count: int) -> tuple[PublicProgressFact, ...]:
+def _public_facts(
+    profile: FileCapabilityProfile, pin: AuthorizedSkillPin, count: int
+) -> tuple[PublicProgressFact, ...]:
     assert profile.parser is not None
     skill_label = _valid_label(pin.public_label)
     if skill_label is None:
         raise ValueError("authorization adapter returned an unsafe public label")
     return (
-        PublicProgressFact("file_category", "admission", "completed", profile.category_label, count, count),
-        PublicProgressFact("parser", "admission", "completed", profile.parser.public_label, count, count),
-        PublicProgressFact("skill", "admission", "completed", skill_label, count, count),
+        PublicProgressFact(
+            "file_category",
+            "admission",
+            "completed",
+            profile.category_label,
+            count,
+            count,
+        ),
+        PublicProgressFact(
+            "parser",
+            "admission",
+            "completed",
+            profile.parser.public_label,
+            count,
+            count,
+        ),
+        PublicProgressFact(
+            "skill", "admission", "completed", skill_label, count, count
+        ),
     )
 
 
 def _not_applicable() -> FileCapabilityAdmission:
-    return FileCapabilityAdmission(ADMISSION_NOT_APPLICABLE, False, None, FILE_CAPABILITY_REGISTRY_VERSION, FILE_CAPABILITY_REGISTRY_DIGEST)
+    return FileCapabilityAdmission(
+        ADMISSION_NOT_APPLICABLE,
+        False,
+        None,
+        FILE_CAPABILITY_REGISTRY_VERSION,
+        FILE_CAPABILITY_REGISTRY_DIGEST,
+    )
 
 
 def _rejected(code: str) -> FileCapabilityAdmission:
-    return FileCapabilityAdmission(ADMISSION_REJECTED, True, code, FILE_CAPABILITY_REGISTRY_VERSION, FILE_CAPABILITY_REGISTRY_DIGEST)
-
-
-if len({pair for profile in FILE_CAPABILITY_REGISTRY for pair in profile.pairs}) != sum(len(profile.pairs) for profile in FILE_CAPABILITY_REGISTRY):
-    raise RuntimeError("file capability registry has ambiguous type pairs")
+    return FileCapabilityAdmission(
+        ADMISSION_REJECTED,
+        True,
+        code,
+        FILE_CAPABILITY_REGISTRY_VERSION,
+        FILE_CAPABILITY_REGISTRY_DIGEST,
+    )
