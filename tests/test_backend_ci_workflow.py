@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -30,6 +31,30 @@ TRUSTED_WORKFLOW_IMPORTS = (
     ("from", "packaging.utils", 0, (("canonicalize_name", None),)),
     ("from", "packaging.version", 0, (("InvalidVersion", None), ("Version", None))),
 )
+AGENT_SKILL_CONTRACT_TESTS = (
+    "tests/test_agent_profile_authority.py",
+    "tests/test_agent_profile_lifecycle.py",
+    "tests/test_agent_profile_routes.py",
+    "tests/test_authorized_skill_catalog.py",
+    "tests/test_skill_dependencies.py",
+    "tests/test_skill_lifecycle.py",
+    "tests/test_skill_registry.py",
+    "tests/test_skill_stager.py",
+    "tests/test_skill_release_policy.py",
+    "tests/test_chat_routes.py",
+    "tests/test_skills_marketplace_routes.py",
+)
+
+
+def _workflow_job_block(workflow: str, job_id: str) -> str:
+    matches = list(re.finditer(rf"(?m)^  {re.escape(job_id)}:\s*$", workflow))
+    assert len(matches) == 1, f"expected exactly one {job_id} job"
+    start = matches[0].start()
+    next_job = re.search(
+        r"(?m)^  [A-Za-z0-9][A-Za-z0-9_-]*:\s*$", workflow[matches[0].end() :]
+    )
+    end = len(workflow) if next_job is None else matches[0].end() + next_job.start()
+    return workflow[start:end]
 
 
 def test_backend_required_check_is_stable_for_every_main_pull_request():
@@ -40,7 +65,8 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "- main" in pull_request_block
     assert "paths:" not in pull_request_block
     assert "name: backend required" in workflow
-    assert "needs: [sandbox-provider, backend-image]" in workflow
+    assert "needs: [sandbox-provider, agent-skill-contracts, backend-image]" in workflow
+    assert "name: Agent and Skill contracts" in workflow
     assert "name: packaged backend image build" in workflow
     assert "if: ${{ always() }}" in workflow
     assert "python -m compileall -q app tools scripts" in workflow
@@ -56,9 +82,9 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
 
 def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_module():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    sandbox_job = workflow.split("  sandbox-provider:", 1)[1].split("  backend-image:", 1)[0]
+    sandbox_job = _workflow_job_block(workflow, "sandbox-provider")
     pytest_step = sandbox_job.split("- name: Run sandbox provider targeted tests", 1)[1]
-    required_job = workflow.split("  required:", 1)[1]
+    required_job = _workflow_job_block(workflow, "required")
     sse_selectors = (
         "tests/test_sse_runtime_cutover.py",
         "tests/test_streaming_redis.py",
@@ -86,8 +112,69 @@ def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_modu
     assert "--ignore" not in pytest_step
     assert " -k " not in pytest_step
     assert "runs-on: ubuntu-latest" in required_job
-    assert "needs: [sandbox-provider, backend-image]" in required_job
+    assert (
+        "needs: [sandbox-provider, agent-skill-contracts, backend-image]"
+        in required_job
+    )
     assert "if: ${{ always() }}" in required_job
+
+
+def test_agent_skill_contract_job_is_bounded_and_required():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    agent_skill_job = _workflow_job_block(workflow, "agent-skill-contracts")
+    required_job = _workflow_job_block(workflow, "required")
+    pytest_step = agent_skill_job.split("- name: Run Agent and Skill contract tests", 1)
+
+    assert len(pytest_step) == 2
+    assert "name: Agent and Skill contracts" in agent_skill_job
+    assert "runs-on: ubuntu-latest" in agent_skill_job
+    assert "needs: sandbox-provider" in agent_skill_job
+    assert (
+        "AGENT_SKILL_SOURCE_COMMIT: "
+        "${{ github.event.pull_request.head.sha || github.sha }}"
+        in agent_skill_job
+    )
+    assert "ref: ${{ env.AGENT_SKILL_SOURCE_COMMIT }}" in agent_skill_job
+    assert "persist-credentials: false" in agent_skill_job
+    assert (
+        'test "$(git rev-parse HEAD)" = "$AGENT_SKILL_SOURCE_COMMIT"'
+        in agent_skill_job
+    )
+    assert "uv lock --check" in agent_skill_job
+    assert "uv sync --locked --extra test --no-install-project" in agent_skill_job
+    assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
+
+    run_script = pytest_step[1].split("run: |", 1)[1]
+    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", run_script)
+    tokens = shlex.split(normalized_run)
+    expected_tokens = [
+        "uv",
+        "run",
+        "--locked",
+        "--extra",
+        "test",
+        "python",
+        "-m",
+        "pytest",
+        *AGENT_SKILL_CONTRACT_TESTS,
+        "-q",
+        "--basetemp",
+        ".pytest-tmp",
+    ]
+    assert tokens == expected_tokens
+    assert not any(token.startswith("-k") for token in tokens)
+    assert not any(token.startswith("--ignore") for token in tokens)
+
+    assert (
+        "needs: [sandbox-provider, agent-skill-contracts, backend-image]"
+        in required_job
+    )
+    assert (
+        "AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}"
+        in required_job
+    )
+    assert 'test "$AGENT_SKILL_RESULT" = "success"' in required_job
+    assert re.search(r"(?m)^\s*continue-on-error\s*:", required_job) is None
 
 
 def test_backend_required_check_runs_on_every_main_push():

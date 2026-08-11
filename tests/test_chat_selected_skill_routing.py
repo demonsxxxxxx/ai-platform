@@ -63,6 +63,9 @@ def default_chat_stream_dependencies(monkeypatch):
     async def ensure_workspace(*_args, **_kwargs):
         return None
 
+    async def ensure_submission_principal(*_args, **_kwargs):
+        return None
+
     async def no_latest_run_input(*_args, **_kwargs):
         return None
 
@@ -106,6 +109,11 @@ def default_chat_stream_dependencies(monkeypatch):
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace,
         raising=False,
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "ensure_submission_principal",
+        ensure_submission_principal,
     )
     monkeypatch.setattr(
         repository_module,
