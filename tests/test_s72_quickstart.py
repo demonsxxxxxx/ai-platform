@@ -56,7 +56,7 @@ def test_compose_command_has_only_internal_test_files_and_exact_overrides(tmp_pa
         ["sudo", "-n", "docker"], tmp_path, tmp_path / ".env", subject
     )
 
-    assert command[:3] == ["sudo", "-n", "env"]
+    assert command[:4] == ["sudo", "-n", "env", "-i"]
     assert [command[index + 1] for index, value in enumerate(command) if value == "-f"] == [
         str(tmp_path / path) for path in quickstart.COMPOSE_FILES
     ]
@@ -90,7 +90,7 @@ def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
         def run(self, command: object, **_: object) -> str:
             joined = " ".join(command)
             if "remote.origin.url" in joined:
-                return "https://github.com/demonsxxxxxx/ai-platform.git"
+                return quickstart.ORIGIN_URL
             if "rev-parse" in joined:
                 return COMMIT
             if "status" in joined:
@@ -124,6 +124,41 @@ def test_invalid_origin_is_rejected_before_network_access(tmp_path: Path) -> Non
     release = quickstart.Quickstart(repo, root, runner=InvalidOriginRunner())
     with pytest.raises(quickstart.QuickstartError, match="invalid origin"):
         release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
+
+
+def test_git_main_check_uses_canonical_url_and_sanitized_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "managed"
+    repo = root / "releases" / COMMIT
+    for relative in quickstart.COMPOSE_FILES:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("services: {}\n", encoding="utf-8")
+    network_calls: list[tuple[list[str], dict[str, str]]] = []
+
+    class CanonicalRunner(quickstart.Runner):
+        def run(self, command: object, **kwargs: object) -> str:
+            command = list(command)
+            joined = " ".join(command)
+            if "rev-parse" in joined:
+                return COMMIT
+            if "status" in joined:
+                return ""
+            if "remote.origin.url" in joined:
+                return quickstart.ORIGIN_URL
+            network_calls.append((command, kwargs["environment"]))
+            return COMMIT + "\trefs/heads/main"
+
+    monkeypatch.setenv("GIT_SSH_COMMAND", "untrusted-command")
+    release = quickstart.Quickstart(repo, root, runner=CanonicalRunner())
+    release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
+
+    command, environment = network_calls[0]
+    assert quickstart.ORIGIN_URL in command and "origin" not in command
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_CONFIG_GLOBAL"] == quickstart.os.devnull
+    assert "GIT_SSH_COMMAND" not in environment
 
 
 @pytest.mark.parametrize("extra_service", [False, True])
@@ -301,6 +336,24 @@ def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands
 
     assert events.count("rollback") == 1
     assert all("down" not in event and "-v" not in event for event in events)
+
+
+def test_keyboard_interrupt_after_up_runs_small_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    release = _release(tmp_path, monkeypatch, events)
+
+    def compose(_env: Path, _subject: object, *args: str) -> None:
+        events.append("compose:" + " ".join(args))
+        if args and args[0] == "up":
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(release, "_compose", compose)
+    with pytest.raises(quickstart.QuickstartError, match="previous images are healthy again"):
+        release.run()
+
+    assert events.count("rollback") == 1
 
 
 @pytest.mark.parametrize(

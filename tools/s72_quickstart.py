@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import signal
 import stat
 import subprocess
 import time
@@ -28,10 +29,7 @@ COMPOSE_FILES = (
 )
 BACKEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-backend"
 FRONTEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-frontend"
-ORIGIN_URLS = {
-    "https://github.com/demonsxxxxxx/ai-platform.git", "git@github.com:demonsxxxxxx/ai-platform.git",
-    "ssh://git@github.com/demonsxxxxxx/ai-platform.git",
-}
+ORIGIN_URL = "https://github.com/demonsxxxxxx/ai-platform.git"
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
@@ -51,9 +49,12 @@ class Subject:
 
 class Runner:
     def run(self, command: Sequence[str], *, cwd: Path | None = None,
-            output: bool = False, timeout: int = 300) -> str:
+            output: bool = False, timeout: int = 300,
+            environment: dict[str, str] | None = None) -> str:
+        command_env = dict(os.environ if environment is None else environment)
+        command_env["GIT_TERMINAL_PROMPT"] = "0"
         result = subprocess.run(
-            list(command), cwd=cwd, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            list(command), cwd=cwd, env=command_env,
             stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdout=subprocess.PIPE if output else subprocess.DEVNULL,
             text=True, timeout=timeout,
@@ -126,9 +127,23 @@ def _compose_command(docker: Sequence[str], repo: Path, env_file: Path,
         f"AI_PLATFORM_FRONTEND_IMAGE={subject.frontend_image}",
         f"AI_PLATFORM_SOURCE_COMMIT={subject.commit}",
     ]
-    prefix = [*docker[:-1], "env", *overrides, docker[-1]] if docker[:2] == ["sudo", "-n"] else ["env", *overrides, *docker]
+    prefix = [*docker[:-1], "env", "-i", *overrides, docker[-1]] if docker[:2] == ["sudo", "-n"] else ["env", "-i", *overrides, *docker]
     files = [item for path in COMPOSE_FILES for item in ("-f", str(repo / path))]
     return [*prefix, "compose", "-p", PROJECT, "--env-file", str(env_file), *files]
+
+
+def _git_network_environment() -> dict[str, str]:
+    allowed = (
+        "PATH", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "no_proxy",
+    )
+    result = {key: os.environ[key] for key in allowed if key in os.environ}
+    result.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return result
+
+
+def _interrupt(*_args: object) -> None:
+    raise KeyboardInterrupt
 
 
 class Quickstart:
@@ -240,12 +255,17 @@ class Quickstart:
 
     def _verify_source(self, subject: Subject) -> None:
         self._verify_checkout(self.repo, subject.commit)
-        origin = self.runner.run(["git", "config", "--get", "remote.origin.url"], cwd=self.repo, output=True)
-        if origin.rstrip("/") not in ORIGIN_URLS:
+        origin = self.runner.run(
+            ["git", "config", "--local", "--get", "remote.origin.url"],
+            cwd=self.repo, output=True,
+        )
+        if origin.rstrip("/") != ORIGIN_URL:
             raise QuickstartError("prepared subject has an invalid origin")
         remote = self.runner.run(
-            ["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"],
-            cwd=self.repo, output=True, timeout=60,
+            ["git", "-c", "credential.helper=", "ls-remote", "--exit-code",
+             ORIGIN_URL, "refs/heads/main"],
+            cwd=self.root, output=True, timeout=60,
+            environment=_git_network_environment(),
         ).split()
         if remote != [subject.commit, "refs/heads/main"]:
             raise QuickstartError("prepared subject is not fresh origin/main")
@@ -346,10 +366,10 @@ class Quickstart:
         try:
             self._compose(env_file, subject, "up", "-d", "--no-build", "--pull", "never")
             self._wait_health(subject)
-        except (OSError, subprocess.SubprocessError, QuickstartError):
+        except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
             try:
                 self._rollback(previous, env_file)
-            except (OSError, subprocess.SubprocessError, QuickstartError):
+            except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
                 raise QuickstartError("startup and rollback failed; data volumes were preserved") from None
             raise QuickstartError(
                 "startup failed; previous images are healthy again (database changes were not reversed)"
@@ -364,14 +384,21 @@ class Quickstart:
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
+    previous_handlers = {
+        signum: signal.signal(signum, _interrupt)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
     try:
         Quickstart(repo).run()
     except QuickstartError as exc:
         print(f"s72 quickstart: failed: {exc} (no data volumes were removed)")
         return 2
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
         print("s72 quickstart: failed: command error (no data volumes were removed)")
         return 2
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     return 0
 
 
