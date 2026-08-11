@@ -20,6 +20,7 @@ def _subject_file(path: Path, **changes: object) -> Path:
         "source_commit": COMMIT,
         "backend_image": BACKEND,
         "frontend_image": FRONTEND,
+        "env_file": "/data/ai-platform-internal-test/config/stable/.env",
         "ci_success": True,
         **changes,
     }
@@ -74,7 +75,7 @@ def test_managed_env_is_only_checked_for_metadata(monkeypatch: pytest.MonkeyPatc
     release = quickstart.Quickstart(tmp_path, root)
     monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: pytest.fail("env read"))
 
-    assert release._env_file(quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)) == env_file
+    assert release._validate_env(env_file) == env_file
 
 
 def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -91,6 +92,8 @@ def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
                 return "https://github.com/demonsxxxxxx/ai-platform.git"
             if "rev-parse" in joined:
                 return COMMIT
+            if "status" in joined:
+                return ""
             return OLD_COMMIT + "\trefs/heads/main"
 
     release = quickstart.Quickstart(repo, tmp_path / "managed", runner=SourceRunner())
@@ -101,13 +104,13 @@ def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
 def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> quickstart.Quickstart:
     release = quickstart.Quickstart(tmp_path, tmp_path / "managed", health_timeout=0)
     release.docker = ["docker"]
-    subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND, tmp_path / ".env")
     previous = quickstart.Subject(OLD_COMMIT, BACKEND.replace("3", "5"), FRONTEND.replace("4", "6"))
-    monkeypatch.setattr(quickstart, "_load_subject", lambda _: subject)
+    monkeypatch.setattr(quickstart, "_load_subject", lambda *_: subject)
     monkeypatch.setattr(release, "_detect_docker", lambda: None)
     monkeypatch.setattr(release, "_verify_source", lambda _: events.append("source"))
     monkeypatch.setattr(release, "_current_runtime", lambda: previous)
-    monkeypatch.setattr(release, "_env_file", lambda _: tmp_path / ".env")
+    monkeypatch.setattr(release, "_validate_env", lambda _: tmp_path / ".env")
     monkeypatch.setattr(release, "_compose", lambda _env, _subject, *args: events.append("compose:" + " ".join(args)))
     monkeypatch.setattr(release, "_wait_health", lambda _: events.append("health"))
     monkeypatch.setattr(release.runner, "run", lambda command, **_: events.append("pull") or "")
@@ -124,7 +127,7 @@ def test_quickstart_orders_config_before_pull_and_up(
     release.run()
 
     assert events == [
-        "source", "compose:config --quiet", "pull", "pull",
+        "source", "compose:config --quiet", "pull", "pull", "source",
         "compose:up -d --no-build --pull never", "health",
     ]
 
@@ -147,6 +150,25 @@ def test_pull_failure_never_runs_up_or_rollback(
     assert "rollback" not in events
 
 
+def test_runtime_change_after_pull_blocks_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    release = _release(tmp_path, monkeypatch, events)
+    previous = quickstart.Subject(
+        OLD_COMMIT, BACKEND.replace("3", "5"), FRONTEND.replace("4", "6")
+    )
+    changed = quickstart.Subject("7" * 40, previous.backend_image, previous.frontend_image)
+    runtimes = iter((previous, changed))
+    monkeypatch.setattr(release, "_current_runtime", lambda: next(runtimes))
+
+    with pytest.raises(quickstart.QuickstartError, match="runtime changed"):
+        release.run()
+
+    assert not any(event.startswith("compose:up") for event in events)
+    assert "rollback" not in events
+
+
 def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -159,11 +181,28 @@ def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands
             raise quickstart.QuickstartError("up")
 
     monkeypatch.setattr(release, "_compose", compose)
-    with pytest.raises(quickstart.QuickstartError, match="previous runtime was restored"):
+    with pytest.raises(quickstart.QuickstartError, match="previous images are healthy again"):
         release.run()
 
     assert events.count("rollback") == 1
     assert all("down" not in event and "-v" not in event for event in events)
+
+
+def test_dirty_exact_checkout_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "managed"
+    repo = root / "releases" / COMMIT
+    for relative in quickstart.COMPOSE_FILES:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("services: {}\n", encoding="utf-8")
+
+    class DirtyRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            return " M deploy/ai-platform/docker-compose.yml" if "status" in command else COMMIT
+
+    release = quickstart.Quickstart(repo, root, runner=DirtyRunner())
+    with pytest.raises(quickstart.QuickstartError, match="not clean"):
+        release._verify_checkout(repo, COMMIT)
 
 
 def test_runbook_exposes_the_zero_argument_quickstart() -> None:

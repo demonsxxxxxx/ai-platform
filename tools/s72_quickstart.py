@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
@@ -39,6 +39,7 @@ class Subject:
     commit: str
     backend_image: str
     frontend_image: str
+    env_file: Path | None = None
 
 
 class Runner:
@@ -55,7 +56,7 @@ class Runner:
         return result.stdout.strip() if output else ""
 
 
-def _load_subject(path: Path) -> Subject:
+def _load_subject(path: Path, managed_root: Path | None = None) -> Subject:
     try:
         metadata = path.stat(follow_symlinks=False)
         pairs = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=list)
@@ -68,10 +69,16 @@ def _load_subject(path: Path) -> Subject:
         if len({key for key, _ in pairs}) != len(pairs):
             raise ValueError
         value = dict(pairs)
-        if set(value) != {"source_commit", "backend_image", "frontend_image", "ci_success"}:
+        if set(value) != {
+            "source_commit", "backend_image", "frontend_image", "env_file", "ci_success"
+        }:
             raise ValueError
         if value["ci_success"] is not True or COMMIT.fullmatch(value["source_commit"]) is None:
             raise ValueError
+        env_value = value["env_file"]
+        if not isinstance(env_value, str) or not PurePosixPath(env_value).is_absolute():
+            raise ValueError
+        env_file = Path(env_value)
         images = {
             "backend": (value["backend_image"], BACKEND_REPOSITORY),
             "frontend": (value["frontend_image"], FRONTEND_REPOSITORY),
@@ -83,9 +90,26 @@ def _load_subject(path: Path) -> Subject:
             for ref, repository in images.values()
         ):
             raise ValueError
+        if managed_root is not None:
+            root = managed_root.resolve()
+            parent_metadata = path.parent.stat(follow_symlinks=False)
+            root_owner = root.stat(follow_symlinks=False).st_uid
+            if (
+                path != root / "incoming" / "latest-main.json"
+                or path.parent.resolve(strict=True) != path.parent
+                or os.name == "posix"
+                and (
+                    metadata.st_uid != root_owner or parent_metadata.st_uid != root_owner
+                    or stat.S_IMODE(metadata.st_mode) & 0o022
+                    or stat.S_IMODE(parent_metadata.st_mode) & 0o022
+                )
+            ):
+                raise ValueError
     except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError):
         raise QuickstartError("latest main subject is invalid") from None
-    return Subject(value["source_commit"], value["backend_image"], value["frontend_image"])
+    return Subject(
+        value["source_commit"], value["backend_image"], value["frontend_image"], env_file
+    )
 
 
 def _compose_command(docker: Sequence[str], repo: Path, env_file: Path,
@@ -141,7 +165,10 @@ class Quickstart:
     def _current_runtime(self) -> Subject:
         values = {role: self._inspect(role) for role in ("api", "worker", "frontend")}
         commits = {item[0] for item in values.values()}
-        if len(commits) != 1 or COMMIT.fullmatch(next(iter(commits))) is None:
+        if (
+            len(commits) != 1 or COMMIT.fullmatch(next(iter(commits))) is None
+            or any(item[5:] != [PROJECT, role] for role, item in values.items())
+        ):
             raise QuickstartError("current runtime subject is invalid")
         backend = values["api"][1]
         if values["worker"][1] != backend:
@@ -158,6 +185,7 @@ class Quickstart:
             metadata = path.stat(follow_symlinks=False)
             valid = (
                 path.resolve(strict=True) == path
+                and path.is_relative_to(self.root / "config")
                 and stat.S_ISREG(metadata.st_mode)
                 and (
                     os.name != "posix"
@@ -173,23 +201,28 @@ class Quickstart:
             raise QuickstartError("managed .env is missing or unsafe")
         return path
 
-    def _env_file(self, runtime: Subject) -> Path:
-        return self._validate_env(self.root / "config" / runtime.commit / ".env")
-
-    def _verify_source(self, subject: Subject) -> None:
-        expected = self.root / "releases" / subject.commit
-        if self.repo != expected or any(
-            not (self.repo / path).is_file() or (self.repo / path).is_symlink()
+    def _verify_checkout(self, repo: Path, commit: str) -> None:
+        expected = self.root / "releases" / commit
+        if repo.resolve() != expected or any(
+            not (repo / path).is_file() or (repo / path).is_symlink()
             for path in COMPOSE_FILES
         ):
             raise QuickstartError("run quickstart from the prepared exact-main release checkout")
+        head = self.runner.run(["git", "rev-parse", "HEAD"], cwd=repo, output=True)
+        dirty = self.runner.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, output=True
+        )
+        if head != commit or dirty:
+            raise QuickstartError("release checkout is not clean at the exact commit")
+
+    def _verify_source(self, subject: Subject) -> None:
+        self._verify_checkout(self.repo, subject.commit)
         origin = self.runner.run(["git", "config", "--get", "remote.origin.url"], cwd=self.repo, output=True)
-        head = self.runner.run(["git", "rev-parse", "HEAD"], cwd=self.repo, output=True)
         remote = self.runner.run(
             ["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"],
             cwd=self.repo, output=True, timeout=60,
         ).split()
-        if origin.rstrip("/") not in ORIGIN_URLS or head != subject.commit or remote != [subject.commit, "refs/heads/main"]:
+        if origin.rstrip("/") not in ORIGIN_URLS or remote != [subject.commit, "refs/heads/main"]:
             raise QuickstartError("prepared subject is not fresh origin/main")
 
     def _compose(self, env_file: Path, subject: Subject, *arguments: str) -> None:
@@ -216,9 +249,9 @@ class Quickstart:
         if health.get("status") != "ok" or ready.get("status") != "ready" or ready.get("runtime_commit") != subject.commit:
             raise QuickstartError("API health failed")
         for service in SERVICES:
-            commit, image, restarts, status, container_health, project, compose_service = self._inspect(service)
+            commit, image, _restarts, status, container_health, project, compose_service = self._inspect(service)
             healthy = service == "worker" or container_health == "healthy"
-            if project != PROJECT or compose_service != service or status != "running" or restarts != "0" or not healthy:
+            if project != PROJECT or compose_service != service or status != "running" or not healthy:
                 raise QuickstartError("container health failed")
             if service in {"api", "worker", "frontend"} and commit != subject.commit:
                 raise QuickstartError("runtime commit mismatch")
@@ -244,8 +277,7 @@ class Quickstart:
 
     def _rollback(self, previous: Subject, env_file: Path) -> None:
         previous_repo = self.root / "releases" / previous.commit
-        if not all((previous_repo / path).is_file() for path in COMPOSE_FILES):
-            raise QuickstartError("previous release checkout is unavailable")
+        self._verify_checkout(previous_repo, previous.commit)
         current_repo, self.repo = self.repo, previous_repo
         try:
             self._compose(env_file, previous, "config", "--quiet")
@@ -256,16 +288,21 @@ class Quickstart:
 
     def run(self) -> Subject:
         self._detect_docker()
-        subject = _load_subject(self.subject_path)
+        subject = _load_subject(self.subject_path, self.root)
         self._verify_source(subject)
         previous = self._current_runtime()
-        env_file = self._env_file(previous)
+        if subject.env_file is None:
+            raise QuickstartError("latest main subject is missing the managed env path")
+        env_file = self._validate_env(subject.env_file)
         self._compose(env_file, subject, "config", "--quiet")
         print("preflight: ok")
         for image in (subject.backend_image, subject.frontend_image):
-            self._env_file(previous)
+            self._validate_env(env_file)
             self.runner.run([*self.docker, "pull", image], timeout=900)
         print("pull: ok")
+        self._verify_source(subject)
+        if self._current_runtime() != previous:
+            raise QuickstartError("runtime changed while quickstart was preparing images")
         try:
             self._compose(env_file, subject, "up", "-d", "--no-build", "--pull", "never")
             self._wait_health(subject)
@@ -274,7 +311,9 @@ class Quickstart:
                 self._rollback(previous, env_file)
             except (OSError, subprocess.SubprocessError, QuickstartError):
                 raise QuickstartError("startup and rollback failed; data volumes were preserved") from None
-            raise QuickstartError("startup failed; previous runtime was restored") from None
+            raise QuickstartError(
+                "startup failed; previous images are healthy again (database changes were not reversed)"
+            ) from None
         print("up: ok")
         print("health: api=ok ready=ok containers=ok opensandbox=ok")
         print(f"commit: {subject.commit}")

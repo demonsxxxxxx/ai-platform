@@ -235,6 +235,7 @@ as a non-secret owner-managed file with exactly these fields:
   "source_commit": "<fresh-main-40-hex-sha>",
   "backend_image": "ghcr.io/demonsxxxxxx/ai-platform-backend@sha256:<digest>",
   "frontend_image": "ghcr.io/demonsxxxxxx/ai-platform-frontend@sha256:<digest>",
+  "env_file": "/data/ai-platform-internal-test/config/<managed-subject>/.env",
   "ci_success": true
 }
 ```
@@ -255,6 +256,18 @@ file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
 and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
 it performs one `--no-build --pull never` up of the saved previous subject;
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
+
+`ci_success` is the controller's admission result; the quickstart does not
+replace the controller's exact-run CI and packaging verification. Keep the
+selected managed env path stable across successive releases. The small image
+rollback only proves that the previous images became healthy again; it does not
+reverse database migrations, which must remain backward-compatible or use a
+separate operator recovery.
+
+Before running, s72 must be able to reach both GitHub and GHCR through the
+operator-approved proxy. The quickstart only inherits standard proxy
+environment behavior; it does not configure Git, Docker daemon, or host proxy
+settings.
 
 Its short API/ready/container/OpenSandbox health result is deployment smoke,
 not the application-owned OpenSandbox lifecycle acceptance described below.
