@@ -692,12 +692,13 @@ s72_atomic_publish_snapshot() {
   s72_atomic_write_snapshot_seal "$stage" || return 1
   s72_atomic_verify_snapshot_seal "$stage" || return 1
   s72_atomic_fsync_tree "$stage" || return 1
-  stage_identity=$(s72_atomic_node_identity "$stage") || return 1
+  stage_identity=$(s72_atomic_directory_identity "$stage") || return 1
   published=$snapshots_parent/$snapshot_id
   test ! -e "$published" && test ! -L "$published" || return 1
   mv -T -n "$stage" "$published" || return 1
   test ! -e "$stage" && test ! -L "$stage" || return 1
-  s72_atomic_require_identity "$published" "$stage_identity" || return 1
+  test -d "$published" && test ! -L "$published" || return 1
+  test "$(s72_atomic_directory_identity "$published")" = "$stage_identity" || return 1
   s72_atomic_fsync_path "$snapshots_parent" || return 1
   s72_atomic_verify_snapshot_seal "$published" || return 1
   printf '%s\n' "$published"

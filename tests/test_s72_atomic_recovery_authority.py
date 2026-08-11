@@ -921,8 +921,15 @@ def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_saf
 ) -> None:
     result = _run_privileged_bash(
         r'''
-        set -eu
         HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4
+        trace_file=$ROOT/s72-snapshot-contract.trace
+        exec 9>"$trace_file"
+        BASH_XTRACEFD=9
+        PS4='+ s72-snapshot-contract:${LINENO}: '
+        set -Eeux
+        printf 's72 snapshot contract entered privileged shell\n' >&2
+        trap 'rc=$?; failed_command=$BASH_COMMAND; failed_line=$LINENO; printf "s72 snapshot contract failed: rc=%s line=%s command=%s\n" "$rc" "$failed_line" "$failed_command" >&2' ERR
+        trap 'rc=$?; set +x; if test "$rc" -ne 0; then printf "last privileged trace commands:\n" >&2; tail -n 160 "$trace_file" >&2; fi; chown -R "$caller_uid:$caller_gid" "$ROOT" >/dev/null 2>&1 || :; exit "$rc"' EXIT
         . "$HELPER"
         snapshots=$ROOT/snapshots
         mkdir -p "$snapshots"
@@ -931,6 +938,17 @@ def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_saf
         require_root_tree() { s72_atomic_require_root_tree "$@"; }
         require_root_owned_regular() { s72_atomic_require_root_owned_regular "$@"; }
         s72_atomic_preflight_snapshot() { s72_atomic_verify_manifest "$1"; }
+        rename_ctimes=$ROOT/rename-ctimes
+        mv() {
+          if test "${1:-}" = -T && test "${2:-}" = -n; then
+            stat -c %Z "$3" > "$rename_ctimes"
+            sleep 1.1
+            command mv "$@"
+            stat -c %Z "$4" >> "$rename_ctimes"
+            return
+          fi
+          command mv "$@"
+        }
 
         tx=11111111111111111111111111111111
         stage=$(s72_atomic_create_snapshot_stage "$snapshots" "$tx")
@@ -940,6 +958,7 @@ def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_saf
         s72_atomic_write_manifest "$stage"
         stage_device=$(stat -c %d "$stage")
         published=$(s72_atomic_publish_snapshot "$stage" "$snapshots" .rollback.$tx)
+        test "$(sed -n 1p "$rename_ctimes")" != "$(sed -n 2p "$rename_ctimes")"
         test "$published" = "$snapshots/.rollback.$tx"
         test "$(stat -c %d "$published")" = "$stage_device"
         s72_atomic_verify_snapshot_seal "$published"
@@ -958,12 +977,17 @@ def test_linux_snapshot_publication_is_same_filesystem_presealed_and_foreign_saf
         printf '%s\n' preserve-replacement > "$replaced_stage/foreign"
         ! s72_atomic_remove_owned_stage "$replaced_stage" "$replaced"
         grep -qx preserve-replacement "$replaced_stage/foreign"
-        chown -R "$caller_uid:$caller_gid" "$ROOT"
         ''',
         HELPER,
         tmp_path,
     )
-    assert result.returncode == 0, result.stderr or result.stdout
+    diagnostics = (
+        f"launcher={shlex.join([str(argument) for argument in result.args[:4]])} <script>\n"
+        f"returncode={result.returncode}\n"
+        f"stdout:\n{result.stdout or '<empty>'}\n"
+        f"stderr:\n{result.stderr or '<empty>'}"
+    )
+    assert result.returncode == 0, diagnostics
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Linux production entry runs on required Ubuntu CI")
