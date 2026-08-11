@@ -1,4 +1,3 @@
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +8,7 @@ from app.routes.admin_runtime import _backpressure_snapshot
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError
 from app.runtime.sandbox.contracts import ContainerStatus, StopResult
 from app.settings import Settings
+from tests.support.db_transactions import opaque_transaction
 
 
 ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
@@ -117,11 +117,6 @@ def user_headers():
     }
 
 
-@asynccontextmanager
-async def fake_transaction():
-    yield object()
-
-
 def patch_db_only_cleanup(monkeypatch):
     async def fake_cleanup_expired_sandbox_leases(conn, *, tenant_id=None, reason="expired"):
         assert tenant_id == "default"
@@ -144,7 +139,7 @@ def patch_empty_leases(monkeypatch):
         assert tenant_id == "default"
         return []
 
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -174,7 +169,7 @@ def patch_real_leases(monkeypatch, *run_ids):
             for run_id in run_ids
         ]
 
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -423,10 +418,6 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
             assert filters == {"tenant_id": "default"}
             return []
 
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
-
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
         return [
@@ -480,7 +471,7 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -501,10 +492,6 @@ def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projectio
     class FakeProvider:
         async def list_runtime_containers(self, filters):
             return []
-
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
 
     async def placeholder_cleanup_failure(*args, **kwargs):
         raise SandboxRuntimeCleanupError(
@@ -528,7 +515,7 @@ def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projectio
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         placeholder_cleanup_failure,
@@ -548,10 +535,6 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
         async def list_runtime_containers(self, filters):
             assert filters == {"tenant_id": "default"}
             return []
-
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
 
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
@@ -588,7 +571,7 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -608,10 +591,6 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
         async def list_runtime_containers(self, filters):
             assert filters == {"tenant_id": "default"}
             return []
-
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
 
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
@@ -675,7 +654,7 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -702,10 +681,6 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
         async def list_runtime_containers(self, filters):
             assert filters == {"tenant_id": "default"}
             return []
-
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
 
     now = datetime.now(timezone.utc)
     issued_at = now - timedelta(minutes=2)
@@ -751,7 +726,7 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -775,10 +750,6 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
         async def list_runtime_containers(self, filters):
             assert filters == {"tenant_id": "default"}
             return []
-
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
 
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
@@ -828,7 +799,7 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -851,10 +822,6 @@ def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypat
             calls.append(("containers", filters))
             return []
 
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
-
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         calls.append(("cleanup", tenant_id, reason))
         return []
@@ -865,7 +832,7 @@ def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -897,10 +864,6 @@ def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeyp
             calls.append(("containers", filters))
             return []
 
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
-
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         calls.append(("db_cleanup", tenant_id, reason))
         return []
@@ -911,7 +874,7 @@ def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -1015,10 +978,6 @@ def test_admin_runtime_containers_fails_closed_when_sandbox_cleanup_fails(monkey
             calls.append(("containers", filters))
             return []
 
-    @asynccontextmanager
-    async def lease_transaction():
-        yield object()
-
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         calls.append(("cleanup", tenant_id, reason))
         raise SandboxRuntimeCleanupError([{"container_id": "exec-run-a", "message": "cleanup failed"}])
@@ -1029,7 +988,7 @@ def test_admin_runtime_containers_fails_closed_when_sandbox_cleanup_fails(monkey
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -1093,10 +1052,6 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
                     sandbox_mode="persistent",
                 ),
             ]
-
-    @asynccontextmanager
-    async def overview_transaction():
-        yield object()
 
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         calls.append(("runtime_cleanup", tenant_id, reason))
@@ -1248,7 +1203,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -1440,10 +1395,6 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
             calls.append(("containers", filters))
             return []
 
-    @asynccontextmanager
-    async def overview_transaction():
-        yield object()
-
     async def fail_runtime_cleanup(conn, *, tenant_id=None, reason="expired", **kwargs):
         raise AssertionError("probe snapshot must not run sandbox runtime cleanup")
 
@@ -1482,7 +1433,7 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
     monkeypatch.setattr("app.auth.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fail_runtime_cleanup,
@@ -1628,7 +1579,7 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
     monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
@@ -1879,10 +1830,6 @@ def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypa
             calls.append(("containers", filters))
             return []
 
-    @asynccontextmanager
-    async def overview_transaction():
-        yield object()
-
     async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
         calls.append(("cleanup", tenant_id, reason))
         raise SandboxRuntimeCleanupError([{"container_id": "exec-run-a", "message": "cleanup failed"}])
@@ -1893,7 +1840,7 @@ def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
@@ -1918,10 +1865,6 @@ def test_admin_runtime_overview_reports_container_list_unavailable_without_docke
         async def list_runtime_containers(self, filters):
             calls.append(("containers", filters))
             raise DockerUnavailableError("docker socket unavailable")
-
-    @asynccontextmanager
-    async def overview_transaction():
-        yield object()
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         calls.append(("leases", tenant_id, status, limit))
@@ -1959,7 +1902,7 @@ def test_admin_runtime_overview_reports_container_list_unavailable_without_docke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
     monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
@@ -2010,10 +1953,6 @@ def test_admin_runtime_overview_fails_closed_when_container_list_has_unexpected_
             calls.append(("containers", filters))
             raise RuntimeError("provider invariant broken")
 
-    @asynccontextmanager
-    async def overview_transaction():
-        yield object()
-
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         return []
 
@@ -2049,7 +1988,7 @@ def test_admin_runtime_overview_fails_closed_when_container_list_has_unexpected_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
     monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)

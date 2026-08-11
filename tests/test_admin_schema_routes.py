@@ -1,9 +1,8 @@
-from contextlib import asynccontextmanager
-
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.settings import Settings
+from tests.support.db_transactions import opaque_transaction
 
 
 def _settings():
@@ -56,10 +55,6 @@ def test_admin_retention_status_exposes_unsupported_policy_and_age_backlog(monke
     configured = Settings(frontend_poc_auth_enabled=True, run_event_retention_days=7)
     calls = []
 
-    @asynccontextmanager
-    async def fake_transaction():
-        yield object()
-
     async def fake_backlog(_conn, *, retention_days):
         calls.append(retention_days)
         return {
@@ -70,7 +65,7 @@ def test_admin_retention_status_exposes_unsupported_policy_and_age_backlog(monke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: configured)
     monkeypatch.setattr("app.routes.health.get_settings", lambda: configured)
-    monkeypatch.setattr("app.routes.health.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.health.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.health.repositories.get_data_retention_backlog", fake_backlog)
 
     response = TestClient(create_app()).get(
@@ -91,16 +86,12 @@ def test_admin_retention_status_exposes_unsupported_policy_and_age_backlog(monke
 def test_admin_can_requeue_dead_letter_object_deletion(monkeypatch):
     calls = []
 
-    @asynccontextmanager
-    async def fake_transaction():
-        yield object()
-
     async def fake_requeue(_conn, **kwargs):
         calls.append(kwargs)
         return True
 
     monkeypatch.setattr("app.auth.get_settings", _settings)
-    monkeypatch.setattr("app.routes.health.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.health.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.health.repositories.requeue_dead_letter_object_deletion",
         fake_requeue,
@@ -117,15 +108,11 @@ def test_admin_can_requeue_dead_letter_object_deletion(monkeypatch):
 
 
 def test_admin_requeue_fails_closed_for_wrong_state(monkeypatch):
-    @asynccontextmanager
-    async def fake_transaction():
-        yield object()
-
     async def fake_requeue(_conn, **_kwargs):
         return False
 
     monkeypatch.setattr("app.auth.get_settings", _settings)
-    monkeypatch.setattr("app.routes.health.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.health.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.health.repositories.requeue_dead_letter_object_deletion",
         fake_requeue,
