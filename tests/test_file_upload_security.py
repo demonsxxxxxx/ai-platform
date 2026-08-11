@@ -137,6 +137,17 @@ async def test_compat_upload_rejects_missing_permission_before_body_read(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_bounded_upload_accepts_the_exact_byte_limit():
+    content = b"A" * files_routes.MAX_UPLOAD_BYTES
+    upload = FakeUploadFile("exact-limit.txt", "text/plain", content)
+
+    result = await files_routes._read_bounded_upload(upload)
+
+    assert result == content
+    assert upload.read_calls == [files_routes.MAX_UPLOAD_BYTES + 1]
+
+
+@pytest.mark.asyncio
 async def test_upload_rejects_oversize_with_bounded_read_and_no_storage_write(monkeypatch):
     install_basic_upload_fakes(monkeypatch)
     upload = FakeUploadFile("large.txt", "text/plain", b"A" * (files_routes.MAX_UPLOAD_BYTES + 1))

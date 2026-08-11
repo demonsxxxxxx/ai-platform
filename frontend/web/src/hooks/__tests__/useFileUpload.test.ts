@@ -56,6 +56,38 @@ test("upload policy prefers the explicit byte contract and supports the byte-val
     },
   });
   assert.deepEqual(legacy, explicit);
+
+  const explicitLimitsWithLegacyCount = resolveUploadBytePolicy({
+    enabled: true,
+    uploadLimitsBytes: explicit?.limitsBytes,
+    uploadLimits: {
+      image: 1,
+      video: 1,
+      audio: 1,
+      document: 1,
+      maxFiles: 7,
+    },
+  });
+  assert.deepEqual(explicitLimitsWithLegacyCount, {
+    limitsBytes: explicit?.limitsBytes,
+    maxFiles: 7,
+  });
+
+  const legacyLimitsWithExplicitCount = resolveUploadBytePolicy({
+    enabled: true,
+    maxFiles: 9,
+    uploadLimits: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+      maxFiles: 1,
+    },
+  });
+  assert.deepEqual(legacyLimitsWithExplicitCount, {
+    limitsBytes: explicit?.limitsBytes,
+    maxFiles: 9,
+  });
 });
 
 test("upload size validation compares bytes at the exact boundary and formats MiB only for display", () => {
