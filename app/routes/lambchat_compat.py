@@ -1066,7 +1066,8 @@ async def upload_config() -> dict[str, object]:
         "provider": "ai-platform",
         "uploadLimitsBytes": upload_limits_bytes,
         "maxFiles": max_files,
-        # Retain the legacy aliases during rolling frontend/backend upgrades.
+        # Preserve the pre-existing byte-valued wire aliases. Older frontends
+        # remain bounded by the canonical server-side 413 during rollout.
         "uploadLimits": {
             **upload_limits_bytes,
             "maxFiles": max_files,

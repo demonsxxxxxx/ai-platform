@@ -37,7 +37,7 @@ export interface UploadConfig {
   /** Canonical per-category limits. Every value is a byte count. */
   uploadLimitsBytes?: UploadLimitsBytes;
   maxFiles?: number;
-  /** Rolling-upgrade alias; category values have always been byte counts. */
+  /** Pre-existing wire alias; category values remain byte counts. */
   uploadLimits?: LegacyUploadLimits;
   max_file_size_bytes?: number;
   max_file_size?: number;
