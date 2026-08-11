@@ -1,4 +1,3 @@
-import asyncio
 import codecs
 import io
 import re
@@ -23,11 +22,14 @@ from app.file_preview_contracts import (
     xlsx_preview_max_bytes,
 )
 from app.models import (
+    FileDeletionResponse,
     SessionInputFileResponse,
     SessionInputFilesResponse,
     UploadFileResponse,
 )
 from app.repositories import (
+    FileDeletionBlockedError,
+    ObjectDeletionStateError,
     RepositoryNotFoundError,
     append_audit_log,
     create_file,
@@ -40,6 +42,7 @@ from app.repositories import (
     get_scoped_context_file,
     list_authorized_session_input_files,
     new_id,
+    queue_unbound_file_for_deletion,
 )
 from app.storage import ObjectStorage, ObjectStorageSizeLimitError
 from app.validation import assert_safe_id
@@ -426,6 +429,59 @@ async def upload_file(
         file_id=file_id,
         sha256=stored.sha256,
         size_bytes=stored.size_bytes,
+    )
+
+
+@router.delete("/files/{file_id}", response_model=FileDeletionResponse)
+async def delete_unbound_file(
+    file_id: str,
+    workspace_id: str = "default",
+    principal: AuthPrincipal = Depends(require_principal),
+) -> FileDeletionResponse:
+    """Queue one exact owned and still-unbound file for durable deletion."""
+
+    try:
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+        workspace_id = assert_safe_id(workspace_id, "workspace_id")
+        file_id = assert_safe_id(file_id, "file_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        async with transaction() as conn:
+            result = await queue_unbound_file_for_deletion(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                file_id=file_id,
+            )
+            if result is None:
+                raise HTTPException(status_code=404, detail="file_not_found")
+            if bool(result.get("created")):
+                await append_audit_log(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=principal.user_id,
+                    action="file.deletion_requested",
+                    target_type="file",
+                    target_id=file_id,
+                    trace_id=standard_trace_id(file_id),
+                    payload_json={
+                        "workspace_id": workspace_id,
+                        "lifecycle_state": result["lifecycle_state"],
+                        "deletion_state": result["deletion_state"],
+                        "source": "user_request",
+                    },
+                )
+    except FileDeletionBlockedError as exc:
+        raise HTTPException(status_code=409, detail="file_deletion_blocked") from exc
+    except ObjectDeletionStateError as exc:
+        raise HTTPException(status_code=409, detail="file_deletion_state_conflict") from exc
+    return FileDeletionResponse(
+        file_id=str(result["file_id"]),
+        lifecycle_state=str(result["lifecycle_state"]),
+        deletion_state=str(result["deletion_state"]),
+        reconcile_required=bool(result["reconcile_required"]),
     )
 
 

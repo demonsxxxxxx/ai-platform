@@ -10412,6 +10412,7 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
     assert len(conn.calls) == 1
     sql, params = conn.calls[0]
     assert "select id, tenant_id, workspace_id, user_id, session_id, run_id," in sql
+    assert "lifecycle_state = 'active'" in sql
     assert "for update" in sql
     assert "update files" not in sql
     assert params == ("file-a",)

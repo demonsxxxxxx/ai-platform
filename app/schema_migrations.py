@@ -14,7 +14,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.12.1"
+TARGET_SCHEMA_VERSION = "2026.08.12.2"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -37,9 +37,16 @@ CRITICAL_COLUMNS = (
     ("messages", "content", "text", True),
     ("messages", "metadata_json", "jsonb", True),
     ("files", "storage_key", "text", True),
+    ("files", "lifecycle_state", "text", True),
+    ("files", "delete_requested_at", "timestamptz", False),
+    ("files", "deleted_at", "timestamptz", False),
     ("artifacts", "lifecycle_state", "text", True),
     ("artifacts", "expires_at", "timestamptz", False),
+    ("object_deletion_outbox", "target_type", "text", True),
+    ("object_deletion_outbox", "artifact_id", "text", False),
+    ("object_deletion_outbox", "file_id", "text", False),
     ("object_deletion_outbox", "state", "text", True),
+    ("object_deletion_outbox", "lease_generation", "int8", True),
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
     ("object_deletion_outbox", "reconcile_required", "bool", True),
     ("audit_logs", "payload_json", "jsonb", True),
@@ -48,8 +55,42 @@ CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
+    ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
+    ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
+    ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
+)
+CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "files",
+        "chk_files_lifecycle_state",
+        "c",
+        "CHECK (lifecycle_state = ANY (ARRAY["
+        "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+    ),
+    (
+        "object_deletion_outbox",
+        "chk_object_deletion_outbox_state",
+        "c",
+        "CHECK (state = ANY (ARRAY["
+        "'pending'::text, 'processing'::text, 'failed'::text, "
+        "'dead_letter'::text, 'deleted'::text]))",
+    ),
+    (
+        "object_deletion_outbox",
+        "chk_object_deletion_outbox_target",
+        "c",
+        "CHECK (target_type = 'artifact'::text AND artifact_id IS NOT NULL "
+        "AND file_id IS NULL OR target_type = 'file'::text AND artifact_id IS NULL "
+        "AND file_id IS NOT NULL)",
+    ),
+    (
+        "object_deletion_outbox",
+        "object_deletion_outbox_file_id_fkey",
+        "f",
+        "FOREIGN KEY (file_id) REFERENCES files(id)",
+    ),
 )
 
 
@@ -62,6 +103,8 @@ class ConcurrentIndexMigration:
     descending: tuple[bool, ...]
     predicate_fragments: tuple[str, ...] = ()
     unique: bool = False
+    access_method: str = "btree"
+    opclass_names: tuple[str, ...] = ()
 
     @property
     def checksum_sha256(self) -> str:
@@ -86,6 +129,36 @@ CONCURRENT_INDEX_MIGRATIONS = (
         (False, False, False, False, True, True),
     ),
     ConcurrentIndexMigration(
+        "idx_runs_input_json_gin",
+        "create index concurrently if not exists idx_runs_input_json_gin "
+        "on runs using gin (input_json jsonb_path_ops)",
+        "runs",
+        ("input_json",),
+        (False,),
+        access_method="gin",
+        opclass_names=("jsonb_path_ops",),
+    ),
+    ConcurrentIndexMigration(
+        "idx_messages_metadata_json_gin",
+        "create index concurrently if not exists idx_messages_metadata_json_gin "
+        "on messages using gin (metadata_json jsonb_path_ops)",
+        "messages",
+        ("metadata_json",),
+        (False,),
+        access_method="gin",
+        opclass_names=("jsonb_path_ops",),
+    ),
+    ConcurrentIndexMigration(
+        "idx_run_context_snapshots_file_ids_gin",
+        "create index concurrently if not exists idx_run_context_snapshots_file_ids_gin "
+        "on run_context_snapshots using gin (included_file_ids)",
+        "run_context_snapshots",
+        ("included_file_ids",),
+        (False,),
+        access_method="gin",
+        opclass_names=("jsonb_ops",),
+    ),
+    ConcurrentIndexMigration(
         "idx_artifacts_tenant_run_created",
         "create index concurrently if not exists idx_artifacts_tenant_run_created "
         "on artifacts(tenant_id, run_id, created_at desc, id desc)",
@@ -104,12 +177,54 @@ CONCURRENT_INDEX_MIGRATIONS = (
         ("lifecycle_state = 'active'", "expires_at is not null"),
     ),
     ConcurrentIndexMigration(
+        "idx_artifacts_manifest_json_gin",
+        "create index concurrently if not exists idx_artifacts_manifest_json_gin "
+        "on artifacts using gin (manifest_json jsonb_path_ops)",
+        "artifacts",
+        ("manifest_json",),
+        (False,),
+        access_method="gin",
+        opclass_names=("jsonb_path_ops",),
+    ),
+    ConcurrentIndexMigration(
         "idx_audit_logs_tenant_created",
         "create index concurrently if not exists idx_audit_logs_tenant_created "
         "on audit_logs(tenant_id, created_at desc, id desc)",
         "audit_logs",
         ("tenant_id", "created_at", "id"),
         (False, True, True),
+    ),
+    ConcurrentIndexMigration(
+        "idx_object_deletion_outbox_claim",
+        "create index concurrently if not exists idx_object_deletion_outbox_claim "
+        "on object_deletion_outbox(state, available_at asc, created_at asc, id asc) "
+        "where state = 'pending' or state = 'processing' or state = 'failed'",
+        "object_deletion_outbox",
+        ("state", "available_at", "created_at", "id"),
+        (False, False, False, False),
+        ("state = 'pending'", "state = 'processing'", "state = 'failed'"),
+    ),
+    ConcurrentIndexMigration(
+        "idx_object_deletion_outbox_artifact_storage_live",
+        "create index concurrently if not exists "
+        "idx_object_deletion_outbox_artifact_storage_live "
+        "on object_deletion_outbox(tenant_id, storage_key) "
+        "where target_type = 'artifact' and state <> 'deleted'",
+        "object_deletion_outbox",
+        ("tenant_id", "storage_key"),
+        (False, False),
+        ("target_type = 'artifact'", "state <> 'deleted'"),
+    ),
+    ConcurrentIndexMigration(
+        "uq_object_deletion_outbox_file",
+        "create unique index concurrently if not exists uq_object_deletion_outbox_file "
+        "on object_deletion_outbox(tenant_id, file_id) "
+        "where target_type = 'file' and file_id is not null",
+        "object_deletion_outbox",
+        ("tenant_id", "file_id"),
+        (False, False),
+        ("target_type = 'file'", "file_id is not null"),
+        unique=True,
     ),
 )
 CRITICAL_INDEXES = (
@@ -187,6 +302,7 @@ async def _index_is_ready(conn: Any, migration: ConcurrentIndexMigration) -> boo
         select coalesce(indexes.indisvalid and indexes.indisready, false) as ready,
                coalesce(indexes.indisunique, false) as is_unique,
                relations.relname as table_name,
+               access_methods.amname as access_method,
                array(
                  select attributes.attname
                  from unnest(indexes.indkey::smallint[]) with ordinality keys(attnum, position)
@@ -203,9 +319,19 @@ async def _index_is_ready(conn: Any, migration: ConcurrentIndexMigration) -> boo
                  where options.position <= indexes.indnkeyatts
                  order by options.position
                ) as descending,
+               array(
+                 select opclasses.opcname
+                 from unnest(indexes.indclass::oid[])
+                   with ordinality classes(opclass_oid, position)
+                 join pg_opclass opclasses on opclasses.oid = classes.opclass_oid
+                 where classes.position <= indexes.indnkeyatts
+                 order by classes.position
+               ) as opclass_names,
                pg_get_expr(indexes.indpred, indexes.indrelid) as predicate
         from pg_index indexes
         join pg_class relations on relations.oid = indexes.indrelid
+        join pg_class index_relations on index_relations.oid = indexes.indexrelid
+        join pg_am access_methods on access_methods.oid = index_relations.relam
         where indexes.indexrelid = to_regclass(%s)
         """,
         (migration.name,),
@@ -215,9 +341,13 @@ async def _index_is_ready(conn: Any, migration: ConcurrentIndexMigration) -> boo
         return False
     if row.get("table_name") != migration.table_name:
         return False
+    if row.get("access_method") != migration.access_method:
+        return False
     if tuple(row.get("column_names") or ()) != migration.column_names:
         return False
     if tuple(bool(item) for item in row.get("descending") or ()) != migration.descending:
+        return False
+    if migration.opclass_names and tuple(row.get("opclass_names") or ()) != migration.opclass_names:
         return False
     predicate = " ".join(
         str(row.get("predicate") or "")
@@ -410,6 +540,34 @@ async def schema_status(conn: Any) -> dict[str, object]:
         """,
         (_json_contract(CRITICAL_CONSTRAINTS, ("relation_name", "constraint_name")),),
     )
+    constraint_definition_cursor = await conn.execute(
+        """
+        select coalesce(bool_and(
+          constraints.oid is not null
+          and constraints.convalidated
+          and constraints.contype::text = expected.constraint_type
+          and regexp_replace(
+            lower(pg_get_constraintdef(constraints.oid, true)), '\\s+', '', 'g'
+          ) = regexp_replace(lower(expected.definition), '\\s+', '', 'g')
+        ), false) as current
+        from jsonb_to_recordset(%s::jsonb)
+          as expected(
+            relation_name text,
+            constraint_name text,
+            constraint_type text,
+            definition text
+          )
+        left join pg_constraint constraints
+          on constraints.conrelid = to_regclass(expected.relation_name)
+         and constraints.conname = expected.constraint_name
+        """,
+        (
+            _json_contract(
+                CRITICAL_CONSTRAINT_DEFINITIONS,
+                ("relation_name", "constraint_name", "constraint_type", "definition"),
+            ),
+        ),
+    )
     index_cursor = await conn.execute(
         """
         select coalesce(bool_and(
@@ -467,11 +625,13 @@ async def schema_status(conn: Any) -> dict[str, object]:
     relation_row = await relation_cursor.fetchone() or {}
     column_row = await column_cursor.fetchone() or {}
     constraint_row = await constraint_cursor.fetchone() or {}
+    constraint_definition_row = await constraint_definition_cursor.fetchone() or {}
     index_row = await index_cursor.fetchone() or {}
     ledger_row = await ledger_cursor.fetchone() or {}
     relations_current = bool(relation_row.get("current"))
     columns_current = bool(column_row.get("current"))
     constraints_current = bool(constraint_row.get("current"))
+    constraint_definitions_current = bool(constraint_definition_row.get("current"))
     indexes_current = bool(index_row.get("current"))
     concurrent_index_definitions_current = all(
         [await _index_is_ready(conn, migration) for migration in CONCURRENT_INDEX_MIGRATIONS]
@@ -481,6 +641,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
             relations_current,
             columns_current,
             constraints_current,
+            constraint_definitions_current,
             indexes_current,
             concurrent_index_definitions_current,
         )
@@ -500,6 +661,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "relations_current": relations_current,
         "columns_current": columns_current,
         "constraints_current": constraints_current,
+        "constraint_definitions_current": constraint_definitions_current,
         "indexes_current": indexes_current,
         "concurrent_index_definitions_current": concurrent_index_definitions_current,
     }

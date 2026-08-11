@@ -882,6 +882,15 @@ class UploadFileResponse(BaseModel):
     size_bytes: int
 
 
+class FileDeletionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: str
+    lifecycle_state: Literal["delete_pending", "deleted"]
+    deletion_state: Literal["pending", "processing", "failed", "dead_letter", "deleted"]
+    reconcile_required: bool = False
+
+
 class SessionInputFileResponse(BaseModel):
     """Opaque public projection for one snapshot-authorized session input file."""
 

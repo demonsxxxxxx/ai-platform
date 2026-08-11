@@ -78,12 +78,26 @@ Upgrade procedure:
 2. Require a successful `status` result before starting API and workers.
 3. Deploy the matching API, worker, and frontend commit, then verify `/ready`.
 
+When a schema version adds a new deletion-outbox target, every object-deletion
+worker must understand that target before an API can enqueue it. In particular,
+an artifact-only worker must never claim a file-target row: it could delete the
+object bytes without writing the matching file lifecycle receipt. The standard
+Compose rollout avoids this mixed state by starting API and worker from the
+same post-migration image. A rolling deployment must stop or drain old workers,
+deploy target-aware workers, and only then enable the producer route.
+
 Migrations in this phase are additive. Rollback means restoring the previous
 application image only after confirming it tolerates the added columns,
 indexes, ledger, and outbox tables. Do not drop or rename them during rollback.
 There is no automatic down migration. A checksum mismatch or missing critical
 contract is a stop condition requiring operator investigation, not a reason to
 bypass readiness.
+
+Before rolling back to an artifact-only worker, stop the file-delete producer
+and drain or reconcile every non-terminal file-target outbox row with a
+target-aware worker. If that cannot be proved, roll forward. The additive file
+lifecycle and typed-outbox columns may remain installed; dropping them is not a
+safe application rollback.
 
 ## Bounded reads and compatibility
 
@@ -113,6 +127,28 @@ Cleanup runs in small worker batches and is retryable:
   tenant-scoped operator requeue. A stale processing lease represents an
   unknown outcome and is retried idempotently before a receipt is committed.
   Artifact reads exclude expired or non-active rows throughout the process.
+- An authenticated owner may explicitly request deletion of a persisted file
+  that is still unbound. This is separate from age-based file retention. The
+  request locks the exact `(tenant, workspace, user, file)` row using the same
+  row authority as Run binding and fails closed for a Session/Run binding,
+  `runs.input_json.file_ids`, message `metadata_json.file_ids`, context snapshot
+  `included_file_ids`, artifact `source_file_id`, or a shared live artifact
+  storage key. An eligible row becomes `delete_pending` and gets one typed file
+  target in the shared object-deletion outbox; the HTTP transaction never
+  deletes object bytes. Duplicate requests return the existing lifecycle state
+  only when target, storage key, and outbox state still agree.
+  File-target audit rows record the lifecycle decision but do not keep object
+  bytes live; treating the deletion audit itself as a reference would make
+  every accepted request permanently undeletable. Run events remain an audit
+  projection rather than a file-binding authority.
+- Object-deletion claims increment a monotonic `lease_generation` that is never
+  reset by operator requeue. Completion and failure require that exact
+  generation, so a worker whose lease expired cannot receipt or fail a newer
+  claim. Completion updates the exact artifact or file target and its outbox
+  receipt in one transaction; a missing target, wrong storage key, or unexpected
+  lifecycle state remains retry/dead-letter/reconcile work instead of a false
+  success. Existing artifact rows are not rewritten when the typed target
+  column is introduced.
 - Soft-deleted memory is physically purged only after the configured grace
   period and only when no active session, context snapshot, or audit target
   still references it. Selection is bounded and uses `SKIP LOCKED`.
@@ -123,6 +159,11 @@ Cleanup runs in small worker batches and is retryable:
   implemented, `0` is reported as `disabled_fail_safe`; a non-zero value is
   reported as `unsupported_not_implemented` and maintenance performs no delete.
   Production settings reject those non-zero values during startup.
+
+Owner-requested file deletion does not make non-zero `file_retention_days`
+supported. It also begins only after a `files` row exists. Object bytes written
+before a failed metadata insert require a separate orphan-reconciliation
+contract and are not covered by the owner delete endpoint.
 
 `GET /admin/retention/status` exposes the policy projection, object-outbox state
 counts (including dead-letter/reconcile-required alerts), and age-eligible row

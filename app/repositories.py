@@ -89,6 +89,7 @@ from app.tool_permission_lifecycle import (
 claim_object_deletions = _artifact_lifecycle_repository.claim_object_deletions
 complete_object_deletion = _artifact_lifecycle_repository.complete_object_deletion
 fail_object_deletion = _artifact_lifecycle_repository.fail_object_deletion
+FileDeletionBlockedError = _artifact_lifecycle_repository.FileDeletionBlockedError
 get_admin_artifact = _artifact_lifecycle_repository.get_admin_artifact
 get_artifact = _artifact_lifecycle_repository.get_artifact
 get_authorized_artifact = _artifact_lifecycle_repository.get_authorized_artifact
@@ -96,8 +97,10 @@ get_data_retention_backlog = _artifact_lifecycle_repository.get_data_retention_b
 list_revealed_artifact_sessions = _artifact_lifecycle_repository.list_revealed_artifact_sessions
 list_revealed_artifacts = _artifact_lifecycle_repository.list_revealed_artifacts
 purge_deleted_memory_records = _artifact_lifecycle_repository.purge_deleted_memory_records
+queue_unbound_file_for_deletion = _artifact_lifecycle_repository.queue_unbound_file_for_deletion
 queue_expired_artifacts_for_deletion = _artifact_lifecycle_repository.queue_expired_artifacts_for_deletion
 requeue_dead_letter_object_deletion = _artifact_lifecycle_repository.requeue_dead_letter_object_deletion
+ObjectDeletionStateError = _artifact_lifecycle_repository.ObjectDeletionStateError
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
@@ -5342,6 +5345,7 @@ async def create_context_snapshot(
               where files.tenant_id = scoped_run.tenant_id
                 and files.workspace_id = scoped_run.workspace_id
                 and files.user_id = scoped_run.user_id
+                and files.lifecycle_state = 'active'
                 and files.session_id = scoped_run.session_id
                 and file_session.user_id = scoped_run.user_id
                 and file_session.workspace_id = scoped_run.workspace_id
@@ -10790,7 +10794,7 @@ async def authorize_files_for_run(
             select id, tenant_id, workspace_id, user_id, session_id, run_id,
                    original_name, content_type, size_bytes, sha256
             from files
-            where id = %s
+            where id = %s and lifecycle_state = 'active'
             for update
             """,
             (file_id,),
@@ -10838,7 +10842,7 @@ async def bind_files_to_run(
             """
             update files
             set session_id = %s, run_id = %s
-            where id = %s
+            where id = %s and lifecycle_state = 'active'
             """,
             (session_id, run_id, file_id),
         )
