@@ -101,18 +101,11 @@ router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS = {"agent_or_skill_not_found", "skill_inactive", "mcp_tool_disabled"}
-_MULTI_AGENT_DISPATCH_NOT_AVAILABLE = "multi_agent_dispatch_not_available"
 
 
 def _raise_if_capability_revoked(exc: Exception) -> None:
     if str(exc) in _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS:
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-
-
-def _raise_multi_agent_dispatch_not_available() -> None:
-    """Keep the disabled worker dispatcher import-compatible until Phase 2."""
-
-    raise HTTPException(status_code=409, detail=_MULTI_AGENT_DISPATCH_NOT_AVAILABLE)
 
 
 async def _audit_capability_denial(
