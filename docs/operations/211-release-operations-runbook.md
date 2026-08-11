@@ -225,6 +225,53 @@ operator-held secret and must never appear in commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
+For the s72 internal-test release, the controller first verifies that fresh
+`origin/main` has successful backend, frontend, and packaging runs. It then
+atomically prepares `/data/ai-platform-internal-test/incoming/latest-main.json`
+as a non-secret owner-managed file with exactly these fields:
+
+```json
+{
+  "source_commit": "<fresh-main-40-hex-sha>",
+  "backend_image": "ghcr.io/demonsxxxxxx/ai-platform-backend@sha256:<digest>",
+  "frontend_image": "ghcr.io/demonsxxxxxx/ai-platform-frontend@sha256:<digest>",
+  "env_file": "/data/ai-platform-internal-test/config/<managed-subject>/.env",
+  "ci_success": true
+}
+```
+
+After preparing the matching exact-main checkout at
+`/data/ai-platform-internal-test/releases/<source_commit>`, run from that
+checkout with no release arguments:
+
+```bash
+./scripts/quickstart-s72.sh
+```
+
+The quickstart rechecks fresh `origin/main`, requires immutable role-specific
+image refs, validates the existing runtime-scoped managed `.env` as an
+owner-matching `0600` regular file without reading or printing its values, and
+runs Compose `config --quiet` before either pull or up. It uses only the base
+file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
+and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
+it performs one `--no-build --pull never` up of the saved previous subject;
+Postgres, Redis, MinIO, and workspace volumes remain untouched.
+
+`ci_success` is the controller's admission result; the quickstart does not
+replace the controller's exact-run CI and packaging verification. Keep the
+selected managed env path stable across successive releases. The small image
+rollback only proves that the previous images became healthy again; it does not
+reverse database migrations, which must remain backward-compatible or use a
+separate operator recovery.
+
+Before running, s72 must be able to reach both GitHub and GHCR through the
+operator-approved proxy. The quickstart only inherits standard proxy
+environment behavior; it does not configure Git, Docker daemon, or host proxy
+settings.
+
+Its short API/ready/container/OpenSandbox health result is deployment smoke,
+not the application-owned OpenSandbox lifecycle acceptance described below.
+
 The `bridge` network is an accepted internal-test risk, not production
 isolation evidence. Acceptance still requires one application-owned run to
 prove SDK create and metadata readback, executor health and runtime identity,
