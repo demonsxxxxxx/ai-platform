@@ -58,11 +58,11 @@ import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistent
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
 import { uuid } from "../../../utils/uuid";
-import type {
-  AgentConversationIdentity,
-  AgentProfileAvatarRef,
-  AgentProfileCategory,
-  AgentProfilePublicProjection,
+import {
+  AGENT_PROFILE_CATEGORY_LABELS,
+  type AgentConversationIdentity,
+  type AgentProfileAvatarRef,
+  type AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 
 export type AgentConversationRecoveryPhase = "generic" | "loading" | "bound" | "blocked";
@@ -134,11 +134,6 @@ export function clearAgentConversationOperationId({
 }): void {
   storage?.removeItem(agentConversationOperationStorageKey(agentId, revision));
 }
-
-const AGENT_CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
-  general: "通用助理", support: "支持服务", writing: "内容写作",
-  research: "研究分析", operations: "运营效率",
-};
 
 const LOCKED_SELECTED_SKILL_STATE: SelectedSkillTaskState = {
   selectedSkill: null, status: "idle", recoveryCode: null, requiresReconfirmation: false,
@@ -255,7 +250,7 @@ export function AgentConversationIdentityBanner({
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
             <span className="text-xs text-[var(--theme-text-secondary)]">
-              {AGENT_CATEGORY_LABELS[identity.category]}
+              {AGENT_PROFILE_CATEGORY_LABELS[identity.category]}
             </span>
           </span>
           {identity.description ? (
@@ -313,7 +308,7 @@ export function AgentWorkspaceWelcome({
                   企业已发布
                 </span>
                 <span className="border-l border-[var(--theme-border)] pl-2 text-[var(--theme-text-secondary)]">
-                  {AGENT_CATEGORY_LABELS[profile.category]}
+                  {AGENT_PROFILE_CATEGORY_LABELS[profile.category]}
                 </span>
                 <span className="border-l border-[var(--theme-border)] pl-2 text-[var(--theme-text-secondary)]">
                   版本 {profile.expected_revision}

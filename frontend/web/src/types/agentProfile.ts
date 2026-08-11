@@ -8,6 +8,14 @@ export const AGENT_PROFILE_CATEGORIES = ["general", "support", "writing", "resea
 
 export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
 
+export const AGENT_PROFILE_CATEGORY_LABELS = {
+  general: "通用助理",
+  support: "支持服务",
+  writing: "内容写作",
+  research: "研究分析",
+  operations: "运营效率",
+} as const satisfies Record<AgentProfileCategory, string>;
+
 /** Optimistic client lock for one published Agent Profile revision. */
 export interface SelectedAgentProfileRequest {
   agent_id: string;

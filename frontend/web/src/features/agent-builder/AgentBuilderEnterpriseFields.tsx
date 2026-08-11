@@ -9,6 +9,7 @@ import {
 import {
   AGENT_PROFILE_AVATAR_REFS,
   AGENT_PROFILE_CATEGORIES,
+  AGENT_PROFILE_CATEGORY_LABELS,
 } from "../../types/agentProfile";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
 
@@ -20,14 +21,6 @@ const AVATAR_LABELS = {
   "builtin:assistant": "服务支持",
   "builtin:document": "文档专家",
   "builtin:research": "研究分析",
-} as const;
-
-const CATEGORY_LABELS = {
-  general: "通用助理",
-  support: "支持服务",
-  writing: "内容写作",
-  research: "研究分析",
-  operations: "运营效率",
 } as const;
 
 function lines(value: string): string[] {
@@ -169,7 +162,7 @@ export function AgentBuilderEnterpriseFields({
               >
                 {AGENT_PROFILE_CATEGORIES.map((category) => (
                   <option key={category} value={category}>
-                    {CATEGORY_LABELS[category]}
+                    {AGENT_PROFILE_CATEGORY_LABELS[category]}
                   </option>
                 ))}
               </select>
