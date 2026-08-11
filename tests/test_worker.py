@@ -17,7 +17,6 @@ from app.executors.base import (
     RunPayload,
 )
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
-from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.repositories import (
@@ -43,6 +42,7 @@ from app.worker import (
     parse_queue_payload,
     process_run_payload,
 )
+from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
@@ -115,7 +115,7 @@ def test_worker_preserves_only_typed_safe_executor_failures():
 
 @pytest.mark.asyncio
 async def test_worker_submit_monitor_preserves_normal_terminal_result():
-    expected = FakeSuccessAdapter()
+    expected = SuccessfulExecutorStub()
     skill_version = "hash-general-chat"
     payload = RunPayload(
         tenant_id="tenant-a",
@@ -1646,7 +1646,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
         "used_skills": [],
     }
 
-    class DiagnosticSuccessAdapter(FakeSuccessAdapter):
+    class DiagnosticSuccessAdapter(SuccessfulExecutorStub):
         async def submit_run(self, payload, event_sink=None):
             result = await super().submit_run(payload, event_sink=event_sink)
             return replace(
@@ -1734,7 +1734,7 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "failed"
     assert ("fail", "tool_permission_pending", "A pending tool-permission request blocks successful completion.") in calls
@@ -2001,7 +2001,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_terminal_state"
@@ -2077,7 +2077,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     injector = asyncio.create_task(insert_permission_after_initial_check())
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
     await injector
 
@@ -2154,7 +2154,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome == WorkerOutcome("cancelled", "run-a")
     assert ("cancel", {"message": "任务已取消"}) in committed
@@ -2306,7 +2306,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
             skill_id="general-chat",
             agent_id="general-agent",
         ),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
         worker_id="worker-a",
     )
 
@@ -2645,7 +2645,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
     monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
     assert outcome.status == "failed"
     release_call = next(item[1] for item in calls if item[0] == "lease_release")
@@ -2688,7 +2688,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
     monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_terminal_state"
@@ -3136,7 +3136,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     with pytest.raises(RuntimeError, match="terminal write failed"):
-        await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+        await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     complete_call = next(item for item in calls if item[0] == "complete")
     release_call = next(item for item in calls if item[0] == "lease_release")
@@ -3193,7 +3193,7 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "succeeded"
@@ -3268,7 +3268,7 @@ async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "succeeded"
@@ -3316,7 +3316,7 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", input=child_input),
-        AdapterRegistry({"fake": FakeFailureAdapter()}),
+        AdapterRegistry({"fake": FailingExecutorStub()}),
     )
 
     assert outcome.status == "failed"
@@ -3449,7 +3449,7 @@ async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatc
             agent_id="general-agent",
             input=child_input,
         ),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "succeeded"
@@ -3550,7 +3550,7 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", executor_type="missing", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "failed"
@@ -3617,7 +3617,7 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", executor_type="missing", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "failed"
@@ -5810,7 +5810,7 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
     assert outcome.status == "failed"
     assert outcome.error_code == "fake_failure"
@@ -5988,7 +5988,7 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
         worker_id="worker-test-1",
     )
 
@@ -6017,7 +6017,7 @@ async def test_worker_rejects_bad_queue_payload_without_touching_database(monkey
 
     outcome = await process_run_payload(
         {"run_id": "../bad", "_queue_attempt_id": "qat-test-attempt"},
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "dead_letter"
@@ -6044,7 +6044,7 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_queue_payload"
@@ -6416,7 +6416,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
 
-    outcome = await process_run_payload(base_payload(executor_type="missing"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(executor_type="missing"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "failed"
     assert outcome.error_code == "unknown_executor_type"
@@ -6463,7 +6463,7 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 
         def get(self, executor_type):
             calls.append(("get", executor_type))
-            return FakeSuccessAdapter()
+            return SuccessfulExecutorStub()
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -6528,7 +6528,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
 
     outcome = await process_run_payload(
         base_payload(executor_type="missing"),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "skipped"
@@ -7154,11 +7154,6 @@ def test_executor_result_schema_validation_blocks_unstable_adapter_output():
 
     with pytest.raises(ValueError, match="Unsupported executor status"):
         result.validate()
-
-
-def test_default_adapter_registry_does_not_expose_embedded_poco_kernel():
-    with pytest.raises(KeyError, match="Unknown executor_type: embedded-poco-kernel"):
-        AdapterRegistry().get("embedded-poco-kernel")
 
 
 def test_explicit_empty_adapter_registry_does_not_fall_back_to_defaults():

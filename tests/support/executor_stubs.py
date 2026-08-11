@@ -1,8 +1,12 @@
 from app.executors.base import ArtifactManifest, ExecutorEventSink, ExecutorResult, RunPayload
 
 
-class FakeSuccessAdapter:
-    async def submit_run(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
+class SuccessfulExecutorStub:
+    async def submit_run(
+        self,
+        payload: RunPayload,
+        event_sink: ExecutorEventSink | None = None,
+    ) -> ExecutorResult:
         return ExecutorResult(
             status="succeeded",
             adapter_version="fake-adapter/1",
@@ -22,7 +26,9 @@ class FakeSuccessAdapter:
                     artifact_type="test_json",
                     label="Test JSON",
                     content_type="application/json",
-                    storage_key=f"tenants/{payload.tenant_id}/runs/{payload.run_id}/fake-result.json",
+                    storage_key=(
+                        f"tenants/{payload.tenant_id}/runs/{payload.run_id}/fake-result.json"
+                    ),
                     size_bytes=2,
                     manifest={"source": "fake"},
                 )
@@ -30,8 +36,12 @@ class FakeSuccessAdapter:
         )
 
 
-class FakeFailureAdapter:
-    async def submit_run(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
+class FailingExecutorStub:
+    async def submit_run(
+        self,
+        payload: RunPayload,
+        event_sink: ExecutorEventSink | None = None,
+    ) -> ExecutorResult:
         return ExecutorResult(
             status="failed",
             adapter_version="fake-adapter/1",
