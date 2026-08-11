@@ -4,7 +4,11 @@ import test from "node:test";
 
 import React from "react";
 
-import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
+import {
+  AGENT_PROFILE_CATEGORIES,
+  AGENT_PROFILE_CATEGORY_LABELS,
+  type AgentProfilePublicProjection,
+} from "../../../types/agentProfile.ts";
 
 const enterpriseProfileFields = {
   welcome_message: "欢迎使用企业专家。",
@@ -20,6 +24,22 @@ const enterpriseProfileFields = {
 
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
+
+test("Agent Profile category labels cover the canonical category contract", () => {
+  assert.deepEqual(
+    AGENT_PROFILE_CATEGORIES.map((category) => [
+      category,
+      AGENT_PROFILE_CATEGORY_LABELS[category],
+    ]),
+    [
+      ["general", "通用助理"],
+      ["support", "支持服务"],
+      ["writing", "内容写作"],
+      ["research", "研究分析"],
+      ["operations", "运营效率"],
+    ],
+  );
+});
 
 type Listener = (event: Record<string, unknown>) => void;
 

@@ -9,7 +9,12 @@ import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
 import { authApi } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfilePublicProjection } from "../../types";
-import type { AgentProfileAvatarRef, AgentProfileCategory } from "../../types/agentProfile";
+import {
+  AGENT_PROFILE_CATEGORIES,
+  AGENT_PROFILE_CATEGORY_LABELS,
+  type AgentProfileAvatarRef,
+  type AgentProfileCategory,
+} from "../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
@@ -32,15 +37,11 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的智能体，请稍后重新加载。";
-const CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
-  general: "通用助理", support: "支持服务", writing: "内容写作",
-  research: "研究分析", operations: "运营效率",
-};
 const MARKET_CATEGORIES: ReadonlyArray<{ value: AgentProfileCategory | "all"; label: string }> = [
   { value: "all", label: "全部" },
-  ...Object.entries(CATEGORY_LABELS).map(([value, label]) => ({
-    value: value as AgentProfileCategory,
-    label,
+  ...AGENT_PROFILE_CATEGORIES.map((value) => ({
+    value,
+    label: AGENT_PROFILE_CATEGORY_LABELS[value],
   })),
 ];
 const FALLBACK_IDENTITY_STYLES = [
@@ -255,7 +256,7 @@ function AgentMarketCard({
           <span className="flex flex-wrap items-start justify-between gap-2">
             <span className="text-base font-semibold text-[var(--theme-text)]">{profile.name}</span>
             <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-xs text-[var(--theme-text-secondary)]">
-              {CATEGORY_LABELS[profile.category]}
+              {AGENT_PROFILE_CATEGORY_LABELS[profile.category]}
             </span>
           </span>
           <span className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
@@ -501,7 +502,7 @@ function AgentMarketDetail({
             <AgentIdentityAvatar profile={profile} large />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
-                <span>{CATEGORY_LABELS[profile.category]}</span>
+                <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
                   企业已发布
                 </span>
