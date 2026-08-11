@@ -32,6 +32,7 @@ from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
+    declaration_from_payload,
 )
 from app.settings import get_settings
 from app.streaming.redis import (
@@ -58,6 +59,8 @@ _CAPABILITY_EVIDENCE_BINDING_FIELDS = (
     "run_id",
     "attempt_id",
 )
+_CAPABILITY_AUTHORITY_SCHEMA_VERSION = "ai-platform.capability-authority.v1"
+_MAX_CAPABILITY_AUTHORITY_DECLARATIONS = 256
 
 
 def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -70,24 +73,77 @@ def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str
     return result
 
 
+def _capability_authority_declarations(
+    lease: dict[str, Any],
+    *,
+    attempt_id: str,
+) -> dict[tuple[str, str], RequiredCapabilityDeclaration]:
+    lease_payload = lease.get("lease_payload_json")
+    authority = (
+        lease_payload.get("capability_authority")
+        if isinstance(lease_payload, dict)
+        else None
+    )
+    if (
+        not isinstance(authority, dict)
+        or set(authority) != {"schema_version", "attempt_id", "declarations"}
+        or authority.get("schema_version") != _CAPABILITY_AUTHORITY_SCHEMA_VERSION
+        or authority.get("attempt_id") != attempt_id
+        or not isinstance(authority.get("declarations"), list)
+        or len(authority["declarations"]) > _MAX_CAPABILITY_AUTHORITY_DECLARATIONS
+    ):
+        raise HTTPException(status_code=409, detail="capability_authority_unavailable")
+    declarations: dict[tuple[str, str], RequiredCapabilityDeclaration] = {}
+    try:
+        for raw in authority["declarations"]:
+            declaration = declaration_from_payload(raw)
+            if declaration is None or declaration.capability_kind not in {"skill", "mcp"}:
+                raise RequiredToolContractError("required_tool_declaration_mismatch")
+            key = (declaration.capability_kind, declaration.canonical_identity)
+            if key in declarations:
+                raise RequiredToolContractError("required_tool_declaration_mismatch")
+            declarations[key] = declaration
+    except RequiredToolContractError as exc:
+        raise HTTPException(status_code=409, detail="capability_authority_unavailable") from exc
+    return declarations
+
+
+def _validated_capability_evidence(
+    raw: object,
+    *,
+    expected_binding: dict[str, str],
+    declarations: dict[tuple[str, str], RequiredCapabilityDeclaration],
+) -> RequiredCapabilityEvidence:
+    try:
+        evidence = RequiredCapabilityEvidence.from_payload(raw)
+    except RequiredToolContractError as exc:
+        raise HTTPException(status_code=409, detail="capability_evidence_invalid") from exc
+    if any(
+        getattr(evidence, field) != expected_binding[field]
+        for field in _CAPABILITY_EVIDENCE_BINDING_FIELDS
+    ):
+        raise HTTPException(status_code=409, detail="capability_evidence_scope_mismatch")
+    declaration = declarations.get(
+        (evidence.capability_kind, evidence.canonical_identity)
+    )
+    if declaration is None:
+        raise HTTPException(status_code=409, detail="capability_evidence_not_authorized")
+    if evidence.declaration_sha256 != declaration.declaration_sha256:
+        raise HTTPException(status_code=409, detail="capability_evidence_declaration_mismatch")
+    return evidence
+
+
 def _private_capability_evidence_event(
     callback: ExecutorCallbackEvent,
     *,
     run_identity: dict[str, Any],
+    declarations: dict[tuple[str, str], RequiredCapabilityDeclaration],
 ) -> dict[str, Any] | None:
     raw = callback.capability_evidence
     if raw is None:
         return None
     if not callback.batch_id:
         raise HTTPException(status_code=409, detail="callback_batch_id_required")
-    try:
-        evidence = RequiredCapabilityEvidence.from_payload(raw)
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind=evidence.capability_kind,
-            canonical_identity=evidence.canonical_identity,
-        )
-    except RequiredToolContractError as exc:
-        raise HTTPException(status_code=409, detail="capability_evidence_invalid") from exc
     expected_binding = {
         "tenant_id": str(run_identity.get("tenant_id") or ""),
         "workspace_id": str(run_identity.get("workspace_id") or ""),
@@ -96,25 +152,53 @@ def _private_capability_evidence_event(
         "run_id": callback.run_id,
         "attempt_id": callback.attempt_id,
     }
-    if any(
-        getattr(evidence, field) != expected_binding[field]
-        for field in _CAPABILITY_EVIDENCE_BINDING_FIELDS
-    ):
-        raise HTTPException(status_code=409, detail="capability_evidence_scope_mismatch")
-    if evidence.declaration_sha256 != declaration.declaration_sha256:
-        raise HTTPException(status_code=409, detail="capability_evidence_declaration_mismatch")
-    private_payload = {
-        key: value
-        for key, value in asdict(evidence).items()
-        if key not in {"public_label", "public_status"}
-    }
-    private_payload["visible_to_user"] = False
+    evidence = _validated_capability_evidence(
+        raw,
+        expected_binding=expected_binding,
+        declarations=declarations,
+    )
     return {
         "event_type": "capability_invocation_evidence",
         "stage": "capability_evidence",
         "message": "Capability invocation evidence recorded",
-        "payload": private_payload,
+        "visible_to_user": False,
+        "payload": asdict(evidence),
     }
+
+
+def _validate_capability_evidence_lifecycle(
+    rows: list[dict[str, Any]],
+    *,
+    expected_binding: dict[str, str],
+    declarations: dict[tuple[str, str], RequiredCapabilityDeclaration],
+) -> None:
+    states: dict[tuple[str, str, str], str] = {}
+    for row in rows:
+        evidence = _validated_capability_evidence(
+            row.get("payload_json") if isinstance(row, dict) else None,
+            expected_binding=expected_binding,
+            declarations=declarations,
+        )
+        key = (
+            evidence.capability_kind,
+            evidence.canonical_identity,
+            str(evidence.tool_call_id or ""),
+        )
+        current = states.get(key, "")
+        if evidence.lifecycle_phase == "invocation_requested":
+            if current:
+                raise HTTPException(
+                    status_code=409,
+                    detail="capability_evidence_lifecycle_invalid",
+                )
+            states[key] = "invocation_requested"
+        elif current != "invocation_requested":
+            raise HTTPException(
+                status_code=409,
+                detail="capability_evidence_lifecycle_invalid",
+            )
+        else:
+            states[key] = evidence.lifecycle_phase
 
 
 async def record_executor_callback(
@@ -156,11 +240,19 @@ async def record_executor_callback(
         if str(run_identity.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
             raise HTTPException(status_code=409, detail="run_already_terminal")
         tenant_id = str(run_identity["tenant_id"])
-        await _require_current_runtime_attempt(
+        runtime_lease = await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
+        )
+        capability_declarations = (
+            _capability_authority_declarations(
+                runtime_lease,
+                attempt_id=callback.attempt_id,
+            )
+            if callback.capability_evidence is not None
+            else {}
         )
         source_digest = hashlib.sha256(
             json.dumps(
@@ -187,6 +279,7 @@ async def record_executor_callback(
         capability_evidence_event = _private_capability_evidence_event(
             callback,
             run_identity=run_identity,
+            declarations=capability_declarations,
         )
         if capability_evidence_event is not None:
             event_batch.append(capability_evidence_event)
@@ -256,6 +349,25 @@ async def record_executor_callback(
                 batch_id=callback.batch_id,
                 events=event_batch,
             )
+            if capability_evidence_event is not None:
+                evidence_rows = await repositories.list_run_capability_evidence(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                )
+                _validate_capability_evidence_lifecycle(
+                    evidence_rows,
+                    expected_binding={
+                        "tenant_id": str(run_identity.get("tenant_id") or ""),
+                        "workspace_id": str(run_identity.get("workspace_id") or ""),
+                        "user_id": str(run_identity.get("user_id") or ""),
+                        "session_id": callback.session_id,
+                        "run_id": callback.run_id,
+                        "attempt_id": callback.attempt_id,
+                    },
+                    declarations=capability_declarations,
+                )
             if public_deltas:
                 candidate = (
                     receipt.get("callback_received_at")

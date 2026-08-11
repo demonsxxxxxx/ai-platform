@@ -5116,6 +5116,21 @@ async def list_run_events(
     )
 
 
+async def list_run_capability_evidence(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> list[dict[str, Any]]:
+    return await _run_event_repository.list_run_capability_evidence(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+    )
+
+
 async def create_context_snapshot(
     conn: AsyncConnection,
     *,

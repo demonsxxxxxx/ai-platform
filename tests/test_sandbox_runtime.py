@@ -15,7 +15,8 @@ from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, S
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.required_tool_contract import RequiredCapabilityDeclaration
+from app.runtime.sandbox.runtime import SandboxRuntime, _runtime_capability_authority
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
@@ -55,6 +56,63 @@ def request(**overrides) -> SandboxRuntimeRequest:
     }
     values.update(overrides)
     return SandboxRuntimeRequest(**values)
+
+
+def test_runtime_capability_authority_contains_only_dispatched_authorized_subjects():
+    def mcp_subject(identity, server, tool, *, authorized=True):
+        return {
+            "identity": identity,
+            "mcp_server": server,
+            "mcp_tool": tool,
+            "registered": authorized,
+            "declared": authorized,
+            "active": authorized,
+            "distributed": authorized,
+            "identity_authorized": authorized,
+            "object_authorized": authorized,
+            "parameters_authorized": authorized,
+            "risk_level": "low",
+            "write_capable": False,
+        }
+
+    authority = _runtime_capability_authority(
+        request(
+            skill_ids=["general-chat", "qa-review", "qa-review"],
+            tool_policy_subjects=[
+                mcp_subject(
+                    "mcp__tenant-server__search",
+                    "tenant-server",
+                    "search",
+                ),
+                mcp_subject(
+                    "mcp__ai-platform-context__read_context_file",
+                    "ai-platform-context",
+                    "read_context_file",
+                ),
+                mcp_subject(
+                    "mcp__denied-server__write",
+                    "denied-server",
+                    "write",
+                    authorized=False,
+                ),
+            ],
+        )
+    )
+
+    assert authority == {
+        "schema_version": "ai-platform.capability-authority.v1",
+        "attempt_id": "qat_test-runtime-attempt",
+        "declarations": [
+            RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind=kind,
+                canonical_identity=identity,
+            ).to_payload()
+            for kind, identity in (
+                ("mcp", "mcp__tenant-server__search"),
+                ("skill", "qa-review"),
+            )
+        ],
+    }
 
 
 def test_sandbox_system_prompt_uses_the_same_character_limit_as_profile_admission():
@@ -1222,6 +1280,20 @@ async def test_runtime_preserves_typed_executor_http_error_and_cleanup_order(tmp
 @pytest.mark.asyncio
 async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, monkeypatch):
     calls = []
+    mcp_subject = {
+        "identity": "mcp__tenant-server__search",
+        "mcp_server": "tenant-server",
+        "mcp_tool": "search",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "low",
+        "write_capable": False,
+    }
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
@@ -1270,7 +1342,14 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
         callback_token_resolver=lambda token_id: "secret-token",
     )
 
-    await runtime.submit(request(sandbox_mode="ephemeral", trace_id="trace-run-a"))
+    await runtime.submit(
+        request(
+            sandbox_mode="ephemeral",
+            trace_id="trace-run-a",
+            skill_ids=["general-chat", "qa-review"],
+            tool_policy_subjects=[mcp_subject],
+        )
+    )
 
     assert calls == [
         (
@@ -1282,6 +1361,20 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                         "evidence_class": "runtime_lease_projection",
                         "security_profile": "governed",
                         "attempt_id": "qat_test-runtime-attempt",
+                        "capability_authority": {
+                            "schema_version": "ai-platform.capability-authority.v1",
+                            "attempt_id": "qat_test-runtime-attempt",
+                            "declarations": [
+                                RequiredCapabilityDeclaration.from_authorized_subject(
+                                    capability_kind=kind,
+                                    canonical_identity=identity,
+                                ).to_payload()
+                                for kind, identity in (
+                                    ("mcp", "mcp__tenant-server__search"),
+                                    ("skill", "qa-review"),
+                                )
+                            ],
+                        },
                         "container_id": "exec-run-a",
                         "container_name": "executor-exec-run-a",
                         "executor_url": "http://executor.test",

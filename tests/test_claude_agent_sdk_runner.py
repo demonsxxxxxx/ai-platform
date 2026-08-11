@@ -4,8 +4,12 @@ import types
 
 import pytest
 
-from app.executors.claude.capability_policy import _parameters_match_subject
+from app.executors.claude.capability_policy import (
+    _parameters_match_subject,
+    internal_context_tool_policy_subjects,
+)
 from app.executors.claude_agent_sdk_runner import (
+    ScopedContextRetrievalIdentity,
     _workspace_path_parameters_authorized,
     run_claude_agent_sdk,
 )
@@ -839,7 +843,7 @@ async def test_sdk_pre_tool_use_denies_when_capability_evidence_is_not_acknowled
 
 
 @pytest.mark.asyncio
-async def test_sdk_serializes_local_filesystem_policy_across_complete_hook_lifecycle(
+async def test_sdk_serializes_context_staging_with_local_filesystem_tool_lifecycle(
     monkeypatch,
     tmp_path,
 ):
@@ -874,16 +878,30 @@ async def test_sdk_serializes_local_filesystem_policy_across_complete_hook_lifec
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
+    class SdkTool:
+        def __init__(self, name, handler):
+            self.name = name
+            self.handler = handler
+
+    def tool(name, description, input_schema, annotations=None):
+        def decorator(handler):
+            return SdkTool(name, handler)
+
+        return decorator
+
+    def create_sdk_mcp_server(name, version="1.0.0", tools=None):
+        return {"name": name, "version": version, "tools": tools or []}
+
     bash_input = {
         "tool_name": "Bash",
         "tool_use_id": "bash-call",
         "tool_input": {"command": "printf ready"},
     }
-    read_input = {
-        "tool_name": "Read",
-        "tool_use_id": "read-call",
+    stage_input = {
+        "tool_name": "stage_context_file_to_workspace",
+        "tool_use_id": "stage-call",
         "tool_input": {
-            "file_path": "outputs/delivery/report.txt",
+            "file_id": "file-a",
         },
     }
     path_policy_calls = []
@@ -909,16 +927,18 @@ async def test_sdk_serializes_local_filesystem_policy_across_complete_hook_lifec
         )
 
         bash_result = await pre_hook(bash_input, "bash-call", {})
-        read_pre_task = asyncio.create_task(
-            pre_hook(read_input, "read-call", {})
+        stage_pre_task = asyncio.create_task(
+            pre_hook(stage_input, "stage-call", {})
         )
         await asyncio.sleep(0)
-        captured["read_pre_blocked"] = not read_pre_task.done()
-        captured["read_policy_checked_before_release"] = "Read" in path_policy_calls
+        captured["stage_pre_blocked"] = not stage_pre_task.done()
+        captured["stage_policy_checked_before_release"] = (
+            "stage_context_file_to_workspace" in path_policy_calls
+        )
         await post_hook(bash_input, "bash-call", {})
-        read_result = await asyncio.wait_for(read_pre_task, timeout=1)
-        await post_hook(read_input, "read-call", {})
-        captured["filesystem_results"] = [bash_result, read_result]
+        stage_result = await asyncio.wait_for(stage_pre_task, timeout=1)
+        await post_hook(stage_input, "stage-call", {})
+        captured["filesystem_results"] = [bash_result, stage_result]
         yield ResultMessage()
 
     monkeypatch.setitem(
@@ -931,7 +951,9 @@ async def test_sdk_serializes_local_filesystem_policy_across_complete_hook_lifec
             ResultMessage=ResultMessage,
             StreamEvent=StreamEvent,
             TextBlock=TextBlock,
+            create_sdk_mcp_server=create_sdk_mcp_server,
             query=query,
+            tool=tool,
         ),
     )
     monkeypatch.setattr(
@@ -952,14 +974,25 @@ async def test_sdk_serializes_local_filesystem_policy_across_complete_hook_lifec
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[
             _local_side_effect_subject("Bash"),
-            _local_side_effect_subject("Read"),
+            *internal_context_tool_policy_subjects(
+                ["stage_context_file_to_workspace"]
+            ),
         ],
+        context_retrieval=types.SimpleNamespace(execute=lambda *_args: None),
+        context_retrieval_identity=ScopedContextRetrievalIdentity(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            agent_id="general-agent",
+        ),
     )
 
     assert result.error is None
-    assert captured["read_pre_blocked"] is True
-    assert captured["read_policy_checked_before_release"] is False
-    assert "Read" in path_policy_calls
+    assert captured["stage_pre_blocked"] is True
+    assert captured["stage_policy_checked_before_release"] is False
+    assert "stage_context_file_to_workspace" in path_policy_calls
     assert all(
         item["hookSpecificOutput"]["permissionDecision"] == "allow"
         for item in captured["filesystem_results"]
@@ -1074,21 +1107,12 @@ async def test_sdk_selected_skill_rejected_post_ack_seals_all_public_output(
 @pytest.mark.asyncio
 async def test_sdk_selected_skill_concurrent_rejection_prevents_inflight_commit(monkeypatch, tmp_path):
     captured, deltas, callback_facts = {}, [], []
-    success_started, rejection_started = asyncio.Event(), asyncio.Event()
     def skill_input(call_id):
         return {"tool_name": "Skill", "tool_use_id": call_id, "tool_input": {"skill": "qa-review"}}
     async def acknowledge(evidence):
         fact = (evidence["tool_call_id"], evidence["lifecycle_phase"])
         callback_facts.append(fact)
-        if fact[1] == "invocation_requested":
-            return True
-        if fact[0] == "skill-call-success":
-            success_started.set()
-            await rejection_started.wait()
-            return True
-        await success_started.wait()
-        rejection_started.set()
-        return False
+        return True
     success, rejected = skill_input("skill-call-success"), skill_input("skill-call-rejected")
     steps = [("hook", ("PreToolUse", success, "skill-call-success")), ("concurrent_hooks", [
         ("PostToolUse", success, "skill-call-success"), ("PostToolUse", rejected, "skill-call-rejected"),
@@ -1098,10 +1122,59 @@ async def test_sdk_selected_skill_concurrent_rejection_prevents_inflight_commit(
     result = await run_claude_agent_sdk(
         prompt="review", cwd=tmp_path, skill_id="qa-review", skills=["qa-review"],
         execution_policy="sandbox_brokered", tool_policy_subjects=[_skill_subject()], on_text=deltas.append,
-        on_skill_use=lambda *_: asyncio.sleep(0, result=deltas.append("skill_used")), on_capability_evidence=acknowledge,
+        on_capability_evidence=acknowledge,
     )
-    assert callback_facts == [("skill-call-success", "invocation_requested"), ("skill-call-success", "completed"), ("skill-call-rejected", "completed")]
+    assert callback_facts == [
+        ("skill-call-success", "invocation_requested"),
+        ("skill-call-success", "completed"),
+    ]
     assert (result.error, result.message, result.used_skills, result.capability_evidence, deltas) == ("required_tool_completion_evidence_mismatch", "", [], [], [])
+
+
+@pytest.mark.asyncio
+async def test_sdk_duplicate_capability_terminal_hook_is_rejected_before_durable_callback(
+    monkeypatch,
+    tmp_path,
+):
+    captured, callback_phases = {}, []
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+    ]
+
+    async def acknowledge(evidence):
+        callback_phases.append(evidence["lifecycle_phase"])
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_capability_evidence=acknowledge,
+    )
+
+    assert callback_phases == ["invocation_requested", "completed"]
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.capability_evidence == []
 
 
 @pytest.mark.asyncio

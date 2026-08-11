@@ -243,6 +243,33 @@ async def list_run_events(
     return [dict(row) for row in rows]
 
 
+async def list_run_capability_evidence(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> list[dict[str, Any]]:
+    """Lock private capability evidence for one exact runtime attempt."""
+
+    cursor = await conn.execute(
+        """
+        select sequence, payload_json
+        from run_events
+        where tenant_id = %s
+          and run_id = %s
+          and event_type = 'capability_invocation_evidence'
+          and stage = 'capability_evidence'
+          and visible_to_user = false
+          and payload_json ->> 'attempt_id' = %s
+        order by sequence asc
+        for update
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_current_sandbox_runtime_leases_for_attempt(
     conn: AsyncConnection,
     *,

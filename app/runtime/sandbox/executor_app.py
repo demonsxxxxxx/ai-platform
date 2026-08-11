@@ -66,6 +66,8 @@ CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
 
 logger = logging.getLogger(__name__)
+_CALLBACK_RETRY_DELAYS_SECONDS = (0.0, 0.1, 0.25)
+_CALLBACK_RETRYABLE_STATUS_CODES = frozenset({408, 429})
 
 
 class _CallbackBatchIdFactory:
@@ -383,9 +385,32 @@ def _canonical_sdk_failure_message(error_code: str) -> str:
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
     headers = {"X-AI-Platform-Callback-Token": token}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        response = None
+        for attempt_index, delay_seconds in enumerate(
+            _CALLBACK_RETRY_DELAYS_SECONDS
+        ):
+            if delay_seconds:
+                await asyncio.sleep(delay_seconds)
+            try:
+                response = await client.post(url, json=payload, headers=headers)
+            except httpx.TransportError:
+                if attempt_index + 1 == len(_CALLBACK_RETRY_DELAYS_SECONDS):
+                    raise
+                continue
+            status_code = int(getattr(response, "status_code", 200))
+            retryable = (
+                status_code in _CALLBACK_RETRYABLE_STATUS_CODES
+                or status_code >= 500
+            )
+            if retryable and attempt_index + 1 < len(
+                _CALLBACK_RETRY_DELAYS_SECONDS
+            ):
+                continue
+            response.raise_for_status()
+            data = response.json()
+            break
+        else:  # pragma: no cover - every terminal branch returns or raises
+            raise RuntimeError("executor_callback_retry_exhausted")
     return data if isinstance(data, dict) else {"accepted": True}
 
 

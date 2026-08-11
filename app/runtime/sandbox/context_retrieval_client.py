@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,34 @@ from app.context.retrieval import (
 from app.path_safety import ensure_creatable_inside
 from app.runtime.sandbox.contracts import ContextRetrievalScope
 from app.validation import assert_safe_id
+
+
+def _atomic_stage_bytes(*, write_root: Path, target: Path, content: bytes) -> None:
+    ensure_creatable_inside(write_root, target, "context_retrieval_workspace_escape")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=target.parent,
+            prefix=".ai-platform-stage-",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        ensure_creatable_inside(
+            write_root,
+            target,
+            "context_retrieval_workspace_escape",
+        )
+        os.replace(temporary_path, target)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 class PlatformContextRetrievalClient:
@@ -298,9 +328,11 @@ class PlatformContextRetrievalClient:
         else:
             write_root = public_root
             target = write_root / "context" / (safe_id or "context-file") / safe_name
-        ensure_creatable_inside(write_root, target, "context_retrieval_workspace_escape")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(raw_bytes)
+        _atomic_stage_bytes(
+            write_root=write_root,
+            target=target,
+            content=raw_bytes,
+        )
         workspace_path = f"context/{safe_id or 'context-file'}/{safe_name}"
         return {
             id_key: expected_id,

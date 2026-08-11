@@ -45,7 +45,13 @@ def callback_payload(**overrides):
     return payload
 
 
-def capability_evidence_payload(**binding_overrides):
+def capability_evidence_payload(
+    *,
+    capability_kind="mcp",
+    canonical_identity="mcp__tenant-server__search",
+    lifecycle_phase="invocation_requested",
+    **binding_overrides,
+):
     binding = {
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
@@ -56,17 +62,34 @@ def capability_evidence_payload(**binding_overrides):
         **binding_overrides,
     }
     declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-        capability_kind="mcp",
-        canonical_identity="mcp__tenant-server__search",
+        capability_kind=capability_kind,
+        canonical_identity=canonical_identity,
     )
     return asdict(
         RequiredCapabilityEvidence.from_sdk_hook(
             declaration=declaration,
             binding=binding,
             tool_call_id="tool-call-a",
-            lifecycle_phase="invocation_requested",
+            lifecycle_phase=lifecycle_phase,
         )
     )
+
+
+def capability_authority_payload(*identities, attempt_id="attempt-a"):
+    declarations = [
+        RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=kind,
+            canonical_identity=identity,
+        ).to_payload()
+        for kind, identity in (
+            identities or (("mcp", "mcp__tenant-server__search"),)
+        )
+    ]
+    return {
+        "schema_version": "ai-platform.capability-authority.v1",
+        "attempt_id": attempt_id,
+        "declarations": declarations,
+    }
 
 
 def callback_settings(token: str):
@@ -88,7 +111,16 @@ def patch_active_attempt(monkeypatch, runtime_callbacks, attempt_id="attempt-a")
     async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
         if attempt_id != active_attempt:
             return []
-        return [{"lease_payload_json": {"attempt_id": active_attempt}}]
+        return [
+            {
+                "lease_payload_json": {
+                    "attempt_id": active_attempt,
+                    "capability_authority": capability_authority_payload(
+                        attempt_id=active_attempt
+                    ),
+                }
+            }
+        ]
 
     monkeypatch.setattr(
         runtime_callbacks.repositories,
@@ -209,6 +241,37 @@ async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
     query, parameters = observed[0]
     assert "lease_payload_json ->> 'attempt_id' = %s" in query
     assert "status = 'active'" in query and "for update" in query
+    assert parameters == ("tenant-a", "run-a", "attempt-b")
+
+
+@pytest.mark.asyncio
+async def test_capability_evidence_query_locks_only_private_exact_attempt_rows():
+    observed = []
+
+    class Cursor:
+        async def fetchall(self):
+            return [{"sequence": 7, "payload_json": {"attempt_id": "attempt-b"}}]
+
+    class Connection:
+        async def execute(self, query, parameters):
+            observed.append((query, parameters))
+            return Cursor()
+
+    rows = await repositories.list_run_capability_evidence(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-b",
+    )
+
+    assert rows == [
+        {"sequence": 7, "payload_json": {"attempt_id": "attempt-b"}}
+    ]
+    query, parameters = observed[0]
+    assert "event_type = 'capability_invocation_evidence'" in query
+    assert "visible_to_user = false" in query
+    assert "payload_json ->> 'attempt_id' = %s" in query
+    assert "for update" in query
     assert parameters == ("tenant-a", "run-a", "attempt-b")
 
 
@@ -755,13 +818,34 @@ def test_executor_callback_persists_exact_private_capability_evidence_in_same_ba
 
     async def append_batch(conn, **receipt):
         persisted.extend(receipt["events"])
-        return {"callback_received_at": "2026-08-11T00:00:00Z"}
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "callback_received_at": "2026-08-11T00:00:00Z",
+        }
+
+    async def list_capability_evidence(conn, **scope):
+        assert scope == {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+        }
+        return [
+            {"sequence": index, "payload_json": event["payload"]}
+            for index, event in enumerate(persisted, start=1)
+            if event["event_type"] == "capability_invocation_evidence"
+        ]
 
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_run_capability_evidence",
+        list_capability_evidence,
+    )
     patch_active_attempt(monkeypatch, runtime_callbacks)
 
     response = TestClient(create_app()).post(
@@ -783,14 +867,8 @@ def test_executor_callback_persists_exact_private_capability_evidence_in_same_ba
     ]
     evidence = persisted[1]
     assert evidence["stage"] == "capability_evidence"
-    expected_payload = {
-        key: value
-        for key, value in capability_evidence_payload().items()
-        if key not in {"public_label", "public_status"}
-    }
-    expected_payload["visible_to_user"] = False
-    assert evidence["payload"] == expected_payload
-    assert evidence["payload"]["visible_to_user"] is False
+    assert evidence["visible_to_user"] is False
+    assert evidence["payload"] == capability_evidence_payload()
 
 
 def test_executor_callback_rejects_private_capability_evidence_with_foreign_binding(monkeypatch):
@@ -836,6 +914,185 @@ def test_executor_callback_rejects_private_capability_evidence_with_foreign_bind
 
     assert response.status_code == 409
     assert response.json() == {"detail": "capability_evidence_scope_mismatch"}
+
+
+@pytest.mark.parametrize(
+    ("capability_kind", "canonical_identity", "authorized_identities"),
+    [
+        ("skill", "unbound-skill", (("skill", "bound-skill"),)),
+        (
+            "mcp",
+            "mcp__unauthorized-server__search",
+            (("mcp", "mcp__tenant-server__search"),),
+        ),
+    ],
+)
+def test_executor_callback_rejects_capability_evidence_outside_attempt_authority(
+    monkeypatch,
+    capability_kind,
+    canonical_identity,
+    authorized_identities,
+):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+        }
+
+    async def current_lease(conn, *, tenant_id, run_id, attempt_id):
+        return [
+            {
+                "lease_payload_json": {
+                    "attempt_id": attempt_id,
+                    "capability_authority": capability_authority_payload(
+                        *authorized_identities,
+                        attempt_id=attempt_id,
+                    ),
+                }
+            }
+        ]
+
+    async def fail_append_batch(*args, **kwargs):
+        raise AssertionError("unauthorized capability evidence must not persist")
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        current_lease,
+    )
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "append_event_batch",
+        fail_append_batch,
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            batch_id="batch-capability-unauthorized",
+            new_message=None,
+            state_patch={},
+            capability_evidence=capability_evidence_payload(
+                capability_kind=capability_kind,
+                canonical_identity=canonical_identity,
+            ),
+        ),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "capability_evidence_not_authorized"}
+
+
+@pytest.mark.parametrize(
+    ("prior_phases", "incoming_phase", "expected_status"),
+    [
+        ([], "completed", 409),
+        (["invocation_requested"], "completed", 200),
+        (["invocation_requested", "completed"], "completed", 409),
+    ],
+)
+def test_executor_callback_validates_durable_capability_lifecycle_before_commit(
+    monkeypatch,
+    prior_phases,
+    incoming_phase,
+    expected_status,
+):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted_payloads = [
+        capability_evidence_payload(lifecycle_phase=phase)
+        for phase in prior_phases
+    ]
+    transaction_exits = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            transaction_exits.append(exc_type)
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+        }
+
+    async def append_batch(conn, **receipt):
+        evidence_event = next(
+            event
+            for event in receipt["events"]
+            if event["event_type"] == "capability_invocation_evidence"
+        )
+        persisted_payloads.append(evidence_event["payload"])
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "callback_received_at": "2026-08-11T00:00:00Z",
+        }
+
+    async def list_capability_evidence(conn, **scope):
+        return [
+            {"sequence": index, "payload_json": payload}
+            for index, payload in enumerate(persisted_payloads, start=1)
+        ]
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_run_capability_evidence",
+        list_capability_evidence,
+    )
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            batch_id=f"batch-capability-{incoming_phase}",
+            new_message=None,
+            state_patch={},
+            capability_evidence=capability_evidence_payload(
+                lifecycle_phase=incoming_phase
+            ),
+        ),
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 409:
+        assert response.json() == {
+            "detail": "capability_evidence_lifecycle_invalid"
+        }
+        assert transaction_exits[0] is not None
+    else:
+        assert response.json() == {"accepted": True, "event_count": 2}
+        assert transaction_exits == [None]
 
 
 def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):

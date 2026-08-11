@@ -52,8 +52,6 @@ from app.principal_authority import (
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
-    RequiredCapabilityEvidence,
-    RequiredToolContractError,
     builtin_capability_subjects,
     required_tool_authorization_for_run,
     required_tool_completion_for_run,
@@ -103,7 +101,6 @@ class _WorkerClock:
 
 time = _WorkerClock()
 logger = logging.getLogger(__name__)
-_CAPABILITY_EVIDENCE_BATCH_ID = "capability-evidence-v1"
 
 
 @dataclass(frozen=True)
@@ -946,64 +943,6 @@ def _bound_agent_mcp_identities(payload: QueueRunPayload) -> set[str]:
         and isinstance(item.get("identity"), str)
         and (identity := item["identity"].strip()).startswith("mcp__")
     }
-
-
-def _private_capability_evidence_events(
-    *,
-    payload: QueueRunPayload,
-    attempt_id: str,
-    trace_id: str,
-    executor_payload: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Project validated capability lifecycle records into a private durable batch."""
-
-    if executor_payload.get("sandbox_runtime_used") is True:
-        # Sandbox callbacks persist each record before the corresponding tool side effect.
-        return []
-    if executor_payload.get("capability_evidence_validated") is not True:
-        return []
-    raw_evidence = executor_payload.get("capability_evidence")
-    if not isinstance(raw_evidence, list):
-        return []
-    expected_binding = {
-        "tenant_id": payload.tenant_id,
-        "workspace_id": payload.workspace_id,
-        "user_id": payload.user_id,
-        "session_id": payload.session_id,
-        "run_id": payload.run_id,
-        "attempt_id": attempt_id,
-    }
-    records: list[RequiredCapabilityEvidence] = []
-    try:
-        for item in raw_evidence:
-            record = RequiredCapabilityEvidence.from_payload(item)
-            if any(getattr(record, field) != value for field, value in expected_binding.items()):
-                return []
-            records.append(record)
-    except RequiredToolContractError:
-        return []
-    return [
-        {
-            "event_type": "capability_invocation_evidence",
-            "stage": "capability_evidence",
-            "message": "Capability invocation evidence recorded",
-            "trace_id": trace_id,
-            "visible_to_user": False,
-            "payload": {
-                "schema_version": record.schema_version,
-                "attempt_id": record.attempt_id,
-                "capability_kind": record.capability_kind,
-                "canonical_identity": record.canonical_identity,
-                "tool_call_id": record.tool_call_id,
-                "lifecycle_phase": record.lifecycle_phase,
-                "lifecycle_status": record.lifecycle_status,
-                "evidence_source": record.evidence_source,
-                "trust_basis": record.trust_basis,
-                "declaration_sha256": record.declaration_sha256,
-            },
-        }
-        for record in records
-    ]
 
 
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
@@ -2776,12 +2715,6 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
-    capability_evidence_events = _private_capability_evidence_events(
-        payload=payload,
-        attempt_id=attempt_id,
-        trace_id=trace_id,
-        executor_payload=result.executor_payload,
-    )
     reconciled_parent = None
     try:
         async with transaction() as conn:
@@ -2816,15 +2749,6 @@ async def process_run_payload(
                     "artifacts": [],
                 }
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
-            if capability_evidence_events:
-                await repositories.append_event_batch(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    attempt_id=attempt_id,
-                    batch_id=_CAPABILITY_EVIDENCE_BATCH_ID,
-                    events=capability_evidence_events,
-                )
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {
                     **result_payload,

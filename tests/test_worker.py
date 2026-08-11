@@ -1153,75 +1153,6 @@ def base_payload(**overrides):
     return payload
 
 
-def _validated_capability_executor_payload(
-    payload: QueueRunPayload,
-    *,
-    sandbox_runtime_used: bool | None = None,
-) -> dict[str, object]:
-    attempt_id = "qat-test-attempt"
-    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-        capability_kind="skill",
-        canonical_identity="qa-file-reviewer",
-    )
-    binding = {
-        key: getattr(payload, key)
-        for key in (
-            "tenant_id",
-            "workspace_id",
-            "user_id",
-            "session_id",
-            "run_id",
-        )
-    }
-    binding["attempt_id"] = attempt_id
-    executor_payload: dict[str, object] = {
-        "capability_evidence_validated": True,
-        "capability_evidence": [
-            RequiredCapabilityEvidence.from_sdk_hook(
-                declaration=declaration,
-                binding=binding,
-                tool_call_id="skill-call-1",
-                lifecycle_phase="completed",
-            ).__dict__
-        ],
-    }
-    if sandbox_runtime_used is not None:
-        executor_payload["sandbox_runtime_used"] = sandbox_runtime_used
-    return executor_payload
-
-
-def test_private_capability_evidence_skips_records_already_persisted_by_sandbox_callback():
-    payload = QueueRunPayload.model_validate(base_payload(_leased=False))
-
-    events = worker_module._private_capability_evidence_events(
-        payload=payload,
-        attempt_id="qat-test-attempt",
-        trace_id="trace-a",
-        executor_payload=_validated_capability_executor_payload(
-            payload,
-            sandbox_runtime_used=True,
-        ),
-    )
-
-    assert events == []
-
-
-def test_private_capability_evidence_preserves_callback_free_sdk_records():
-    payload = QueueRunPayload.model_validate(base_payload(_leased=False))
-
-    events = worker_module._private_capability_evidence_events(
-        payload=payload,
-        attempt_id="qat-test-attempt",
-        trace_id="trace-a",
-        executor_payload=_validated_capability_executor_payload(payload),
-    )
-
-    assert len(events) == 1
-    assert events[0]["event_type"] == "capability_invocation_evidence"
-    assert events[0]["visible_to_user"] is False
-    assert events[0]["payload"]["lifecycle_phase"] == "completed"
-
-
 def test_bound_agent_skill_ids_include_authorized_dependency_closure():
     payload = QueueRunPayload.model_validate(
         base_payload(
@@ -5058,7 +4989,6 @@ async def test_agent_app_ignores_unproven_optional_skill_claim(monkeypatch, sour
 async def test_agent_app_recovered_capability_preserves_partial_failure_without_artifact(monkeypatch):
     completed = {}
     events = []
-    capability_batches = []
 
     class ExactHookWithoutRequiredArtifactAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -5115,10 +5045,6 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
         events.append(kwargs["event_type"])
         return "evt-a"
 
-    async def append_event_batch(conn, **kwargs):
-        capability_batches.append(kwargs)
-        return {"accepted": True, "duplicate": False}
-
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         completed.update(result_json)
         return True
@@ -5126,7 +5052,6 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_event_batch", append_event_batch)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
@@ -5160,14 +5085,6 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
     assert "capability_completed" in events
     assert "capability_invocation_failed" in events
     assert "artifact_ready" not in events
-    assert len(capability_batches) == 1
-    assert capability_batches[0]["attempt_id"] == "qat-test-attempt"
-    assert capability_batches[0]["batch_id"] == "capability-evidence-v1"
-    assert [
-        item["payload"]["lifecycle_phase"] for item in capability_batches[0]["events"]
-    ] == ["invocation_requested", "failed", "invocation_requested", "completed"]
-    assert all(item["visible_to_user"] is False for item in capability_batches[0]["events"])
-    assert "Use the fixed enterprise expert policy." not in str(capability_batches)
 
 
 @pytest.mark.asyncio

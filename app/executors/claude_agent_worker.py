@@ -5,7 +5,7 @@ import logging
 import posixpath
 import shutil
 import zipfile
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 from xml.etree import ElementTree
@@ -18,10 +18,8 @@ from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     available_context_retrieval_tools,
 )
-from app.context.retrieval import ContextRetrievalAuthority
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.diagnostics import log_safe_exception, new_diagnostic_id
 from app.execution_boundary import (
     CLAUDE_WORKER_EXECUTOR,
     ExecutionBoundaryDecision,
@@ -36,13 +34,9 @@ from app.executors.base import (
 )
 from app.executors.claude_agent_sdk_runner import (
     CapabilityExecutionPlan,
-    ClaudeAgentSdkRunResult,
-    ClaudeAgentSdkNotAvailable,
-    ScopedContextRetrievalIdentity,
     build_skill_prompt,
     internal_context_tool_policy_subjects,
     project_sdk_turn_diagnostics,
-    run_claude_agent_sdk,
 )
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
@@ -617,79 +611,6 @@ class ClaudeAgentWorkerAdapter:
 
         return self._sdk_required_result(payload, sdk_result=None)
 
-    async def _run_general_chat(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
-        sdk_result = await self._try_run_sdk(payload, event_sink=event_sink)
-        if self._sdk_completed_normally(sdk_result):
-            turn_diagnostics = _public_sdk_turn_diagnostics(
-                payload,
-                getattr(sdk_result, "turn_diagnostics", {}),
-                error_code=None,
-                used_skill_ids=list(getattr(sdk_result, "used_skills", []) or []),
-                public_skill_metadata={},
-            )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version=self.adapter_version,
-                executor_type=self.executor_type,
-                executor_version=self.executor_version,
-                capabilities=self.capabilities,
-                result={
-                    "message": sdk_result.message or "任务完成",
-                    "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
-                    "sdk_error": None,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                },
-                artifacts=[],
-                executor_payload={
-                    "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
-                    "sdk_usage": sdk_result.usage,
-                    "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                },
-            )
-        error_code = self._sdk_failure_code(sdk_result)
-        sdk_used = bool(sdk_result and sdk_result.used_sdk)
-        sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
-        diagnostic_id = str(getattr(sdk_result, "diagnostic_id", "") or "") or None
-        turn_diagnostics = _public_sdk_turn_diagnostics(
-            payload,
-            getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
-            error_code=error_code,
-            used_skill_ids=list(getattr(sdk_result, "used_skills", []) or []) if sdk_result else [],
-            public_skill_metadata={},
-        )
-        return ExecutorResult(
-            status="failed",
-            adapter_version=self.adapter_version,
-            executor_type=self.executor_type,
-            executor_version=self.executor_version,
-            capabilities=self.capabilities,
-            result={
-                "message": self._sdk_failure_message(sdk_result),
-                "error_code": error_code,
-                "sdk_used": sdk_used,
-                "sdk_error": sdk_error,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "sdk_turn_diagnostics": turn_diagnostics,
-                "diagnostic_id": diagnostic_id,
-            },
-            executor_payload={
-                "sdk_used": sdk_used,
-                "sdk_error": sdk_error,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "sdk_turn_diagnostics": turn_diagnostics,
-                "diagnostic_id": diagnostic_id,
-            },
-        )
-
     def _sdk_failure_code(self, sdk_result) -> str:
         if sdk_result is None:
             return "claude_agent_sdk_disabled"
@@ -726,18 +647,6 @@ class ClaudeAgentWorkerAdapter:
             "claude_agent_sdk_unavailable": "Claude Agent SDK is required for general chat runs.",
         }
         return messages.get(error_code, "Claude Agent SDK execution failed")
-
-    def _sdk_completed_normally(self, sdk_result) -> bool:
-        return bool(
-            sdk_result
-            and getattr(sdk_result, "used_sdk", False)
-            and not getattr(sdk_result, "error", None)
-            and getattr(sdk_result, "received_structured_terminal", False)
-        )
-
-    def _sdk_terminal_reason(self, sdk_result) -> str | None:
-        terminal_reason = getattr(sdk_result, "terminal_reason", None)
-        return terminal_reason if isinstance(terminal_reason, str) and terminal_reason else None
 
     def _sdk_required_result(self, payload: RunPayload, sdk_result) -> ExecutorResult:
         error_code = self._sdk_failure_code(sdk_result)
@@ -788,22 +697,6 @@ class ClaudeAgentWorkerAdapter:
         if payload.context_pack.get("schema_version") == "ai-platform.executor-context-pack.v1":
             return payload.context_pack
         return executor_context_pack_from_snapshot(payload.context_snapshot)
-
-    def _context_retrieval_for_payload(
-        self,
-        payload: RunPayload,
-        context_pack: dict[str, Any],
-        workspace: Path,
-    ) -> tuple[ContextRetrievalAuthority | None, ScopedContextRetrievalIdentity | None]:
-        scope = self._context_retrieval_scope_for_payload(payload, context_pack)
-        if scope is None:
-            return None, None
-        return (
-            ContextRetrievalAuthority.for_workspace_transaction(
-                transaction, ObjectStorage(), workspace
-            ),
-            ScopedContextRetrievalIdentity(**scope.model_dump()),
-        )
 
     def _context_retrieval_scope_for_payload(
         self,
@@ -1526,6 +1419,11 @@ class ClaudeAgentWorkerAdapter:
         if not settings.claude_agent_sdk_enabled:
             return None
         sandbox_required = _ordinary_run_requires_sandbox(payload)
+        if not sandbox_required:
+            return self._sandbox_provider_required_result(
+                sandbox_provider="",
+                runtime_started=False,
+            )
         await _emit_public_progress_event(
             event_sink,
             event_type="intent_detected",
@@ -1535,478 +1433,26 @@ class ClaudeAgentWorkerAdapter:
         prepared, preflight_failure = await self._prepare_sdk_run(
             payload,
             event_sink=event_sink,
-            workspace=_sandbox_workspace(settings, payload) if sandbox_required else None,
-            workspace_root=settings.sandbox_workspace_root if sandbox_required else None,
+            workspace=_sandbox_workspace(settings, payload),
+            workspace_root=settings.sandbox_workspace_root,
         )
         if preflight_failure is not None:
             return preflight_failure
         if prepared is None:
             return None
         try:
-            attachment_requirements = attachment_requirements_from_contract(
+            attachment_requirements_from_contract(
                 _attachment_preprocessing_contract(payload, prepared)
             )
         except AttachmentPreprocessingError as exc:
             return self._attachment_parser_failure_result(error_code=exc.code)
-        if attachment_requirements and not sandbox_required:
-            return self._attachment_parser_failure_result(
-                error_code="attachment_parser_sandbox_required"
-            )
-        if sandbox_required:
-            return await self._submit_prepared_run_to_sandbox_runtime(
-                payload,
-                prepared,
-                event_sink=event_sink,
-                sandbox_runtime=sandbox_runtime,
-                execution_owner=execution_owner,
-            )
-
-        sdk_result = await self._try_run_sdk(
+        return await self._submit_prepared_run_to_sandbox_runtime(
             payload,
+            prepared,
             event_sink=event_sink,
-            workspace=prepared.workspace,
-            file_names=prepared.file_names,
-            prompt=prepared.prompt,
-            system_prompt=prepared.system_prompt,
-            staged_skill_names=prepared.staged_skill_names,
-            public_skill_metadata=prepared.public_skill_metadata,
+            sandbox_runtime=sandbox_runtime,
+            execution_owner=execution_owner,
         )
-        if self._sdk_completed_normally(sdk_result):
-            artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
-            used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names)
-            used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-            skill_manifests = _skill_manifests(
-                prepared.selected_skills,
-                used_skill_names=used_skill_names,
-                pins=prepared.pinned_manifests,
-            )
-            capability_evidence_error = _capability_execution_error(
-                payload,
-                getattr(sdk_result, "capability_evidence", None),
-                available_skill_ids=prepared.staged_skill_names,
-                claimed_used_skill_ids=used_skill_names,
-            )
-            if capability_evidence_error is not None:
-                turn_diagnostics = _public_sdk_turn_diagnostics(
-                    payload,
-                    getattr(sdk_result, "turn_diagnostics", {}),
-                    error_code=capability_evidence_error,
-                    used_skill_ids=used_skill_names,
-                    public_skill_metadata=prepared.public_skill_metadata,
-                )
-                return ExecutorResult(
-                    status="failed",
-                    adapter_version=self.adapter_version,
-                    executor_type=self.executor_type,
-                    executor_version=self.executor_version,
-                    capabilities={**self.capabilities, "platform_skills": True},
-                    result={
-                        "message": "Capability execution evidence was incomplete. Please retry.",
-                        "error_code": capability_evidence_error,
-                        "sdk_used": True,
-                        "sdk_session_id": sdk_result.session_id,
-                        "sdk_error": capability_evidence_error,
-                        "delegate_used": False,
-                        "worker_boundary": self.executor_type,
-                        "allowed_skills": prepared.allowed_skill_names,
-                        "staged_skills": prepared.staged_skill_names,
-                        "used_skills": used_skill_names,
-                        "sdk_turn_diagnostics": turn_diagnostics,
-                    },
-                    artifacts=[],
-                    executor_payload={
-                        "sdk_used": True,
-                        "sdk_session_id": sdk_result.session_id,
-                        "sdk_usage": sdk_result.usage,
-                        "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
-                        "sdk_error": capability_evidence_error,
-                        "delegate_used": False,
-                        "worker_boundary": self.executor_type,
-                        "allowed_skills": prepared.allowed_skill_names,
-                        "staged_skills": prepared.staged_skill_names,
-                        "used_skills": used_skill_names,
-                        "used_skills_source": used_skills_source,
-                        "skill_manifests": skill_manifests,
-                        "capability_evidence": list(
-                            getattr(sdk_result, "capability_evidence", []) or []
-                        ),
-                        "capability_evidence_validated": False,
-                        "sdk_turn_diagnostics": turn_diagnostics,
-                    },
-                )
-            turn_diagnostics = _public_sdk_turn_diagnostics(
-                payload,
-                getattr(sdk_result, "turn_diagnostics", {}),
-                error_code=None,
-                used_skill_ids=used_skill_names,
-                public_skill_metadata=prepared.public_skill_metadata,
-            )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version=self.adapter_version,
-                executor_type=self.executor_type,
-                executor_version=self.executor_version,
-                capabilities={**self.capabilities, "platform_skills": True},
-                result={
-                    "message": sdk_result.message or "任务完成",
-                    "artifact_count": len(artifacts),
-                    "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
-                    "sdk_error": None,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                },
-                artifacts=artifacts,
-                executor_payload={
-                    "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
-                    "sdk_usage": sdk_result.usage,
-                    "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
-                    "used_skills_source": used_skills_source,
-                    "skill_manifests": skill_manifests,
-                    "capability_evidence": list(
-                        getattr(sdk_result, "capability_evidence", []) or []
-                    ),
-                    "capability_evidence_validated": True,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                },
-            )
-        used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names) if sdk_result else []
-        used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-        skill_manifests = _skill_manifests(
-            prepared.selected_skills,
-            used_skill_names=used_skill_names,
-            pins=prepared.pinned_manifests,
-        )
-        failure_code = self._sdk_failure_code(sdk_result)
-        diagnostic_id = str(getattr(sdk_result, "diagnostic_id", "") or "") or None
-        turn_diagnostics = _public_sdk_turn_diagnostics(
-            payload,
-            getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
-            error_code=failure_code,
-            used_skill_ids=used_skill_names,
-            public_skill_metadata=prepared.public_skill_metadata,
-        )
-        return ExecutorResult(
-            status="failed",
-            adapter_version=self.adapter_version,
-            executor_type=self.executor_type,
-            executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
-            result={
-                "message": self._sdk_failure_message(sdk_result) if sdk_result else "Claude Agent SDK execution failed",
-                "error_code": failure_code,
-                "sdk_used": bool(sdk_result and sdk_result.used_sdk),
-                "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "allowed_skills": prepared.allowed_skill_names,
-                "staged_skills": prepared.staged_skill_names,
-                "used_skills": used_skill_names,
-                "sdk_turn_diagnostics": turn_diagnostics,
-                "diagnostic_id": diagnostic_id,
-            },
-            artifacts=[],
-            executor_payload={
-                "sdk_used": bool(sdk_result and sdk_result.used_sdk),
-                "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "allowed_skills": prepared.allowed_skill_names,
-                "staged_skills": prepared.staged_skill_names,
-                "used_skills": used_skill_names,
-                "used_skills_source": used_skills_source,
-                "skill_manifests": skill_manifests,
-                "sdk_turn_diagnostics": turn_diagnostics,
-                "diagnostic_id": diagnostic_id,
-            },
-        )
-
-    async def _try_run_sdk(
-        self,
-        payload: RunPayload,
-        event_sink: ExecutorEventSink | None = None,
-        *,
-        workspace: Path | None = None,
-        file_names: list[str] | None = None,
-        prompt: str | None = None,
-        system_prompt: str | None = None,
-        staged_skill_names: list[str] | None = None,
-        public_skill_metadata: dict[str, dict[str, str]] | None = None,
-    ):
-        settings = get_settings()
-        if not settings.claude_agent_sdk_enabled:
-            return None
-        if workspace is None:
-            workspace = _run_workspace(settings, payload)
-            _prepare_run_workspace(settings.claude_agent_workspace_root, workspace)
-        else:
-            ensure_creatable_inside(
-                settings.claude_agent_workspace_root,
-                workspace,
-                "run workspace must stay inside the configured workspace root",
-            )
-            workspace.mkdir(parents=True, exist_ok=True)
-        prepared_file_names = (
-            file_names
-            if file_names is not None
-            else await self._materialize_files(payload, workspace)
-        )
-        raw_attachment_metadata = getattr(prepared_file_names, "attachment_metadata", [])
-        attachment_metadata = (
-            [
-                item
-                for item in raw_attachment_metadata
-                if isinstance(item, _AuthorizedAttachmentMetadata)
-            ]
-            if isinstance(raw_attachment_metadata, list)
-            else []
-        )
-        file_names = list(prepared_file_names)
-        context_pack = self._executor_context_pack(payload)
-        context_manifest = _context_manifest_from_pack(context_pack)
-        if context_manifest is not None:
-            context_pack = dict(context_pack)
-            context_pack["context_manifest"] = _context_manifest_with_attachment_metadata(
-                context_manifest,
-                attachment_metadata,
-                allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
-            )
-        if not prompt:
-            try:
-                authorized_catalog = _runtime_authorized_skill_catalog(payload)
-            except AuthorizedSkillCatalogError:
-                return type("SdkFailed", (), {
-                    "used_sdk": False,
-                    "message": "",
-                    "session_id": None,
-                    "usage": {},
-                    "error": "authorized_skill_catalog_invalid",
-                    "turn_diagnostics": {},
-                })()
-            prompt = build_skill_prompt(
-                skill_id=payload.skill_id,
-                user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
-                file_names=file_names,
-                context_pack=context_pack,
-                authorized_skill_catalog=(
-                    authorized_catalog.snapshot if authorized_catalog is not None else None
-                ),
-            )
-        if system_prompt is None:
-            system_prompt = self._agent_profile_system_prompt(payload)
-        context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack, workspace)
-
-        async def on_text(delta: str) -> None:
-            if event_sink:
-                await event_sink(
-                    event_type="assistant_delta",
-                    stage="message",
-                    message=delta,
-                    payload={"delta": delta, "visible_to_user": True, "severity": "info"},
-                )
-
-        async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
-            if event_sink:
-                await event_sink(
-                    event_type="skill_used",
-                    stage="skills",
-                    message=f"Platform Skill used: {skill_name}",
-                    payload={
-                        "skill_id": skill_name,
-                        "tool_use_id": str(metadata.get("tool_use_id") or ""),
-                        "source": str(metadata.get("source") or "claude_agent_sdk_hook"),
-                        "used_skills_source": "executor_hook",
-                        "visible_to_user": False,
-                        "severity": "info",
-                    },
-                )
-
-        runtime_tool_policy_subjects = _runtime_tool_policy_subjects(
-            payload,
-            _context_manifest_from_pack(context_pack),
-        )
-        capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
-            runtime_tool_policy_subjects,
-            available_skill_identities=staged_skill_names or (),
-        )
-        capability_declarations = {
-            key: RequiredCapabilityDeclaration.from_authorized_subject(
-                capability_kind=key[0],
-                canonical_identity=key[1],
-            )
-            for key in capability_plan.available
-        }
-        bound_capability_evidence: list[dict[str, Any]] = []
-        capability_invocation_states: dict[tuple[str, str, str], str] = {}
-        capability_evidence_rejected = False
-
-        def reject_capability_evidence() -> bool:
-            nonlocal capability_evidence_rejected
-            capability_evidence_rejected = True
-            bound_capability_evidence.clear()
-            return False
-
-        async def on_capability_evidence(raw: dict[str, str]) -> bool:
-            """Bind exact worker-local SDK hook facts before acknowledging them."""
-
-            if capability_evidence_rejected:
-                return False
-            try:
-                capability_kind = raw.get("capability_kind")
-                canonical_identity = raw.get("canonical_identity")
-                tool_call_id = raw.get("tool_call_id")
-                lifecycle_phase = raw.get("lifecycle_phase")
-                if not all(
-                    isinstance(value, str) and value
-                    for value in (
-                        capability_kind,
-                        canonical_identity,
-                        tool_call_id,
-                        lifecycle_phase,
-                    )
-                ):
-                    return reject_capability_evidence()
-                declaration = capability_declarations.get(
-                    (str(capability_kind), str(canonical_identity))
-                )
-                if declaration is None:
-                    return reject_capability_evidence()
-                expected = RequiredCapabilityEvidence.sdk_hook_payload(
-                    declaration=declaration,
-                    tool_call_id=str(tool_call_id),
-                    lifecycle_phase=str(lifecycle_phase),
-                )
-                if raw != expected:
-                    return reject_capability_evidence()
-                invocation_key = (
-                    str(capability_kind),
-                    str(canonical_identity),
-                    str(tool_call_id),
-                )
-                current_phase = capability_invocation_states.get(invocation_key, "")
-                if lifecycle_phase == "invocation_requested":
-                    if current_phase:
-                        return reject_capability_evidence()
-                elif current_phase != "invocation_requested":
-                    return reject_capability_evidence()
-                evidence = RequiredCapabilityEvidence.from_sdk_hook(
-                    declaration=declaration,
-                    binding={
-                        "tenant_id": payload.tenant_id,
-                        "workspace_id": payload.workspace_id,
-                        "user_id": payload.user_id,
-                        "session_id": payload.session_id,
-                        "run_id": payload.run_id,
-                        "attempt_id": payload.attempt_id,
-                    },
-                    tool_call_id=str(tool_call_id),
-                    lifecycle_phase=str(lifecycle_phase),
-                )
-            except (AttributeError, RequiredToolContractError):
-                return reject_capability_evidence()
-            bound_capability_evidence.append(asdict(evidence))
-            capability_invocation_states[invocation_key] = (
-                "invocation_requested"
-                if lifecycle_phase == "invocation_requested"
-                else "terminal"
-            )
-            return True
-
-        try:
-            sdk_kwargs = {
-                "prompt": prompt,
-                "cwd": workspace,
-                "skill_id": payload.skill_id,
-                "session_id": sdk_session_id_for_run(payload.run_id),
-                "model_id": payload.model_value or payload.model_id or None,
-                "skills": staged_skill_names,
-                "on_text": on_text,
-                "on_skill_use": on_skill_use,
-                "public_skill_metadata": public_skill_metadata,
-                "tool_policy_subjects": runtime_tool_policy_subjects,
-            }
-            if system_prompt:
-                sdk_kwargs["system_prompt"] = system_prompt
-            if context_retrieval is not None and context_retrieval_identity is not None:
-                sdk_kwargs["context_retrieval"] = context_retrieval
-                sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
-            if capability_declarations:
-                sdk_kwargs["on_capability_evidence"] = on_capability_evidence
-            await _emit_public_progress_event(
-                event_sink,
-                event_type="run_started",
-                stage="runtime",
-                message="SDK runtime dispatch is active",
-            )
-            sdk_result = await run_claude_agent_sdk(**sdk_kwargs)
-            if capability_declarations and isinstance(
-                sdk_result,
-                ClaudeAgentSdkRunResult,
-            ):
-                return replace(
-                    sdk_result,
-                    capability_evidence=list(bound_capability_evidence),
-                )
-            return sdk_result
-        except ClaudeAgentSdkNotAvailable as exc:
-            diagnostic_id = str(getattr(exc, "diagnostic_id", "") or "") or new_diagnostic_id()
-            log_safe_exception(
-                logger,
-                event="claude_sdk_dispatch_failure",
-                phase="sdk_import",
-                diagnostic_id=diagnostic_id,
-                exc=exc,
-                identifiers={
-                    "trace_id": payload.trace_id,
-                    "run_id": payload.run_id,
-                    "attempt_id": payload.attempt_id,
-                    "session_id": payload.session_id,
-                },
-            )
-            return type("SdkUnavailable", (), {
-                "used_sdk": False,
-                "message": "",
-                "session_id": None,
-                "usage": {},
-                "error": "claude_agent_sdk_unavailable",
-                "diagnostic_id": diagnostic_id,
-                "turn_diagnostics": {},
-            })()
-        # The worker boundary maps all SDK dependency failures to one stable public error.
-        except Exception as exc:  # noqa: BLE001
-            diagnostic_id = new_diagnostic_id()
-            log_safe_exception(
-                logger,
-                event="claude_sdk_dispatch_failure",
-                phase="sdk_execution",
-                diagnostic_id=diagnostic_id,
-                exc=exc,
-                identifiers={
-                    "trace_id": payload.trace_id,
-                    "run_id": payload.run_id,
-                    "attempt_id": payload.attempt_id,
-                    "session_id": payload.session_id,
-                },
-            )
-            return type("SdkFailed", (), {
-                "used_sdk": True,
-                "message": "",
-                "session_id": None,
-                "usage": {},
-                "error": "claude_agent_sdk_upstream_error",
-                "diagnostic_id": diagnostic_id,
-                "turn_diagnostics": {},
-            })()
 
     async def _materialize_files(self, payload: RunPayload, workspace: Path) -> list[str]:
         if not payload.file_ids:

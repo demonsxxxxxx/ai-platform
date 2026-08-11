@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -294,6 +295,99 @@ async def test_default_non_permission_callback_fails_fast(monkeypatch):
         "accepted": True
     }
     assert observed["timeout"] == tool_permission_budget(120.0).non_permission_callback_timeout_seconds
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["transport", "server"])
+async def test_default_callback_retries_same_idempotent_batch_after_uncertain_failure(
+    monkeypatch,
+    first_failure,
+):
+    posts, delays = [], []
+    callback_payload = {
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "batch_id": "batch-a",
+        "status": "running",
+    }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            posts.append((url, dict(json), dict(headers)))
+            request = httpx.Request("POST", url)
+            if len(posts) == 1 and first_failure == "transport":
+                raise httpx.ReadTimeout("response lost", request=request)
+            if len(posts) == 1:
+                return httpx.Response(503, request=request, json={"detail": "unavailable"})
+            return httpx.Response(
+                200,
+                request=request,
+                json={"accepted": True, "duplicate": True},
+            )
+
+    async def record_delay(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.httpx.AsyncClient",
+        lambda **_kwargs: FakeClient(),
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.asyncio.sleep",
+        record_delay,
+    )
+
+    result = await _default_callback_sender(
+        "https://control-plane.test/event",
+        callback_payload,
+        "token-a",
+    )
+
+    assert result == {"accepted": True, "duplicate": True}
+    assert len(posts) == 2
+    assert posts[0] == posts[1]
+    assert posts[0][1] == callback_payload
+    assert delays == [0.1]
+
+
+@pytest.mark.asyncio
+async def test_default_callback_does_not_retry_stable_contract_rejection(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            calls.append((url, json, headers))
+            return httpx.Response(
+                409,
+                request=httpx.Request("POST", url),
+                json={"detail": "capability_evidence_not_authorized"},
+            )
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.httpx.AsyncClient",
+        lambda **_kwargs: FakeClient(),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _default_callback_sender(
+            "https://control-plane.test/event",
+            {"attempt_id": "attempt-a", "batch_id": "batch-a"},
+            "token-a",
+        )
+
+    assert len(calls) == 1
 
 
 def test_executor_runtime_identity_requires_lease_credential_and_returns_only_effective_ids(tmp_path, monkeypatch):

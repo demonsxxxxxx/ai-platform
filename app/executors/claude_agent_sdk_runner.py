@@ -82,6 +82,12 @@ _SDK_LOCAL_SIDE_EFFECT_TOOLS = frozenset({"Bash", "Write", "Edit", "NotebookEdit
 _SDK_LOCAL_FILESYSTEM_TOOLS = frozenset(
     (*_SDK_LOCAL_READ_ONLY_TOOLS, *_SDK_LOCAL_SIDE_EFFECT_TOOLS)
 )
+_SDK_INTERNAL_CONTEXT_STAGING_IDENTITIES = frozenset(
+    {
+        f"{_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX}stage_context_file_to_workspace",
+        f"{_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX}stage_run_artifact_to_workspace",
+    }
+)
 _SDK_BROKERED_BUILTIN_TOOLS = (
     "Bash",
     "Write",
@@ -883,6 +889,7 @@ async def run_claude_agent_sdk(
     used_skill_names: list[str] = []
     capability_evidence: list[dict[str, str]] = []
     capability_evidence_rejected = False
+    capability_evidence_lock = asyncio.Lock()
     actual_capability_invocation_observed = False
     actual_mcp_invocation_observed = False
     started_tool_lifecycles: set[tuple[str, str]] = set()
@@ -1211,44 +1218,10 @@ async def run_claude_agent_sdk(
         """Record one bounded actual-call fact without tool input or output."""
 
         nonlocal actual_capability_invocation_observed, actual_mcp_invocation_observed
-        if capability_evidence_rejected:
-            return False
-        key = (capability_kind, canonical_identity)
-        if lifecycle_phase == "invocation_requested":
-            actual_capability_invocation_observed = True
-            if capability_kind == "mcp":
-                actual_mcp_invocation_observed = True
-                answer_stream_gate.seal(
-                    {
-                        canonical_identity: "external tool",
-                        tool_call_id: "tool invocation",
-                    }
-                )
-            elif key in capability_plan.available:
-                answer_stream_gate.seal({tool_call_id: "tool invocation"})
-        try:
-            evidence = RequiredCapabilityEvidence.sdk_hook_payload(
-                declaration=RequiredCapabilityDeclaration.from_authorized_subject(
-                    capability_kind=capability_kind, canonical_identity=canonical_identity
-                ),
-                tool_call_id=tool_call_id,
-                lifecycle_phase=lifecycle_phase,
-            ) if key in capability_plan.available else None
-            if evidence is not None:
-                acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
-            elif capability_kind == "mcp":
-                return reject_capability_evidence()
-        except asyncio.CancelledError:
-            reject_capability_evidence()
-            raise
-        except Exception:  # noqa: BLE001
-            return reject_capability_evidence()
-        if evidence is not None:
-            # One event-loop task executes this no-await commit section at a time.
-            if acknowledged is not True:
-                return reject_capability_evidence()
+        async with capability_evidence_lock:
             if capability_evidence_rejected:
                 return False
+            key = (capability_kind, canonical_identity)
             if not capability_evidence_transition_is_valid(
                 capability_kind=capability_kind,
                 canonical_identity=canonical_identity,
@@ -1256,12 +1229,44 @@ async def run_claude_agent_sdk(
                 lifecycle_phase=lifecycle_phase,
             ):
                 return reject_capability_evidence()
-            capability_evidence.append(evidence)
-            if (
-                lifecycle_phase in {"completed", "failed"}
-                and all_observed_capability_calls_are_terminal()
-            ):
-                answer_stream_gate.release_after_verified_capability()
+            if lifecycle_phase == "invocation_requested":
+                actual_capability_invocation_observed = True
+                if capability_kind == "mcp":
+                    actual_mcp_invocation_observed = True
+                    answer_stream_gate.seal(
+                        {
+                            canonical_identity: "external tool",
+                            tool_call_id: "tool invocation",
+                        }
+                    )
+                elif key in capability_plan.available:
+                    answer_stream_gate.seal({tool_call_id: "tool invocation"})
+            try:
+                evidence = RequiredCapabilityEvidence.sdk_hook_payload(
+                    declaration=RequiredCapabilityDeclaration.from_authorized_subject(
+                        capability_kind=capability_kind, canonical_identity=canonical_identity
+                    ),
+                    tool_call_id=tool_call_id,
+                    lifecycle_phase=lifecycle_phase,
+                ) if key in capability_plan.available else None
+                if evidence is not None:
+                    acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
+                elif capability_kind == "mcp":
+                    return reject_capability_evidence()
+            except asyncio.CancelledError:
+                reject_capability_evidence()
+                raise
+            except Exception:  # noqa: BLE001
+                return reject_capability_evidence()
+            if evidence is not None:
+                if acknowledged is not True:
+                    return reject_capability_evidence()
+                capability_evidence.append(evidence)
+                if (
+                    lifecycle_phase in {"completed", "failed"}
+                    and all_observed_capability_calls_are_terminal()
+                ):
+                    answer_stream_gate.release_after_verified_capability()
         claimed = skill_metadata is not None and claim_used_skill(canonical_identity)
         if claimed and on_skill_use:
             await on_skill_use(canonical_identity, skill_metadata)
@@ -1283,9 +1288,13 @@ async def run_claude_agent_sdk(
         """Serialize path validation and local file access across each hook lifecycle."""
 
         nonlocal filesystem_tool_owner
-        if tool_name not in _SDK_LOCAL_FILESYSTEM_TOOLS:
+        identity = adapter_identity(tool_name)
+        if (
+            tool_name not in _SDK_LOCAL_FILESYSTEM_TOOLS
+            and identity not in _SDK_INTERNAL_CONTEXT_STAGING_IDENTITIES
+        ):
             return True
-        owner = (tool_name, tool_call_id)
+        owner = (identity, tool_call_id)
         if not tool_call_id or filesystem_tool_owner == owner:
             return False
         await filesystem_tool_lock.acquire()
@@ -1297,7 +1306,7 @@ async def run_claude_agent_sdk(
 
     def release_filesystem_tool(*, tool_name: str, tool_call_id: str) -> None:
         nonlocal filesystem_tool_owner
-        if filesystem_tool_owner != (tool_name, tool_call_id):
+        if filesystem_tool_owner != (adapter_identity(tool_name), tool_call_id):
             return
         filesystem_tool_owner = None
         filesystem_tool_lock.release()
@@ -1438,7 +1447,10 @@ async def run_claude_agent_sdk(
             else ""
         )
         filesystem_lock_held = False
-        if tool_name in _SDK_LOCAL_FILESYSTEM_TOOLS:
+        if (
+            tool_name in _SDK_LOCAL_FILESYSTEM_TOOLS
+            or adapter_identity(tool_name) in _SDK_INTERNAL_CONTEXT_STAGING_IDENTITIES
+        ):
             filesystem_lock_held = await acquire_filesystem_tool(
                 tool_name=tool_name,
                 tool_call_id=resolved_tool_call_id,

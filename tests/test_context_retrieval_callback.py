@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,7 +12,10 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.main import create_app
-from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
+from app.runtime.sandbox.context_retrieval_client import (
+    PlatformContextRetrievalClient,
+    _atomic_stage_bytes,
+)
 from app.runtime.sandbox.contracts import ContextRetrievalScope
 
 
@@ -327,6 +331,7 @@ def test_context_retrieval_callback_rejects_stale_or_released_attempt_before_act
 async def test_platform_context_client_stages_brokered_bytes_without_returning_token(tmp_path, monkeypatch):
     requests = []
     raw = b"docx-bytes"
+    replacements = []
 
     class Response:
         status_code = 200
@@ -356,6 +361,19 @@ async def test_platform_context_client_stages_brokered_bytes_without_returning_t
             return Response()
 
     monkeypatch.setattr("app.runtime.sandbox.context_retrieval_client.httpx.AsyncClient", Client)
+    from app.runtime.sandbox import context_retrieval_client
+
+    original_replace = context_retrieval_client.os.replace
+
+    def checked_replace(source, target):
+        source_path = Path(source)
+        target_path = Path(target)
+        assert source_path.read_bytes() == raw
+        assert not target_path.exists()
+        replacements.append((source_path.name, target_path.name))
+        original_replace(source, target)
+
+    monkeypatch.setattr(context_retrieval_client.os, "replace", checked_replace)
     scope = ContextRetrievalScope(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -392,6 +410,37 @@ async def test_platform_context_client_stages_brokered_bytes_without_returning_t
     assert requests[0][1]["run_id"] == "run-a"
     assert requests[0][1]["attempt_id"] == "attempt-a"
     assert requests[0][2] == {"X-AI-Platform-Callback-Token": "secret"}
+    assert len(replacements) == 1
+    assert replacements[0][1] == "translated.docx"
+    assert replacements[0][0].startswith(".ai-platform-stage-")
+    assert not list((tmp_path / "context-stage").rglob("*.tmp"))
+
+
+def test_atomic_context_stage_cleans_temporary_file_when_publish_fails(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "context" / "artifact-a" / "result.docx"
+
+    def fail_replace(source, destination):
+        assert Path(source).read_bytes() == b"complete-content"
+        assert Path(destination) == target
+        raise OSError("publish failed")
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.context_retrieval_client.os.replace",
+        fail_replace,
+    )
+
+    with pytest.raises(OSError, match="publish failed"):
+        _atomic_stage_bytes(
+            write_root=tmp_path,
+            target=target,
+            content=b"complete-content",
+        )
+
+    assert not target.exists()
+    assert not list(target.parent.glob(".ai-platform-stage-*.tmp"))
 
 
 @pytest.mark.asyncio

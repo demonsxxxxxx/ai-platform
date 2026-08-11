@@ -16,6 +16,7 @@ from app.execution_boundary import (
     governed_egress_proof_from_labels,
 )
 from app.executors.base import RunExecutionOwner
+from app.required_tool_contract import RequiredCapabilityDeclaration
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
     ContainerStartFailedError,
@@ -62,6 +63,7 @@ from app.runtime.sandbox.opensandbox_policy import (
 from app.skills.execution_profiles import OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import get_settings
+from app.tool_policy import evaluate_tool_policy
 
 
 EventSink = Callable[[AgentEvent], Awaitable[None] | None]
@@ -72,6 +74,60 @@ LeaseReleaser = Callable[..., Awaitable[Any] | Any]
 CreationClaimFactory = Callable[..., AbstractAsyncContextManager[SandboxCreationClaim]]
 
 _logger = logging.getLogger(__name__)
+_CAPABILITY_AUTHORITY_SCHEMA_VERSION = "ai-platform.capability-authority.v1"
+
+
+def _runtime_capability_authority(request: SandboxRuntimeRequest) -> dict[str, Any]:
+    """Seal the exact Skill and external MCP identities dispatched to this attempt."""
+
+    identities = {
+        ("skill", skill_id)
+        for skill_id in request.skill_ids
+        if skill_id and skill_id != "general-chat"
+    }
+    for raw in request.tool_policy_subjects:
+        if not isinstance(raw, dict):
+            continue
+        identity = str(raw.get("identity") or "")
+        server_id = str(raw.get("mcp_server") or "")
+        tool_name = str(raw.get("mcp_tool") or "")
+        if (
+            not identity
+            or not server_id
+            or server_id == "ai-platform-context"
+            or not tool_name
+            or identity != f"mcp__{server_id}__{tool_name}"
+        ):
+            continue
+        decision = evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": [identity],
+                "registered": raw.get("registered"),
+                "declared": raw.get("declared"),
+                "active": raw.get("active"),
+                "distributed": raw.get("distributed"),
+                "identity_authorized": raw.get("identity_authorized"),
+                "object_authorized": raw.get("object_authorized"),
+                "parameters_authorized": raw.get("parameters_authorized"),
+                "risk_level": raw.get("risk_level"),
+                "write_capable": raw.get("write_capable"),
+            }
+        )
+        if decision.allowed and decision.canonical_identity == identity:
+            identities.add(("mcp", identity))
+    declarations = [
+        RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=kind,
+            canonical_identity=identity,
+        ).to_payload()
+        for kind, identity in sorted(identities)
+    ]
+    return {
+        "schema_version": _CAPABILITY_AUTHORITY_SCHEMA_VERSION,
+        "attempt_id": request.attempt_id,
+        "declarations": declarations,
+    }
 
 
 @dataclass(frozen=True)
@@ -282,6 +338,7 @@ class SandboxRuntime:
             "evidence_class": "runtime_lease_projection",
             "security_profile": lease_security_profile,
             "attempt_id": request.attempt_id,
+            "capability_authority": _runtime_capability_authority(request),
             "container_id": runtime_container_id,
             "container_name": runtime_container_name,
             "executor_url": runtime_executor_url,
