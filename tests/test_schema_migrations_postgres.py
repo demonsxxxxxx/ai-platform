@@ -162,6 +162,9 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
             "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target"
         )
         await admin.execute(
+            "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state"
+        )
+        await admin.execute(
             "alter table object_deletion_outbox drop constraint object_deletion_outbox_file_id_fkey"
         )
         await admin.execute(
@@ -219,6 +222,85 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_file_state_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await admin.execute(
+            "insert into users(id, tenant_id, display_name) values ('state-user', 'default', 'State')"
+        )
+        await admin.execute(
+            "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state"
+        )
+        await admin.execute(
+            "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_state"
+        )
+        await admin.execute(
+            """
+            alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
+              check (state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted'))
+            """
+        )
+        await admin.execute(
+            """
+            insert into files(
+              id, tenant_id, workspace_id, user_id, original_name, content_type,
+              size_bytes, storage_key, sha256, lifecycle_state, delete_requested_at, deleted_at
+            ) values
+              ('state-pending', 'default', 'default', 'state-user', 'p', 'text/plain', 1, 'state/p', 'p', 'delete_pending', now(), null),
+              ('state-processing', 'default', 'default', 'state-user', 'q', 'text/plain', 1, 'state/q', 'q', 'delete_pending', now(), null),
+              ('state-failed', 'default', 'default', 'state-user', 'f', 'text/plain', 1, 'state/f', 'f', 'delete_pending', now(), null),
+              ('state-dead-letter', 'default', 'default', 'state-user', 'd', 'text/plain', 1, 'state/d', 'd', 'delete_pending', now(), null),
+              ('state-deleted', 'default', 'default', 'state-user', 'x', 'text/plain', 1, 'state/x', 'x', 'deleted', now(), now())
+            """
+        )
+        await admin.execute(
+            """
+            insert into object_deletion_outbox(
+              id, tenant_id, target_type, artifact_id, file_id, storage_key, state
+            ) values
+              ('out-state-pending', 'default', 'file', null, 'state-pending', 'state/p', 'pending'),
+              ('out-state-processing', 'default', 'file', null, 'state-processing', 'state/q', 'processing'),
+              ('out-state-failed', 'default', 'file', null, 'state-failed', 'state/f', 'failed'),
+              ('out-state-dead-letter', 'default', 'file', null, 'state-dead-letter', 'state/d', 'dead_letter'),
+              ('out-state-deleted', 'default', 'file', null, 'state-deleted', 'state/x', 'deleted')
+            """
+        )
+        await admin.execute(
+            """
+            insert into schema_migrations(version, checksum_sha256)
+            values ('2026.08.12.2', repeat('2', 64))
+            """
+        )
+
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+
+        assert result["status"] == "applied"
+        cursor = await admin.execute("select id, state from object_deletion_outbox order by id")
+        assert {row["id"]: row["state"] for row in await cursor.fetchall()} == {
+            "out-state-dead-letter": "file_dead_letter",
+            "out-state-deleted": "file_deleted",
+            "out-state-failed": "file_failed",
+            "out-state-pending": "file_pending",
+            "out-state-processing": "file_processing",
+        }
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "damage_sql",
     [
@@ -226,6 +308,7 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
         "alter table files drop constraint chk_files_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target",
+        "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state",
         "alter table object_deletion_outbox drop column lease_generation",
         "drop index idx_messages_tenant_session_created",
         "drop index idx_runs_input_json_gin",
@@ -271,6 +354,11 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
         alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target;
         alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target
           check (artifact_id is not null or file_id is not null)
+        """,
+        """
+        alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state;
+        alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target_state
+          check (target_type = 'artifact' or state = 'file_pending')
         """,
         """
         alter table object_deletion_outbox
@@ -403,7 +491,8 @@ async def test_real_postgres_readiness_rejects_and_migration_removes_orphan_inde
             "idx_object_deletion_outbox_claim",
             "create index idx_object_deletion_outbox_claim "
             "on object_deletion_outbox(state, available_at, created_at, id) "
-            "where (state = 'pending' or state = 'processing' or state = 'failed') "
+            "where (state = 'pending' or state = 'processing' or state = 'failed' "
+            "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed') "
             "and tenant_id = 'default'",
         ),
     ],

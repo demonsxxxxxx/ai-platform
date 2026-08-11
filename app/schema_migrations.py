@@ -14,7 +14,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.12.2"
+TARGET_SCHEMA_VERSION = "2026.08.12.3"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -59,6 +59,7 @@ CRITICAL_CONSTRAINTS = (
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
+    ("object_deletion_outbox", "chk_object_deletion_outbox_target_state"),
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
 )
 CRITICAL_CONSTRAINT_DEFINITIONS = (
@@ -75,7 +76,19 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (state = ANY (ARRAY["
         "'pending'::text, 'processing'::text, 'failed'::text, "
-        "'dead_letter'::text, 'deleted'::text]))",
+        "'dead_letter'::text, 'deleted'::text, 'file_pending'::text, "
+        "'file_processing'::text, 'file_failed'::text, 'file_dead_letter'::text, "
+        "'file_deleted'::text]))",
+    ),
+    (
+        "object_deletion_outbox",
+        "chk_object_deletion_outbox_target_state",
+        "c",
+        "CHECK (target_type = 'artifact'::text AND (state = ANY (ARRAY["
+        "'pending'::text, 'processing'::text, 'failed'::text, 'dead_letter'::text, "
+        "'deleted'::text])) OR target_type = 'file'::text AND (state = ANY (ARRAY["
+        "'file_pending'::text, 'file_processing'::text, 'file_failed'::text, "
+        "'file_dead_letter'::text, 'file_deleted'::text])))",
     ),
     (
         "object_deletion_outbox",
@@ -198,11 +211,13 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "idx_object_deletion_outbox_claim",
         "create index concurrently if not exists idx_object_deletion_outbox_claim "
         "on object_deletion_outbox(state, available_at asc, created_at asc, id asc) "
-        "where state = 'pending' or state = 'processing' or state = 'failed'",
+        "where state = 'pending' or state = 'processing' or state = 'failed' "
+        "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed'",
         "object_deletion_outbox",
         ("state", "available_at", "created_at", "id"),
         (False, False, False, False),
-        "state = 'pending' or state = 'processing' or state = 'failed'",
+        "state = 'pending' or state = 'processing' or state = 'failed' "
+        "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed'",
     ),
     ConcurrentIndexMigration(
         "idx_object_deletion_outbox_artifact_storage_live",

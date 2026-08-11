@@ -329,7 +329,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
               id, tenant_id, target_type, artifact_id, file_id, storage_key, state
             ) values (
               'objdel_file-mismatch', 'tenant-a', 'file', null, 'file-mismatch',
-              'files/wrong-object', 'pending'
+              'files/wrong-object', 'file_pending'
             )
             """
         )
@@ -472,10 +472,52 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
         with pytest.raises(repositories.RepositoryNotFoundError, match="file_not_found"):
             await blocked_bind
 
+        cursor = await primary.execute(
+            """
+            select id, target_type
+            from object_deletion_outbox
+            where (
+                state in ('pending', 'failed') and available_at <= now()
+              ) or (
+                state = 'processing'
+                and leased_at <= now() - interval '5 minutes'
+              )
+            order by id
+            """
+        )
+        assert all(row["target_type"] != "file" for row in await cursor.fetchall())
+        await primary.commit()
+        await admin.execute(
+            """
+            update object_deletion_outbox
+            set state = 'file_processing', attempts = 1, lease_generation = 1,
+                leased_at = now() - interval '6 minutes'
+            where id = 'objdel_file-delete-first'
+            """
+        )
+
         async with primary.transaction():
             claimed = await repositories.claim_object_deletions(primary, limit=10, max_attempts=5)
             assert all(item["id"] != "objdel_file-mismatch" for item in claimed)
             delete_claim = next(item for item in claimed if item["file_id"] == "file-delete")
+            stale_reclaim = next(
+                item for item in claimed if item["file_id"] == "file-delete-first"
+            )
+            assert (stale_reclaim["attempts"], stale_reclaim["lease_generation"]) == (2, 2)
+            assert not await repositories.fail_object_deletion(
+                primary,
+                outbox_id=stale_reclaim["id"],
+                tenant_id="tenant-a",
+                lease_generation=1,
+                error_code="stale_worker",
+            )
+            assert await repositories.fail_object_deletion(
+                primary,
+                outbox_id=stale_reclaim["id"],
+                tenant_id="tenant-a",
+                lease_generation=stale_reclaim["lease_generation"],
+                error_code="object_delete_transient",
+            ) == "file_failed"
             assert await repositories.complete_object_deletion(
                 primary,
                 outbox_id=delete_claim["id"],
@@ -489,10 +531,31 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             """
         )
         assert await cursor.fetchone() == {
-            "state": "dead_letter",
+            "state": "file_dead_letter",
             "reconcile_required": True,
             "last_error_code": "object_delete_target_invariant",
         }
+        await primary.commit()
+        await admin.execute(
+            """
+            update object_deletion_outbox
+            set available_at = now() - interval '1 second'
+            where id = 'objdel_file-delete-first'
+            """
+        )
+        async with primary.transaction():
+            retried_file = await repositories.claim_object_deletions(
+                primary,
+                limit=10,
+                max_attempts=5,
+            )
+            assert [item["id"] for item in retried_file] == ["objdel_file-delete-first"]
+            assert await repositories.complete_object_deletion(
+                primary,
+                outbox_id=retried_file[0]["id"],
+                tenant_id="tenant-a",
+                lease_generation=retried_file[0]["lease_generation"],
+            )
         await primary.commit()
         async with primary.transaction():
             replay = await repositories.queue_unbound_file_for_deletion(

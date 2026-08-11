@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.12.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.12.3"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -219,6 +219,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "object_deletion_outbox",
+        "chk_object_deletion_outbox_target_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "object_deletion_outbox",
         "object_deletion_outbox_file_id_fkey",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
@@ -235,7 +239,19 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (state = ANY (ARRAY["
             "'pending'::text, 'processing'::text, 'failed'::text, "
-            "'dead_letter'::text, 'deleted'::text]))",
+            "'dead_letter'::text, 'deleted'::text, 'file_pending'::text, "
+            "'file_processing'::text, 'file_failed'::text, 'file_dead_letter'::text, "
+            "'file_deleted'::text]))",
+        ),
+        (
+            "object_deletion_outbox",
+            "chk_object_deletion_outbox_target_state",
+            "c",
+            "CHECK (target_type = 'artifact'::text AND (state = ANY (ARRAY["
+            "'pending'::text, 'processing'::text, 'failed'::text, 'dead_letter'::text, "
+            "'deleted'::text])) OR target_type = 'file'::text AND (state = ANY (ARRAY["
+            "'file_pending'::text, 'file_processing'::text, 'file_failed'::text, "
+            "'file_dead_letter'::text, 'file_deleted'::text])))",
         ),
         (
             "object_deletion_outbox",
@@ -260,7 +276,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
     assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
-        "state = 'pending' or state = 'processing' or state = 'failed'"
+        "state = 'pending' or state = 'processing' or state = 'failed' "
+        "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed'"
     )
     assert migrations[
         "idx_object_deletion_outbox_artifact_storage_live"

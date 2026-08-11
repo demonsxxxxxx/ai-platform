@@ -78,13 +78,17 @@ Upgrade procedure:
 2. Require a successful `status` result before starting API and workers.
 3. Deploy the matching API, worker, and frontend commit, then verify `/ready`.
 
-When a schema version adds a new deletion-outbox target, every object-deletion
-worker must understand that target before an API can enqueue it. In particular,
-an artifact-only worker must never claim a file-target row: it could delete the
-object bytes without writing the matching file lifecycle receipt. The standard
-Compose rollout avoids this mixed state by starting API and worker from the
-same post-migration image. A rolling deployment must stop or drain old workers,
-deploy target-aware workers, and only then enable the producer route.
+When a schema version adds a new deletion-outbox target, an older worker must be
+structurally unable to claim it. Artifact rows retain the historical
+`pending`/`processing`/`failed` state namespace. File rows use the disjoint
+`file_pending`/`file_processing`/`file_failed` namespace and matching terminal
+states. The schema migration rewrites any pre-release file row that used the
+shared namespace before validating the target/state constraint. Consequently,
+an artifact-only worker's historical claim SQL cannot select a file target and
+cannot delete its object bytes without a matching file receipt. New workers
+remain dual-read for artifact states while all file transitions stay namespaced.
+This is the data-safety fence; worker capability heartbeat remains an optional
+availability and rollout-observability layer rather than deletion authority.
 
 Migrations in this phase are additive. Rollback means restoring the previous
 application image only after confirming it tolerates the added columns,
@@ -93,11 +97,13 @@ There is no automatic down migration. A checksum mismatch or missing critical
 contract is a stop condition requiring operator investigation, not a reason to
 bypass readiness.
 
-Before rolling back to an artifact-only worker, stop the file-delete producer
-and drain or reconcile every non-terminal file-target outbox row with a
-target-aware worker. If that cannot be proved, roll forward. The additive file
-lifecycle and typed-outbox columns may remain installed; dropping them is not a
-safe application rollback.
+Before rolling back to an artifact-only worker, stop the file-delete producer.
+Namespaced file rows remain invisible to that worker, so rollback cannot make it
+physically delete them; however, deletion progress stops until a target-aware
+worker returns. Drain or reconcile every non-terminal file-target outbox row
+before claiming availability is restored. The additive file lifecycle,
+typed-outbox columns, and namespaced states may remain installed; dropping or
+rewriting them is not a safe application rollback.
 
 ## Bounded reads and compatibility
 
@@ -149,6 +155,11 @@ Cleanup runs in small worker batches and is retryable:
   lifecycle state remains retry/dead-letter/reconcile work instead of a false
   success. Existing artifact rows are not rewritten when the typed target
   column is introduced.
+- Artifact and file targets use disjoint persisted state namespaces. An
+  artifact-only worker can continue processing historical artifact rows during
+  a rolling upgrade, but its state predicates cannot claim, fail, receipt, or
+  requeue file rows. Backlog metrics combine the equivalent states only for
+  operator visibility; they do not erase the persisted protocol distinction.
 - Soft-deleted memory is physically purged only after the configured grace
   period and only when no active session, context snapshot, or audit target
   still references it. Selection is bounded and uses `SKIP LOCKED`.

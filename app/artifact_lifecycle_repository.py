@@ -10,7 +10,14 @@ from psycopg import AsyncConnection
 
 OUTBOX_TARGET_ARTIFACT = "artifact"
 OUTBOX_TARGET_FILE = "file"
-FILE_DELETE_PENDING_STATES = frozenset({"pending", "processing", "failed", "dead_letter"})
+FILE_DELETE_PUBLIC_STATES = {
+    "file_pending": "pending",
+    "file_processing": "processing",
+    "file_failed": "failed",
+    "file_dead_letter": "dead_letter",
+    "file_deleted": "deleted",
+}
+FILE_DELETE_PENDING_STATES = frozenset(FILE_DELETE_PUBLIC_STATES) - {"file_deleted"}
 
 
 class FileDeletionBlockedError(RuntimeError):
@@ -48,14 +55,14 @@ def _file_deletion_result(
         raise ObjectDeletionStateError("file_deletion_outbox_identity_mismatch")
     if lifecycle_state == "delete_pending" and outbox_state not in FILE_DELETE_PENDING_STATES:
         raise ObjectDeletionStateError("file_deletion_outbox_state_mismatch")
-    if lifecycle_state == "deleted" and outbox_state != "deleted":
+    if lifecycle_state == "deleted" and outbox_state != "file_deleted":
         raise ObjectDeletionStateError("file_deletion_outbox_state_mismatch")
     if lifecycle_state not in {"delete_pending", "deleted"}:
         raise ObjectDeletionStateError("file_deletion_lifecycle_state_mismatch")
     return {
         "file_id": file_id,
         "lifecycle_state": lifecycle_state,
-        "deletion_state": outbox_state,
+        "deletion_state": FILE_DELETE_PUBLIC_STATES[outbox_state],
         "reconcile_required": bool(outbox_row.get("reconcile_required")),
         "created": created,
     }
@@ -212,7 +219,7 @@ async def queue_unbound_file_for_deletion(
         """
         insert into object_deletion_outbox(
           id, tenant_id, target_type, artifact_id, file_id, storage_key, state, available_at
-        ) values (%s, %s, 'file', null, %s, %s, 'pending', now())
+        ) values (%s, %s, 'file', null, %s, %s, 'file_pending', now())
         on conflict (id) do nothing
         returning id, tenant_id, target_type, artifact_id, file_id, storage_key,
                   state, attempts, lease_generation, reconcile_required
@@ -337,7 +344,16 @@ async def claim_object_deletions(
         with invariant_violations as (
           select outbox.id
           from object_deletion_outbox outbox
-          where outbox.state in ('pending', 'failed', 'processing')
+          where (
+              (
+                outbox.target_type = 'artifact'
+                and outbox.state in ('pending', 'failed', 'processing')
+              )
+              or (
+                outbox.target_type = 'file'
+                and outbox.state in ('file_pending', 'file_failed', 'file_processing')
+              )
+            )
             and not (
               (
                 outbox.target_type = 'artifact'
@@ -365,7 +381,10 @@ async def claim_object_deletions(
           for update of outbox skip locked
         )
         update object_deletion_outbox outbox
-        set state = 'dead_letter',
+        set state = case
+              when outbox.target_type = 'file' then 'file_dead_letter'
+              else 'dead_letter'
+            end,
             dead_letter_at = coalesce(dead_letter_at, now()),
             reconcile_required = true,
             last_error_code = 'object_delete_target_invariant',
@@ -382,15 +401,33 @@ async def claim_object_deletions(
           from object_deletion_outbox
           where attempts >= %s
             and (
-              (state in ('pending', 'failed') and available_at <= now())
-              or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+              (
+                target_type = 'artifact'
+                and (
+                  (state in ('pending', 'failed') and available_at <= now())
+                  or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+                )
+              )
+              or (
+                target_type = 'file'
+                and (
+                  (state in ('file_pending', 'file_failed') and available_at <= now())
+                  or (
+                    state = 'file_processing'
+                    and leased_at <= now() - interval '5 minutes'
+                  )
+                )
+              )
             )
           order by available_at asc, created_at asc, id asc
           limit %s
           for update skip locked
         )
         update object_deletion_outbox
-        set state = 'dead_letter',
+        set state = case
+              when target_type = 'file' then 'file_dead_letter'
+              else 'dead_letter'
+            end,
             dead_letter_at = coalesce(dead_letter_at, now()),
             reconcile_required = true,
             leased_at = null,
@@ -405,10 +442,21 @@ async def claim_object_deletions(
           select id
           from object_deletion_outbox
           where (
-              state in ('pending', 'failed') and available_at <= now() and attempts < %s
+              target_type = 'artifact'
+              and (
+                (state in ('pending', 'failed') and available_at <= now())
+                or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+              )
+              and attempts < %s
             ) or (
-              state = 'processing'
-              and leased_at <= now() - interval '5 minutes'
+              target_type = 'file'
+              and (
+                (state in ('file_pending', 'file_failed') and available_at <= now())
+                or (
+                  state = 'file_processing'
+                  and leased_at <= now() - interval '5 minutes'
+                )
+              )
               and attempts < %s
             )
           order by available_at asc, created_at asc, id asc
@@ -416,7 +464,10 @@ async def claim_object_deletions(
           for update skip locked
         )
         update object_deletion_outbox
-        set state = 'processing',
+        set state = case
+              when target_type = 'file' then 'file_processing'
+              else 'processing'
+            end,
             attempts = attempts + 1,
             lease_generation = lease_generation + 1,
             leased_at = now(),
@@ -442,7 +493,11 @@ async def complete_object_deletion(
         with claimed as materialized (
           select id, tenant_id, target_type, artifact_id, file_id, storage_key
           from object_deletion_outbox
-          where id = %s and tenant_id = %s and state = 'processing'
+          where id = %s and tenant_id = %s
+            and (
+              (target_type = 'artifact' and state = 'processing')
+              or (target_type = 'file' and state = 'file_processing')
+            )
             and lease_generation = %s
           for update
         ), updated_artifact as (
@@ -471,7 +526,10 @@ async def complete_object_deletion(
           select id from updated_file
         )
         update object_deletion_outbox outbox
-        set state = 'deleted',
+        set state = case
+              when claimed.target_type = 'file' then 'file_deleted'
+              else 'deleted'
+            end,
             receipt_at = now(),
             dead_letter_at = null,
             reconcile_required = false,
@@ -505,7 +563,12 @@ async def fail_object_deletion(
     cursor = await conn.execute(
         """
         update object_deletion_outbox
-        set state = case when attempts >= %s then 'dead_letter' else 'failed' end,
+        set state = case
+              when target_type = 'file' and attempts >= %s then 'file_dead_letter'
+              when target_type = 'file' then 'file_failed'
+              when attempts >= %s then 'dead_letter'
+              else 'failed'
+            end,
             last_error_code = %s,
             available_at = case
               when attempts >= %s then available_at
@@ -520,11 +583,16 @@ async def fail_object_deletion(
             reconcile_required = attempts >= %s,
             leased_at = null,
             updated_at = now()
-        where id = %s and tenant_id = %s and state = 'processing'
+        where id = %s and tenant_id = %s
+          and (
+            (target_type = 'artifact' and state = 'processing')
+            or (target_type = 'file' and state = 'file_processing')
+          )
           and lease_generation = %s
         returning state
         """,
         (
+            resolved_max_attempts,
             resolved_max_attempts,
             error_code[:120],
             resolved_max_attempts,
@@ -552,7 +620,10 @@ async def requeue_dead_letter_object_deletion(
     cursor = await conn.execute(
         """
         update object_deletion_outbox outbox
-        set state = 'pending',
+        set state = case
+              when outbox.target_type = 'file' then 'file_pending'
+              else 'pending'
+            end,
             attempts = 0,
             available_at = now(),
             leased_at = null,
@@ -562,10 +633,10 @@ async def requeue_dead_letter_object_deletion(
             updated_at = now()
         where outbox.id = %s
           and outbox.tenant_id = %s
-          and outbox.state = 'dead_letter'
           and (
             (
               outbox.target_type = 'artifact'
+              and outbox.state = 'dead_letter'
               and exists (
                 select 1 from artifacts
                 where artifacts.id = outbox.artifact_id
@@ -576,6 +647,7 @@ async def requeue_dead_letter_object_deletion(
             )
             or (
               outbox.target_type = 'file'
+              and outbox.state = 'file_dead_letter'
               and exists (
                 select 1 from files
                 where files.id = outbox.file_id
@@ -654,15 +726,22 @@ async def get_data_retention_backlog(
           (select count(*) from artifacts
            where lifecycle_state = 'active' and expires_at is not null and expires_at <= now()) as expired_artifacts,
           (select count(*) from artifacts where lifecycle_state = 'delete_pending') as artifact_delete_pending,
-          (select count(*) from object_deletion_outbox where state <> 'deleted') as object_delete_backlog,
-          (select count(*) from object_deletion_outbox where state = 'pending') as object_delete_pending,
-          (select count(*) from object_deletion_outbox where state = 'processing') as object_delete_processing,
-          (select count(*) from object_deletion_outbox where state = 'failed') as object_delete_retry_waiting,
-          (select count(*) from object_deletion_outbox where state = 'dead_letter') as object_delete_dead_letter,
+          (select count(*) from object_deletion_outbox
+           where state not in ('deleted', 'file_deleted')) as object_delete_backlog,
+          (select count(*) from object_deletion_outbox
+           where state in ('pending', 'file_pending')) as object_delete_pending,
+          (select count(*) from object_deletion_outbox
+           where state in ('processing', 'file_processing')) as object_delete_processing,
+          (select count(*) from object_deletion_outbox
+           where state in ('failed', 'file_failed')) as object_delete_retry_waiting,
+          (select count(*) from object_deletion_outbox
+           where state in ('dead_letter', 'file_dead_letter')) as object_delete_dead_letter,
           (select count(*) from object_deletion_outbox where reconcile_required) as object_delete_reconcile_required,
-          (select coalesce(max(attempts), 0) from object_deletion_outbox where state <> 'deleted') as object_delete_max_attempts_observed,
+          (select coalesce(max(attempts), 0) from object_deletion_outbox
+           where state not in ('deleted', 'file_deleted')) as object_delete_max_attempts_observed,
           (select coalesce(extract(epoch from now() - min(created_at))::bigint, 0)
-           from object_deletion_outbox where state = 'dead_letter') as object_delete_oldest_dead_letter_age_seconds,
+           from object_deletion_outbox
+           where state in ('dead_letter', 'file_dead_letter')) as object_delete_oldest_dead_letter_age_seconds,
           (select count(*) from memory_records where status = 'deleted' and deleted_at is not null) as memory_soft_deleted,
           (select count(*) from run_events
            where %s > 0 and created_at <= now() - (%s * interval '1 day')) as run_events_age_eligible,

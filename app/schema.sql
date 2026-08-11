@@ -2186,13 +2186,41 @@ alter table object_deletion_outbox add column if not exists dead_letter_at times
 alter table object_deletion_outbox add column if not exists reconcile_required boolean not null default false;
 alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_state_check;
 alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_state;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target_state;
+update object_deletion_outbox
+set state = case state
+  when 'pending' then 'file_pending'
+  when 'processing' then 'file_processing'
+  when 'failed' then 'file_failed'
+  when 'dead_letter' then 'file_dead_letter'
+  when 'deleted' then 'file_deleted'
+  else state
+end
+where target_type = 'file'
+  and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted');
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
-  check (state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted'));
+  check (state in (
+    'pending', 'processing', 'failed', 'dead_letter', 'deleted',
+    'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+  ));
 alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target;
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target
   check (
     (target_type = 'artifact' and artifact_id is not null and file_id is null)
     or (target_type = 'file' and artifact_id is null and file_id is not null)
+  );
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target_state
+  check (
+    (
+      target_type = 'artifact'
+      and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted')
+    )
+    or (
+      target_type = 'file'
+      and state in (
+        'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+      )
+    )
   );
 
 create table if not exists audit_logs (
