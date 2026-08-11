@@ -398,7 +398,7 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     assert params == ("default",)
 
 
-def test_lambchat_bootstrap_endpoints_match_frontend_contract():
+def test_frontend_bootstrap_endpoints_match_retained_contracts():
     client = TestClient(create_app())
 
     expectations = {
@@ -431,13 +431,31 @@ def test_lambchat_bootstrap_endpoints_match_frontend_contract():
                 assert payload[key] == value, path
 
 
-def test_lambchat_bootstrap_routes_do_not_shadow_authenticated_workbench_projections(monkeypatch):
+def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
+    from app.routes.lambchat_compat import router as lambchat_router
+    from app.routes.workbench_projections import router as workbench_router
     from tests.test_workbench_projection_routes import (
         install_workbench_route_fakes,
         user_headers,
     )
 
     install_workbench_route_fakes(monkeypatch)
+    for path in ("/settings/", "/notifications/active"):
+        workbench_owners = [
+            route.endpoint.__module__
+            for route in workbench_router.routes
+            if getattr(route, "path", None) == path
+            and "GET" in (getattr(route, "methods", None) or set())
+        ]
+        lambchat_owners = [
+            route.endpoint.__module__
+            for route in lambchat_router.routes
+            if getattr(route, "path", None) == path
+            and "GET" in (getattr(route, "methods", None) or set())
+        ]
+        assert workbench_owners == ["app.routes.workbench_projections"]
+        assert lambchat_owners == []
+
     client = TestClient(create_app())
 
     anonymous_settings = client.get("/api/settings/")
