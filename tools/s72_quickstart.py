@@ -132,14 +132,32 @@ def _compose_command(docker: Sequence[str], repo: Path, env_file: Path,
     return [*prefix, "compose", "-p", PROJECT, "--env-file", str(env_file), *files]
 
 
+PROXY_ENVIRONMENT = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+)
+
+
 def _git_network_environment() -> dict[str, str]:
-    allowed = (
-        "PATH", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-        "http_proxy", "https_proxy", "no_proxy",
-    )
+    allowed = ("PATH", "LANG", "LC_ALL", *PROXY_ENVIRONMENT)
     result = {key: os.environ[key] for key in allowed if key in os.environ}
     result.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
     return result
+
+
+def _git_local_environment() -> dict[str, str]:
+    result = {
+        key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ
+    }
+    result.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return result
+
+
+def _docker_environment() -> dict[str, str]:
+    allowed = (
+        "PATH", "LANG", "LC_ALL", "HOME", "DOCKER_CONFIG",
+        *PROXY_ENVIRONMENT,
+    )
+    return {key: os.environ[key] for key in allowed if key in os.environ}
 
 
 def _interrupt(*_args: object) -> None:
@@ -160,8 +178,13 @@ class Quickstart:
     def _detect_docker(self) -> None:
         for candidate in (["docker"], ["sudo", "-n", "docker"]):
             try:
-                self.runner.run([*candidate, "version"], timeout=30)
-                self.runner.run([*candidate, "compose", "version"], timeout=30)
+                self.runner.run(
+                    [*candidate, "version"], timeout=30, environment=_docker_environment()
+                )
+                self.runner.run(
+                    [*candidate, "compose", "version"], timeout=30,
+                    environment=_docker_environment(),
+                )
             except (OSError, subprocess.SubprocessError, QuickstartError):
                 continue
             self.docker = list(candidate)
@@ -179,7 +202,7 @@ class Quickstart:
         ))
         fields = self.runner.run(
             [*self.docker, "container", "inspect", f"ai-platform-{service}", "--format", fmt],
-            output=True, timeout=30,
+            output=True, timeout=30, environment=_docker_environment(),
         ).split("\t")
         if len(fields) != 8:
             raise QuickstartError("runtime metadata is invalid")
@@ -191,7 +214,7 @@ class Quickstart:
             [*self.docker, "container", "ls", "-a", "--filter",
              f"label=com.docker.compose.project={PROJECT}", "--format",
              '{{.Label "com.docker.compose.service"}}'],
-            output=True, timeout=30,
+            output=True, timeout=30, environment=_docker_environment(),
         ).splitlines()
         app_values = {role: values[role] for role in ("api", "worker", "frontend")}
         commits = {item[0] for item in app_values.values()}
@@ -246,9 +269,14 @@ class Quickstart:
             for path in COMPOSE_FILES
         ):
             raise QuickstartError("run quickstart from the prepared exact-main release checkout")
-        head = self.runner.run(["git", "rev-parse", "HEAD"], cwd=repo, output=True)
+        git_environment = _git_local_environment()
+        head = self.runner.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, output=True,
+            environment=git_environment,
+        )
         dirty = self.runner.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, output=True
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo,
+            output=True, environment=git_environment,
         )
         if head != commit or dirty:
             raise QuickstartError("release checkout is not clean at the exact commit")
@@ -257,7 +285,7 @@ class Quickstart:
         self._verify_checkout(self.repo, subject.commit)
         origin = self.runner.run(
             ["git", "config", "--local", "--get", "remote.origin.url"],
-            cwd=self.repo, output=True,
+            cwd=self.repo, output=True, environment=_git_local_environment(),
         )
         if origin.rstrip("/") != ORIGIN_URL:
             raise QuickstartError("prepared subject has an invalid origin")
@@ -276,6 +304,7 @@ class Quickstart:
             [*_compose_command(self.docker, self.repo, env_file, subject), *arguments],
             cwd=self.repo / COMPOSE_FILES[0].parent,
             timeout=600 if arguments and arguments[0] == "up" else 90,
+            environment=_docker_environment(),
         )
 
     def _http_json(self, path: str) -> dict[str, Any]:
@@ -338,7 +367,10 @@ class Quickstart:
         previous_repo = self.root / "releases" / previous.commit
         self._verify_checkout(previous_repo, previous.commit)
         for image in (previous.backend_image, previous.frontend_image):
-            self.runner.run([*self.docker, "image", "inspect", image], timeout=30)
+            self.runner.run(
+                [*self.docker, "image", "inspect", image], timeout=30,
+                environment=_docker_environment(),
+            )
         current_repo, self.repo = self.repo, previous_repo
         try:
             self._compose(env_file, previous, "config", "--quiet")
@@ -357,7 +389,10 @@ class Quickstart:
         print("preflight: ok")
         for image in (subject.backend_image, subject.frontend_image):
             self._validate_env(env_file)
-            self.runner.run([*self.docker, "pull", image], timeout=900)
+            self.runner.run(
+                [*self.docker, "pull", image], timeout=900,
+                environment=_docker_environment(),
+            )
         print("pull: ok")
         self._verify_source(subject)
         if self._current_runtime() != previous:

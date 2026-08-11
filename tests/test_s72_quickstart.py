@@ -136,21 +136,27 @@ def test_git_main_check_uses_canonical_url_and_sanitized_environment(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("services: {}\n", encoding="utf-8")
     network_calls: list[tuple[list[str], dict[str, str]]] = []
+    local_environments: list[dict[str, str]] = []
 
     class CanonicalRunner(quickstart.Runner):
         def run(self, command: object, **kwargs: object) -> str:
             command = list(command)
             joined = " ".join(command)
             if "rev-parse" in joined:
+                local_environments.append(kwargs["environment"])
                 return COMMIT
             if "status" in joined:
+                local_environments.append(kwargs["environment"])
                 return ""
             if "remote.origin.url" in joined:
+                local_environments.append(kwargs["environment"])
                 return quickstart.ORIGIN_URL
             network_calls.append((command, kwargs["environment"]))
             return COMMIT + "\trefs/heads/main"
 
     monkeypatch.setenv("GIT_SSH_COMMAND", "untrusted-command")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "other.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "other"))
     release = quickstart.Quickstart(repo, root, runner=CanonicalRunner())
     release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
@@ -159,6 +165,23 @@ def test_git_main_check_uses_canonical_url_and_sanitized_environment(
     assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
     assert environment["GIT_CONFIG_GLOBAL"] == quickstart.os.devnull
     assert "GIT_SSH_COMMAND" not in environment
+    assert all(
+        "GIT_DIR" not in environment and "GIT_WORK_TREE" not in environment
+        for environment in local_environments
+    )
+
+
+def test_docker_environment_keeps_proxy_but_rejects_daemon_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("DOCKER_HOST", "tcp://unapproved.invalid:2375")
+    monkeypatch.setenv("DOCKER_CONTEXT", "unapproved")
+
+    environment = quickstart._docker_environment()
+
+    assert environment["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+    assert "DOCKER_HOST" not in environment and "DOCKER_CONTEXT" not in environment
 
 
 @pytest.mark.parametrize("extra_service", [False, True])
