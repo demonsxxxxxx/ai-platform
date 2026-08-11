@@ -127,7 +127,7 @@ def _compose_command(docker: Sequence[str], repo: Path, env_file: Path,
         f"AI_PLATFORM_FRONTEND_IMAGE={subject.frontend_image}",
         f"AI_PLATFORM_SOURCE_COMMIT={subject.commit}",
     ]
-    prefix = [*docker[:-1], "env", "-i", *overrides, docker[-1]] if docker[:2] == ["sudo", "-n"] else ["env", "-i", *overrides, *docker]
+    prefix = [*docker[:2], "env", "-i", *overrides, *docker[2:]] if docker[:2] == ["sudo", "-n"] else ["env", "-i", *overrides, *docker]
     files = [item for path in COMPOSE_FILES for item in ("-f", str(repo / path))]
     return [*prefix, "compose", "-p", PROJECT, "--env-file", str(env_file), *files]
 
@@ -176,7 +176,10 @@ class Quickstart:
         self.docker: list[str] = []
 
     def _detect_docker(self) -> None:
-        for candidate in (["docker"], ["sudo", "-n", "docker"]):
+        for candidate in (
+            ["docker", "--context", "default"],
+            ["sudo", "-n", "docker", "--context", "default"],
+        ):
             try:
                 self.runner.run(
                     [*candidate, "version"], timeout=30, environment=_docker_environment()

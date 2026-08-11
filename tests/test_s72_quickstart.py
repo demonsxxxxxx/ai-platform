@@ -53,10 +53,14 @@ def test_subject_requires_ci_success_exact_main_and_role_digests(
 def test_compose_command_has_only_internal_test_files_and_exact_overrides(tmp_path: Path) -> None:
     subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
     command = quickstart._compose_command(
-        ["sudo", "-n", "docker"], tmp_path, tmp_path / ".env", subject
+        ["sudo", "-n", "docker", "--context", "default"],
+        tmp_path, tmp_path / ".env", subject,
     )
 
     assert command[:4] == ["sudo", "-n", "env", "-i"]
+    assert command[command.index("docker") + 1:command.index("compose")] == [
+        "--context", "default",
+    ]
     assert [command[index + 1] for index, value in enumerate(command) if value == "-f"] == [
         str(tmp_path / path) for path in quickstart.COMPOSE_FILES
     ]
