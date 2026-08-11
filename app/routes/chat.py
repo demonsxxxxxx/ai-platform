@@ -1041,8 +1041,10 @@ def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | N
     raw_model_id = agent_options.get("model_id")
     if raw_model_id is None:
         return None
+    if not isinstance(raw_model_id, str):
+        raise HTTPException(status_code=400, detail="model_id_not_available")
     try:
-        return resolve_model_selection(str(raw_model_id), get_settings())
+        return resolve_model_selection(raw_model_id, get_settings())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="model_id_not_available") from exc
 

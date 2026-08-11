@@ -2801,6 +2801,58 @@ async def test_chat_stream_rejects_unavailable_model_id_before_creating_run(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raw_model_id", [True, 123, 1.5])
+async def test_chat_stream_rejects_non_string_model_id_without_coercion(
+    monkeypatch,
+    raw_model_id,
+):
+    calls = []
+    current_settings = type(
+        "S",
+        (),
+        {
+            "model_catalog_json": '[{"id":"True"},{"id":"123"},{"id":"1.5"}]',
+            "default_model_id": "True",
+            "claude_agent_model": "",
+            "anthropic_model": "",
+            "openai_model": "",
+            "max_active_runs_per_user": 3,
+            "platform_skills_root": "",
+        },
+    )()
+
+    async def fail_side_effect(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("non-string model_id must be rejected before side effects")
+
+    monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_side_effect)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello", agent_options={"model_id": raw_model_id}),
+            principal=principal(roles=["admin"]),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "model_id_not_available"
+    assert calls == []
+
+
+@pytest.mark.parametrize("raw_model_id", [[], {}])
+def test_chat_stream_request_rejects_structured_model_id(raw_model_id):
+    with pytest.raises(ValueError):
+        ChatStreamRequest(
+            message="hello",
+            agent_options={"model_id": raw_model_id},
+        )
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypatch):
     calls = []
     current_settings = type(
