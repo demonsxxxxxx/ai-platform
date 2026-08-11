@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -158,6 +159,30 @@ def test_explicit_catalog_without_usable_models_fails_closed(raw_catalog):
         build_model_catalog(
             settings(
                 model_catalog_json=raw_catalog,
+                claude_agent_model="runtime-fallback-must-not-override-explicit-catalog",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"id": 123},
+        {"id": "configured-model", "value": 123},
+        {"id": "configured-model", "provider": {"name": "gateway"}},
+        {"id": "configured-model", "label": ["label"]},
+        {"id": "configured-model", "description": True},
+        {"id": "configured-model", "profile": []},
+        {"id": "configured-model", "max_input_tokens": True},
+        {"id": "configured-model", "max_input_tokens": 1.5},
+        {"id": "configured-model", "max_input_tokens": "32000"},
+    ],
+)
+def test_explicit_catalog_rejects_non_contract_field_types(item):
+    with pytest.raises(ValueError, match=MODEL_CATALOG_NOT_CONFIGURED):
+        build_model_catalog(
+            settings(
+                model_catalog_json=json.dumps([item]),
                 claude_agent_model="runtime-fallback-must-not-override-explicit-catalog",
             )
         )

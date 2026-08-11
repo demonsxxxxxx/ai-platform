@@ -8,14 +8,6 @@ MODEL_CATALOG_NOT_CONFIGURED = "model_catalog_not_configured"
 DEFAULT_MAX_INPUT_TOKENS = 128000
 
 
-def _coerce_positive_int(value: object, default: int) -> int:
-    try:
-        parsed = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default
-
-
 def _model_from_item(
     item: object,
     *,
@@ -23,23 +15,51 @@ def _model_from_item(
 ) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
-    raw_id = str(item.get("id") or item.get("value") or "").strip()
+    raw_id_value = item.get("id")
+    if raw_id_value is None or (
+        isinstance(raw_id_value, str) and not raw_id_value.strip()
+    ):
+        raw_id_value = item.get("value")
+    if not isinstance(raw_id_value, str):
+        return None
+    raw_id = raw_id_value.strip()
     if not raw_id:
         return None
     model_id = assert_safe_id(raw_id, "model_id")
-    value = str(item.get("value") or "").strip() or model_id
+    raw_value = item.get("value")
+    if raw_value is not None and not isinstance(raw_value, str):
+        return None
+    value = (raw_value or "").strip() or model_id
     value = assert_safe_id(value, "model_value")
-    provider = str(item.get("provider") or "").strip() or default_provider
-    label = str(item.get("label") or model_id).strip() or model_id
-    description = str(item.get("description") or "").strip()
-    profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
+    raw_provider = item.get("provider")
+    raw_label = item.get("label")
+    raw_description = item.get("description")
+    if raw_provider is not None and not isinstance(raw_provider, str):
+        return None
+    if raw_label is not None and not isinstance(raw_label, str):
+        return None
+    if raw_description is not None and not isinstance(raw_description, str):
+        return None
+    provider = (raw_provider or "").strip() or default_provider
+    label = (raw_label or "").strip() or model_id
+    description = (raw_description or "").strip()
+    raw_profile = item.get("profile")
+    if raw_profile is not None and not isinstance(raw_profile, dict):
+        return None
+    profile = raw_profile or {}
     raw_max_input_tokens = profile.get("max_input_tokens")
     if raw_max_input_tokens is None:
         raw_max_input_tokens = item.get("max_input_tokens")
-    max_input_tokens = _coerce_positive_int(
-        raw_max_input_tokens,
-        DEFAULT_MAX_INPUT_TOKENS,
-    )
+    if raw_max_input_tokens is None:
+        max_input_tokens = DEFAULT_MAX_INPUT_TOKENS
+    elif (
+        not isinstance(raw_max_input_tokens, int)
+        or isinstance(raw_max_input_tokens, bool)
+        or raw_max_input_tokens <= 0
+    ):
+        return None
+    else:
+        max_input_tokens = raw_max_input_tokens
     return {
         "id": model_id,
         "value": value,
