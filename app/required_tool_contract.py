@@ -25,6 +25,7 @@ REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION = (
 )
 REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY = "_required_capability_declaration"
 REQUIRED_CAPABILITY_EVIDENCE_KEY = "required_capability_evidence"
+MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT = 512
 CANONICAL_REQUIRED_TOOL_IDENTITY = "Bash"
 _BINDING_FIELDS = (
     "tenant_id",
@@ -304,6 +305,41 @@ class RequiredCapabilityEvidence:
         ):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         return evidence
+
+
+def validate_capability_evidence_lifecycle(
+    records: list[RequiredCapabilityEvidence],
+    *,
+    require_terminal: bool = False,
+) -> None:
+    """Validate one bounded attempt ledger with globally unique call ownership."""
+
+    if len(records) > MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT:
+        raise RequiredToolContractError("capability_evidence_limit_exceeded")
+    owners: dict[str, tuple[str, str]] = {}
+    states: dict[str, str] = {}
+    for evidence in records:
+        call_id = str(evidence.tool_call_id or "")
+        owner = (evidence.capability_kind, evidence.canonical_identity)
+        if evidence.capability_kind not in {"skill", "mcp"} or not call_id:
+            raise RequiredToolContractError("capability_evidence_lifecycle_invalid")
+        current_owner = owners.get(call_id)
+        if current_owner is not None and current_owner != owner:
+            raise RequiredToolContractError("capability_evidence_call_owner_mismatch")
+        current_state = states.get(call_id, "")
+        if evidence.lifecycle_phase == "invocation_requested":
+            if current_state:
+                raise RequiredToolContractError("capability_evidence_lifecycle_invalid")
+            owners[call_id] = owner
+            states[call_id] = "invocation_requested"
+        elif current_state != "invocation_requested":
+            raise RequiredToolContractError("capability_evidence_lifecycle_invalid")
+        else:
+            states[call_id] = evidence.lifecycle_phase
+    if require_terminal and any(
+        state == "invocation_requested" for state in states.values()
+    ):
+        raise RequiredToolContractError("capability_evidence_lifecycle_incomplete")
 
 
 @dataclass(frozen=True)

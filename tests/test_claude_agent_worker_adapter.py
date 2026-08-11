@@ -1615,8 +1615,8 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert result.result["delegate_used"] is False
     assert result.result["allowed_skills"] == ["qa-file-reviewer", "minimax-docx"]
     assert result.result["staged_skills"] == ["qa-file-reviewer", "minimax-docx"]
-    assert result.result["used_skills"] == ["qa-file-reviewer"]
-    assert result.executor_payload["used_skills_source"] == "executor_hook"
+    assert result.result["used_skills"] == []
+    assert result.executor_payload["used_skills_source"] == "none"
     manifest = result.executor_payload["skill_manifests"][0]
     assert manifest["skill_id"] == "qa-file-reviewer"
     assert manifest["version"]
@@ -1624,7 +1624,7 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert manifest["source"]["kind"] == "builtin"
     assert manifest["allowed"] is True
     assert manifest["staged"] is True
-    assert manifest["used"] is True
+    assert manifest["used"] is False
     runtime_request = runtime_requests[0]
     workspace = sandbox_workspace_path(current_settings)
     assert runtime_request.skill_ids == ["qa-file-reviewer", "minimax-docx"]
@@ -2454,98 +2454,6 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
     assert [event for event in events if event["payload"].get("tool_category") == "mcp"] == []
 
 
-@pytest.mark.parametrize(
-    ("case", "expected_error"),
-    [
-        ("unused", None),
-        ("completed", None),
-        ("repeated_complete", None),
-        ("started", "required_tool_completion_evidence_mismatch"),
-        ("failed", None),
-        ("stale", "required_tool_completion_evidence_mismatch"),
-        ("unauthorized", "required_tool_completion_evidence_mismatch"),
-        ("duplicate", "required_tool_completion_evidence_mismatch"),
-        ("cross_mcp_call_id", "required_tool_completion_evidence_mismatch"),
-        ("skill_missing", None),
-        ("skill_completed", None),
-        ("skill_mcp_call_id", "required_tool_completion_evidence_mismatch"),
-    ],
-)
-def test_worker_capability_execution_plan_validates_required_and_observed_calls(case, expected_error):
-    second_subject = {
-        **_mcp_subject(),
-        "identity": "mcp__other-server__fetch",
-        "mcp_server": "other-server",
-        "mcp_tool": "fetch",
-    }
-    skill_id = "qa-review" if case.startswith("skill_") else "general-chat"
-    subjects = [_mcp_subject(), second_subject] if case == "cross_mcp_call_id" else [_mcp_subject()]
-    current_payload = payload(
-        skill_id=skill_id,
-        input={"message": "work", "_runtime_tool_policy_subjects": subjects},
-    )
-    request = types.SimpleNamespace(
-        **{
-            key: getattr(current_payload, key)
-            for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
-        },
-        skill_ids=[skill_id],
-        tool_policy_subjects=subjects,
-    )
-    evidence = _selected_capability_evidence(request)
-    if case in {"unused", "skill_missing"}:
-        evidence = []
-    elif case == "started":
-        evidence = evidence[:1]
-    elif case == "failed":
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
-        )
-        evidence[1] = RequiredCapabilityEvidence.from_sdk_hook(
-            declaration=declaration,
-            binding={key: getattr(current_payload, key) for key in (
-                "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
-            )},
-            tool_call_id=evidence[0]["tool_call_id"],
-            lifecycle_phase="failed",
-        ).__dict__
-    elif case == "stale":
-        evidence[1]["attempt_id"] = "stale-attempt"
-    elif case == "unauthorized":
-        evidence[0]["canonical_identity"] = "mcp__foreign__lookup"
-    elif case == "duplicate":
-        evidence.append(dict(evidence[1]))
-    elif case == "cross_mcp_call_id":
-        evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = evidence[0]["tool_call_id"]
-    elif case == "repeated_complete":
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
-        )
-        binding = {key: getattr(current_payload, key) for key in (
-            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
-        )}
-        evidence.extend(
-            RequiredCapabilityEvidence.from_sdk_hook(
-                declaration=declaration,
-                binding=binding,
-                tool_call_id="invocation-repeat",
-                lifecycle_phase=phase,
-            ).__dict__
-            for phase in ("invocation_requested", "completed")
-        )
-    elif case == "skill_completed":
-        evidence = [item for item in evidence if item["capability_kind"] == "skill"]
-    elif case == "skill_mcp_call_id":
-        skill_call_id = evidence[0]["tool_call_id"]
-        evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = skill_call_id
-
-    assert claude_agent_worker._capability_execution_error(
-        current_payload,
-        evidence,
-        available_skill_ids=[skill_id] if skill_id != "general-chat" else [],
-    ) == expected_error
-
-
 @pytest.mark.asyncio
 async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatch_raises(
     monkeypatch,
@@ -2847,13 +2755,7 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
             "version": "version-a",
             "availability": "available",
         }
-        assert result.result["sdk_turn_diagnostics"]["used_skills"] == [
-            {
-                "name": "Workbook analysis",
-                "version": "version-a",
-                "availability": "available",
-            }
-        ]
+        assert result.result["sdk_turn_diagnostics"]["used_skills"] == []
         assert "qa-rag-skill" not in str(result.result["sdk_turn_diagnostics"])
         assert "private_untrusted_field" not in str(result.result["sdk_turn_diagnostics"])
         assert result.artifacts == []
@@ -3335,15 +3237,18 @@ async def test_qa_file_reviewer_manifest_records_available_dependency(monkeypatc
     assert result.result["allowed_skills"] == ["qa-file-reviewer", "minimax-docx"]
     manifests = {item["skill_id"]: item for item in result.executor_payload["skill_manifests"]}
     assert manifests["qa-file-reviewer"]["dependency_ids"] == ["minimax-docx"]
-    assert result.result["used_skills"] == ["qa-file-reviewer"]
-    assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert manifests["qa-file-reviewer"]["used"] is True
+    assert result.result["used_skills"] == []
+    assert result.executor_payload["used_skills_source"] == "none"
+    assert manifests["qa-file-reviewer"]["used"] is False
     assert manifests["minimax-docx"]["dependency_ids"] == []
     assert manifests["minimax-docx"]["used"] is False
 
 
 @pytest.mark.asyncio
-async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeypatch, tmp_path):
+async def test_agent_run_ignores_sandbox_reported_used_skills_until_durable_reconciliation(
+    monkeypatch,
+    tmp_path,
+):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
@@ -3378,15 +3283,16 @@ async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeyp
     )
 
     manifests = {item["skill_id"]: item for item in result.executor_payload["skill_manifests"]}
-    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.result["used_skills"] == []
     assert "used_skills_source" not in result.result
-    assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert manifests["qa-file-reviewer"]["used"] is True
+    assert result.executor_payload["used_skills_source"] == "none"
+    assert result.executor_payload["capability_evidence"] == []
+    assert manifests["qa-file-reviewer"]["used"] is False
     assert manifests["minimax-docx"]["used"] is False
 
 
 @pytest.mark.asyncio
-async def test_agent_run_preserves_sdk_reported_used_skills_on_sdk_error(monkeypatch, tmp_path):
+async def test_agent_run_ignores_sandbox_reported_used_skills_on_sdk_error(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
@@ -3424,10 +3330,10 @@ async def test_agent_run_preserves_sdk_reported_used_skills_on_sdk_error(monkeyp
 
     manifests = {item["skill_id"]: item for item in result.executor_payload["skill_manifests"]}
     assert result.status == "failed"
-    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.result["used_skills"] == []
     assert "used_skills_source" not in result.result
-    assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert manifests["qa-file-reviewer"]["used"] is True
+    assert result.executor_payload["used_skills_source"] == "none"
+    assert manifests["qa-file-reviewer"]["used"] is False
     assert manifests["minimax-docx"]["used"] is False
 
 

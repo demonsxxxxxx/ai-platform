@@ -3,6 +3,7 @@ from dataclasses import replace
 import pytest
 
 from app.required_tool_contract import (
+    MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
@@ -14,6 +15,7 @@ from app.required_tool_contract import (
     required_builtin_capability_subjects,
     required_tool_authorization_for_run,
     selected_capability_completion_decision,
+    validate_capability_evidence_lifecycle,
 )
 
 
@@ -493,6 +495,55 @@ def _selected_evidence(declaration, phase, *, call_id="call-a", **binding_overri
         tool_call_id=call_id,
         lifecycle_phase=phase,
     ).__dict__
+
+
+def _selected_evidence_record(declaration, phase, *, call_id="call-a"):
+    return RequiredCapabilityEvidence.from_payload(
+        _selected_evidence(declaration, phase, call_id=call_id)
+    )
+
+
+def test_attempt_capability_lifecycle_rejects_cross_identity_call_id_reuse():
+    skill = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+    mcp = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    with pytest.raises(
+        RequiredToolContractError,
+        match="capability_evidence_call_owner_mismatch",
+    ):
+        validate_capability_evidence_lifecycle(
+            [
+                _selected_evidence_record(skill, "invocation_requested"),
+                _selected_evidence_record(mcp, "completed"),
+            ]
+        )
+
+
+def test_attempt_capability_lifecycle_requires_terminal_and_enforces_bound():
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+    requested = _selected_evidence_record(declaration, "invocation_requested")
+
+    with pytest.raises(
+        RequiredToolContractError,
+        match="capability_evidence_lifecycle_incomplete",
+    ):
+        validate_capability_evidence_lifecycle([requested], require_terminal=True)
+    with pytest.raises(
+        RequiredToolContractError,
+        match="capability_evidence_limit_exceeded",
+    ):
+        validate_capability_evidence_lifecycle(
+            [requested] * (MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT + 1)
+        )
 
 
 @pytest.mark.parametrize(

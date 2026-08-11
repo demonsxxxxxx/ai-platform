@@ -1083,6 +1083,72 @@ async def test_executor_serializes_concurrent_capability_transitions(
         assert result["error_code"] == "capability_lifecycle_sequence_invalid"
 
 
+@pytest.mark.asyncio
+async def test_executor_rejects_cross_identity_call_id_before_second_callback(
+    tmp_path,
+    monkeypatch,
+):
+    acknowledgements = []
+    persisted_phases = []
+    shared_call_id = "shared-call-id"
+    second_identity = "mcp__other-server__fetch"
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        record = kwargs["on_capability_evidence"]
+        acknowledgements.append(
+            await record(
+                sdk_mcp_evidence(
+                    "mcp__tenant-server__search",
+                    shared_call_id,
+                    "invocation_requested",
+                )
+            )
+        )
+        acknowledgements.append(
+            await record(
+                sdk_mcp_evidence(
+                    second_identity,
+                    shared_call_id,
+                    "invocation_requested",
+                )
+            )
+        )
+        return sdk_result()
+
+    async def emit_event(event):
+        if event.type.startswith("capability_"):
+            persisted_phases.append(event.type)
+        return True
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    payload = selected_mcp_task_payload()
+    payload["config"]["tool_policy_subjects"].append(
+        {
+            **payload["config"]["tool_policy_subjects"][0],
+            "identity": second_identity,
+            "mcp_server": "other-server",
+            "mcp_tool": "fetch",
+            "public_tool_label": "Other Fetch",
+        }
+    )
+    request = ExecutorTaskRequest.model_validate(payload)
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert acknowledgements == [True, False]
+    assert persisted_phases == ["capability_invoking"]
+    assert result["status"] == "failed"
+    assert result["error_code"] == "capability_lifecycle_sequence_invalid"
+    assert result["capability_evidence"] == []
+
+
 def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):
     callbacks = []
 

@@ -5122,12 +5122,14 @@ async def list_run_capability_evidence(
     tenant_id: str,
     run_id: str,
     attempt_id: str,
+    limit: int,
 ) -> list[dict[str, Any]]:
     return await _run_event_repository.list_run_capability_evidence(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
         attempt_id=attempt_id,
+        limit=limit,
     )
 
 

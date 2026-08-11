@@ -1178,6 +1178,64 @@ async def test_sdk_duplicate_capability_terminal_hook_is_rejected_before_durable
 
 
 @pytest.mark.asyncio
+async def test_sdk_rejects_cross_identity_tool_call_id_before_second_durable_callback(
+    monkeypatch,
+    tmp_path,
+):
+    captured, callback_facts = {}, []
+    shared_call_id = "shared-call-id"
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": shared_call_id,
+        "tool_input": {"skill": "qa-review"},
+    }
+    mcp_subject = _subject()
+    mcp_input = {
+        "tool_name": mcp_subject["identity"],
+        "tool_use_id": shared_call_id,
+        "tool_input": {"private": "safe-synthetic-value"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", skill_input, shared_call_id)),
+        ("hook", ("PreToolUse", mcp_input, shared_call_id)),
+    ]
+
+    async def acknowledge(evidence):
+        callback_facts.append(
+            (
+                evidence["capability_kind"],
+                evidence["canonical_identity"],
+                evidence["lifecycle_phase"],
+            )
+        )
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review and search",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject(), mcp_subject],
+        on_capability_evidence=acknowledge,
+    )
+
+    assert callback_facts == [("skill", "qa-review", "invocation_requested")]
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.capability_evidence == []
+
+
+@pytest.mark.asyncio
 async def test_sdk_mcp_selection_or_authorization_without_valid_pre_tool_use_never_starts(
     monkeypatch,
     tmp_path,

@@ -888,6 +888,7 @@ async def run_claude_agent_sdk(
     last_public_stage = "runtime"
     used_skill_names: list[str] = []
     capability_evidence: list[dict[str, str]] = []
+    capability_call_owners: dict[str, tuple[str, str]] = {}
     capability_evidence_rejected = False
     capability_evidence_lock = asyncio.Lock()
     actual_capability_invocation_observed = False
@@ -1172,6 +1173,7 @@ async def run_claude_agent_sdk(
         if not capability_evidence_rejected:
             capability_evidence_rejected = True
             capability_evidence.clear()
+            capability_call_owners.clear()
             used_skill_names.clear()
             answer_stream_gate.fail_closed()
         return False
@@ -1222,6 +1224,9 @@ async def run_claude_agent_sdk(
             if capability_evidence_rejected:
                 return False
             key = (capability_kind, canonical_identity)
+            current_owner = capability_call_owners.get(tool_call_id)
+            if current_owner is not None and current_owner != key:
+                return reject_capability_evidence()
             if not capability_evidence_transition_is_valid(
                 capability_kind=capability_kind,
                 canonical_identity=canonical_identity,
@@ -1230,6 +1235,7 @@ async def run_claude_agent_sdk(
             ):
                 return reject_capability_evidence()
             if lifecycle_phase == "invocation_requested":
+                capability_call_owners[tool_call_id] = key
                 actual_capability_invocation_observed = True
                 if capability_kind == "mcp":
                     actual_mcp_invocation_observed = True

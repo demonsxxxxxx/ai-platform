@@ -905,7 +905,7 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
                     "missing_pinned_snapshots": [],
                 }
             ]
-        if "from run_event_batches" in sql:
+        if "from run_events e" in sql:
             lifecycle = _capability_lifecycle_summary(
                 ["qa-file-reviewer", "baoyu-translate"],
                 ["run_review_gate_1", "run_translate_gate_1"],
@@ -950,6 +950,7 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
             "event_count": 6,
             "invocation_group_count": 3,
             "invalid_group_count": 0,
+            "invalid_call_owner_count": 0,
             "completed_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
             "mcp_invocation_count": 1,
             "attempt_bindings": [
@@ -961,7 +962,9 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
     assert "run_review_gate_1" in queries[0]
     assert "run_translate_gate_1" in queries[0]
     assert "r.input_json ? 'release_decision'" in queries[0]
-    assert "b.batch_id = 'capability-evidence-v1'" in queries[1]
+    assert "from run_events e" in queries[1]
+    assert "authority.state = 'terminal'" in queries[1]
+    assert "capability-evidence-v1" not in queries[1]
 
 
 def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(monkeypatch):
@@ -976,7 +979,7 @@ def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(m
 
     def fake_psql_rows(*args, **kwargs):
         sql = args[3]
-        if "from run_event_batches" in sql:
+        if "from run_events e" in sql:
             return [_capability_lifecycle_summary(["qa-file-reviewer"], ["run_review_gate_1"])]
         return [
             {
@@ -1013,7 +1016,7 @@ def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_ma
 
     def fake_psql_rows(*args, **kwargs):
         sql = args[3]
-        if "from run_event_batches" in sql:
+        if "from run_events e" in sql:
             return [_capability_lifecycle_summary(["qa-file-reviewer"], ["run_review_gate_1"])]
         return [
             {
@@ -1041,7 +1044,7 @@ def test_governed_skill_runs_gate_rejects_legacy_execution_source(monkeypatch):
         assert "run_review_current" in sql
         assert "run_review_stale" not in sql
         assert "run_translate_current" in sql
-        if "from run_event_batches" in sql:
+        if "from run_events e" in sql:
             return [
                 _capability_lifecycle_summary(
                     ["qa-file-reviewer", "baoyu-translate"],
@@ -1106,7 +1109,7 @@ def test_governed_skill_runs_gate_rejects_legacy_execution_source(monkeypatch):
 
 def test_governed_skill_runs_gate_fails_closed_on_invalid_capability_lifecycle(monkeypatch):
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
-        if "from run_event_batches" in sql:
+        if "from run_events e" in sql:
             lifecycle = _capability_lifecycle_summary(
                 ["qa-file-reviewer"],
                 ["run_review_gate_1"],

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time as _time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
 from typing import Any
@@ -40,7 +40,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
-from app.diagnostics import log_safe_exception, new_diagnostic_id
+from app.diagnostics import log_safe_exception, log_safe_failure, new_diagnostic_id
 from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
@@ -51,10 +51,14 @@ from app.principal_authority import (
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.required_tool_contract import (
+    MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT,
     RequiredCapabilityDecision,
+    RequiredCapabilityEvidence,
+    RequiredToolContractError,
     builtin_capability_subjects,
     required_tool_authorization_for_run,
     required_tool_completion_for_run,
+    validate_capability_evidence_lifecycle,
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import (
@@ -943,6 +947,127 @@ def _bound_agent_mcp_identities(payload: QueueRunPayload) -> set[str]:
         and isinstance(item.get("identity"), str)
         and (identity := item["identity"].strip()).startswith("mcp__")
     }
+
+
+async def _reconcile_durable_sandbox_capability_evidence(
+    result: ExecutorResult,
+    *,
+    payload: QueueRunPayload,
+    attempt_id: str,
+) -> ExecutorResult:
+    """Replace executor claims with the frozen exact-attempt callback ledger."""
+
+    if (
+        result.executor_payload.get("sandbox_runtime_used") is not True
+        or result.status != "succeeded"
+    ):
+        return result
+    async with transaction() as conn:
+        rows = await repositories.list_run_capability_evidence(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+            attempt_id=attempt_id,
+            limit=MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT + 1,
+        )
+    expected_binding = {
+        "tenant_id": payload.tenant_id,
+        "workspace_id": payload.workspace_id,
+        "user_id": payload.user_id,
+        "session_id": payload.session_id,
+        "run_id": payload.run_id,
+        "attempt_id": attempt_id,
+    }
+    result_without_capability_claims = {
+        key: value
+        for key, value in result.result.items()
+        if key
+        not in {
+            "capability_evidence",
+            "capability_evidence_validated",
+            "used_skills",
+            "used_skills_source",
+        }
+    }
+    try:
+        records = [
+            RequiredCapabilityEvidence.from_payload(
+                row.get("payload_json") if isinstance(row, dict) else None
+            )
+            for row in rows
+        ]
+        if any(
+            getattr(record, field) != value
+            for record in records
+            for field, value in expected_binding.items()
+        ):
+            raise RequiredToolContractError("capability_evidence_scope_mismatch")
+        validate_capability_evidence_lifecycle(
+            records,
+            require_terminal=result.status == "succeeded",
+        )
+    except RequiredToolContractError:
+        error_code = "capability_evidence_ledger_invalid"
+        diagnostic_id = new_diagnostic_id()
+        log_safe_failure(
+            logger,
+            event="worker_capability_evidence_reconciliation_failed",
+            phase="terminalization",
+            diagnostic_id=diagnostic_id,
+            error_code=error_code,
+            identifiers={
+                "run_id": payload.run_id,
+                "attempt_id": attempt_id,
+                "executor_type": payload.executor_type,
+            },
+        )
+        return replace(
+            result,
+            status="failed",
+            artifacts=[],
+            result={
+                **result_without_capability_claims,
+                "message": "Authoritative capability evidence was unavailable. Please retry.",
+                "error_code": error_code,
+                "diagnostic_id": diagnostic_id,
+            },
+            executor_payload={
+                **result.executor_payload,
+                "capability_evidence": [],
+                "capability_evidence_validated": False,
+                "used_skills": [],
+                "used_skills_source": "none",
+                "sdk_error": error_code,
+                "diagnostic_id": diagnostic_id,
+            },
+        )
+    evidence_payloads = [asdict(record) for record in records]
+    completed_skills = {
+        record.canonical_identity
+        for record in records
+        if record.capability_kind == "skill"
+        and record.lifecycle_phase == "completed"
+    }
+    staged_skills = result.executor_payload.get("staged_skills")
+    used_skills = [
+        skill_id
+        for skill_id in staged_skills
+        if isinstance(skill_id, str) and skill_id in completed_skills
+    ] if isinstance(staged_skills, list) else []
+    return replace(
+        result,
+        result={
+            **result_without_capability_claims,
+            "used_skills": used_skills,
+        },
+        executor_payload={
+            **result.executor_payload,
+            "capability_evidence": evidence_payloads,
+            "capability_evidence_validated": True,
+            "used_skills": used_skills,
+            "used_skills_source": "executor_hook" if used_skills else "none",
+        },
+    )
 
 
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
@@ -2509,6 +2634,11 @@ async def process_run_payload(
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         result = _normalize_sandbox_reported_failure(result)
+        result = await _reconcile_durable_sandbox_capability_evidence(
+            result,
+            payload=payload,
+            attempt_id=attempt_id,
+        )
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
         required_tool_decision = capability_authorization.required_tool_decision or RequiredCapabilityDecision(

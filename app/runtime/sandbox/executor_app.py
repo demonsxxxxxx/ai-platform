@@ -912,6 +912,7 @@ async def _default_executor_runner(
 
     bound_capability_evidence: list[dict[str, Any]] = []
     invocation_states: dict[tuple[str, str, str], str] = {}
+    invocation_owners: dict[str, tuple[str, str]] = {}
     capability_evidence_error = {"code": ""}
     capability_evidence_lock = asyncio.Lock()
 
@@ -924,6 +925,7 @@ async def _default_executor_runner(
         reject_capability_evidence("capability_callback_not_acknowledged")
         bound_capability_evidence.clear()
         invocation_states.clear()
+        invocation_owners.clear()
         if isinstance(emit_event, _SealableExecutorEventEmitter):
             emit_event.seal_capability_failure()
 
@@ -959,8 +961,14 @@ async def _default_executor_runner(
             evidence.canonical_identity,
             str(evidence.tool_call_id or ""),
         )
+        call_id = invocation_key[2]
+        owner = invocation_key[:2]
+        current_owner = invocation_owners.get(call_id)
         current_state = invocation_states.get(invocation_key)
         invalid_sequence = (
+            current_owner is not None
+            and current_owner != owner
+        ) or (
             evidence.lifecycle_phase == "invocation_requested" and current_state is not None
         ) or (
             evidence.lifecycle_phase != "invocation_requested" and current_state != "invoking"
@@ -985,6 +993,7 @@ async def _default_executor_runner(
             invocation_states[invocation_key] = "rejected"
             return reject_capability_evidence("capability_callback_not_acknowledged")
         bound_capability_evidence.append(asdict(evidence))
+        invocation_owners[call_id] = owner
         invocation_states[invocation_key] = (
             "invoking" if evidence.lifecycle_phase == "invocation_requested" else "terminal"
         )

@@ -5,7 +5,7 @@ import logging
 import posixpath
 import shutil
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 from xml.etree import ElementTree
@@ -47,12 +47,6 @@ from app.file_parser_contracts import (
     validate_required_parser_evidence,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
-from app.required_tool_contract import (
-    RequiredCapabilityDecision,
-    RequiredCapabilityDeclaration,
-    RequiredCapabilityEvidence,
-    RequiredToolContractError,
-)
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -131,99 +125,6 @@ async def _emit_public_progress_event(
         message=message,
         payload={"visible_to_user": True, "severity": "info"},
     )
-
-
-def _capability_completion_decision(
-    plan: CapabilityExecutionPlan, *, binding: dict[str, object], evidence: object
-) -> RequiredCapabilityDecision:
-    """Validate the scope and lifecycle of every observed optional invocation."""
-
-    mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
-    if not isinstance(evidence, list):
-        return mismatch
-    try:
-        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
-    except RequiredToolContractError:
-        return mismatch
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    call_owners: dict[str, tuple[str, str]] = {}
-    for record in records:
-        key = (record.capability_kind, record.canonical_identity)
-        call_id = record.tool_call_id
-        if key not in plan.available or not isinstance(call_id, str) or not call_id:
-            return mismatch
-        if any(getattr(record, field) != value for field, value in binding.items()):
-            return mismatch
-        if call_owners.setdefault(call_id, key) != key:
-            return mismatch
-        groups.setdefault((*key, call_id), []).append(asdict(record))
-    for (capability_kind, canonical_identity, _call_id), invocation in groups.items():
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind=capability_kind,
-            canonical_identity=canonical_identity,
-        )
-        phases = [item.get("lifecycle_phase") for item in invocation]
-        statuses = [item.get("lifecycle_status") for item in invocation]
-        if (
-            len(invocation) != 2
-            or phases[0] != "invocation_requested"
-            or phases[1] not in {"completed", "failed"}
-            or statuses[0] != "invoking"
-            or statuses[1] != ("succeeded" if phases[1] == "completed" else "failed")
-            or any(item.get("declaration_sha256") != declaration.declaration_sha256 for item in invocation)
-        ):
-            return mismatch
-    reason = "capability_invocation_evidence_valid" if groups else "capability_not_invoked"
-    return RequiredCapabilityDecision(True, reason, "", "")
-
-
-def _capability_execution_error(
-    payload: RunPayload,
-    evidence: object,
-    *,
-    available_skill_ids: object = (),
-    claimed_used_skill_ids: object | None = None,
-) -> str | None:
-    """Validate only the Skill and MCP invocations that actually occurred."""
-
-    plan = CapabilityExecutionPlan.from_tool_policy_subjects(
-        payload.input.get("_runtime_tool_policy_subjects"),
-        available_skill_identities=available_skill_ids,
-    )
-    decision = _capability_completion_decision(
-        plan,
-        binding={
-            "tenant_id": payload.tenant_id,
-            "workspace_id": payload.workspace_id,
-            "user_id": payload.user_id,
-            "session_id": payload.session_id,
-            "run_id": payload.run_id,
-            "attempt_id": payload.attempt_id,
-        },
-        evidence=evidence,
-    )
-    if not decision.allowed:
-        return decision.reason
-    if claimed_used_skill_ids is None:
-        return None
-    if not isinstance(claimed_used_skill_ids, list) or any(
-        not isinstance(item, str) or not item for item in claimed_used_skill_ids
-    ):
-        return "required_tool_completion_evidence_mismatch"
-    try:
-        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
-    except (RequiredToolContractError, TypeError):
-        return "required_tool_completion_evidence_mismatch"
-    completed_skill_ids = {
-        record.canonical_identity
-        for record in records
-        if record.capability_kind == "skill" and record.lifecycle_phase == "completed"
-    }
-    if set(claimed_used_skill_ids) != completed_skill_ids or len(
-        claimed_used_skill_ids
-    ) != len(set(claimed_used_skill_ids)):
-        return "required_tool_completion_evidence_mismatch"
-    return None
 
 
 @dataclass(frozen=True)
@@ -1156,30 +1057,10 @@ class ClaudeAgentWorkerAdapter:
                 runtime_terminal_status=runtime_status,
                 evidence=parser_evidence,
             )
-        capability_evidence = (
-            executor_response.get("capability_evidence")
-            if isinstance(executor_response.get("capability_evidence"), list)
-            else []
-        )
-        runtime_sdk_result = type(
-            "RuntimeSdkResult",
-            (),
-            {
-                "used_skills": executor_response.get("used_skills"),
-                "used_skills_source": executor_response.get("used_skills_source", ""),
-            },
-        )()
-        used_skill_names = _sdk_used_skill_names(
-            runtime_sdk_result,
-            prepared.staged_skill_names,
-        )
-        used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
-        capability_evidence_error = _capability_execution_error(
-            payload,
-            capability_evidence,
-            available_skill_ids=prepared.staged_skill_names,
-            claimed_used_skill_ids=used_skill_names,
-        )
+        # The executor response is not evidence authority. Worker terminalization
+        # replaces these fields from the exact-attempt durable callback ledger.
+        used_skill_names: list[str] = []
+        used_skills_source = "none"
         skill_manifests = _skill_manifests(
             prepared.selected_skills,
             used_skill_names=used_skill_names,
@@ -1205,8 +1086,8 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_timings": sandbox_timings,
             "diagnostic_id": str(executor_response.get("diagnostic_id") or "") or None,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
-            "capability_evidence": capability_evidence,
-            "capability_evidence_validated": capability_evidence_error is None,
+            "capability_evidence": [],
+            "capability_evidence_validated": False,
         }
         raw_used_skills_source = str(
             executor_response.get("used_skills_source") or ""
@@ -1252,40 +1133,6 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_error": error_code,
                     "used_skills": [],
                     "used_skills_source": "none",
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                },
-            )
-        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and capability_evidence_error is not None:
-            turn_diagnostics = _public_sdk_turn_diagnostics(
-                payload,
-                executor_response.get("sdk_turn_diagnostics"),
-                error_code=capability_evidence_error,
-                used_skill_ids=used_skill_names,
-                public_skill_metadata=prepared.public_skill_metadata,
-            )
-            return ExecutorResult(
-                status="failed",
-                adapter_version=self.adapter_version,
-                executor_type=self.executor_type,
-                executor_version=self.executor_version,
-                capabilities={**self.capabilities, "platform_skills": True},
-                result={
-                    "message": "Capability execution evidence was incomplete. Please retry.",
-                    "error_code": capability_evidence_error,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
-                    "sdk_error": capability_evidence_error,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                },
-                artifacts=[],
-                executor_payload={
-                    **common_payload,
-                    "sdk_error": capability_evidence_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
@@ -1660,33 +1507,6 @@ def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
         workspace,
         "run workspace must stay inside the configured workspace root",
     )
-
-
-def _sdk_used_skill_names(
-    sdk_result: object,
-    staged_skill_names: list[str],
-) -> list[str]:
-    source = str(getattr(sdk_result, "used_skills_source", "") or "").strip()
-    if source != "executor_hook":
-        return []
-    raw = getattr(sdk_result, "used_skills", None)
-    if not isinstance(raw, list):
-        return []
-    staged = set(staged_skill_names)
-    used: list[str] = []
-    for item in raw:
-        skill_name = str(item).strip()
-        if not skill_name or skill_name not in staged or skill_name in used:
-            continue
-        used.append(skill_name)
-    return used
-
-
-def _sdk_used_skills_source(sdk_result: object | None, used_skill_names: list[str]) -> str:
-    if not used_skill_names:
-        return "none"
-    source = str(getattr(sdk_result, "used_skills_source", "") or "").strip()
-    return source or "executor_hook"
 
 
 def _pinned_skill_manifests(payload: RunPayload) -> dict[str, dict[str, Any]]:

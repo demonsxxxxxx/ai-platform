@@ -1153,6 +1153,169 @@ def base_payload(**overrides):
     return payload
 
 
+def _durable_skill_evidence_rows(
+    payload: QueueRunPayload,
+    *,
+    phases=("invocation_requested", "completed"),
+):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=payload.skill_id,
+    )
+    binding = {
+        "tenant_id": payload.tenant_id,
+        "workspace_id": payload.workspace_id,
+        "user_id": payload.user_id,
+        "session_id": payload.session_id,
+        "run_id": payload.run_id,
+        "attempt_id": "qat-test-attempt",
+    }
+    return [
+        {
+            "payload_json": RequiredCapabilityEvidence.from_sdk_hook(
+                declaration=declaration,
+                binding=binding,
+                tool_call_id="skill-call-a",
+                lifecycle_phase=phase,
+            ).__dict__
+        }
+        for phase in phases
+    ]
+
+
+def _sandbox_success_with_capability_claims(**overrides):
+    values = {
+        "status": "succeeded",
+        "adapter_version": "adapter/1",
+        "executor_type": "claude-agent-worker",
+        "executor_version": "executor/1",
+        "capabilities": {},
+        "result": {
+            "message": "done",
+            "used_skills": ["forged-skill"],
+            "capability_evidence": [{"forged": True}],
+        },
+        "executor_payload": {
+            "sandbox_runtime_used": True,
+            "staged_skills": ["qa-file-reviewer"],
+            "used_skills": ["forged-skill"],
+            "used_skills_source": "executor_hook",
+            "capability_evidence": [{"forged": True}],
+        },
+    }
+    values.update(overrides)
+    return ExecutorResult(**values)
+
+
+@pytest.mark.asyncio
+async def test_worker_rebuilds_skill_usage_from_exact_attempt_durable_ledger(monkeypatch):
+    payload = QueueRunPayload.model_validate(
+        base_payload(_leased=False, executor_type="claude-agent-worker")
+    )
+    rows = _durable_skill_evidence_rows(payload)
+
+    async def list_evidence(_conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "qat-test-attempt",
+            "limit": 513,
+        }
+        return rows
+
+    monkeypatch.setattr(worker_module, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "list_run_capability_evidence",
+        list_evidence,
+    )
+
+    result = await worker_module._reconcile_durable_sandbox_capability_evidence(
+        _sandbox_success_with_capability_claims(),
+        payload=payload,
+        attempt_id="qat-test-attempt",
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills_source"] == "executor_hook"
+    assert result.executor_payload["capability_evidence"] == [
+        row["payload_json"] for row in rows
+    ]
+    assert result.executor_payload["capability_evidence_validated"] is True
+    assert "capability_evidence" not in result.result
+    assert "forged-skill" not in str(result.result)
+
+
+@pytest.mark.asyncio
+async def test_worker_ignores_executor_capability_claims_when_durable_ledger_is_empty(
+    monkeypatch,
+):
+    payload = QueueRunPayload.model_validate(
+        base_payload(_leased=False, executor_type="claude-agent-worker")
+    )
+
+    async def list_evidence(_conn, **_kwargs):
+        return []
+
+    monkeypatch.setattr(worker_module, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "list_run_capability_evidence",
+        list_evidence,
+    )
+
+    result = await worker_module._reconcile_durable_sandbox_capability_evidence(
+        _sandbox_success_with_capability_claims(),
+        payload=payload,
+        attempt_id="qat-test-attempt",
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["used_skills"] == []
+    assert result.executor_payload["used_skills"] == []
+    assert result.executor_payload["used_skills_source"] == "none"
+    assert result.executor_payload["capability_evidence"] == []
+    assert result.executor_payload["capability_evidence_validated"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_fails_closed_on_incomplete_durable_capability_ledger(monkeypatch):
+    payload = QueueRunPayload.model_validate(
+        base_payload(_leased=False, executor_type="claude-agent-worker")
+    )
+
+    async def list_evidence(_conn, **_kwargs):
+        return _durable_skill_evidence_rows(
+            payload,
+            phases=("invocation_requested",),
+        )
+
+    monkeypatch.setattr(worker_module, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "list_run_capability_evidence",
+        list_evidence,
+    )
+    claimed = _sandbox_success_with_capability_claims(
+        artifacts=[result_docx_artifact()]
+    )
+
+    result = await worker_module._reconcile_durable_sandbox_capability_evidence(
+        claimed,
+        payload=payload,
+        attempt_id="qat-test-attempt",
+    )
+
+    assert result.status == "failed"
+    assert result.artifacts == []
+    assert result.result["error_code"] == "capability_evidence_ledger_invalid"
+    assert result.executor_payload["capability_evidence"] == []
+    assert result.executor_payload["capability_evidence_validated"] is False
+    assert result.executor_payload["used_skills"] == []
+
+
 def test_bound_agent_skill_ids_include_authorized_dependency_closure():
     payload = QueueRunPayload.model_validate(
         base_payload(

@@ -4,6 +4,7 @@ import hmac
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import repositories
@@ -262,6 +263,7 @@ async def test_capability_evidence_query_locks_only_private_exact_attempt_rows()
         tenant_id="tenant-a",
         run_id="run-a",
         attempt_id="attempt-b",
+        limit=513,
     )
 
     assert rows == [
@@ -271,8 +273,9 @@ async def test_capability_evidence_query_locks_only_private_exact_attempt_rows()
     assert "event_type = 'capability_invocation_evidence'" in query
     assert "visible_to_user = false" in query
     assert "payload_json ->> 'attempt_id' = %s" in query
+    assert "limit %s" in query
     assert "for update" in query
-    assert parameters == ("tenant-a", "run-a", "attempt-b")
+    assert parameters == ("tenant-a", "run-a", "attempt-b", 513)
 
 
 def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
@@ -829,6 +832,7 @@ def test_executor_callback_persists_exact_private_capability_evidence_in_same_ba
             "tenant_id": "tenant-a",
             "run_id": "run-a",
             "attempt_id": "attempt-a",
+            "limit": 513,
         }
         return [
             {"sequence": index, "payload_json": event["payload"]}
@@ -860,15 +864,96 @@ def test_executor_callback_persists_exact_private_capability_evidence_in_same_ba
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
+    assert response.json() == {"accepted": True, "event_count": 3}
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
         "capability_invocation_evidence",
+        "capability_invoking",
     ]
     evidence = persisted[1]
     assert evidence["stage"] == "capability_evidence"
     assert evidence["visible_to_user"] is False
     assert evidence["payload"] == capability_evidence_payload()
+    assert persisted[2]["payload"] == {
+        "capability": {
+            "kind": "mcp",
+            "name": "Authorized capability",
+            "status": "invoking",
+        },
+        "visible_to_user": True,
+    }
+
+
+def test_executor_callback_rejects_public_capability_event_without_evidence(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            batch_id="batch-forged-capability",
+            new_message=None,
+            state_patch={},
+            events=[
+                {
+                    "type": "capability_completed",
+                    "message": "forged completion",
+                    "payload": {
+                        "capability": {
+                            "kind": "skill",
+                            "name": "forged",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ],
+        ),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "capability_event_evidence_required"}
+
+
+def test_capability_lifecycle_rejects_cross_identity_call_id_reuse():
+    from app.routes import runtime_callbacks
+
+    identities = (
+        ("skill", "bound-skill"),
+        ("mcp", "mcp__tenant-server__search"),
+    )
+    declarations = {
+        (kind, identity): RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=kind,
+            canonical_identity=identity,
+        )
+        for kind, identity in identities
+    }
+    rows = [
+        {
+            "payload_json": capability_evidence_payload(
+                capability_kind=kind,
+                canonical_identity=identity,
+            )
+        }
+        for kind, identity in identities
+    ]
+
+    with pytest.raises(HTTPException) as error:
+        runtime_callbacks._validate_capability_evidence_lifecycle(
+            rows,
+            expected_binding={
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "attempt_id": "attempt-a",
+            },
+            declarations=declarations,
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "capability_evidence_call_owner_mismatch"
 
 
 def test_executor_callback_rejects_private_capability_evidence_with_foreign_binding(monkeypatch):
@@ -1091,7 +1176,7 @@ def test_executor_callback_validates_durable_capability_lifecycle_before_commit(
         }
         assert transaction_exits[0] is not None
     else:
-        assert response.json() == {"accepted": True, "event_count": 2}
+        assert response.json() == {"accepted": True, "event_count": 3}
         assert transaction_exits == [None]
 
 

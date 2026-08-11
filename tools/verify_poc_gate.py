@@ -766,19 +766,19 @@ with target_runs(tenant_id, run_id, skill_id) as (
 target_run_ids as (
   select distinct tenant_id, run_id from target_runs
 ),
-batches as (
-  select b.tenant_id, b.run_id, b.attempt_id, b.event_ids_json
-  from run_event_batches b
-  join target_run_ids target
-    on target.tenant_id = b.tenant_id
-   and target.run_id = b.run_id
-  where b.batch_id = 'capability-evidence-v1'
+target_attempts as (
+  select target.tenant_id, target.run_id, authority.attempt_id
+  from target_run_ids target
+  join sse_stream_authorities authority
+    on authority.tenant_id = target.tenant_id
+   and authority.run_id = target.run_id
+   and authority.state = 'terminal'
 ),
 evidence_events as (
   select
-    b.tenant_id,
-    b.run_id,
-    b.attempt_id,
+    target.tenant_id,
+    target.run_id,
+    target.attempt_id,
     e.sequence,
     e.payload_json->>'attempt_id' as payload_attempt_id,
     e.payload_json->>'capability_kind' as capability_kind,
@@ -794,13 +794,16 @@ evidence_events as (
       and e.stage = 'capability_evidence'
       and e.visible_to_user = false
       and e.payload_json->>'schema_version' = 'ai-platform.required-capability-evidence.v1'
+      and e.payload_json->>'attempt_id' = target.attempt_id
     ) as envelope_valid
-  from batches b
-  cross join lateral jsonb_array_elements_text(b.event_ids_json) as event_ids(event_id)
-  join run_events e
-    on e.tenant_id = b.tenant_id
-   and e.run_id = b.run_id
-   and e.id = event_ids.event_id
+  from run_events e
+  join target_attempts target
+    on target.tenant_id = e.tenant_id
+   and target.run_id = e.run_id
+   and e.payload_json->>'attempt_id' = target.attempt_id
+  where e.event_type = 'capability_invocation_evidence'
+    and e.stage = 'capability_evidence'
+    and e.visible_to_user = false
 ),
 invocation_groups as (
   select
@@ -834,6 +837,12 @@ invocation_groups as (
   from evidence_events
   group by tenant_id, run_id, attempt_id, capability_kind, canonical_identity, tool_call_id
 ),
+call_owner_conflicts as (
+  select tenant_id, run_id, attempt_id, tool_call_id
+  from evidence_events
+  group by tenant_id, run_id, attempt_id, tool_call_id
+  having count(distinct capability_kind || ':' || canonical_identity) <> 1
+),
 validated_groups as (
   select
     *,
@@ -848,14 +857,14 @@ validated_groups as (
   from invocation_groups
 )
 select json_build_object(
-  'batch_count', (select count(*) from batches),
-  'batch_event_count', coalesce(
-    (select sum(jsonb_array_length(event_ids_json)) from batches),
-    0
+  'batch_count', (
+    select count(distinct run_id || ':' || attempt_id) from evidence_events
   ),
+  'batch_event_count', (select count(*) from evidence_events),
   'event_count', (select count(*) from evidence_events),
   'invocation_group_count', (select count(*) from validated_groups),
   'invalid_group_count', (select count(*) from validated_groups where lifecycle_valid is not true),
+  'invalid_call_owner_count', (select count(*) from call_owner_conflicts),
   'completed_skill_ids', coalesce(
     (
       select json_agg(distinct canonical_identity order by canonical_identity)
@@ -871,7 +880,7 @@ select json_build_object(
     (
       select json_agg(binding order by binding)
       from (
-        select distinct run_id || ':' || attempt_id as binding from batches
+        select distinct run_id || ':' || attempt_id as binding from evidence_events
       ) bindings
     ),
     '[]'::json
@@ -913,6 +922,9 @@ select json_build_object(
     capability_event_count = int(capability_summary.get("event_count") or 0)
     invocation_group_count = int(capability_summary.get("invocation_group_count") or 0)
     invalid_group_count = int(capability_summary.get("invalid_group_count") or 0)
+    invalid_call_owner_count = int(
+        capability_summary.get("invalid_call_owner_count") or 0
+    )
     mcp_invocation_count = int(capability_summary.get("mcp_invocation_count") or 0)
     ok = (
         all(status == "succeeded" for status in real_task_statuses.values())
@@ -925,6 +937,7 @@ select json_build_object(
         and capability_event_count >= len(scopes) * 2
         and invocation_group_count >= len(scopes)
         and invalid_group_count == 0
+        and invalid_call_owner_count == 0
         and sorted(str(item) for item in completed_skill_ids) == sorted(expected_used_skill_ids)
         and len(attempt_bindings) == expected_run_count
         and pinned_snapshot_count >= len(scopes)
@@ -957,6 +970,7 @@ select json_build_object(
             "event_count": capability_event_count,
             "invocation_group_count": invocation_group_count,
             "invalid_group_count": invalid_group_count,
+            "invalid_call_owner_count": invalid_call_owner_count,
             "completed_skill_ids": [
                 str(item) for item in completed_skill_ids if isinstance(item, str)
             ],

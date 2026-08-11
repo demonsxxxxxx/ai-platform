@@ -29,10 +29,12 @@ from app.runtime.sandbox.contracts import (
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.required_tool_contract import (
+    MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     declaration_from_payload,
+    validate_capability_evidence_lifecycle,
 )
 from app.settings import get_settings
 from app.streaming.redis import (
@@ -61,6 +63,14 @@ _CAPABILITY_EVIDENCE_BINDING_FIELDS = (
 )
 _CAPABILITY_AUTHORITY_SCHEMA_VERSION = "ai-platform.capability-authority.v1"
 _MAX_CAPABILITY_AUTHORITY_DECLARATIONS = 256
+_CAPABILITY_EVENT_TYPES = frozenset(
+    {"capability_invoking", "capability_completed", "capability_failed"}
+)
+_CAPABILITY_EVENT_BY_PHASE = {
+    "invocation_requested": ("capability_invoking", "invoking"),
+    "completed": ("capability_completed", "completed"),
+    "failed": ("capability_failed", "failed"),
+}
 
 
 def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -172,33 +182,21 @@ def _validate_capability_evidence_lifecycle(
     expected_binding: dict[str, str],
     declarations: dict[tuple[str, str], RequiredCapabilityDeclaration],
 ) -> None:
-    states: dict[tuple[str, str, str], str] = {}
-    for row in rows:
-        evidence = _validated_capability_evidence(
+    records = [
+        _validated_capability_evidence(
             row.get("payload_json") if isinstance(row, dict) else None,
             expected_binding=expected_binding,
             declarations=declarations,
         )
-        key = (
-            evidence.capability_kind,
-            evidence.canonical_identity,
-            str(evidence.tool_call_id or ""),
-        )
-        current = states.get(key, "")
-        if evidence.lifecycle_phase == "invocation_requested":
-            if current:
-                raise HTTPException(
-                    status_code=409,
-                    detail="capability_evidence_lifecycle_invalid",
-                )
-            states[key] = "invocation_requested"
-        elif current != "invocation_requested":
-            raise HTTPException(
-                status_code=409,
-                detail="capability_evidence_lifecycle_invalid",
-            )
-        else:
-            states[key] = evidence.lifecycle_phase
+        for row in rows
+    ]
+    try:
+        validate_capability_evidence_lifecycle(records)
+    except RequiredToolContractError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
 
 
 async def record_executor_callback(
@@ -209,6 +207,16 @@ async def record_executor_callback(
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         raise HTTPException(
             status_code=409, detail="executor_terminal_callback_not_allowed"
+        )
+    incoming_capability_event_types = [
+        event.type
+        for event in callback.events
+        if event.type in _CAPABILITY_EVENT_TYPES
+    ]
+    if incoming_capability_event_types and callback.capability_evidence is None:
+        raise HTTPException(
+            status_code=409,
+            detail="capability_event_evidence_required",
         )
     callback_for_events = callback
     if callback.status == "running" and callback.new_message is not None:
@@ -281,9 +289,36 @@ async def record_executor_callback(
             run_identity=run_identity,
             declarations=capability_declarations,
         )
+        canonical_capability_event: dict[str, Any] | None = None
         if capability_evidence_event is not None:
             event_batch.append(capability_evidence_event)
+            evidence_payload = capability_evidence_event["payload"]
+            capability_event_type, capability_status = _CAPABILITY_EVENT_BY_PHASE[
+                str(evidence_payload["lifecycle_phase"])
+            ]
+            if incoming_capability_event_types and incoming_capability_event_types != [
+                capability_event_type
+            ]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="capability_event_evidence_mismatch",
+                )
+            canonical_capability_event = {
+                "event_type": capability_event_type,
+                "stage": "capability",
+                "message": "Capability lifecycle update",
+                "payload": {
+                    "capability": {
+                        "kind": str(evidence_payload["capability_kind"]),
+                        "name": "Authorized capability",
+                        "status": capability_status,
+                    },
+                    "visible_to_user": True,
+                },
+            }
         for item_index, event in enumerate(events):
+            if event.type in _CAPABILITY_EVENT_TYPES:
+                continue
             executor_event = agent_event_to_executor_event(event)
             executor_event_type = str(executor_event["event_type"])
             executor_payload = dict(executor_event["payload"])
@@ -324,6 +359,8 @@ async def record_executor_callback(
                     "payload": event_payload,
                 }
             )
+        if canonical_capability_event is not None:
+            event_batch.append(canonical_capability_event)
         if public_deltas:
             authority = await get_stream_authority(
                 conn, tenant_id=tenant_id, run_id=callback.run_id
@@ -355,6 +392,7 @@ async def record_executor_callback(
                     tenant_id=tenant_id,
                     run_id=callback.run_id,
                     attempt_id=callback.attempt_id,
+                    limit=MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT + 1,
                 )
                 _validate_capability_evidence_lifecycle(
                     evidence_rows,
