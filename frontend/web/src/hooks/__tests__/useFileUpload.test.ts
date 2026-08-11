@@ -8,8 +8,68 @@ import {
   settleUploadFailure,
   startFileUploadTask,
 } from "../useFileUpload.ts";
+import {
+  formatUploadLimitMiB,
+  isFileSizeWithinLimitBytes,
+  resolveUploadBytePolicy,
+} from "../../utils/uploadLimits.ts";
 
 const translate = (key: string) => `translated:${key}`;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+test("upload policy prefers the explicit byte contract and supports the byte-valued legacy alias", () => {
+  const explicit = resolveUploadBytePolicy({
+    enabled: true,
+    uploadLimitsBytes: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+    },
+    maxFiles: 10,
+    uploadLimits: {
+      image: 1,
+      video: 1,
+      audio: 1,
+      document: 1,
+      maxFiles: 1,
+    },
+  });
+  assert.deepEqual(explicit, {
+    limitsBytes: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+    },
+    maxFiles: 10,
+  });
+
+  const legacy = resolveUploadBytePolicy({
+    enabled: true,
+    uploadLimits: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+      maxFiles: 10,
+    },
+  });
+  assert.deepEqual(legacy, explicit);
+});
+
+test("upload size validation compares bytes at the exact boundary and formats MiB only for display", () => {
+  assert.equal(
+    isFileSizeWithinLimitBytes(MAX_UPLOAD_BYTES, MAX_UPLOAD_BYTES),
+    true,
+  );
+  assert.equal(
+    isFileSizeWithinLimitBytes(MAX_UPLOAD_BYTES + 1, MAX_UPLOAD_BYTES),
+    false,
+  );
+  assert.equal(formatUploadLimitMiB(MAX_UPLOAD_BYTES), "50 MiB");
+  assert.equal(formatUploadLimitMiB(1.5 * 1024 * 1024), "1.5 MiB");
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

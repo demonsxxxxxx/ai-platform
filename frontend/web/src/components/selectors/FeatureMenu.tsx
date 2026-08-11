@@ -24,8 +24,8 @@ import {
 } from "lucide-react";
 import { THINKING_LEVEL_COLOR } from "../chat/chatInputConstants";
 
-import type { FileCategory } from "../../types";
-import type { UploadLimits } from "../../hooks/useFileUpload";
+import type { FileCategory, UploadLimitsBytes } from "../../types";
+import { formatUploadLimitMiB } from "../../utils/uploadLimits";
 
 export type FeaturePanel =
   | "tools"
@@ -55,7 +55,7 @@ interface FeatureMenuProps {
   thinkingLevel?: string;
   // File upload
   uploadCategories: FileCategory[];
-  uploadLimits?: UploadLimits | null;
+  uploadLimitsBytes?: UploadLimitsBytes | null;
   onFileCategorySelect: (category: FileCategory) => void;
 }
 
@@ -152,7 +152,7 @@ export const FeatureMenu = memo(function FeatureMenu({
   thinkingLabel,
   thinkingLevel,
   uploadCategories,
-  uploadLimits,
+  uploadLimitsBytes,
   onFileCategorySelect,
 }: FeatureMenuProps) {
   const { t } = useTranslation();
@@ -252,9 +252,9 @@ export const FeatureMenu = memo(function FeatureMenu({
                       <span className="flex-1 text-left truncate">
                         {t(`fileUpload.categories.${category}`)}
                       </span>
-                      {uploadLimits && (
+                      {uploadLimitsBytes && (
                         <span className="feature-menu-item-badge">
-                          {uploadLimits[category]}MB
+                          {formatUploadLimitMiB(uploadLimitsBytes[category])}
                         </span>
                       )}
                     </button>

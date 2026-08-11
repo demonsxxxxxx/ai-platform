@@ -13,6 +13,7 @@ from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
 )
+from app.routes.files import MAX_UPLOAD_BYTES
 
 
 def auth_settings():
@@ -429,6 +430,26 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts():
                 assert isinstance(payload[key], dict), path
             else:
                 assert payload[key] == value, path
+
+
+def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
+    client = TestClient(create_app())
+
+    response = client.get("/api/upload/config")
+
+    assert response.status_code == 200
+    payload = response.json()
+    expected_limits_bytes = {
+        "image": MAX_UPLOAD_BYTES,
+        "video": MAX_UPLOAD_BYTES,
+        "audio": MAX_UPLOAD_BYTES,
+        "document": MAX_UPLOAD_BYTES,
+    }
+    assert payload["uploadLimitsBytes"] == expected_limits_bytes
+    assert payload["maxFiles"] == 10
+    assert payload["max_file_size_bytes"] == MAX_UPLOAD_BYTES
+    assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 10}
+    assert payload["max_file_size"] == MAX_UPLOAD_BYTES
 
 
 def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):

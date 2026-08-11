@@ -20,16 +20,27 @@ export interface MessageAttachment {
   isUploading?: boolean;
 }
 
+export interface UploadLimitsBytes {
+  image: number;
+  video: number;
+  audio: number;
+  document: number;
+}
+
+export interface LegacyUploadLimits extends UploadLimitsBytes {
+  maxFiles: number;
+}
+
 export interface UploadConfig {
   enabled: boolean;
   provider?: string;
-  uploadLimits: {
-    image: number;
-    video: number;
-    audio: number;
-    document: number;
-    maxFiles: number;
-  };
+  /** Canonical per-category limits. Every value is a byte count. */
+  uploadLimitsBytes?: UploadLimitsBytes;
+  maxFiles?: number;
+  /** Rolling-upgrade alias; category values have always been byte counts. */
+  uploadLimits?: LegacyUploadLimits;
+  max_file_size_bytes?: number;
+  max_file_size?: number;
 }
 
 export interface UploadResult {

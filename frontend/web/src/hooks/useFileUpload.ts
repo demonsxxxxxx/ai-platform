@@ -3,16 +3,14 @@ import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { uploadApi, UploadRequestError } from "../services/api/upload";
 import { compressImageFile } from "../utils/imageCompression";
+import {
+  formatUploadLimitMiB,
+  isFileSizeWithinLimitBytes,
+  resolveUploadBytePolicy,
+  type ResolvedUploadBytePolicy,
+} from "../utils/uploadLimits";
 import { uuid } from "../utils/uuid";
 import type { MessageAttachment, FileCategory } from "../types";
-
-export interface UploadLimits {
-  image: number;
-  video: number;
-  audio: number;
-  document: number;
-  maxFiles: number;
-}
 
 export interface UseFileUploadOptions {
   attachments: MessageAttachment[];
@@ -224,7 +222,8 @@ export function useFileUpload({
   onAttachmentsChange,
 }: UseFileUploadOptions) {
   const { t } = useTranslation();
-  const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
+  const [uploadPolicy, setUploadPolicy] =
+    useState<ResolvedUploadBytePolicy | null>(null);
   const limitsFetched = useRef(false);
   const abortMapRef = useRef<Map<string, () => void>>(new Map());
   const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
@@ -241,8 +240,8 @@ export function useFileUpload({
     uploadApi
       .getConfig()
       .then((config) => {
-        if (isMounted && config.uploadLimits) {
-          setUploadLimits(config.uploadLimits);
+        if (isMounted) {
+          setUploadPolicy(resolveUploadBytePolicy(config));
         }
       })
       .catch(() => {});
@@ -255,31 +254,33 @@ export function useFileUpload({
   /** Validate file size, returns true if ok */
   const validateSize = useCallback(
     (file: File, category: FileCategory): boolean => {
-      if (!uploadLimits) return true;
-      const maxMB = uploadLimits[category];
-      if (file.size > maxMB * 1024 * 1024) {
-        toast.error(`${t("fileUpload.fileTooLarge")} (${maxMB}MB)`);
-        return false;
-      }
-      return true;
-    },
-    [uploadLimits, t],
-  );
-
-  /** Validate file count (existing + new), returns true if ok */
-  const validateCount = useCallback(
-    (newFileCount: number): boolean => {
-      if (!uploadLimits) return true;
-      const remaining = uploadLimits.maxFiles - attachments.length;
-      if (remaining <= 0 || newFileCount > remaining) {
+      if (!uploadPolicy) return true;
+      const maxBytes = uploadPolicy.limitsBytes[category];
+      if (!isFileSizeWithinLimitBytes(file.size, maxBytes)) {
         toast.error(
-          t("fileUpload.tooManyFiles", { count: uploadLimits.maxFiles }),
+          `${t("fileUpload.fileTooLarge")} (${formatUploadLimitMiB(maxBytes)})`,
         );
         return false;
       }
       return true;
     },
-    [uploadLimits, attachments.length, t],
+    [uploadPolicy, t],
+  );
+
+  /** Validate file count (existing + new), returns true if ok */
+  const validateCount = useCallback(
+    (newFileCount: number): boolean => {
+      if (!uploadPolicy) return true;
+      const remaining = uploadPolicy.maxFiles - attachments.length;
+      if (remaining <= 0 || newFileCount > remaining) {
+        toast.error(
+          t("fileUpload.tooManyFiles", { count: uploadPolicy.maxFiles }),
+        );
+        return false;
+      }
+      return true;
+    },
+    [uploadPolicy, attachments.length, t],
   );
 
   /** Cancel an in-progress upload by attachment id */
@@ -342,7 +343,7 @@ export function useFileUpload({
   );
 
   return {
-    uploadLimits,
+    uploadLimitsBytes: uploadPolicy?.limitsBytes ?? null,
     uploadFiles,
     uploadFile,
     validateSize,
