@@ -405,7 +405,7 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts():
         "/api/auth/oauth/providers": {"registration_enabled": False},
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
         "/api/agent/models/available": {"default_model_id": "deepseek-v4-flash"},
-        "/api/agent/models/": {"enabled_count": 2},
+        "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
         "/api/settings/": {"settings": {}},
         "/api/version": {"version": "ai-platform-poc"},
