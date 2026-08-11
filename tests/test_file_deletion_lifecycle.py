@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 import pytest
 from fastapi import HTTPException
 
-from app import repositories
 from app.auth import AuthPrincipal
+from app.persistence import file_deletions, object_deletions
 from app.routes import files as files_routes
 
 
@@ -79,7 +79,7 @@ async def test_queue_owned_unbound_file_tombstones_and_enqueues_one_exact_intent
         outbox_row(),
     )
 
-    result = await repositories.queue_unbound_file_for_deletion(
+    result = await file_deletions.queue_unbound_file_for_deletion(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -95,7 +95,9 @@ async def test_queue_owned_unbound_file_tombstones_and_enqueues_one_exact_intent
         "created": True,
     }
     lock_sql, lock_params = conn.calls[0]
-    assert "tenant_id = %s and workspace_id = %s and user_id = %s and id = %s" in lock_sql
+    assert (
+        "tenant_id = %s and workspace_id = %s and user_id = %s and id = %s" in lock_sql
+    )
     assert "for update" in lock_sql
     assert lock_params == ("tenant-a", "workspace-a", "user-a", "file-a")
     assert "runs.input_json @> jsonb_build_object" in conn.calls[1][0]
@@ -116,7 +118,7 @@ async def test_duplicate_delete_returns_the_existing_intent_without_requeue():
         [outbox_row(state="file_processing")],
     )
 
-    result = await repositories.queue_unbound_file_for_deletion(
+    result = await file_deletions.queue_unbound_file_for_deletion(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -152,8 +154,8 @@ async def test_canonical_durable_references_block_file_deletion(reference_key, r
     references[reference_key] = True
     conn = ScriptedConnection(file_row(), references)
 
-    with pytest.raises(repositories.FileDeletionBlockedError, match=reason):
-        await repositories.queue_unbound_file_for_deletion(
+    with pytest.raises(file_deletions.FileDeletionBlockedError, match=reason):
+        await file_deletions.queue_unbound_file_for_deletion(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -168,7 +170,7 @@ async def test_canonical_durable_references_block_file_deletion(reference_key, r
 async def test_cross_scope_delete_is_indistinguishable_from_missing_file():
     conn = ScriptedConnection(None)
 
-    result = await repositories.queue_unbound_file_for_deletion(
+    result = await file_deletions.queue_unbound_file_for_deletion(
         conn,
         tenant_id="tenant-b",
         workspace_id="workspace-b",
@@ -187,8 +189,10 @@ async def test_idempotent_replay_rejects_wrong_storage_identity():
         [outbox_row(storage_key="private/wrong")],
     )
 
-    with pytest.raises(repositories.ObjectDeletionStateError, match="identity_mismatch"):
-        await repositories.queue_unbound_file_for_deletion(
+    with pytest.raises(
+        object_deletions.ObjectDeletionStateError, match="identity_mismatch"
+    ):
+        await file_deletions.queue_unbound_file_for_deletion(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -211,8 +215,10 @@ async def test_active_file_with_preexisting_outbox_fails_before_tombstone():
         },
     )
 
-    with pytest.raises(repositories.ObjectDeletionStateError, match="without_tombstone"):
-        await repositories.queue_unbound_file_for_deletion(
+    with pytest.raises(
+        object_deletions.ObjectDeletionStateError, match="without_tombstone"
+    ):
+        await file_deletions.queue_unbound_file_for_deletion(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -225,7 +231,10 @@ async def test_active_file_with_preexisting_outbox_fails_before_tombstone():
 @pytest.mark.asyncio
 async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     conn = ScriptedConnection(None, None, [])
-    assert await repositories.claim_object_deletions(conn, limit=7, max_attempts=4) == []
+    assert (
+        await object_deletions.claim_object_deletions(conn, limit=7, max_attempts=4)
+        == []
+    )
     assert "object_delete_target_invariant" in conn.calls[0][0]
     assert "limit %s" in conn.calls[0][0] and "skip locked" in conn.calls[0][0]
     assert conn.calls[0][1] == (7,)
@@ -234,11 +243,14 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     assert "lease_generation = lease_generation + 1" in conn.calls[2][0]
     assert "target_type, artifact_id, file_id" in conn.calls[2][0]
     assert "state in ('pending', 'failed', 'processing')" in conn.calls[0][0]
-    assert "state in ('file_pending', 'file_failed', 'file_processing')" in conn.calls[0][0]
+    assert (
+        "state in ('file_pending', 'file_failed', 'file_processing')"
+        in conn.calls[0][0]
+    )
     assert "then 'file_processing'" in conn.calls[2][0]
 
     completion = ScriptedConnection({"id": "out-a"})
-    assert await repositories.complete_object_deletion(
+    assert await object_deletions.complete_object_deletion(
         completion,
         outbox_id="out-a",
         tenant_id="tenant-a",
@@ -252,13 +264,16 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     assert complete_params == ("out-a", "tenant-a", 9)
 
     failure = ScriptedConnection({"state": "file_failed"})
-    assert await repositories.fail_object_deletion(
-        failure,
-        outbox_id="out-a",
-        tenant_id="tenant-a",
-        lease_generation=9,
-        error_code="safe_error",
-    ) == "file_failed"
+    assert (
+        await object_deletions.fail_object_deletion(
+            failure,
+            outbox_id="out-a",
+            tenant_id="tenant-a",
+            lease_generation=9,
+            error_code="safe_error",
+        )
+        == "file_failed"
+    )
     assert "then 'file_dead_letter'" in failure.calls[0][0]
     assert "then 'file_failed'" in failure.calls[0][0]
     assert failure.calls[0][1][-3:] == ("out-a", "tenant-a", 9)
@@ -286,7 +301,9 @@ def test_canonical_file_delete_route_has_a_typed_public_response():
 
 
 @pytest.mark.asyncio
-async def test_delete_route_uses_principal_scope_and_audits_only_new_intent(monkeypatch):
+async def test_delete_route_uses_principal_scope_and_audits_only_new_intent(
+    monkeypatch,
+):
     calls = []
 
     @asynccontextmanager
@@ -352,10 +369,13 @@ async def test_delete_route_hides_cross_scope_and_reference_details(monkeypatch)
             workspace_id="workspace-a",
             principal=principal(),
         )
-    assert (missing_error.value.status_code, missing_error.value.detail) == (404, "file_not_found")
+    assert (missing_error.value.status_code, missing_error.value.detail) == (
+        404,
+        "file_not_found",
+    )
 
     async def blocked(_conn, **_kwargs):
-        raise repositories.FileDeletionBlockedError("private_reference_detail")
+        raise file_deletions.FileDeletionBlockedError("private_reference_detail")
 
     monkeypatch.setattr(files_routes, "queue_unbound_file_for_deletion", blocked)
     with pytest.raises(HTTPException) as blocked_error:

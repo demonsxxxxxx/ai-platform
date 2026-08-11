@@ -120,6 +120,34 @@ working but receive only the bounded first page.
 
 ## Retention and physical deletion
 
+### Release note: object-deletion ownership and settings
+
+The 2026-08-12 release separates persistence ownership without changing the
+deletion protocol. Generic claim, receipt, retry, dead-letter, and operator
+requeue logic now belongs to the object-deletion boundary. Artifact expiry and
+ACL reads remain artifact-owned, owner-requested file admission is file-owned,
+and the worker still runs one shared bounded loop.
+
+New deployments should use the following generic worker settings:
+
+| Canonical setting | Deprecated fallback | Scope |
+| --- | --- | --- |
+| `OBJECT_DELETE_BATCH_LIMIT` | `ARTIFACT_RETENTION_CLEANUP_LIMIT` | Shared artifact/file outbox claim batch. |
+| `OBJECT_DELETE_MAX_ATTEMPTS` | `ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS` | Shared retry/dead-letter threshold. |
+| `OBJECT_DELETE_RETRY_BASE_SECONDS` | `ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS` | Shared retry backoff base. |
+| `OBJECT_DELETE_RETRY_CAP_SECONDS` | `ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS` | Shared retry backoff cap. |
+
+When both names are present, the canonical `OBJECT_DELETE_*` value wins. When a
+canonical value is absent, the deprecated value preserves the previous
+behavior. `ARTIFACT_RETENTION_CLEANUP_LIMIT` remains the artifact-expiry
+selection limit; only its fallback role as the shared object claim limit is
+deprecated. The old names and the logic-free
+`app.artifact_lifecycle_repository` import facade are supported through
+2026-10-31 and may be removed no earlier than 2026-11-01 after operator and
+internal-import migration evidence is complete. This is a configuration and
+code-ownership rename only: it does not change SQL, persisted states, retry
+semantics, or retention eligibility.
+
 Cleanup runs in small worker batches and is retryable:
 
 - Expired artifacts are selected with `FOR UPDATE SKIP LOCKED` only when no
