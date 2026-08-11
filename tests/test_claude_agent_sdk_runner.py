@@ -121,6 +121,7 @@ def _skill_subject(skill_name="qa-review"):
 def _local_side_effect_subject(tool_name):
     parameters = {
         "Bash": (["command", "timeout", "description"], ["command"]),
+        "Read": (["file_path", "offset", "limit"], ["file_path"]),
         "Write": (["file_path", "content"], ["file_path", "content"]),
     }
     allowed, required = parameters[tool_name]
@@ -135,8 +136,8 @@ def _local_side_effect_subject(tool_name):
         "parameters_authorized": True,
         "allowed_parameter_keys": allowed,
         "required_parameter_keys": required,
-        "risk_level": "high",
-        "write_capable": True,
+        "risk_level": "low" if tool_name == "Read" else "high",
+        "write_capable": tool_name != "Read",
         "workspace_contract": "ai-platform.skill-workspace.v1",
         "command_isolation": "sibling-tool-sandbox-v1",
     }
@@ -838,7 +839,7 @@ async def test_sdk_pre_tool_use_denies_when_capability_evidence_is_not_acknowled
 
 
 @pytest.mark.asyncio
-async def test_sdk_serializes_local_side_effect_tools_across_complete_hook_lifecycle(
+async def test_sdk_serializes_local_filesystem_policy_across_complete_hook_lifecycle(
     monkeypatch,
     tmp_path,
 ):
@@ -878,14 +879,24 @@ async def test_sdk_serializes_local_side_effect_tools_across_complete_hook_lifec
         "tool_use_id": "bash-call",
         "tool_input": {"command": "printf ready"},
     }
-    write_input = {
-        "tool_name": "Write",
-        "tool_use_id": "write-call",
+    read_input = {
+        "tool_name": "Read",
+        "tool_use_id": "read-call",
         "tool_input": {
             "file_path": "outputs/delivery/report.txt",
-            "content": "report",
         },
     }
+    path_policy_calls = []
+    original_path_policy = _workspace_path_parameters_authorized
+
+    def capture_path_policy(subject, tool_name, tool_input, *, workspace_root):
+        path_policy_calls.append(tool_name)
+        return original_path_policy(
+            subject,
+            tool_name,
+            tool_input,
+            workspace_root=workspace_root,
+        )
 
     async def query(*, prompt, options):
         del options
@@ -898,15 +909,16 @@ async def test_sdk_serializes_local_side_effect_tools_across_complete_hook_lifec
         )
 
         bash_result = await pre_hook(bash_input, "bash-call", {})
-        write_pre_task = asyncio.create_task(
-            pre_hook(write_input, "write-call", {})
+        read_pre_task = asyncio.create_task(
+            pre_hook(read_input, "read-call", {})
         )
         await asyncio.sleep(0)
-        captured["write_pre_blocked"] = not write_pre_task.done()
+        captured["read_pre_blocked"] = not read_pre_task.done()
+        captured["read_policy_checked_before_release"] = "Read" in path_policy_calls
         await post_hook(bash_input, "bash-call", {})
-        write_result = await asyncio.wait_for(write_pre_task, timeout=1)
-        await post_hook(write_input, "write-call", {})
-        captured["side_effect_results"] = [bash_result, write_result]
+        read_result = await asyncio.wait_for(read_pre_task, timeout=1)
+        await post_hook(read_input, "read-call", {})
+        captured["filesystem_results"] = [bash_result, read_result]
         yield ResultMessage()
 
     monkeypatch.setitem(
@@ -926,6 +938,10 @@ async def test_sdk_serializes_local_side_effect_tools_across_complete_hook_lifec
         "app.executors.claude_agent_sdk_runner.get_settings",
         _sandbox_brokered_settings,
     )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner._workspace_path_parameters_authorized",
+        capture_path_policy,
+    )
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", "/workspace/.ai-platform/native-tool.sock")
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)
 
@@ -936,15 +952,17 @@ async def test_sdk_serializes_local_side_effect_tools_across_complete_hook_lifec
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[
             _local_side_effect_subject("Bash"),
-            _local_side_effect_subject("Write"),
+            _local_side_effect_subject("Read"),
         ],
     )
 
     assert result.error is None
-    assert captured["write_pre_blocked"] is True
+    assert captured["read_pre_blocked"] is True
+    assert captured["read_policy_checked_before_release"] is False
+    assert "Read" in path_policy_calls
     assert all(
         item["hookSpecificOutput"]["permissionDecision"] == "allow"
-        for item in captured["side_effect_results"]
+        for item in captured["filesystem_results"]
     )
 
 

@@ -957,6 +957,9 @@ def _private_capability_evidence_events(
 ) -> list[dict[str, Any]]:
     """Project validated capability lifecycle records into a private durable batch."""
 
+    if executor_payload.get("sandbox_runtime_used") is True:
+        # Sandbox callbacks persist each record before the corresponding tool side effect.
+        return []
     if executor_payload.get("capability_evidence_validated") is not True:
         return []
     raw_evidence = executor_payload.get("capability_evidence")

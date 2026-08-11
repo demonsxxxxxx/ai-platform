@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import hashlib
 import hmac
 from types import SimpleNamespace
@@ -16,6 +17,10 @@ from app.runtime.sandbox.callback_tokens import (
 from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorToolPermissionRequest,
+)
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
 )
 
 
@@ -38,6 +43,30 @@ def callback_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def capability_evidence_payload(**binding_overrides):
+    binding = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        **binding_overrides,
+    }
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__tenant-server__search",
+    )
+    return asdict(
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=binding,
+            tool_call_id="tool-call-a",
+            lifecycle_phase="invocation_requested",
+        )
+    )
 
 
 def callback_settings(token: str):
@@ -701,6 +730,112 @@ def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatc
     assert persisted[2][3]["checkpoint_id"] == "checkpoint-a"
     assert persisted[2][3]["source"] == "executor_callback"
     assert persisted[4][3]["visible_to_user"] is True
+
+
+def test_executor_callback_persists_exact_private_capability_evidence_in_same_batch(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+        }
+
+    async def append_batch(conn, **receipt):
+        persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-11T00:00:00Z"}
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            batch_id="batch-capability-a",
+            new_message=None,
+            state_patch={},
+            capability_evidence=capability_evidence_payload(),
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "event_count": 2}
+    assert [event["event_type"] for event in persisted] == [
+        "executor_callback",
+        "capability_invocation_evidence",
+    ]
+    evidence = persisted[1]
+    assert evidence["stage"] == "capability_evidence"
+    expected_payload = {
+        key: value
+        for key, value in capability_evidence_payload().items()
+        if key not in {"public_label", "public_status"}
+    }
+    expected_payload["visible_to_user"] = False
+    assert evidence["payload"] == expected_payload
+    assert evidence["payload"]["visible_to_user"] is False
+
+
+def test_executor_callback_rejects_private_capability_evidence_with_foreign_binding(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+        }
+
+    async def fail_append_batch(*args, **kwargs):
+        raise AssertionError("foreign capability evidence must not persist")
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fail_append_batch)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            batch_id="batch-capability-a",
+            new_message=None,
+            state_patch={},
+            capability_evidence=capability_evidence_payload(workspace_id="workspace-foreign"),
+        ),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "capability_evidence_scope_mismatch"}
 
 
 def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):

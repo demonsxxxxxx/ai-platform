@@ -354,6 +354,7 @@ class ExecutorCallbackEvent(BaseModel):
     sdk_session_id: str | None = None
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list)
+    capability_evidence: dict[str, Any] | None = None
 
     @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod

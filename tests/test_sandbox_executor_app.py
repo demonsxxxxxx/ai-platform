@@ -108,7 +108,11 @@ def callback_ack(payload: dict[str, object]) -> dict[str, object]:
     """Mirror the runtime callback receipt: envelope plus bridged events."""
 
     events = payload.get("events")
-    return {"accepted": True, "event_count": 1 + len(events) if isinstance(events, list) else 1}
+    evidence_count = 1 if isinstance(payload.get("capability_evidence"), dict) else 0
+    return {
+        "accepted": True,
+        "event_count": 1 + (len(events) if isinstance(events, list) else 0) + evidence_count,
+    }
 
 
 def mapped_execution_fact(invocation_id: str, lifecycle: str, *, fact_kind: str = "tool_invocation"):
@@ -477,6 +481,26 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         {"kind": "mcp", "name": "Tenant Search", "status": "invoking"},
         {"kind": "mcp", "name": "Tenant Search", "status": "completed"},
     ]
+    assert [item["capability_evidence"]["lifecycle_phase"] for item in capability_events] == [
+        "invocation_requested",
+        "completed",
+    ]
+    assert {
+        (
+            item["capability_evidence"]["tenant_id"],
+            item["capability_evidence"]["workspace_id"],
+            item["capability_evidence"]["user_id"],
+            item["capability_evidence"]["session_id"],
+            item["capability_evidence"]["run_id"],
+            item["capability_evidence"]["attempt_id"],
+        )
+        for item in capability_events
+    } == {("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "qat-attempt-a")}
+    assert all(
+        not {"tool_input", "tool_output", "arguments", "result"}
+        & set(item["capability_evidence"])
+        for item in capability_events
+    )
     execution_events = [item["events"][1] for item in capability_events]
     assert [item["type"] for item in execution_events] == [
         "execution_step",
@@ -484,8 +508,9 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     ]
     assert execution_events[0]["payload"]["step_id"] == execution_events[1]["payload"]["step_id"]
     assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
-    assert "mcp__tenant-server__search" not in json.dumps(capability_events)
-    assert "tool-call-1" not in json.dumps(capability_events)
+    public_capability_events = [item["events"] for item in capability_events]
+    assert "mcp__tenant-server__search" not in json.dumps(public_capability_events)
+    assert "tool-call-1" not in json.dumps(public_capability_events)
 
 
 def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp_path):

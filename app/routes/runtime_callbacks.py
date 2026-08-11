@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import hashlib
 import json
 from typing import Any
@@ -27,6 +28,11 @@ from app.runtime.sandbox.contracts import (
     ExecutorContextRetrievalRequest,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    RequiredToolContractError,
+)
 from app.settings import get_settings
 from app.streaming.redis import (
     RedisStreamBridge,
@@ -44,6 +50,14 @@ router = APIRouter()
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
+_CAPABILITY_EVIDENCE_BINDING_FIELDS = (
+    "tenant_id",
+    "workspace_id",
+    "user_id",
+    "session_id",
+    "run_id",
+    "attempt_id",
+)
 
 
 def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -54,6 +68,53 @@ def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str
         else:
             result.append((index, text))
     return result
+
+
+def _private_capability_evidence_event(
+    callback: ExecutorCallbackEvent,
+    *,
+    run_identity: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw = callback.capability_evidence
+    if raw is None:
+        return None
+    if not callback.batch_id:
+        raise HTTPException(status_code=409, detail="callback_batch_id_required")
+    try:
+        evidence = RequiredCapabilityEvidence.from_payload(raw)
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=evidence.capability_kind,
+            canonical_identity=evidence.canonical_identity,
+        )
+    except RequiredToolContractError as exc:
+        raise HTTPException(status_code=409, detail="capability_evidence_invalid") from exc
+    expected_binding = {
+        "tenant_id": str(run_identity.get("tenant_id") or ""),
+        "workspace_id": str(run_identity.get("workspace_id") or ""),
+        "user_id": str(run_identity.get("user_id") or ""),
+        "session_id": callback.session_id,
+        "run_id": callback.run_id,
+        "attempt_id": callback.attempt_id,
+    }
+    if any(
+        getattr(evidence, field) != expected_binding[field]
+        for field in _CAPABILITY_EVIDENCE_BINDING_FIELDS
+    ):
+        raise HTTPException(status_code=409, detail="capability_evidence_scope_mismatch")
+    if evidence.declaration_sha256 != declaration.declaration_sha256:
+        raise HTTPException(status_code=409, detail="capability_evidence_declaration_mismatch")
+    private_payload = {
+        key: value
+        for key, value in asdict(evidence).items()
+        if key not in {"public_label", "public_status"}
+    }
+    private_payload["visible_to_user"] = False
+    return {
+        "event_type": "capability_invocation_evidence",
+        "stage": "capability_evidence",
+        "message": "Capability invocation evidence recorded",
+        "payload": private_payload,
+    }
 
 
 async def record_executor_callback(
@@ -123,6 +184,12 @@ async def record_executor_callback(
                 },
             }
         ]
+        capability_evidence_event = _private_capability_evidence_event(
+            callback,
+            run_identity=run_identity,
+        )
+        if capability_evidence_event is not None:
+            event_batch.append(capability_evidence_event)
         for item_index, event in enumerate(events):
             executor_event = agent_event_to_executor_event(event)
             executor_event_type = str(executor_event["event_type"])

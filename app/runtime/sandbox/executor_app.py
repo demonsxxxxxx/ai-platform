@@ -85,6 +85,7 @@ class _PrivateExecutionFact(NamedTuple):
 
     fact: dict[str, object] | None
     public_event: AgentEvent | None = None
+    capability_evidence: dict[str, object] | None = None
 
     @property
     def type(self) -> str:
@@ -223,6 +224,7 @@ def _private_capability_fact(
                 "kind": evidence.capability_kind, "name": callback_label, "status": callback_status,
             }},
         ),
+        capability_evidence=asdict(evidence),
     )
 
 
@@ -1298,10 +1300,13 @@ def create_executor_app(
                 }
                 for agent_event in event.events
             )
+            if event.capability_evidence is not None:
+                strict_event_count += 1
             if strict_event_count:
                 acknowledged = _callback_acknowledges_exact_batch(
                     result,
-                    event_count=len(event.events),
+                    event_count=len(event.events)
+                    + (1 if event.capability_evidence is not None else 0),
                 )
                 if not acknowledged:
                     callback_errors.append(event.status)
@@ -1315,7 +1320,8 @@ def create_executor_app(
             if isinstance(event, _PrivateExecutionFact):
                 agent_event = event.public_event
                 agent_events = event.public_events(public_execution_projector)
-                if not agent_events:
+                private_capability_evidence = event.capability_evidence
+                if not agent_events and private_capability_evidence is None:
                     return True
                 event_type = event.type
                 active_progress = active_progress_identity(event)
@@ -1323,6 +1329,7 @@ def create_executor_app(
                     stop_active_progress(active_progress[0])
             elif isinstance(event, _PlatformExecutionPhaseFact):
                 agent_event = None
+                private_capability_evidence = None
                 agent_events = event.public_events(public_execution_phase_publisher)
                 if not agent_events:
                     return True
@@ -1332,6 +1339,7 @@ def create_executor_app(
                     stop_active_progress(active_progress[0])
             else:
                 agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
+                private_capability_evidence = None
                 raw_payload = dict(agent_event.payload)
                 if agent_event.type in {
                     "execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"
@@ -1365,9 +1373,14 @@ def create_executor_app(
                 state_patch={"stage": event_type or "execution_step"},
                 sdk_session_id=request.sdk_session_id,
                 events=agent_events,
+                capability_evidence=private_capability_evidence,
             )
             artifact_started_at = time.monotonic() if event_type == "artifact_created" else None
-            is_capability_event = agent_event is not None and agent_event.type.startswith("capability_")
+            is_capability_event = (
+                private_capability_evidence is not None
+                or agent_event is not None
+                and agent_event.type.startswith("capability_")
+            )
             acknowledged = await dispatch_callback_event(callback_event)
             if is_capability_event and not acknowledged:
                 seal_runner_events_after_capability_failure()

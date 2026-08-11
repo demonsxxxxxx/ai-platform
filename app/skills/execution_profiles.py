@@ -75,20 +75,23 @@ def sdk_skill_tool_admission_for_execution_profile(
     staged_skill_ids: object,
     authorized_skill_ids: object,
 ) -> SdkSkillToolAdmission | None:
-    """Return the exact sandbox SDK tool admission for one bound Skill."""
+    """Return the provider-wide SDK tool upper bound for OpenSandbox."""
 
-    if (
-        execution_profile != OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
-        or not isinstance(bound_skill_id, str)
-        or not bound_skill_id
-        or not isinstance(staged_skill_ids, list | tuple | set | frozenset)
-        or not isinstance(authorized_skill_ids, list | tuple | set | frozenset)
+    if execution_profile != OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE:
+        return None
+    if bound_skill_id is not None and (
+        not isinstance(bound_skill_id, str) or not bound_skill_id
     ):
         return None
-    staged = {item for item in staged_skill_ids if isinstance(item, str)}
-    authorized = {item for item in authorized_skill_ids if isinstance(item, str)}
-    if bound_skill_id not in staged or bound_skill_id not in authorized:
-        return None
+    if bound_skill_id is not None:
+        if not isinstance(staged_skill_ids, list | tuple | set | frozenset) or not isinstance(
+            authorized_skill_ids, list | tuple | set | frozenset
+        ):
+            return None
+        staged = {item for item in staged_skill_ids if isinstance(item, str)}
+        authorized = {item for item in authorized_skill_ids if isinstance(item, str)}
+        if bound_skill_id not in staged or bound_skill_id not in authorized:
+            return None
     return SdkSkillToolAdmission(
         tool_names=_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS,
         command_isolation=OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,

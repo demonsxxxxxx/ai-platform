@@ -1153,6 +1153,75 @@ def base_payload(**overrides):
     return payload
 
 
+def _validated_capability_executor_payload(
+    payload: QueueRunPayload,
+    *,
+    sandbox_runtime_used: bool | None = None,
+) -> dict[str, object]:
+    attempt_id = "qat-test-attempt"
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="qa-file-reviewer",
+    )
+    binding = {
+        key: getattr(payload, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+        )
+    }
+    binding["attempt_id"] = attempt_id
+    executor_payload: dict[str, object] = {
+        "capability_evidence_validated": True,
+        "capability_evidence": [
+            RequiredCapabilityEvidence.from_sdk_hook(
+                declaration=declaration,
+                binding=binding,
+                tool_call_id="skill-call-1",
+                lifecycle_phase="completed",
+            ).__dict__
+        ],
+    }
+    if sandbox_runtime_used is not None:
+        executor_payload["sandbox_runtime_used"] = sandbox_runtime_used
+    return executor_payload
+
+
+def test_private_capability_evidence_skips_records_already_persisted_by_sandbox_callback():
+    payload = QueueRunPayload.model_validate(base_payload(_leased=False))
+
+    events = worker_module._private_capability_evidence_events(
+        payload=payload,
+        attempt_id="qat-test-attempt",
+        trace_id="trace-a",
+        executor_payload=_validated_capability_executor_payload(
+            payload,
+            sandbox_runtime_used=True,
+        ),
+    )
+
+    assert events == []
+
+
+def test_private_capability_evidence_preserves_callback_free_sdk_records():
+    payload = QueueRunPayload.model_validate(base_payload(_leased=False))
+
+    events = worker_module._private_capability_evidence_events(
+        payload=payload,
+        attempt_id="qat-test-attempt",
+        trace_id="trace-a",
+        executor_payload=_validated_capability_executor_payload(payload),
+    )
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "capability_invocation_evidence"
+    assert events[0]["visible_to_user"] is False
+    assert events[0]["payload"]["lifecycle_phase"] == "completed"
+
+
 def test_bound_agent_skill_ids_include_authorized_dependency_closure():
     payload = QueueRunPayload.model_validate(
         base_payload(

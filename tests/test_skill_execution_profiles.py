@@ -172,6 +172,40 @@ def test_governed_opensandbox_profile_removes_preexisting_unbrokered_bash_subjec
     assert "Bash" not in resolved
 
 
+def test_governed_opensandbox_profile_bounds_general_chat_without_a_skill_subject():
+    admission = sdk_skill_tool_admission_for_execution_profile(
+        execution_profile=OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
+        bound_skill_id=None,
+        staged_skill_ids=[],
+        authorized_skill_ids=set(),
+    )
+    assert admission is not None
+    subjects = {
+        tool_name: {"identity": tool_name}
+        for tool_name in _SDK_NATIVE_TOOLS
+    }
+
+    resolved = _with_execution_profile_skill_tools(subjects, admission=admission)
+
+    assert set(resolved) == set(_OPEN_SANDBOX_SAFE_TOOLS)
+    assert "Bash" not in resolved
+
+
+@pytest.mark.parametrize("bound_skill_id", ["", 7, [], {}])
+def test_governed_opensandbox_profile_rejects_invalid_bound_skill_identity(
+    bound_skill_id,
+):
+    assert (
+        sdk_skill_tool_admission_for_execution_profile(
+            execution_profile=OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
+            bound_skill_id=bound_skill_id,
+            staged_skill_ids=[],
+            authorized_skill_ids=set(),
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     ("skill_id", "source_kind", "lifecycle_status"),
     [

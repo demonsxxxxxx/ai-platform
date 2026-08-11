@@ -4375,18 +4375,27 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
 
 @pytest.mark.asyncio
 async def test_create_run_rejects_file_skill_without_files(monkeypatch):
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+    async def fake_authorize_selected_skill(conn, **kwargs):
+        assert kwargs["agent_id"] == "general-agent"
+        assert kwargs["skill_id"] == "baoyu-translate"
+        assert kwargs["expected_version"] == "1.0.0"
         return skill(input_modes=["docx"])
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.authorize_selected_run_capabilities",
+        fake_authorize_selected_skill,
+    )
 
     with pytest.raises(Exception) as exc_info:
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="baoyu-translate",
-                capability_id="document_translation",
+                agent_id="general-agent",
+                selected_skill={
+                    "skill_id": "baoyu-translate",
+                    "expected_version": "1.0.0",
+                },
                 file_ids=[],
             ),
             principal=principal(),
@@ -4400,7 +4409,10 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
 async def test_create_run_reuses_snapshot_authorized_session_file_without_rebinding(monkeypatch):
     calls = {}
 
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+    async def fake_authorize_selected_skill(conn, **kwargs):
+        assert kwargs["agent_id"] == "general-agent"
+        assert kwargs["skill_id"] == "baoyu-translate"
+        assert kwargs["expected_version"] == "1.0.0"
         return skill(input_modes=["docx"])
 
     async def fake_list_files(conn, **kwargs):
@@ -4445,7 +4457,10 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         return 1
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.authorize_selected_run_capabilities",
+        fake_authorize_selected_skill,
+    )
     monkeypatch.setattr(
         "app.routes.runs.repositories.list_authorized_session_input_files",
         fake_list_files,
@@ -4462,8 +4477,11 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         CreateRunRequest(
             workspace_id="default",
             session_id="ses-existing",
-            agent_id="baoyu-translate",
-            capability_id="document_translation",
+            agent_id="general-agent",
+            selected_skill={
+                "skill_id": "baoyu-translate",
+                "expected_version": "1.0.0",
+            },
         ),
         principal=principal(),
     )

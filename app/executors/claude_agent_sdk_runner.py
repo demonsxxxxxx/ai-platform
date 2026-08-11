@@ -79,6 +79,9 @@ _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_LOCAL_READ_ONLY_TOOLS = ("Read", "Glob", "LS")
 _SDK_LOCAL_SIDE_EFFECT_TOOLS = frozenset({"Bash", "Write", "Edit", "NotebookEdit"})
+_SDK_LOCAL_FILESYSTEM_TOOLS = frozenset(
+    (*_SDK_LOCAL_READ_ONLY_TOOLS, *_SDK_LOCAL_SIDE_EFFECT_TOOLS)
+)
 _SDK_BROKERED_BUILTIN_TOOLS = (
     "Bash",
     "Write",
@@ -380,9 +383,9 @@ def _with_execution_profile_skill_tools(
 ) -> dict[str, dict[str, Any]]:
     """Project one server-selected SDK profile into complete tool subjects."""
 
-    skill_subject = subjects.get("Skill")
-    if admission is None or not isinstance(skill_subject, dict):
+    if admission is None:
         return subjects
+    skill_subject = subjects.get("Skill")
     admitted_tools = set(admission.tool_names)
     profile_local_tools = {
         *_SDK_LOCAL_READ_ONLY_TOOLS,
@@ -395,6 +398,8 @@ def _with_execution_profile_skill_tools(
         for identity, subject in subjects.items()
         if identity not in profile_local_tools or identity in admitted_tools
     }
+    if not isinstance(skill_subject, dict):
+        return resolved
     for tool_name in admission.tool_names:
         if tool_name in resolved:
             continue
@@ -881,8 +886,8 @@ async def run_claude_agent_sdk(
     actual_capability_invocation_observed = False
     actual_mcp_invocation_observed = False
     started_tool_lifecycles: set[tuple[str, str]] = set()
-    side_effect_tool_lock = asyncio.Lock()
-    side_effect_tool_owner: tuple[str, str] | None = None
+    filesystem_tool_lock = asyncio.Lock()
+    filesystem_tool_owner: tuple[str, str] | None = None
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
         return project_sdk_turn_diagnostics(
@@ -1270,32 +1275,32 @@ async def run_claude_agent_sdk(
             return ""
         return supplied[0] if len(set(supplied)) == 1 else ""
 
-    async def acquire_side_effect_tool(
+    async def acquire_filesystem_tool(
         *,
         tool_name: str,
         tool_call_id: str,
     ) -> bool:
-        """Serialize local mutations across their complete SDK hook lifecycle."""
+        """Serialize path validation and local file access across each hook lifecycle."""
 
-        nonlocal side_effect_tool_owner
-        if tool_name not in _SDK_LOCAL_SIDE_EFFECT_TOOLS:
+        nonlocal filesystem_tool_owner
+        if tool_name not in _SDK_LOCAL_FILESYSTEM_TOOLS:
             return True
         owner = (tool_name, tool_call_id)
-        if not tool_call_id or side_effect_tool_owner == owner:
+        if not tool_call_id or filesystem_tool_owner == owner:
             return False
-        await side_effect_tool_lock.acquire()
-        if side_effect_tool_owner is not None:
-            side_effect_tool_lock.release()
+        await filesystem_tool_lock.acquire()
+        if filesystem_tool_owner is not None:
+            filesystem_tool_lock.release()
             return False
-        side_effect_tool_owner = owner
+        filesystem_tool_owner = owner
         return True
 
-    def release_side_effect_tool(*, tool_name: str, tool_call_id: str) -> None:
-        nonlocal side_effect_tool_owner
-        if side_effect_tool_owner != (tool_name, tool_call_id):
+    def release_filesystem_tool(*, tool_name: str, tool_call_id: str) -> None:
+        nonlocal filesystem_tool_owner
+        if filesystem_tool_owner != (tool_name, tool_call_id):
             return
-        side_effect_tool_owner = None
-        side_effect_tool_lock.release()
+        filesystem_tool_owner = None
+        filesystem_tool_lock.release()
 
     async def record_tool_lifecycle(
         *, tool_name: object, tool_call_id: object, lifecycle: str
@@ -1426,59 +1431,83 @@ async def run_claude_agent_sdk(
         return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        if not isinstance(hook_input, dict):
-            decision = evaluate_tool_policy(tool={})
-        else:
-            tool_name = str(hook_input.get("tool_name") or "")
-            tool_input = hook_input.get("tool_input")
-            decision = policy_for_tool(tool_name, tool_input)
-        if not decision.allowed:
-            diagnostic_counters["tool_admission_denials"] += 1
-        output: dict[str, object] = {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision.outcome,
-            "permissionDecisionReason": decision.reason,
-        }
-        if decision.allowed and isinstance(hook_input, dict):
-            tool_name = str(hook_input.get("tool_name") or "")
-            identity = adapter_identity(tool_name)
-            subject = internal_context_subjects.get(identity) or authorized_subjects.get(identity)
-            if (
-                tool_name == "Bash"
-                and isinstance(subject, dict)
-                and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
-            ):
-                updated_input = _native_tool_proxy_input(hook_input.get("tool_input"))
-                if updated_input is None:
-                    output["permissionDecision"] = "deny"
-                    output["permissionDecisionReason"] = "native_tool_isolation_unavailable"
-                else:
-                    output["updatedInput"] = updated_input
-            if output["permissionDecision"] == "allow" and not await acquire_side_effect_tool(
+        tool_name = str(hook_input.get("tool_name") or "") if isinstance(hook_input, dict) else ""
+        resolved_tool_call_id = (
+            exact_hook_tool_call_id(hook_input, tool_use_id)
+            if isinstance(hook_input, dict)
+            else ""
+        )
+        filesystem_lock_held = False
+        if tool_name in _SDK_LOCAL_FILESYSTEM_TOOLS:
+            filesystem_lock_held = await acquire_filesystem_tool(
                 tool_name=tool_name,
-                tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
-            ):
-                output["permissionDecision"] = "deny"
-                output["permissionDecisionReason"] = "side_effect_tool_identity_invalid"
+                tool_call_id=resolved_tool_call_id,
+            )
+            if not filesystem_lock_held:
                 diagnostic_counters["tool_admission_denials"] += 1
-        if decision.allowed is True and output["permissionDecision"] == "allow" and hook_input:
-            tool_name = str(hook_input.get("tool_name") or "")
-            identity = adapter_identity(tool_name)
-            resolved_tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
-            if tool_name.lower() != "skill" and not identity.startswith("mcp__"):
-                await record_tool_lifecycle(
-                    tool_name=tool_name,
-                    tool_call_id=resolved_tool_call_id,
-                    lifecycle="started",
-                )
-            if tool_name.lower() == "skill":
-                for skill_name in _extract_skill_names_from_tool_input(
-                    hook_input.get("tool_input"),
-                    allowed_skill_names,
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "filesystem_tool_identity_invalid",
+                    }
+                }
+        retain_filesystem_lock = False
+        try:
+            decision = (
+                policy_for_tool(tool_name, hook_input.get("tool_input"))
+                if isinstance(hook_input, dict)
+                else evaluate_tool_policy(tool={})
+            )
+            if not decision.allowed:
+                diagnostic_counters["tool_admission_denials"] += 1
+            output: dict[str, object] = {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision.outcome,
+                "permissionDecisionReason": decision.reason,
+            }
+            if decision.allowed and isinstance(hook_input, dict):
+                identity = adapter_identity(tool_name)
+                subject = internal_context_subjects.get(identity) or authorized_subjects.get(identity)
+                if (
+                    tool_name == "Bash"
+                    and isinstance(subject, dict)
+                    and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
                 ):
+                    updated_input = _native_tool_proxy_input(hook_input.get("tool_input"))
+                    if updated_input is None:
+                        output["permissionDecision"] = "deny"
+                        output["permissionDecisionReason"] = "native_tool_isolation_unavailable"
+                    else:
+                        output["updatedInput"] = updated_input
+            if decision.allowed is True and output["permissionDecision"] == "allow" and hook_input:
+                identity = adapter_identity(tool_name)
+                if tool_name.lower() != "skill" and not identity.startswith("mcp__"):
+                    await record_tool_lifecycle(
+                        tool_name=tool_name,
+                        tool_call_id=resolved_tool_call_id,
+                        lifecycle="started",
+                    )
+                if tool_name.lower() == "skill":
+                    for skill_name in _extract_skill_names_from_tool_input(
+                        hook_input.get("tool_input"),
+                        allowed_skill_names,
+                    ):
+                        acknowledged = await record_capability_evidence(
+                            capability_kind="skill",
+                            canonical_identity=skill_name,
+                            tool_call_id=resolved_tool_call_id,
+                            lifecycle_phase="invocation_requested",
+                        )
+                        if not acknowledged:
+                            output["permissionDecision"] = "deny"
+                            output["permissionDecisionReason"] = "capability_evidence_not_acknowledged"
+                            diagnostic_counters["tool_admission_denials"] += 1
+                            break
+                elif identity in authorized_subjects and identity.startswith("mcp__"):
                     acknowledged = await record_capability_evidence(
-                        capability_kind="skill",
-                        canonical_identity=skill_name,
+                        capability_kind="mcp",
+                        canonical_identity=identity,
                         tool_call_id=resolved_tool_call_id,
                         lifecycle_phase="invocation_requested",
                     )
@@ -1486,19 +1515,17 @@ async def run_claude_agent_sdk(
                         output["permissionDecision"] = "deny"
                         output["permissionDecisionReason"] = "capability_evidence_not_acknowledged"
                         diagnostic_counters["tool_admission_denials"] += 1
-                        break
-            elif identity in authorized_subjects and identity.startswith("mcp__"):
-                acknowledged = await record_capability_evidence(
-                    capability_kind="mcp",
-                    canonical_identity=identity,
+            retain_filesystem_lock = (
+                filesystem_lock_held and output["permissionDecision"] == "allow"
+            )
+            return {"hookSpecificOutput": output}
+        finally:
+            if filesystem_lock_held and not retain_filesystem_lock:
+                release_filesystem_tool(
+                    tool_name=tool_name,
                     tool_call_id=resolved_tool_call_id,
-                    lifecycle_phase="invocation_requested",
                 )
-                if not acknowledged:
-                    output["permissionDecision"] = "deny"
-                    output["permissionDecisionReason"] = "capability_evidence_not_acknowledged"
-                    diagnostic_counters["tool_admission_denials"] += 1
-        return {"hookSpecificOutput": output}
+
     def skill_tool_hook(lifecycle_phase: str):
         async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
             hook_input = hook_input if isinstance(hook_input, dict) else {}
@@ -1544,7 +1571,7 @@ async def run_claude_agent_sdk(
                         lifecycle=lifecycle,
                     )
             finally:
-                release_side_effect_tool(
+                release_filesystem_tool(
                     tool_name=tool_name,
                     tool_call_id=tool_call_id,
                 )
