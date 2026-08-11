@@ -33,6 +33,12 @@ export interface SkillCatalogSelection {
   changed: boolean;
 }
 
+export interface ArchivedSkillCatalogEntry {
+  id: string;
+  actionName: string;
+  displayName: string;
+}
+
 function statusFor(
   adminSkill: AdminSkillCatalogItem | null,
   runtimeSkill: SkillResponse | null,
@@ -136,6 +142,35 @@ export function resolveSkillCatalogSelection(
     selectedSkillId: nextSkillId,
     changed: selectedSkillId !== nextSkillId,
   };
+}
+
+/** Bind runtime delete results back to the stable catalog ids used by master-detail UI. */
+export function resolveArchivedSkillCatalogEntries(
+  adminSkills: ReadonlyArray<AdminSkillCatalogItem>,
+  actionNames: ReadonlyArray<string>,
+): ArchivedSkillCatalogEntry[] {
+  const resolved = new Map<string, ArchivedSkillCatalogEntry>();
+  for (const actionName of actionNames) {
+    const adminSkill = adminSkills.find(
+      (item) => item.skillId === actionName || item.name === actionName,
+    );
+    const entry = {
+      id: adminSkill?.skillId ?? actionName,
+      actionName,
+      displayName: adminSkill?.name ?? actionName,
+    };
+    resolved.set(entry.id, entry);
+  }
+  return [...resolved.values()];
+}
+
+export function removeArchivedActionSelections(
+  selectedActionNames: ReadonlySet<string>,
+  archivedActionNames: ReadonlyArray<string>,
+): Set<string> {
+  const next = new Set(selectedActionNames);
+  archivedActionNames.forEach((actionName) => next.delete(actionName));
+  return next;
 }
 
 /**

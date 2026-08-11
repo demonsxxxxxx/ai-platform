@@ -1984,6 +1984,7 @@
       "visibleToUsers": "Visible to regular users"
     },
     "batchDeleteFailed": "Failed to delete some skills",
+    "batchDeletePartial": "Deleted {{deleted}} skills; {{failed}} could not be deleted.",
     "batchDeleteSuccess": "{{count}} skill(s) deleted",
     "batchDisableSuccess": "{{count}} skill(s) disabled",
     "batchEnableSuccess": "{{count}} skill(s) enabled",

@@ -111,12 +111,15 @@ test("Skill deletion refreshes both catalogs and announces the synchronized deta
     "utf8",
   );
 
-  assert.match(panel, /onSkillsArchived: setArchivedSkillIds/);
+  assert.match(panel, /onSkillsArchived: setArchivedSkills/);
   assert.match(panel, /data-skill-selection-status/);
   assert.match(panel, /resolveSkillCatalogSelection/);
   assert.match(actions, /setAdminCatalogItems\(\(current\) =>/);
   assert.match(actions, /await refreshAdminSkillCatalog\(\)/);
   assert.match(actions, /options\?\.onSkillsArchived\?\./);
+  assert.match(actions, /removeArchivedActionSelections/);
+  assert.match(actions, /resolveArchivedSkillCatalogEntries/);
+  assert.match(actions, /skills\.batchDeletePartial/);
   assert.match(skillsHook, /Promise<string\[\]>/);
   assert.match(skillsHook, /return result\.deleted/);
 });

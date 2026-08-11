@@ -1985,6 +1985,7 @@
       "visibleToUsers": "对普通用户可见"
     },
     "batchDeleteFailed": "部分技能删除失败",
+    "batchDeletePartial": "已删除 {{deleted}} 个 Skill，另有 {{failed}} 个删除失败。",
     "batchDeleteSuccess": "已删除 {{count}} 个技能",
     "batchDisableSuccess": "已禁用 {{count}} 个技能",
     "batchEnableSuccess": "已启用 {{count}} 个技能",

@@ -1628,6 +1628,7 @@
       "visibleToUsers": "일반 사용자에게 표시"
     },
     "batchDeleteFailed": "일부 스킬 삭제에 실패했습니다",
+    "batchDeletePartial": "스킬 {{deleted}}개를 삭제했으며 {{failed}}개는 삭제하지 못했습니다.",
     "batchDeleteSuccess": "{{count}}개 스킬 삭제 완료",
     "batchDisableSuccess": "{{count}}개 스킬 비활성화 완료",
     "batchEnableSuccess": "{{count}}개 스킬 활성화 완료",

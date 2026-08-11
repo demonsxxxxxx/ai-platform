@@ -1630,6 +1630,7 @@
       "visibleToUsers": "Виден обычным пользователям"
     },
     "batchDeleteFailed": "Не удалось удалить некоторые навыки",
+    "batchDeletePartial": "Удалено навыков: {{deleted}}; не удалось удалить: {{failed}}.",
     "batchDeleteSuccess": "{{count}} навык(ов) удалено",
     "batchDisableSuccess": "{{count}} навык(ов) отключено",
     "batchEnableSuccess": "{{count}} навык(ов) включено",

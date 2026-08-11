@@ -18,6 +18,7 @@ import {
   filterSkillCatalogEntries,
   resolveSkillCatalogPage,
   resolveSkillCatalogSelection,
+  type ArchivedSkillCatalogEntry,
 } from "./skillCatalogEntries";
 
 interface CatalogState {
@@ -52,14 +53,16 @@ export function SkillsPanel({
   const skillImportBacked = true;
   const skillBatchWriteBacked = true;
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
-  const [archivedSkillIds, setArchivedSkillIds] = useState<string[]>([]);
+  const [archivedSkills, setArchivedSkills] = useState<
+    ArchivedSkillCatalogEntry[]
+  >([]);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
 
   const actions = useSkillsActions({
     allAuthorizedCatalog,
     enabled: !governedUnavailable,
     loadAdminCatalog: showDistributionEditor,
-    onSkillsArchived: setArchivedSkillIds,
+    onSkillsArchived: setArchivedSkills,
   });
   const permissionDenied = isPermissionError(actions.listError);
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
@@ -129,10 +132,11 @@ export function SkillsPanel({
     );
     if (!resolution.changed) {
       if (
-        archivedSkillIds.length > 0 &&
-        (!selectedSkillId || !archivedSkillIds.includes(selectedSkillId))
+        archivedSkills.length > 0 &&
+        (!selectedSkillId ||
+          !archivedSkills.some((skill) => skill.id === selectedSkillId))
       ) {
-        setArchivedSkillIds([]);
+        setArchivedSkills([]);
       }
       return;
     }
@@ -142,18 +146,21 @@ export function SkillsPanel({
           (entry) => entry.id === resolution.selectedSkillId,
         ) ?? null
       : null;
-    if (selectedSkillId && archivedSkillIds.includes(selectedSkillId)) {
+    const archivedSelection = archivedSkills.find(
+      (skill) => skill.id === selectedSkillId,
+    );
+    if (selectedSkillId && archivedSelection) {
       setSelectionNotice(
         nextEntry
           ? t("skills.managementTable.selectionAfterDelete", {
-              deleted: selectedSkillId,
+              deleted: archivedSelection.displayName,
               name: nextEntry.displayName,
             })
           : t("skills.managementTable.selectionAfterDeleteEmpty", {
-              deleted: selectedSkillId,
+              deleted: archivedSelection.displayName,
             }),
       );
-      setArchivedSkillIds([]);
+      setArchivedSkills([]);
     } else if (selectedSkillId && nextEntry) {
       setSelectionNotice(
         t("skills.managementTable.selectionChanged", {
@@ -163,7 +170,7 @@ export function SkillsPanel({
     }
     setSelectedSkillId(resolution.selectedSkillId);
   }, [
-    archivedSkillIds,
+    archivedSkills,
     filteredCatalogEntries,
     selectedSkillId,
     t,

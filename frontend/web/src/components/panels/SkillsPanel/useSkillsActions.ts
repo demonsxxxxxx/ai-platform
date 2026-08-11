@@ -15,6 +15,11 @@ import {
   toggleZipSkillSelection,
   type ZipSkillPreview,
 } from "./zipSelection";
+import {
+  removeArchivedActionSelections,
+  resolveArchivedSkillCatalogEntries,
+  type ArchivedSkillCatalogEntry,
+} from "./skillCatalogEntries";
 
 export type { ZipSkillPreview } from "./zipSelection";
 
@@ -35,7 +40,7 @@ export function useSkillsActions(options?: {
   allAuthorizedCatalog?: boolean;
   enabled?: boolean;
   loadAdminCatalog?: boolean;
-  onSkillsArchived?: (skillIds: string[]) => void;
+  onSkillsArchived?: (skills: ArchivedSkillCatalogEntry[]) => void;
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -268,10 +273,18 @@ export function useSkillsActions(options?: {
     try {
       const deleted = await deleteSkill(skillName);
       if (deleted) {
-        setAdminCatalogItems((current) =>
-          current.filter((item) => item.skillId !== skillName),
+        const archivedEntries = resolveArchivedSkillCatalogEntries(
+          adminCatalogItems,
+          [skillName],
         );
-        options?.onSkillsArchived?.([skillName]);
+        const archivedIds = new Set(archivedEntries.map((entry) => entry.id));
+        setAdminCatalogItems((current) =>
+          current.filter((item) => !archivedIds.has(item.skillId)),
+        );
+        setSelectedNames((current) =>
+          removeArchivedActionSelections(current, [skillName]),
+        );
+        options?.onSkillsArchived?.(archivedEntries);
         if (options?.loadAdminCatalog) {
           await refreshAdminSkillCatalog();
         }
@@ -325,11 +338,15 @@ export function useSkillsActions(options?: {
     try {
       const deletedNames = await batchDeleteSkills(requestedNames);
       if (deletedNames.length > 0) {
-        const deletedSet = new Set(deletedNames);
-        setAdminCatalogItems((current) =>
-          current.filter((item) => !deletedSet.has(item.skillId)),
+        const archivedEntries = resolveArchivedSkillCatalogEntries(
+          adminCatalogItems,
+          deletedNames,
         );
-        options?.onSkillsArchived?.(deletedNames);
+        const archivedIds = new Set(archivedEntries.map((entry) => entry.id));
+        setAdminCatalogItems((current) =>
+          current.filter((item) => !archivedIds.has(item.skillId)),
+        );
+        options?.onSkillsArchived?.(archivedEntries);
         if (options?.loadAdminCatalog) {
           await refreshAdminSkillCatalog();
         }
@@ -338,6 +355,13 @@ export function useSkillsActions(options?: {
       if (deletedNames.length === requestedNames.length) {
         toast.success(
           t("skills.batchDeleteSuccess", { count: deletedNames.length }),
+        );
+      } else if (deletedNames.length > 0) {
+        toast.error(
+          t("skills.batchDeletePartial", {
+            deleted: deletedNames.length,
+            failed: requestedNames.length - deletedNames.length,
+          }),
         );
       } else {
         toast.error(t("skills.batchDeleteFailed"));
