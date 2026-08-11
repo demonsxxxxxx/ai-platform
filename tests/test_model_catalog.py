@@ -218,3 +218,15 @@ def test_model_selection_resolves_configured_value_and_rejects_unknown_id():
     }
     with pytest.raises(ValueError, match="model_id_not_available"):
         resolve_model_selection("missing-id", configured)
+
+
+@pytest.mark.parametrize("invalid_model_id", [True, 123, 1.5, [], {}])
+def test_model_selection_rejects_non_string_ids_without_coercion(invalid_model_id):
+    configured = settings(
+        model_catalog_json=(
+            '[{"id":"True"},{"id":"123"},{"id":"1.5"}]'
+        )
+    )
+
+    with pytest.raises(ValueError, match="model_id_not_available"):
+        resolve_model_selection(invalid_model_id, configured)

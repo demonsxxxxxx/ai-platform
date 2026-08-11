@@ -136,7 +136,9 @@ def resolve_model_selection(model_id: str | None, settings: object) -> dict[str,
     """Resolve a frontend catalog id to the runtime model value used by providers."""
     if model_id is None:
         return None
-    normalized = assert_safe_id(str(model_id).strip(), "model_id")
+    if not isinstance(model_id, str):
+        raise ValueError("model_id_not_available")
+    normalized = assert_safe_id(model_id.strip(), "model_id")
     catalog = build_model_catalog(settings)
     for model in catalog["models"]:
         if str(model["id"]) == normalized:
