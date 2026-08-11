@@ -220,11 +220,9 @@ async def _run_command(
     timeout_ms: int = NATIVE_TOOL_DEFAULT_TIMEOUT_MS,
 ) -> NativeToolResult:
     _require_native_tool_identity(uid, gid)
-    temp_dir = workspace / ".native-skill-tmp"
-    temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     environment = {
-        "HOME": str(workspace),
-        "TMPDIR": str(temp_dir),
+        "HOME": "/home/ai-platform",
+        "TMPDIR": "/tmp",
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",

@@ -92,7 +92,7 @@ _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
-_MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
+_MAX_AUTONOMOUS_ANSWER_TEXT_CHARS = 64 * 1_024
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -1005,6 +1005,18 @@ async def run_claude_agent_sdk(
             ),
             *_sdk_skill_allow_patterns(allowed_skill_names),
         ]
+    native_command_hook_required = sandbox_brokered and any(
+        identity == "Bash"
+        and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
+        for identity, subject in authorized_subjects.items()
+    )
+    if native_command_hook_required and not callable(HookMatcher):
+        error_code = _SDK_TOOL_ADMISSION_FAILED
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=error_code,
+            turn_diagnostics=turn_diagnostics(error_code),
+        )
     if bound_sdk_skill is not None and bound_sdk_skill not in allowed_skill_names:
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
@@ -1082,7 +1094,7 @@ async def run_claude_agent_sdk(
         (declaration.capability_kind, declaration.canonical_identity): declaration
         for declaration in capability_plan.required
     }
-    capability_answer_gate = bool(capability_plan.available)
+    capability_projection_enabled = bool(capability_plan.available)
     private_mcp_replacements = {
         identity: "external tool"
         for kind, identity in capability_plan.available
@@ -1101,9 +1113,11 @@ async def run_claude_agent_sdk(
     answer_stream_gate = PublicAnswerStreamGate(
         private_replacements=private_mcp_replacements,
         sanitizer=sanitize_public_text,
-        max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
+        max_sealed_chars=_MAX_AUTONOMOUS_ANSWER_TEXT_CHARS,
     )
-    if capability_answer_gate:
+    if capability_projection_enabled:
+        # A capability hook can arrive after assistant text. Hold that prefix until
+        # reconciliation proves the turn did not invoke a governed capability.
         answer_stream_gate.seal()
     sdk_prompt = prompt
     timeout_seconds = _sdk_run_timeout_seconds(
@@ -1127,6 +1141,7 @@ async def run_claude_agent_sdk(
             capability_evidence_rejected = True
             capability_evidence.clear()
             used_skill_names.clear()
+            answer_stream_gate.fail_closed()
         return False
 
     def all_observed_capability_calls_are_terminal() -> bool:
@@ -1145,6 +1160,27 @@ async def run_claude_agent_sdk(
             for phases in groups.values()
         )
 
+    def capability_evidence_transition_is_valid(
+        *,
+        capability_kind: str,
+        canonical_identity: str,
+        tool_call_id: str,
+        lifecycle_phase: str,
+    ) -> bool:
+        phases = [
+            item["lifecycle_phase"]
+            for item in capability_evidence
+            if (
+                item["capability_kind"],
+                item["canonical_identity"],
+                item["tool_call_id"],
+            )
+            == (capability_kind, canonical_identity, tool_call_id)
+        ]
+        if lifecycle_phase == "invocation_requested":
+            return not phases
+        return phases == ["invocation_requested"]
+
     async def record_capability_evidence(*, capability_kind: str, canonical_identity: str, tool_call_id: str,
                                          lifecycle_phase: str, skill_metadata: dict[str, Any] | None = None) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
@@ -1155,16 +1191,16 @@ async def run_claude_agent_sdk(
         key = (capability_kind, canonical_identity)
         if lifecycle_phase == "invocation_requested":
             actual_capability_invocation_observed = True
-        if capability_kind == "mcp":
-            actual_mcp_invocation_observed = True
-            answer_stream_gate.seal(
-                {
-                    canonical_identity: "external tool",
-                    tool_call_id: "tool invocation",
-                }
-            )
-        elif key in capability_plan.available:
-            answer_stream_gate.seal({tool_call_id: "tool invocation"})
+            if capability_kind == "mcp":
+                actual_mcp_invocation_observed = True
+                answer_stream_gate.seal(
+                    {
+                        canonical_identity: "external tool",
+                        tool_call_id: "tool invocation",
+                    }
+                )
+            elif key in capability_plan.available:
+                answer_stream_gate.seal({tool_call_id: "tool invocation"})
         try:
             evidence = RequiredCapabilityEvidence.sdk_hook_payload(
                 declaration=RequiredCapabilityDeclaration.from_authorized_subject(
@@ -1188,6 +1224,13 @@ async def run_claude_agent_sdk(
                 return reject_capability_evidence()
             if capability_evidence_rejected:
                 return False
+            if not capability_evidence_transition_is_valid(
+                capability_kind=capability_kind,
+                canonical_identity=canonical_identity,
+                tool_call_id=tool_call_id,
+                lifecycle_phase=lifecycle_phase,
+            ):
+                return reject_capability_evidence()
             capability_evidence.append(evidence)
             if (
                 lifecycle_phase in {"completed", "failed"}
@@ -1515,10 +1558,8 @@ async def run_claude_agent_sdk(
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
-    answer_text_limit = _MAX_REQUIRED_ANSWER_TEXT_CHARS
-    projector_limits = {"trailing_chars": answer_text_limit, "max_pending_chars": answer_text_limit} if capability_answer_gate else {}
     stream_projector = (
-        ClaudeStreamProjector(sanitizer=sanitize_public_payload, **projector_limits)
+        ClaudeStreamProjector(sanitizer=sanitize_public_payload)
         if sandbox_partial_streaming
         else None
     )
@@ -1596,7 +1637,7 @@ async def run_claude_agent_sdk(
                         last_public_stage = "message"
                         text = getattr(block, "text", "")
                         assistant_text_blocks.append(text)
-                if (capability_answer_gate or actual_capability_invocation_observed) and (
+                if (capability_projection_enabled or actual_capability_invocation_observed) and (
                     stream_projector is None or not stream_projector.partial_emitted
                 ):
                     assistant_text = (

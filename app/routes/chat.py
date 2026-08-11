@@ -2172,7 +2172,7 @@ async def chat_stream(
                 file_ids=primary_file_ids,
                 source="chat_stream",
                 include_session_history=True,
-                include_session_files=False,
+                include_session_files=admitted_agent_profile is not None,
             )
             for event in intent_event_specs(decision_payload):
                 await repositories.append_event(

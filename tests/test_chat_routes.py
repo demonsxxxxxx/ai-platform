@@ -3761,6 +3761,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     queue_readback_available = enqueue_failure_mode != "after_publish_unknown"
     enqueue_payloads: list[dict[str, object]] = []
     published_payloads: list[dict[str, object]] = []
+    context_snapshot_calls: list[dict[str, object]] = []
     profile_manifest = snapshot_manifest("profile-specialist")
 
     class TransactionState:
@@ -3886,6 +3887,18 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def append_message(*_args, **_kwargs):
         return "msg-profile-lock-order"
 
+    async def record_context(*_args, **kwargs):
+        context_snapshot_calls.append(dict(kwargs))
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-profile-lock-order",
+            "source": kwargs["source"],
+            "message_count": 1,
+            "file_count": 1,
+            "artifact_count": 0,
+            "memory_record_count": 0,
+        }
+
     async def claim_submission(conn, **kwargs):
         calls.append("claim")
         conn.submission = {
@@ -4009,6 +4022,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", record_context)
     monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
@@ -4110,6 +4124,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         ]
         assert len(enqueue_payloads) == 1
         assert published_payloads == []
+        assert context_snapshot_calls[-1]["file_ids"] == []
+        assert context_snapshot_calls[-1]["include_session_history"] is True
+        assert context_snapshot_calls[-1]["include_session_files"] is True
         return
 
     response = await chat_stream(
@@ -4121,6 +4138,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     assert response.session_id == "ses-profile-lock-order"
     assert response.run_id == "run-profile-lock-order"
     assert response.submission_id is not None
+    assert context_snapshot_calls[-1]["file_ids"] == []
+    assert context_snapshot_calls[-1]["include_session_history"] is True
+    assert context_snapshot_calls[-1]["include_session_files"] is True
     if submission_id is not None:
         assert response.submission_id == submission_id
     initial_calls = list(calls)

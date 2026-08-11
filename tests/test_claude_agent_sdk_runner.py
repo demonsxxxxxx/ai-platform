@@ -381,7 +381,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
     first = _subject()
     subjects = [first, _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp")]
     private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {first['mcp_server_config']['url']}."
-    text = "x" * 4_097 if outcome == "overflow" else private_text if outcome == "success" else "must stay sealed"
+    text = "x" * (64 * 1_024 + 1) if outcome == "overflow" else private_text if outcome == "success" else "must stay sealed"
     steps = _actual_mcp_steps(outcome, subjects, text, lambda: sealed_probe.extend(deltas))
 
     async def acknowledge(evidence):

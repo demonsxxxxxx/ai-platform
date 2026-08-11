@@ -6,7 +6,7 @@ Accepted on 2026-08-11.
 
 ## Context
 
-An Expert supplies a private instruction and one or more governed Skills, but a
+An Expert supplies a server-owned instruction and one or more governed Skills, but a
 conversation can contain domain work, clarification, and ordinary questions.
 Treating a bound Skill as a mandatory workflow made the platform route by
 specific Skill IDs, reuse files implicitly, and force artifact-producing work
@@ -20,6 +20,12 @@ to invoke a Skill from the current user message and conversation context. The
 platform does not classify translation, review, writing, or other domain
 workflows and does not require a bound Skill or artifact to be used for a Run to
 succeed.
+
+The Expert Instruction is integrity-protected configuration, not a secrets store.
+Ordinary-user configuration projections, events, errors, and logs must not expose
+it directly, but the instruction is presented to the model and can influence or be
+reflected in model output. Administrators must never put passwords, tokens, or
+other secrets in it.
 
 The platform remains authoritative for identity, authorization, immutable Skill
 material, tool and file access, sandbox isolation, persistence, invocation

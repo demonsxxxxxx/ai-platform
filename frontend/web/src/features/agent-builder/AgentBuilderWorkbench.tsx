@@ -463,6 +463,9 @@ export function AgentBuilderWorkbench({
                       required
                       value={activeEditor.instructions}
                     />
+                    <span className="text-xs leading-5 text-[var(--theme-text-secondary)]">
+                      每轮对话都会将专家指令作为系统指令发送给模型。普通用户无法在配置页查看，但模型回复可能体现其内容；请勿填写密码、令牌或其他秘密。
+                    </span>
                   </label>
                 </div>
               </section>

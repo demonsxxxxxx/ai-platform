@@ -88,5 +88,7 @@ test("builder keeps execution fields primary and collapses optional market metad
   assert.match(workbenchSource, /一个专家固定一个主 Skill/);
   assert.match(workbenchSource, /专家开场白/);
   assert.match(workbenchSource, /专家指令/);
+  assert.match(workbenchSource, /模型回复可能体现其内容/);
+  assert.match(workbenchSource, /请勿填写密码、令牌或其他秘密/);
   assert.match(workbenchSource, /title="选择主 Skill"/);
 });

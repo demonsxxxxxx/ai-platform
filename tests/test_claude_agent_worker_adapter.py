@@ -262,6 +262,72 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+@pytest.mark.asyncio
+async def test_native_bash_admission_fails_closed_without_hook_matcher(monkeypatch, tmp_path):
+    query_called = False
+
+    class ResultMessage:
+        pass
+
+    async def query(prompt, options):
+        nonlocal query_called
+        query_called = True
+        if False:
+            yield None
+
+    settings = types.SimpleNamespace(
+        claude_agent_sdk_enabled=True,
+        anthropic_base_url="",
+        anthropic_auth_token="",
+        anthropic_model="",
+        openai_api_key="",
+        claude_agent_model="model-a",
+        claude_agent_sdk_skills="",
+        claude_agent_sdk_timeout_seconds=5,
+        claude_agent_permission_mode="dontAsk",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=object,
+            ClaudeAgentOptions=object,
+            ResultMessage=ResultMessage,
+            TextBlock=object,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
+    bash_subject = {
+        "identity": "Bash",
+        "declared_identities": ["Bash"],
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "allowed_parameter_keys": ["command"],
+        "required_parameter_keys": ["command"],
+        "risk_level": "high",
+        "write_capable": True,
+        "command_isolation": "sibling-tool-sandbox-v1",
+    }
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        skills=[],
+        tool_policy_subjects=[bash_subject],
+        execution_policy="sandbox_brokered",
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert query_called is False
+
+
 class FakeQueryResult:
     used_sdk = True
     message = "hello from sdk"
@@ -5273,6 +5339,7 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
 @pytest.mark.asyncio
 async def test_sdk_runner_bound_skill_may_remain_unused(monkeypatch, tmp_path):
     captured = {}
+    long_answer = "x" * 4097
 
     class AssistantMessage:
         def __init__(self, content):
@@ -5286,7 +5353,7 @@ async def test_sdk_runner_bound_skill_may_remain_unused(monkeypatch, tmp_path):
         session_id = "sdk-session"
         usage = {}
         model_usage = {}
-        result = "manual answer without using the selected Skill"
+        result = long_answer
         is_error = False
         errors = []
         stop_reason = None
@@ -5305,7 +5372,7 @@ async def test_sdk_runner_bound_skill_may_remain_unused(monkeypatch, tmp_path):
         captured["prompt_messages"] = []
         async for message in prompt:
             captured["prompt_messages"].append(message)
-        yield AssistantMessage([TextBlock("manual answer without using the selected Skill")])
+        yield AssistantMessage([TextBlock(long_answer)])
         yield ResultMessage()
 
     current_settings = types.SimpleNamespace(
@@ -5349,7 +5416,7 @@ async def test_sdk_runner_bound_skill_may_remain_unused(monkeypatch, tmp_path):
         captured["prompt_messages"][0]["message"]["content"]
     )
     assert result.error is None
-    assert result.message == "manual answer without using the selected Skill"
+    assert result.message == long_answer
     assert result.used_skills == []
 
 

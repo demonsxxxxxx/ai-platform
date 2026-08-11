@@ -18,7 +18,7 @@ not describe storage, routes, frameworks, or current runtime state.
 **Expert Workspace**
 : The dedicated user experience for one Expert. Entering it does not create
   a conversation. It shows only safe profile facts and never lets the client
-  replace the Expert's fixed model, bound Skills, tools, or private instructions.
+  replace the Expert's fixed model, bound Skills, tools, or server-owned instructions.
 
 **Expert Conversation**
 : A user-owned conversation pinned to one Expert identity, Expert Revision,
@@ -31,8 +31,11 @@ not describe storage, routes, frameworks, or current runtime state.
   capabilities before any work is dispatched.
 
 **Expert Instruction**
-: A private administrator-authored instruction in an Expert Revision. It is
-  authoritative for every Expert Run and is never supplied or overridden by a client.
+: An administrator-authored, server-owned instruction in an Expert Revision. It
+  is authoritative for every Expert Run and is never supplied or overridden by a
+  client. It enters model context and is therefore not a secrets store, even though
+  ordinary-user configuration projections, events, errors, and logs must not expose
+  it directly.
 
 **Welcome Message**
 : Public presentation content shown once when an Expert Conversation starts.

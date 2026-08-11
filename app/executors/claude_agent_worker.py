@@ -1313,6 +1313,7 @@ class ClaudeAgentWorkerAdapter:
             "diagnostic_id": str(executor_response.get("diagnostic_id") or "") or None,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
             "capability_evidence": capability_evidence,
+            "capability_evidence_validated": capability_evidence_error is None,
         }
         raw_used_skills_source = str(
             executor_response.get("used_skills_source") or ""
@@ -1629,6 +1630,7 @@ class ClaudeAgentWorkerAdapter:
                         "capability_evidence": list(
                             getattr(sdk_result, "capability_evidence", []) or []
                         ),
+                        "capability_evidence_validated": False,
                         "sdk_turn_diagnostics": turn_diagnostics,
                     },
                 )
@@ -1674,6 +1676,7 @@ class ClaudeAgentWorkerAdapter:
                     "capability_evidence": list(
                         getattr(sdk_result, "capability_evidence", []) or []
                     ),
+                    "capability_evidence_validated": True,
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )

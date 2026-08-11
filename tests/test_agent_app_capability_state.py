@@ -1,6 +1,7 @@
 import pytest
 
 from app.agent_apps.capability_state import (
+    exact_attempted_skills,
     exact_invoked_skills,
     project_agent_capability_state,
 )
@@ -52,6 +53,42 @@ def test_exact_sdk_hook_claim_is_limited_to_the_staged_set():
     assert state.completed is True
     assert state.artifact_ready is True
     assert state.optional_not_invoked_count == 1
+
+
+def test_failed_sdk_skill_call_is_attempted_but_not_completed():
+    payload = {
+        "used_skills_source": "none",
+        "staged_skills": ["bound-skill"],
+        "used_skills": [],
+        "sdk_used": True,
+        "capability_evidence_validated": True,
+        "capability_evidence": [
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "bound-skill",
+                "tool_call_id": "call-1",
+                "lifecycle_phase": "invocation_requested",
+            },
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "bound-skill",
+                "tool_call_id": "call-1",
+                "lifecycle_phase": "failed",
+            },
+        ],
+    }
+
+    assert exact_attempted_skills(payload) == {"bound-skill"}
+    state = project_agent_capability_state(
+        bound_skill_ids={"bound-skill"},
+        executor_payload=payload,
+        run_succeeded=True,
+        durable_artifact_count=0,
+    )
+
+    assert state.actually_invoked is True
+    assert state.completed is False
+    assert state.optional_not_invoked_count == 0
 
 
 def test_public_capability_projection_contains_only_safe_semantic_state():

@@ -144,6 +144,30 @@ def test_verified_capability_release_discards_pre_evidence_text_and_streams_late
     assert finished.final_text == "Safe final answer."
 
 
+def test_reseal_preserves_public_text_released_after_an_earlier_capability():
+    gate = _gate()
+
+    gate.seal({"call-one": "tool invocation"})
+    gate.release_after_verified_capability()
+    first = gate.accept("First public segment. ")
+
+    gate.seal({"call-two": "tool invocation"})
+    assert gate.accept("private intermediate text") == ()
+    gate.release_after_verified_capability()
+    second = gate.accept("Second public segment.")
+    finished = gate.finish(
+        final_text=(
+            "First public segment. private intermediate textSecond public segment."
+        ),
+        release=True,
+    )
+
+    streamed = "".join((*first, *second, *finished.chunks))
+    assert streamed == "First public segment. Second public segment."
+    assert finished.final_text == streamed
+    assert "private intermediate text" not in streamed
+
+
 def test_verified_capability_release_never_falls_back_to_cumulative_terminal_text():
     gate = _gate()
     pre_evidence = "raw tool output must remain private"

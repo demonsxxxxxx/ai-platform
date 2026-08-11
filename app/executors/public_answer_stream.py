@@ -115,7 +115,6 @@ class PublicAnswerStreamGate:
         if self._failed or self._finished or not self._sealed:
             return
         self._pending = ""
-        self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = True
 

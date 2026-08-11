@@ -583,6 +583,8 @@ _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
 _NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS = 3.0
 _NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS = 0.01
 _NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
+_NATIVE_TOOL_MASKED_WORKSPACE_ROOTS = (".home", ".claude-config", ".pins", ".tmp")
+_NATIVE_TOOL_MASK_ROOT_NAME = "native-tool-masks"
 _CLAUDE_PROJECT_SETTING_NAMES = ("settings.json", "settings.local.json")
 
 
@@ -881,6 +883,89 @@ def _secure_native_tool_socket_directory(socket_dir: Path) -> None:
         return
     os.chown(socket_dir, RUNTIME_UID, RUNTIME_GID)
     os.chmod(socket_dir, 0o700)
+
+
+def _prepare_native_tool_workspace_volumes(
+    workspace: WorkspaceLease,
+    *,
+    socket_path: Path,
+    skill_mount: _TrustedSkillMount | None,
+) -> dict[str, dict[str, str]]:
+    """Expose one read-only run view with only delivery and the broker socket writable."""
+
+    workspace_root, _workspace_node = _real_directory(
+        Path(workspace.workspace_host_path),
+        error="native tool workspace is invalid",
+    )
+    host_root, _host_node = _real_directory(
+        Path(workspace.host_root),
+        error="native tool run root is invalid",
+    )
+    delivery_root, _delivery_node = _real_directory(
+        workspace_root / "outputs" / "delivery",
+        error="native tool delivery directory is invalid",
+    )
+    try:
+        workspace_root.relative_to(host_root)
+        delivery_root.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ContainerStartFailedError("native tool workspace mount escapes run root") from exc
+
+    mask_root = host_root / "runtime" / _NATIVE_TOOL_MASK_ROOT_NAME
+    try:
+        mask_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ContainerStartFailedError("native tool mask root cannot be created") from exc
+    if mask_root.is_symlink() or not mask_root.is_dir():
+        raise ContainerStartFailedError("native tool mask root is invalid")
+    _secure_native_tool_socket_directory(mask_root)
+
+    masked_roots = list(_NATIVE_TOOL_MASKED_WORKSPACE_ROOTS)
+    if skill_mount is None:
+        masked_roots.append(".claude")
+    mask_paths: dict[str, Path] = {}
+    for workspace_name in masked_roots:
+        mask_path = mask_root / workspace_name.removeprefix(".")
+        try:
+            mask_path.mkdir(mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise ContainerStartFailedError("native tool mask directory cannot be created") from exc
+        if mask_path.is_symlink() or not mask_path.is_dir():
+            raise ContainerStartFailedError("native tool mask directory is invalid")
+        try:
+            if any(mask_path.iterdir()):
+                raise ContainerStartFailedError("native tool mask directory is occupied")
+        except OSError as exc:
+            raise ContainerStartFailedError("native tool mask directory cannot be inspected") from exc
+        _secure_native_tool_socket_directory(mask_path)
+        mask_paths[workspace_name] = mask_path.resolve(strict=True)
+
+    container_root = workspace.workspace_container_path.rstrip("/")
+    volumes = {
+        str(workspace_root): {
+            "bind": workspace.workspace_container_path,
+            "mode": "ro",
+        },
+        str(delivery_root): {
+            "bind": f"{container_root}/outputs/delivery",
+            "mode": "rw",
+        },
+        str(socket_path.parent): {
+            "bind": f"{container_root}/.ai-platform",
+            "mode": "rw",
+        },
+    }
+    for workspace_name, mask_path in mask_paths.items():
+        volumes[str(mask_path)] = {
+            "bind": f"{container_root}/{workspace_name}",
+            "mode": "ro",
+        }
+    if skill_mount is not None:
+        volumes[str(skill_mount.host_path)] = {
+            "bind": skill_mount.container_path,
+            "mode": "ro",
+        }
+    return volumes
 
 
 def _docker_workspace_user_kwargs(workspace_host_path: str) -> dict[str, str]:
@@ -3449,6 +3534,11 @@ class DockerContainerProvider:
             trusted_skill_mount = skill_mount or _prepare_trusted_skill_mount(request, workspace)
             socket_path = self._prepare_native_tool_socket(workspace)
             socket_prepared = True
+            native_tool_volumes = _prepare_native_tool_workspace_volumes(
+                workspace,
+                socket_path=socket_path,
+                skill_mount=trusted_skill_mount,
+            )
             existing_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
             if not self._remove_owned_native_tool_container(existing_lease):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
@@ -3457,26 +3547,7 @@ class DockerContainerProvider:
                 name=_native_tool_container_name(request.run_id),
                 detach=True,
                 labels=_native_tool_labels(request, workspace, trusted_skill_mount),
-                volumes={
-                    workspace.workspace_host_path: {
-                        "bind": workspace.workspace_container_path,
-                        "mode": "rw",
-                    },
-                    **(
-                        {
-                            str(trusted_skill_mount.host_path): {
-                                "bind": trusted_skill_mount.container_path,
-                                "mode": "ro",
-                            }
-                        }
-                        if trusted_skill_mount is not None
-                        else {}
-                    ),
-                    str(socket_path.parent): {
-                        "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
-                        "mode": "rw",
-                    },
-                },
+                volumes=native_tool_volumes,
                 environment=_native_tool_environment(token),
                 # The launcher establishes the UDS parent before Uvicorn binds
                 # it. Lifespan hooks run too late to repair a missing parent.

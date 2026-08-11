@@ -470,13 +470,14 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
     assert captured["include_orphans"] is True
     assert captured["terminated_uid"] == 10001
     assert captured["kwargs"]["env"] == {
-        "HOME": str(workspace),
-        "TMPDIR": str(workspace / ".native-skill-tmp"),
+        "HOME": "/home/ai-platform",
+        "TMPDIR": "/tmp",
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+    assert not (workspace / ".native-skill-tmp").exists()
 
 
 @pytest.mark.asyncio

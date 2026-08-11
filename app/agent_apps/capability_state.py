@@ -54,6 +54,27 @@ def exact_invoked_skills(
     return _string_set(executor_payload.get("used_skills")) & staged
 
 
+def exact_attempted_skills(executor_payload: dict[str, Any]) -> set[str]:
+    """Accept only worker-validated SDK invocation requests in the staged set."""
+
+    if executor_payload.get("capability_evidence_validated") is not True:
+        return set()
+    staged = _string_set(executor_payload.get("staged_skills"))
+    evidence = executor_payload.get("capability_evidence")
+    if not isinstance(evidence, list):
+        return set()
+    return {
+        identity
+        for item in evidence
+        if isinstance(item, dict)
+        and item.get("capability_kind") == "skill"
+        and item.get("lifecycle_phase") == "invocation_requested"
+        and isinstance(item.get("canonical_identity"), str)
+        and (identity := item["canonical_identity"].strip())
+        and identity in staged
+    }
+
+
 def project_agent_capability_state(
     *,
     bound_skill_ids: set[str],
@@ -63,14 +84,16 @@ def project_agent_capability_state(
 ) -> AgentCapabilityState:
     staged_skills = _string_set(executor_payload.get("staged_skills"))
     invoked_skills = exact_invoked_skills(executor_payload)
+    attempted_skills = exact_attempted_skills(executor_payload) | invoked_skills
     bound_staged = bound_skill_ids & staged_skills
     bound_invoked = bound_skill_ids & invoked_skills
-    optional_not_invoked = bound_staged - bound_invoked
+    bound_attempted = bound_skill_ids & attempted_skills
+    optional_not_invoked = bound_staged - bound_attempted
     return AgentCapabilityState(
         bound=bool(bound_skill_ids),
         staged=bool(bound_staged),
         sdk_registered=bool(bound_staged) and executor_payload.get("sdk_used") is True,
-        actually_invoked=bool(bound_invoked),
+        actually_invoked=bool(bound_attempted),
         completed=run_succeeded and bool(bound_invoked),
         artifact_ready=durable_artifact_count > 0,
         optional_not_invoked_count=len(optional_not_invoked),

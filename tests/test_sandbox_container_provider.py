@@ -121,6 +121,10 @@ def workspace(**overrides) -> WorkspaceLease:
     workspace_path = Path(values["workspace_host_path"])
     if prepare_staged_skills and workspace_path.is_dir():
         (workspace_path / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    if workspace_path.is_dir():
+        (workspace_path / "inputs").mkdir(parents=True, exist_ok=True)
+        (workspace_path / "outputs" / "delivery").mkdir(parents=True, exist_ok=True)
+        (Path(values["host_root"]) / "runtime").mkdir(parents=True, exist_ok=True)
     return WorkspaceLease(**values)
 
 
@@ -174,6 +178,30 @@ def trusted_skill_mount_stub(selected_workspace: WorkspaceLease) -> SimpleNamesp
         container_path=f"{selected_workspace.workspace_container_path.rstrip('/')}/.claude",
         fingerprint="f" * 64,
     )
+
+
+def native_tool_workspace_volumes_stub(
+    selected_workspace: WorkspaceLease,
+    *,
+    socket_path: Path,
+    skill_mount: SimpleNamespace | None,
+) -> dict[str, dict[str, str]]:
+    volumes = {
+        selected_workspace.workspace_host_path: {
+            "bind": selected_workspace.workspace_container_path,
+            "mode": "ro",
+        },
+        str(socket_path.parent): {
+            "bind": f"{selected_workspace.workspace_container_path.rstrip('/')}/.ai-platform",
+            "mode": "rw",
+        },
+    }
+    if skill_mount is not None:
+        volumes[str(skill_mount.host_path)] = {
+            "bind": skill_mount.container_path,
+            "mode": "ro",
+        }
+    return volumes
 
 
 def test_skill_mount_and_native_bash_admission_are_independently_derived():
@@ -3762,10 +3790,23 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
         "bind": "/workspace/.claude",
         "mode": "ro",
     }
-    assert sidecar["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert sidecar["volumes"][str(workspace_path.resolve())] == {
+        "bind": "/workspace",
+        "mode": "ro",
+    }
     assert executor["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
     assert sidecar["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
     assert executor["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
+    sidecar_mount_modes = {
+        volume["bind"]: volume["mode"] for volume in sidecar["volumes"].values()
+    }
+    assert sidecar_mount_modes["/workspace/outputs/delivery"] == "rw"
+    assert sidecar_mount_modes["/workspace/.ai-platform"] == "rw"
+    for masked_root in (".home", ".claude-config", ".pins", ".tmp"):
+        assert sidecar_mount_modes[f"/workspace/{masked_root}"] == "ro"
+    assert {
+        mount for mount, mode in sidecar_mount_modes.items() if mode == "rw"
+    } == {"/workspace/outputs/delivery", "/workspace/.ai-platform"}
     mount_fingerprint = lease.labels["ai-platform.skill_mount.fingerprint"]
     assert len(mount_fingerprint) == 64
     assert sidecar["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
@@ -3820,6 +3861,49 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert native.removed is True
     assert primary.removed is True
     assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
+
+
+@pytest.mark.asyncio
+async def test_docker_native_sidecar_masks_claude_tree_when_no_skill_is_staged(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    (workspace_path / ".claude" / "private").mkdir(parents=True)
+    (workspace_path / ".claude" / "private" / "settings.json").write_text(
+        "private",
+        encoding="utf-8",
+    )
+    leased_workspace = workspace(
+        workspace_host_path=str(workspace_path),
+        prepare_staged_skills=False,
+    )
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+    )
+
+    await provider.create_or_reuse(
+        request(tool_policy_subjects=[native_tool_subjects()[1]]),
+        leased_workspace,
+    )
+
+    sidecar, executor = fake.created
+    sidecar_claude_mounts = [
+        (host_path, mount)
+        for host_path, mount in sidecar["volumes"].items()
+        if mount["bind"] == "/workspace/.claude"
+    ]
+    assert len(sidecar_claude_mounts) == 1
+    masked_host_path, masked_mount = sidecar_claude_mounts[0]
+    assert masked_mount["mode"] == "ro"
+    assert Path(masked_host_path).name == "claude"
+    assert Path(masked_host_path).parent.name == "native-tool-masks"
+    assert Path(masked_host_path).resolve() != (workspace_path / ".claude").resolve()
+    assert not any(
+        mount["bind"] == "/workspace/.claude"
+        for mount in executor["volumes"].values()
+    )
 
 
 @pytest.mark.asyncio
@@ -4174,6 +4258,10 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
         lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
     )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.container_provider._prepare_native_tool_workspace_volumes",
+        native_tool_workspace_volumes_stub,
+    )
     native_subjects = native_tool_subjects()
 
     lease = await provider.create_or_reuse(
@@ -4372,6 +4460,10 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
     monkeypatch.setattr(
         "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
         lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.container_provider._prepare_native_tool_workspace_volumes",
+        native_tool_workspace_volumes_stub,
     )
 
     async def bounded_timeout(container, _timeout_seconds):
