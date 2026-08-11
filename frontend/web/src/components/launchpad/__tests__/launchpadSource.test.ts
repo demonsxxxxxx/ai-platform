@@ -13,6 +13,8 @@ test("launchpad panel opens company destinations externally without iframe embed
   assert.match(panelSource, /window\.open\(href,\s*"_blank"/);
   assert.match(panelSource, /tab\.url/);
   assert.match(panelSource, /openUrl\(tab\.url\)/);
+  assert.match(panelSource, /tab\.runtimeUrlKey/);
+  assert.match(panelSource, /disabled=\{tabUnavailable\}/);
   assert.match(panelSource, /"noopener,noreferrer"/);
   assert.doesNotMatch(panelSource, /data-legacy-webui-frame/);
   assert.doesNotMatch(panelSource, /<iframe/);
@@ -26,6 +28,9 @@ test("launchpad panel has tabs, search, and unavailable rendering", () => {
   assert.match(panelSource, /launchpadTabs/);
   assert.match(panelSource, /filterLaunchpadGroups/);
   assert.match(panelSource, /launchpad\.unavailable/);
+  assert.match(panelSource, /fetchBrowserRuntimeConfig/);
+  assert.match(panelSource, /configureLaunchpadCatalog/);
+  assert.match(panelSource, /UNAVAILABLE_LAUNCHPAD_RUNTIME_URLS/);
   assert.match(panelSource, /useState<LaunchpadTabKey>\("common"\)/);
   assert.doesNotMatch(panelSource, /useState<LaunchpadTabKey>\("lingxi"\)/);
 });

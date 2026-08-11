@@ -1,7 +1,8 @@
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -108,8 +109,12 @@ class Settings(BaseSettings):
     )
     trusted_principal_secret: str = Field(default="")
     frontend_poc_auth_enabled: bool = Field(default=False)
-    existing_auth_base_url: str = Field(default="http://10.56.0.25:7263")
-    existing_user_info_base_url: str = Field(default="http://10.56.0.25:5166")
+    browser_public_launchpad_lingxi_url: str | None = Field(default=None)
+    browser_public_launchpad_sop_url: str | None = Field(default=None)
+    browser_public_launchpad_word_translate_url: str | None = Field(default=None)
+    browser_public_launchpad_word_review_url: str | None = Field(default=None)
+    existing_auth_base_url: str = Field(default="")
+    existing_user_info_base_url: str = Field(default="")
     existing_auth_timeout_seconds: float = Field(default=15.0)
     ai_admin_work_ids: str = Field(default="")
     ai_session_secret: str = Field(default="")
@@ -148,6 +153,70 @@ class Settings(BaseSettings):
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
+
+    @field_validator(
+        "browser_public_launchpad_lingxi_url",
+        "browser_public_launchpad_sop_url",
+        "browser_public_launchpad_word_translate_url",
+        "browser_public_launchpad_word_review_url",
+        mode="before",
+    )
+    @classmethod
+    def validate_browser_public_launchpad_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("browser_public_launchpad_url_must_be_string")
+        candidate = value.strip()
+        if not candidate:
+            return None
+        if len(candidate) > 2048 or any(character.isspace() for character in candidate):
+            raise ValueError("browser_public_launchpad_url_invalid")
+        try:
+            parsed = urlsplit(candidate)
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("browser_public_launchpad_url_invalid") from exc
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or "=" in parsed.fragment
+        ):
+            raise ValueError("browser_public_launchpad_url_invalid")
+        return candidate
+
+    @field_validator(
+        "existing_auth_base_url",
+        "existing_user_info_base_url",
+        mode="before",
+    )
+    @classmethod
+    def validate_private_upstream_base_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("private_upstream_url_must_be_string")
+        candidate = value.strip()
+        if not candidate:
+            return ""
+        if len(candidate) > 2048 or any(character.isspace() for character in candidate):
+            raise ValueError("private_upstream_url_invalid")
+        try:
+            parsed = urlsplit(candidate)
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("private_upstream_url_invalid") from exc
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("private_upstream_url_invalid")
+        return candidate
 
     @model_validator(mode="after")
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
@@ -188,6 +257,16 @@ class Settings(BaseSettings):
             }
             if any(days > 0 for days in unsupported_retention.values()):
                 raise ValueError("unsupported_retention_policy_in_production")
+            missing_private_upstreams = sorted(
+                field_name
+                for field_name in ("existing_auth_base_url", "existing_user_info_base_url")
+                if not str(getattr(self, field_name)).strip()
+            )
+            if missing_private_upstreams:
+                raise ValueError(
+                    "private_upstream_url_required_in_production:"
+                    + ",".join(missing_private_upstreams)
+                )
         return self
 
 @lru_cache(maxsize=1)

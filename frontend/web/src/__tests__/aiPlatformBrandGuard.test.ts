@@ -60,10 +60,8 @@ test("active frontend no longer exposes LambChat brand authority", () => {
 test("ai-platform product constants are the active brand source", () => {
   const constants = readFileSync(join(root, "src/constants/index.ts"), "utf8");
   assert.match(constants, /export const APP_NAME = "AI Platform"/);
-  assert.match(
-    constants,
-    /export const APP_HOME_URL = "http:\/\/10\.56\.0\.211:18001\/"/,
-  );
+  assert.match(constants, /export const APP_HOME_URL = "\/"/);
+  assert.doesNotMatch(constants, /https?:\/\/10\.56\./);
 });
 
 test("brand entry surfaces consume the ai-platform home authority", () => {

@@ -4,6 +4,65 @@ from pydantic import ValidationError
 from app.settings import Settings
 
 
+def test_browser_public_launchpad_urls_default_unavailable_and_accept_explicit_env(monkeypatch):
+    defaults = Settings(_env_file=None)
+    assert defaults.browser_public_launchpad_lingxi_url is None
+    assert defaults.browser_public_launchpad_sop_url is None
+    assert defaults.browser_public_launchpad_word_translate_url is None
+    assert defaults.browser_public_launchpad_word_review_url is None
+
+    monkeypatch.setenv(
+        "BROWSER_PUBLIC_LAUNCHPAD_LINGXI_URL",
+        "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
+    )
+    monkeypatch.setenv(
+        "BROWSER_PUBLIC_LAUNCHPAD_WORD_TRANSLATE_URL",
+        "https://word-tools.example.test/translate",
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert (
+        settings.browser_public_launchpad_lingxi_url
+        == "http://10.56.0.25:8189/#/TaskManagement/indexSpace/"
+    )
+    assert settings.browser_public_launchpad_word_translate_url == (
+        "https://word-tools.example.test/translate"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "javascript:alert(1)",
+        "/relative/path",
+        "https://user:password@example.test/path",
+        "https://example.test/path?token=secret",
+        "https://example.test/#access_token=secret",
+        "https://example.test/path with space",
+        123,
+    ],
+)
+def test_browser_public_launchpad_urls_reject_unsafe_values(value):
+    with pytest.raises(ValidationError, match="browser_public_launchpad_url"):
+        Settings(_env_file=None, browser_public_launchpad_lingxi_url=value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "auth.internal.example",
+        "ftp://auth.internal.example",
+        "https://user:password@auth.internal.example",
+        "https://auth.internal.example?token=secret",
+        "https://auth.internal.example/#fragment",
+    ],
+)
+def test_private_upstream_urls_reject_invalid_base_urls(value):
+    with pytest.raises(ValidationError, match="private_upstream_url_invalid"):
+        Settings(_env_file=None, existing_auth_base_url=value)
+
+
 def test_stale_run_reconciliation_settings_accept_environment_overrides(monkeypatch):
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_SECONDS", "1800")
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_LIMIT", "7")
@@ -176,6 +235,26 @@ def test_production_identity_boundary_requires_gateway_secret_and_forbids_poc():
             trusted_principal_secret="secret",
             frontend_poc_auth_enabled=True,
         )
+
+
+def test_production_requires_explicit_private_upstream_urls():
+    with pytest.raises(ValidationError, match="private_upstream_url_required_in_production"):
+        Settings(
+            _env_file=None,
+            deployment_environment="production",
+            trusted_principal_secret="gateway-secret",
+        )
+
+    settings = Settings(
+        _env_file=None,
+        deployment_environment="production",
+        trusted_principal_secret="gateway-secret",
+        existing_auth_base_url="https://auth.internal.example",
+        existing_user_info_base_url="https://directory.internal.example",
+    )
+
+    assert settings.existing_auth_base_url == "https://auth.internal.example"
+    assert settings.existing_user_info_base_url == "https://directory.internal.example"
 
 
 def test_default_tenant_is_fixed_deployment_scope():
