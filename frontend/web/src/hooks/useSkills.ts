@@ -455,8 +455,8 @@ export function useSkills(options?: {
 
   // Batch delete skills
   const batchDeleteSkills = useCallback(
-    async (names: string[]): Promise<boolean> => {
-      if (!enabled) return false;
+    async (names: string[]): Promise<string[]> => {
+      if (!enabled) return [];
       setError(null);
       try {
         const result = await skillApi.batchDelete(names);
@@ -468,13 +468,13 @@ export function useSkills(options?: {
         }
         // Full refresh for consistency
         await fetchSkills();
-        return result.errors.length === 0;
+        return result.deleted;
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to delete skills",
         );
         await fetchSkills(); // rollback
-        return false;
+        return [];
       }
     },
     [enabled, fetchSkills],

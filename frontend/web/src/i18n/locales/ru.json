@@ -1630,6 +1630,7 @@
       "visibleToUsers": "Виден обычным пользователям"
     },
     "batchDeleteFailed": "Не удалось удалить некоторые навыки",
+    "batchDeletePartial": "Удалено навыков: {{deleted}}; не удалось удалить: {{failed}}.",
     "batchDeleteSuccess": "{{count}} навык(ов) удалено",
     "batchDisableSuccess": "{{count}} навык(ов) отключено",
     "batchEnableSuccess": "{{count}} навык(ов) включено",
@@ -1679,6 +1680,10 @@
       "selectSkill": "Выбрать {{name}}",
       "selectedDetail": "Сведения о выбранном Skill",
       "selectDetailPrompt": "Выберите Skill в каталоге, чтобы открыть сведения.",
+      "selectionAfterDelete": "{{deleted}} удалён. Список и сведения переключены на {{name}}.",
+      "selectionAfterDeleteEmpty": "{{deleted}} удалён. Выбранных Skill больше нет.",
+      "selectionChanged": "Список и сведения переключены на {{name}}.",
+      "selectionCurrent": "В списке и сведениях отображается {{name}}.",
       "skill": "Навык",
       "tags": "Теги",
       "catalogStatus": "Статус каталога",
