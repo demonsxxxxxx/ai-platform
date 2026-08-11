@@ -142,6 +142,22 @@ def test_uploaded_files_can_be_created_before_sessions():
     assert "user_id text not null references users(id)" in schema
 
 
+def test_schema_declares_file_lifecycle_and_typed_object_deletion_targets():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "alter table files add column if not exists lifecycle_state" in schema
+    assert "chk_files_lifecycle_state" in schema
+    assert "target_type text not null default 'artifact'" in schema
+    assert "file_id text references files(id)" in schema
+    assert "lease_generation bigint not null default 0" in schema
+    assert "chk_object_deletion_outbox_target" in schema
+    assert "chk_object_deletion_outbox_target_state" in schema
+    assert "target_type = 'artifact' and artifact_id is not null and file_id is null" in schema
+    assert "target_type = 'file' and artifact_id is null and file_id is not null" in schema
+    assert "when 'pending' then 'file_pending'" in schema
+    assert "'file_pending', 'file_processing', 'file_failed'" in schema
+
+
 def test_schema_declares_run_copy_and_cancel_columns():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

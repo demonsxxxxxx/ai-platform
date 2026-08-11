@@ -120,6 +120,8 @@ async def run_data_retention_maintenance(
                 await repositories.fail_object_deletion(
                     conn,
                     outbox_id=str(item["id"]),
+                    tenant_id=str(item["tenant_id"]),
+                    lease_generation=int(item["lease_generation"]),
                     error_code=f"object_delete_{type(exc).__name__}".lower(),
                     max_attempts=object_delete_max_attempts,
                     retry_base_seconds=object_delete_retry_base_seconds,
@@ -132,9 +134,23 @@ async def run_data_retention_maintenance(
                 conn,
                 outbox_id=str(item["id"]),
                 tenant_id=str(item["tenant_id"]),
-                artifact_id=str(item["artifact_id"]),
+                lease_generation=int(item["lease_generation"]),
             )
-        deleted_objects += int(completed)
+            if not completed:
+                await repositories.fail_object_deletion(
+                    conn,
+                    outbox_id=str(item["id"]),
+                    tenant_id=str(item["tenant_id"]),
+                    lease_generation=int(item["lease_generation"]),
+                    error_code="object_delete_receipt_conflict",
+                    max_attempts=object_delete_max_attempts,
+                    retry_base_seconds=object_delete_retry_base_seconds,
+                    retry_cap_seconds=object_delete_retry_cap_seconds,
+                )
+        if completed:
+            deleted_objects += 1
+        else:
+            failed_objects += 1
 
     _next_cleanup_at = current_time + interval
     return {

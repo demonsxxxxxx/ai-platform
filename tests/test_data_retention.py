@@ -56,7 +56,17 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
 
     async def claim(_conn, *, limit, max_attempts):
         calls.append(("claim", limit, max_attempts))
-        return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
+        return [
+            {
+                "id": "out-a",
+                "tenant_id": "default",
+                "target_type": "artifact",
+                "artifact_id": "art-a",
+                "file_id": None,
+                "storage_key": "private/a",
+                "lease_generation": 1,
+            }
+        ]
 
     async def complete(_conn, **kwargs):
         calls.append(("complete", kwargs))
@@ -95,7 +105,17 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
         return []
 
     async def claim(_conn, *, limit, max_attempts):
-        return [{"id": "out-a", "tenant_id": "default", "artifact_id": "art-a", "storage_key": "private/a"}]
+        return [
+            {
+                "id": "out-a",
+                "tenant_id": "default",
+                "target_type": "artifact",
+                "artifact_id": "art-a",
+                "file_id": None,
+                "storage_key": "private/a",
+                "lease_generation": 3,
+            }
+        ]
 
     async def fail(_conn, **kwargs):
         failures.append(kwargs)
@@ -114,6 +134,8 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
     assert failures == [
         {
             "outbox_id": "out-a",
+            "tenant_id": "default",
+            "lease_generation": 3,
             "error_code": "object_delete_runtimeerror",
             "max_attempts": 5,
             "retry_base_seconds": 60,
@@ -133,8 +155,24 @@ async def test_permanent_failure_does_not_starve_later_object(monkeypatch):
 
     async def claim(_conn, *, limit, max_attempts):
         return [
-            {"id": "out-bad", "tenant_id": "default", "artifact_id": "art-bad", "storage_key": "bad"},
-            {"id": "out-good", "tenant_id": "default", "artifact_id": "art-good", "storage_key": "good"},
+            {
+                "id": "out-bad",
+                "tenant_id": "default",
+                "target_type": "artifact",
+                "artifact_id": "art-bad",
+                "file_id": None,
+                "storage_key": "bad",
+                "lease_generation": 5,
+            },
+            {
+                "id": "out-good",
+                "tenant_id": "default",
+                "target_type": "file",
+                "artifact_id": None,
+                "file_id": "file-good",
+                "storage_key": "good",
+                "lease_generation": 8,
+            },
         ]
 
     async def fail(_conn, **kwargs):
@@ -165,6 +203,62 @@ async def test_permanent_failure_does_not_starve_later_object(monkeypatch):
     assert completed == ["out-good"]
     assert result["failed_objects"] == 1
     assert result["deleted_objects"] == 1
+
+
+@pytest.mark.asyncio
+async def test_receipt_conflict_is_retried_under_the_same_claim_generation(monkeypatch):
+    failures = []
+    data_retention._next_cleanup_at = 0
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def claim(_conn, *, limit, max_attempts):
+        return [
+            {
+                "id": "out-file",
+                "tenant_id": "default",
+                "target_type": "file",
+                "artifact_id": None,
+                "file_id": "file-a",
+                "storage_key": "private/file-a",
+                "lease_generation": 11,
+            }
+        ]
+
+    async def complete(_conn, **_kwargs):
+        return False
+
+    async def fail(_conn, **kwargs):
+        failures.append(kwargs)
+        return "failed"
+
+    monkeypatch.setattr(data_retention, "transaction", fake_transaction)
+    monkeypatch.setattr(data_retention.repositories, "queue_expired_artifacts_for_deletion", empty)
+    monkeypatch.setattr(data_retention.repositories, "purge_deleted_memory_records", empty)
+    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
+    monkeypatch.setattr(data_retention.repositories, "complete_object_deletion", complete)
+    monkeypatch.setattr(data_retention.repositories, "fail_object_deletion", fail)
+
+    result = await data_retention.run_data_retention_maintenance(
+        settings(),
+        now=10,
+        storage=RecordingStorage(),
+    )
+
+    assert result["deleted_objects"] == 0
+    assert result["failed_objects"] == 1
+    assert failures == [
+        {
+            "outbox_id": "out-file",
+            "tenant_id": "default",
+            "lease_generation": 11,
+            "error_code": "object_delete_receipt_conflict",
+            "max_attempts": 5,
+            "retry_base_seconds": 60,
+            "retry_cap_seconds": 3600,
+        }
+    ]
 
 
 def test_undecided_retention_classes_are_explicitly_fail_safe():

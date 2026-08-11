@@ -88,9 +88,11 @@ class FakeIndexConnection:
                     "ready": True,
                     "is_unique": migration.unique,
                     "table_name": migration.table_name,
+                    "access_method": migration.access_method,
                     "column_names": list(migration.column_names),
                     "descending": list(migration.descending),
-                    "predicate": " and ".join(migration.predicate_fragments) or None,
+                    "opclass_names": list(migration.opclass_names),
+                    "predicate": migration.predicate_expression or None,
                 }
                 if params[0] in self.state.indexes
                 else None
@@ -187,6 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.12.3"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -206,3 +209,96 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "chk_object_deletion_outbox_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "files",
+        "chk_files_lifecycle_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "object_deletion_outbox",
+        "chk_object_deletion_outbox_target",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "object_deletion_outbox",
+        "chk_object_deletion_outbox_target_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "object_deletion_outbox",
+        "object_deletion_outbox_file_id_fkey",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "files",
+            "chk_files_lifecycle_state",
+            "c",
+            "CHECK (lifecycle_state = ANY (ARRAY["
+            "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "object_deletion_outbox",
+            "chk_object_deletion_outbox_state",
+            "c",
+            "CHECK (state = ANY (ARRAY["
+            "'pending'::text, 'processing'::text, 'failed'::text, "
+            "'dead_letter'::text, 'deleted'::text, 'file_pending'::text, "
+            "'file_processing'::text, 'file_failed'::text, 'file_dead_letter'::text, "
+            "'file_deleted'::text]))",
+        ),
+        (
+            "object_deletion_outbox",
+            "chk_object_deletion_outbox_target_state",
+            "c",
+            "CHECK (target_type = 'artifact'::text AND (state = ANY (ARRAY["
+            "'pending'::text, 'processing'::text, 'failed'::text, 'dead_letter'::text, "
+            "'deleted'::text])) OR target_type = 'file'::text AND (state = ANY (ARRAY["
+            "'file_pending'::text, 'file_processing'::text, 'file_failed'::text, "
+            "'file_dead_letter'::text, 'file_deleted'::text])))",
+        ),
+        (
+            "object_deletion_outbox",
+            "chk_object_deletion_outbox_target",
+            "c",
+            "CHECK (target_type = 'artifact'::text AND artifact_id IS NOT NULL "
+            "AND file_id IS NULL OR target_type = 'file'::text AND artifact_id IS NULL "
+            "AND file_id IS NOT NULL)",
+        ),
+        (
+            "object_deletion_outbox",
+            "object_deletion_outbox_file_id_fkey",
+            "f",
+            "FOREIGN KEY (file_id) REFERENCES files(id)",
+        ),
+    )
+    assert (
+        "object_deletion_outbox",
+        "lease_generation",
+        "int8",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
+    assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
+        "state = 'pending' or state = 'processing' or state = 'failed' "
+        "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed'"
+    )
+    assert migrations[
+        "idx_object_deletion_outbox_artifact_storage_live"
+    ].predicate_expression == (
+        "target_type = 'artifact' and state <> 'deleted'"
+    )
+    assert migrations["uq_object_deletion_outbox_file"].unique is True
+    assert migrations["uq_object_deletion_outbox_file"].predicate_expression == (
+        "target_type = 'file' and file_id is not null"
+    )
+    assert {
+        name: (migrations[name].access_method, migrations[name].opclass_names)
+        for name in (
+            "idx_runs_input_json_gin",
+            "idx_messages_metadata_json_gin",
+            "idx_run_context_snapshots_file_ids_gin",
+            "idx_artifacts_manifest_json_gin",
+        )
+    } == {
+        "idx_runs_input_json_gin": ("gin", ("jsonb_path_ops",)),
+        "idx_messages_metadata_json_gin": ("gin", ("jsonb_path_ops",)),
+        "idx_run_context_snapshots_file_ids_gin": ("gin", ("jsonb_ops",)),
+        "idx_artifacts_manifest_json_gin": ("gin", ("jsonb_path_ops",)),
+    }

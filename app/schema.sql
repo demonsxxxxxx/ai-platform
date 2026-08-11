@@ -2111,8 +2111,18 @@ create table if not exists files (
   size_bytes bigint not null,
   storage_key text not null unique,
   sha256 text not null,
+  lifecycle_state text not null default 'active',
+  delete_requested_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table files add column if not exists lifecycle_state text not null default 'active';
+alter table files add column if not exists delete_requested_at timestamptz;
+alter table files add column if not exists deleted_at timestamptz;
+alter table files drop constraint if exists chk_files_lifecycle_state;
+alter table files add constraint chk_files_lifecycle_state
+  check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
 
 create table if not exists artifacts (
   id text primary key,
@@ -2148,10 +2158,13 @@ alter table artifacts add constraint chk_artifacts_lifecycle_state
 create table if not exists object_deletion_outbox (
   id text primary key,
   tenant_id text not null references tenants(id),
-  artifact_id text not null references artifacts(id),
+  target_type text not null default 'artifact',
+  artifact_id text references artifacts(id),
+  file_id text references files(id),
   storage_key text not null,
   state text not null default 'pending',
   attempts integer not null default 0,
+  lease_generation bigint not null default 0,
   available_at timestamptz not null default now(),
   leased_at timestamptz,
   receipt_at timestamptz,
@@ -2162,15 +2175,53 @@ create table if not exists object_deletion_outbox (
   updated_at timestamptz not null default now(),
   unique (tenant_id, artifact_id)
 );
+alter table object_deletion_outbox add column if not exists target_type text not null default 'artifact';
+alter table object_deletion_outbox add column if not exists file_id text references files(id);
+alter table object_deletion_outbox add column if not exists lease_generation bigint not null default 0;
+alter table object_deletion_outbox alter column artifact_id drop not null;
+alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_file_id_fkey;
+alter table object_deletion_outbox add constraint object_deletion_outbox_file_id_fkey
+  foreign key (file_id) references files(id);
 alter table object_deletion_outbox add column if not exists dead_letter_at timestamptz;
 alter table object_deletion_outbox add column if not exists reconcile_required boolean not null default false;
 alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_state_check;
 alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_state;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target_state;
+update object_deletion_outbox
+set state = case state
+  when 'pending' then 'file_pending'
+  when 'processing' then 'file_processing'
+  when 'failed' then 'file_failed'
+  when 'dead_letter' then 'file_dead_letter'
+  when 'deleted' then 'file_deleted'
+  else state
+end
+where target_type = 'file'
+  and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted');
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
-  check (state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted'));
-create index if not exists idx_object_deletion_outbox_claim
-  on object_deletion_outbox(state, available_at asc, created_at asc, id asc)
-  where state in ('pending', 'processing', 'failed');
+  check (state in (
+    'pending', 'processing', 'failed', 'dead_letter', 'deleted',
+    'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+  ));
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target;
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target
+  check (
+    (target_type = 'artifact' and artifact_id is not null and file_id is null)
+    or (target_type = 'file' and artifact_id is null and file_id is not null)
+  );
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target_state
+  check (
+    (
+      target_type = 'artifact'
+      and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted')
+    )
+    or (
+      target_type = 'file'
+      and state in (
+        'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+      )
+    )
+  );
 
 create table if not exists audit_logs (
   id text primary key,
