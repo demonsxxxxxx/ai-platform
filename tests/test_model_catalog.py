@@ -67,7 +67,7 @@ def test_explicit_catalog_is_authoritative_and_preserves_configured_fields():
 def test_explicit_catalog_uses_gateway_provider_without_environment_description():
     catalog = build_model_catalog(
         settings(
-            model_catalog_json='[{"id":"configured-model"}]',
+            model_catalog_json='[{"id":"configured-model","provider":"   "}]',
             llm_gateway_provider="configured-gateway",
         )
     )
@@ -94,6 +94,14 @@ def test_explicit_catalog_uses_gateway_provider_without_environment_description(
                 "openai_model": "openai-runtime",
             },
             "claude-runtime",
+        ),
+        (
+            {
+                "claude_agent_model": "   ",
+                "anthropic_model": "anthropic-runtime",
+                "openai_model": "openai-runtime",
+            },
+            "anthropic-runtime",
         ),
         (
             {

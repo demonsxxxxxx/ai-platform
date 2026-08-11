@@ -29,7 +29,7 @@ def _model_from_item(
     model_id = assert_safe_id(raw_id, "model_id")
     value = str(item.get("value") or model_id).strip()
     value = assert_safe_id(value, "model_value")
-    provider = str(item.get("provider") or default_provider).strip()
+    provider = str(item.get("provider") or "").strip() or default_provider
     label = str(item.get("label") or model_id).strip() or model_id
     description = str(item.get("description") or "").strip()
     profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
@@ -83,12 +83,12 @@ def build_model_catalog(settings: object) -> dict[str, Any]:
         if has_explicit_catalog
         else []
     )
-    runtime_default = str(
-        getattr(settings, "claude_agent_model", "")
-        or getattr(settings, "anthropic_model", "")
-        or getattr(settings, "openai_model", "")
-        or ""
-    ).strip()
+    runtime_default = ""
+    for field_name in ("claude_agent_model", "anthropic_model", "openai_model"):
+        candidate = str(getattr(settings, field_name, "") or "").strip()
+        if candidate:
+            runtime_default = candidate
+            break
     if not models:
         if has_explicit_catalog or not runtime_default:
             raise ValueError(MODEL_CATALOG_NOT_CONFIGURED)
