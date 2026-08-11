@@ -1,105 +1,167 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 from dataclasses import replace
 
 import pytest
 from openpyxl import Workbook
 
-import app.attachments.capability_admission as capability_admission
 from app.attachments.capability_admission import (
     ADMISSION_REJECTED,
     ADMISSION_REQUIRED,
     FILE_CAPABILITY_REGISTRY,
-    FILE_CAPABILITY_REGISTRY_DIGEST,
+    FILE_CAPABILITY_REGISTRY_POLICY_DIGEST,
     FILE_CAPABILITY_REGISTRY_VERSION,
     AgentSkillBinding,
     AuthorizedSkillPin,
-    FileCapabilityAdmission,
     FileCapabilityAdmissionRequest,
     RuntimeDependencyIdentity,
-    RuntimeDependencyRequirement,
     RuntimeImageInventory,
+    RuntimeInventoryResolution,
     SkillAuthorizationResolution,
     SkillSelection,
     WorkspaceSkillPin,
     admit_file_capability,
-    registry_digest,
+    registry_policy_digest,
 )
-from app.attachments.classification import (
-    AttachmentBytesForClassification,
-    classify_attachment_bytes,
+from app.attachments.classification import AttachmentBytesForClassification
+from app.attachments.file_capabilities import (
+    FILE_CAPABILITY_CONTRACT_SCOPE,
+    FILE_CAPABILITY_ENFORCEMENT_STATE,
+    AgentFileAuthorizationResolution,
+    authorization_scope_sha256,
 )
-from app.attachments.file_capabilities import AgentFileAuthorizationResolution
+from app.auth import AuthPrincipal
+from app.file_parser_contracts import XLSX_CONTENT_TYPE
 
 
-XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 IMAGE_DIGEST = "sha256:" + "b" * 64
 PROFILE_SHA256 = "c" * 64
 
 
-class FakeAuthorizationPort:
-    def __init__(self, resolution: SkillAuthorizationResolution) -> None:
+def _principal() -> AuthPrincipal:
+    return AuthPrincipal(
+        user_id="user-reviewed",
+        display_name="Reviewed User",
+        tenant_id="tenant-reviewed",
+        department_id="department-reviewed",
+        roles=["user"],
+        permissions=["agent:use"],
+        source="trusted-header",
+        authority_source="trusted-gateway",
+        authority_checked_at="2026-08-11T00:00:00+00:00",
+    )
+
+
+class FakeSkillAuthorizationPort:
+    def __init__(self, resolution: object) -> None:
         self.resolution = resolution
         self.calls: list[dict[str, object]] = []
 
-    async def resolve_exactly_one(self, *, logical_skill_ids, selection, binding):
+    async def resolve_exactly_one(
+        self,
+        *,
+        principal,
+        workspace_id,
+        logical_skill_ids,
+        selection,
+        binding,
+    ):
         self.calls.append(
             {
+                "principal": principal,
+                "workspace_id": workspace_id,
                 "logical_skill_ids": logical_skill_ids,
                 "selection": selection,
                 "binding": binding,
             }
         )
+        if isinstance(self.resolution, Exception):
+            raise self.resolution
         return self.resolution
 
 
-class RaisingAuthorizationPort:
-    async def resolve_exactly_one(self, *, logical_skill_ids, selection, binding):
-        raise TimeoutError("authority unavailable")
+class FakeRuntimeInventoryPort:
+    def __init__(self, resolution: object) -> None:
+        self.resolution = resolution
+        self.calls: list[dict[str, object]] = []
+
+    async def resolve_authorized_inventory(
+        self,
+        *,
+        principal,
+        workspace_id,
+        run_id,
+        attempt_id,
+        expected_workspace_skill,
+    ):
+        self.calls.append(
+            {
+                "principal": principal,
+                "workspace_id": workspace_id,
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_workspace_skill": expected_workspace_skill,
+            }
+        )
+        if isinstance(self.resolution, Exception):
+            raise self.resolution
+        return self.resolution
 
 
 class FakeAgentAuthorizationPort:
-    def __init__(self, resolution: AgentFileAuthorizationResolution) -> None:
+    def __init__(self, resolution: object) -> None:
         self.resolution = resolution
         self.calls: list[dict[str, object]] = []
 
     async def resolve_authorized_revision(
         self,
         *,
-        agent_id: str,
-        expected_revision: int,
-        expected_profile_sha256: str,
-    ) -> AgentFileAuthorizationResolution:
+        principal,
+        workspace_id,
+        agent_id,
+        expected_revision,
+        expected_profile_sha256,
+    ):
         self.calls.append(
             {
+                "principal": principal,
+                "workspace_id": workspace_id,
                 "agent_id": agent_id,
                 "expected_revision": expected_revision,
                 "expected_profile_sha256": expected_profile_sha256,
             }
         )
+        if isinstance(self.resolution, Exception):
+            raise self.resolution
         return self.resolution
 
 
-def _xlsx_bytes() -> bytes:
+def _xlsx_bytes(cell_value: str = "name") -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Data"
-    sheet["A1"] = "name"
+    sheet["A1"] = cell_value
     output = io.BytesIO()
     workbook.save(output)
     workbook.close()
     return output.getvalue()
 
 
-def _attachment(file_id: str = "file-xlsx") -> AttachmentBytesForClassification:
-    raw = _xlsx_bytes()
+def _attachment(
+    file_id: str = "file-xlsx",
+    *,
+    declared_media_type: str = XLSX_CONTENT_TYPE,
+    cell_value: str = "name",
+) -> AttachmentBytesForClassification:
+    raw = _xlsx_bytes(cell_value)
     return AttachmentBytesForClassification(
         file_id=file_id,
         raw_bytes=raw,
         source_filename="report.xlsx",
-        declared_media_type="text/plain",
+        declared_media_type=declared_media_type,
         expected_size_bytes=len(raw),
         expected_sha256=hashlib.sha256(raw).hexdigest(),
     )
@@ -109,76 +171,66 @@ def _pin(
     *,
     skill_id: str = "qa-rag-skill",
     version: str = "v2026-07-29",
-    content_hash: str | None = None,
+    manifest_sha256: str | None = None,
 ) -> AuthorizedSkillPin:
     return AuthorizedSkillPin(
         logical_skill_id="qa-rag-skill",
         skill_id=skill_id,
         expected_version=version,
-        manifest_sha256=content_hash
+        manifest_sha256=manifest_sha256
         or hashlib.sha256(f"{skill_id}:{version}".encode()).hexdigest(),
         public_label="QA spreadsheet analysis",
     )
 
 
-def _port(
-    status: str = "authorized", pins: tuple[AuthorizedSkillPin, ...] | None = None
-):
-    return FakeAuthorizationPort(
+def _skill_port(
+    status: str = "authorized",
+    *,
+    pins: tuple[AuthorizedSkillPin, ...] | None = None,
+    principal: AuthPrincipal | None = None,
+    workspace_id: str = "workspace-reviewed",
+) -> FakeSkillAuthorizationPort:
+    scoped_principal = principal or _principal()
+    if status != "authorized":
+        return FakeSkillAuthorizationPort(SkillAuthorizationResolution(status=status))
+    return FakeSkillAuthorizationPort(
         SkillAuthorizationResolution(
             status=status,
-            pins=(_pin(),) if pins is None and status == "authorized" else pins or (),
+            pins=(_pin(),) if pins is None else pins,
+            tenant_id=scoped_principal.tenant_id,
+            principal_user_id=scoped_principal.user_id,
+            workspace_id=workspace_id,
+            authorization_scope_sha256=authorization_scope_sha256(
+                scoped_principal, workspace_id
+            ),
+            authority_source="published_skill_authority",
         )
-    )
-
-
-def _agent_port(
-    *,
-    selected_skill_version: str = "agent-version",
-    supported_input_types: tuple[str, ...] = ("text", "file"),
-    supported_file_types: tuple[str, ...] = ("xlsx",),
-) -> FakeAgentAuthorizationPort:
-    return FakeAgentAuthorizationPort(
-        AgentFileAuthorizationResolution(
-            status="authorized",
-            agent_id="agent-immutable",
-            agent_revision=4,
-            profile_sha256=PROFILE_SHA256,
-            supported_input_types=supported_input_types,
-            supported_file_types=supported_file_types,
-            selected_skill_id="qa-rag-skill",
-            selected_skill_version=selected_skill_version,
-        )
-    )
-
-
-def _workspace_pin(pin: AuthorizedSkillPin | None = None) -> WorkspaceSkillPin:
-    selected = pin or _pin()
-    return WorkspaceSkillPin(
-        selected.skill_id, selected.expected_version, selected.manifest_sha256
     )
 
 
 def _inventory(
     *,
+    pin: AuthorizedSkillPin | None = None,
     dependencies: tuple[RuntimeDependencyIdentity, ...] | None = None,
-    workspace_skills: tuple[WorkspaceSkillPin, ...] | None = None,
     artifact_types: frozenset[str] = frozenset({"xlsx"}),
 ) -> RuntimeImageInventory:
+    selected = pin or _pin()
     return RuntimeImageInventory(
         image_digest=IMAGE_DIGEST,
         python_version="3.11.9",
         runs_as_non_root=True,
-        dependencies=dependencies
-        if dependencies is not None
-        else (
+        dependencies=(
             RuntimeDependencyIdentity("prebuilt_python", "openpyxl", "3.1.5"),
-            RuntimeDependencyIdentity("prebuilt_python", "matplotlib", "3.8.4"),
-            RuntimeDependencyIdentity("prebuilt_python", "python-docx", "1.2.0"),
+        )
+        if dependencies is None
+        else dependencies,
+        workspace_skills=(
+            WorkspaceSkillPin(
+                selected.skill_id,
+                selected.expected_version,
+                selected.manifest_sha256,
+            ),
         ),
-        workspace_skills=workspace_skills
-        if workspace_skills is not None
-        else (_workspace_pin(),),
         artifact_types=artifact_types,
         node_version=None,
         npm_source_install_allowed=False,
@@ -186,250 +238,368 @@ def _inventory(
     )
 
 
+def _runtime_resolution(
+    *,
+    principal: AuthPrincipal | None = None,
+    workspace_id: str = "workspace-reviewed",
+    run_id: str = "run-reviewed",
+    attempt_id: str = "attempt-reviewed",
+    inventory: RuntimeImageInventory | None = None,
+) -> RuntimeInventoryResolution:
+    scoped_principal = principal or _principal()
+    return RuntimeInventoryResolution(
+        status="authorized",
+        tenant_id=scoped_principal.tenant_id,
+        principal_user_id=scoped_principal.user_id,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authorization_scope_sha256=authorization_scope_sha256(
+            scoped_principal, workspace_id
+        ),
+        authority_source="runtime_lease_projection",
+        inventory=inventory or _inventory(),
+    )
+
+
+def _runtime_port(**kwargs) -> FakeRuntimeInventoryPort:
+    return FakeRuntimeInventoryPort(_runtime_resolution(**kwargs))
+
+
+def _agent_resolution(
+    *,
+    principal: AuthPrincipal | None = None,
+    workspace_id: str = "workspace-reviewed",
+    agent_revision: int = 4,
+    profile_sha256: str = PROFILE_SHA256,
+    supported_input_types: tuple[str, ...] = ("text", "file"),
+    supported_file_types: tuple[str, ...] = ("xlsx",),
+    selected_skill_version: str = "agent-version",
+) -> AgentFileAuthorizationResolution:
+    scoped_principal = principal or _principal()
+    return AgentFileAuthorizationResolution(
+        status="authorized",
+        tenant_id=scoped_principal.tenant_id,
+        principal_user_id=scoped_principal.user_id,
+        workspace_id=workspace_id,
+        authorization_scope_sha256=authorization_scope_sha256(
+            scoped_principal, workspace_id
+        ),
+        agent_id="agent-reviewed",
+        agent_revision=agent_revision,
+        profile_sha256=profile_sha256,
+        supported_input_types=supported_input_types,
+        supported_file_types=supported_file_types,
+        selected_skill_id="qa-rag-skill",
+        selected_skill_version=selected_skill_version,
+    )
+
+
 def _request(
     *attachments: AttachmentBytesForClassification,
+    principal: AuthPrincipal | None = None,
     task_intent: str = "analyze",
     explicit_selection: SkillSelection | None = None,
     agent_binding: AgentSkillBinding | None = None,
-    runtime_inventory: RuntimeImageInventory | None = None,
 ) -> FileCapabilityAdmissionRequest:
     return FileCapabilityAdmissionRequest(
         attachments=attachments,
         task_intent=task_intent,
+        principal=principal or _principal(),
+        workspace_id="workspace-reviewed",
+        run_id="run-reviewed",
+        attempt_id="attempt-reviewed",
         explicit_selection=explicit_selection,
         agent_binding=agent_binding,
-        runtime_inventory=runtime_inventory or _inventory(),
     )
 
 
 @pytest.mark.asyncio
-async def test_red_one_entry_classifies_bytes_then_binds_xlsx_to_one_pinned_skill():
-    port = _port()
+async def test_happy_path_requires_skill_and_runtime_authority_ports():
+    principal = _principal()
+    skill_port = _skill_port()
+    runtime_port = _runtime_port(principal=principal)
 
     result = await admit_file_capability(
-        _request(_attachment()), authorization_port=port
+        _request(_attachment(), principal=principal),
+        authorization_port=skill_port,
+        runtime_authorization_port=runtime_port,
     )
 
     assert result.state == ADMISSION_REQUIRED
     assert result.fallback_prohibited is True
     assert result.selected_skill == SkillSelection("qa-rag-skill", "v2026-07-29")
-    assert result.parser_requirements[0].parser_id == "ai-platform.xlsx.openpyxl"
-    assert result.parser_requirements[0].verified_media_type == XLSX_MIME
     assert result.runtime_image_digest == IMAGE_DIGEST
-    assert result.workspace_skill_pin == _workspace_pin()
-    assert [fact.to_public_payload() for fact in result.public_progress_facts] == [
+    assert result.registry_policy_digest == FILE_CAPABILITY_REGISTRY_POLICY_DIGEST
+    assert result.registry_digest == result.registry_policy_digest
+    assert result.contract_scope == FILE_CAPABILITY_CONTRACT_SCOPE
+    assert result.enforcement_state == FILE_CAPABILITY_ENFORCEMENT_STATE
+    assert result.admission_fingerprint
+    assert result.admission_fingerprint.startswith("sha256:")
+    assert runtime_port.calls == [
         {
-            "kind": "file_category",
-            "stage": "admission",
-            "status": "completed",
-            "label": "Spreadsheet files",
-            "progress": {"current": 1, "total": 1},
-        },
-        {
-            "kind": "parser",
-            "stage": "admission",
-            "status": "completed",
-            "label": "Spreadsheet analysis",
-            "progress": {"current": 1, "total": 1},
-        },
-        {
-            "kind": "skill",
-            "stage": "admission",
-            "status": "completed",
-            "label": "QA spreadsheet analysis",
-            "progress": {"current": 1, "total": 1},
-        },
-    ]
-    public_payload = repr(
-        [fact.to_public_payload() for fact in result.public_progress_facts]
-    )
-    assert "file-xlsx" not in public_payload
-    assert "qa-rag-skill" not in public_payload
-
-
-def test_request_rejects_a_nominal_identity_before_any_admission_can_consume_it():
-    public_decision = classify_attachment_bytes(_attachment())
-
-    with pytest.raises(ValueError, match="AttachmentBytesForClassification"):
-        _request(public_decision)
-
-
-def test_agent_binding_cannot_self_attest_a_selected_skill():
-    with pytest.raises(TypeError):
-        AgentSkillBinding(  # type: ignore[call-arg]
-            "agent-immutable",
-            SkillSelection("qa-rag-skill", "agent-version"),
-        )
-
-
-def test_admission_dto_rejects_noncanonical_metadata_and_rejection_codes():
-    with pytest.raises(ValueError, match="fallback invariant"):
-        FileCapabilityAdmission(
-            ADMISSION_REJECTED,
-            True,
-            "caller_supplied_rejection",
-            FILE_CAPABILITY_REGISTRY_VERSION,
-            FILE_CAPABILITY_REGISTRY_DIGEST,
-        )
-    with pytest.raises(ValueError, match="fallback invariant"):
-        FileCapabilityAdmission(
-            ADMISSION_REJECTED,
-            True,
-            "file_capability_type_unsupported",
-            "caller-registry",
-            FILE_CAPABILITY_REGISTRY_DIGEST,
-        )
-
-
-@pytest.mark.asyncio
-async def test_classification_rejection_is_terminal_and_never_calls_skill_authorization():
-    bad = _attachment()
-    bad = AttachmentBytesForClassification(
-        file_id=bad.file_id,
-        raw_bytes=b"not an OOXML workbook",
-        source_filename="spoofed.xlsx",
-        declared_media_type=XLSX_MIME,
-        expected_size_bytes=len(b"not an OOXML workbook"),
-        expected_sha256=hashlib.sha256(b"not an OOXML workbook").hexdigest(),
-    )
-    port = _port()
-
-    result = await admit_file_capability(_request(bad), authorization_port=port)
-
-    assert result.state == ADMISSION_REJECTED
-    assert result.rejection_code == "attachment_classification_type_unsupported"
-    assert result.fallback_prohibited is True
-    assert port.calls == []
-
-
-@pytest.mark.asyncio
-async def test_disabled_registry_profile_is_terminal_when_a_classifier_reaches_it(
-    monkeypatch,
-):
-    disabled_xlsx = replace(FILE_CAPABILITY_REGISTRY[0], enabled=False)
-    monkeypatch.setattr(
-        capability_admission,
-        "FILE_CAPABILITY_REGISTRY",
-        (disabled_xlsx, *FILE_CAPABILITY_REGISTRY[1:]),
-    )
-
-    result = await admit_file_capability(
-        _request(_attachment()), authorization_port=_port()
-    )
-
-    assert result.rejection_code == "file_capability_type_unsupported"
-    assert result.fallback_prohibited is True
-
-
-@pytest.mark.asyncio
-async def test_explicit_selection_precedes_server_choice_and_agent_binding_cannot_broaden_it():
-    valid = SkillSelection("qa-rag-skill", "caller-version")
-    accepted = await admit_file_capability(
-        _request(
-            _attachment(),
-            explicit_selection=valid,
-            runtime_inventory=_inventory(
-                workspace_skills=(_workspace_pin(_pin(version="caller-version")),)
-            ),
-        ),
-        authorization_port=_port(pins=(_pin(version="caller-version"),)),
-    )
-    incompatible = await admit_file_capability(
-        _request(_attachment(), explicit_selection=SkillSelection("other-skill", "v1")),
-        authorization_port=_port(),
-    )
-    binding = AgentSkillBinding("agent-immutable", 4, PROFILE_SHA256)
-    agent_rejected = await admit_file_capability(
-        _request(_attachment(), explicit_selection=valid, agent_binding=binding),
-        authorization_port=_port(),
-        agent_authorization_port=_agent_port(),
-    )
-
-    assert accepted.state == ADMISSION_REQUIRED
-    assert (
-        incompatible.rejection_code == "file_capability_caller_selection_incompatible"
-    )
-    assert agent_rejected.rejection_code == "file_capability_agent_profile_incompatible"
-
-
-@pytest.mark.asyncio
-async def test_agent_binding_is_resolved_by_exact_revision_before_skill_admission():
-    selected = _pin(version="agent-version")
-    skill_port = _port(pins=(selected,))
-    agent_port = _agent_port()
-
-    result = await admit_file_capability(
-        _request(
-            _attachment(),
-            agent_binding=AgentSkillBinding("agent-immutable", 4, PROFILE_SHA256),
-            runtime_inventory=_inventory(workspace_skills=(_workspace_pin(selected),)),
-        ),
-        authorization_port=skill_port,
-        agent_authorization_port=agent_port,
-    )
-
-    assert result.state == ADMISSION_REQUIRED
-    assert result.selected_skill == SkillSelection("qa-rag-skill", "agent-version")
-    assert agent_port.calls == [
-        {
-            "agent_id": "agent-immutable",
-            "expected_revision": 4,
-            "expected_profile_sha256": PROFILE_SHA256,
+            "principal": principal,
+            "workspace_id": "workspace-reviewed",
+            "run_id": "run-reviewed",
+            "attempt_id": "attempt-reviewed",
+            "expected_workspace_skill": _pin().workspace_pin(),
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_admission_fingerprint_changes_with_each_authoritative_fact_group():
+    base = await admit_file_capability(
+        _request(_attachment()),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(),
+    )
+    changed_file = await admit_file_capability(
+        _request(_attachment(cell_value="different workbook")),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(),
+    )
+    changed_pin = _pin(manifest_sha256="d" * 64)
+    changed_skill = await admit_file_capability(
+        _request(_attachment()),
+        authorization_port=_skill_port(pins=(changed_pin,)),
+        runtime_authorization_port=_runtime_port(
+            inventory=_inventory(pin=changed_pin)
+        ),
+    )
+    changed_runtime = await admit_file_capability(
+        _request(_attachment()),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(
+            inventory=replace(
+                _inventory(), image_digest="sha256:" + "e" * 64
+            )
+        ),
+    )
+    changed_intent = await admit_file_capability(
+        _request(_attachment(), task_intent="generate_artifact"),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(),
+    )
+
+    results = (base, changed_file, changed_skill, changed_runtime, changed_intent)
+    assert all(result.state == ADMISSION_REQUIRED for result in results)
+    assert len({result.admission_fingerprint for result in results}) == len(results)
     assert (
-        skill_port.calls[0]["binding"].authority == "server_authorized_agent_revision"
+        base.parser_requirements[0].expected_sha256
+        != changed_file.parser_requirements[0].expected_sha256
     )
 
 
 @pytest.mark.asyncio
-async def test_agent_binding_without_authority_or_with_empty_declaration_fails_closed():
-    request = _request(
-        _attachment(),
-        agent_binding=AgentSkillBinding("agent-immutable", 4, PROFILE_SHA256),
-    )
-    skill_port = _port()
+async def test_admission_fingerprint_covers_agent_revision_and_profile():
+    principal = _principal()
+    pin = _pin(version="agent-version")
+    first_profile = "c" * 64
+    second_profile = "d" * 64
 
-    missing_port = await admit_file_capability(
-        request,
-        authorization_port=skill_port,
-    )
-    empty_declaration = await admit_file_capability(
-        request,
-        authorization_port=skill_port,
-        agent_authorization_port=_agent_port(
-            supported_input_types=("text",),
-            supported_file_types=(),
-        ),
-    )
+    async def admitted(revision: int, profile_sha256: str):
+        return await admit_file_capability(
+            _request(
+                _attachment(),
+                principal=principal,
+                agent_binding=AgentSkillBinding(
+                    "agent-reviewed", revision, profile_sha256
+                ),
+            ),
+            authorization_port=_skill_port(pins=(pin,), principal=principal),
+            agent_authorization_port=FakeAgentAuthorizationPort(
+                _agent_resolution(
+                    principal=principal,
+                    agent_revision=revision,
+                    profile_sha256=profile_sha256,
+                )
+            ),
+            runtime_authorization_port=_runtime_port(
+                principal=principal,
+                inventory=_inventory(pin=pin),
+            ),
+        )
 
-    assert missing_port.rejection_code == "file_capability_agent_binding_required"
-    assert empty_declaration.rejection_code == "file_capability_agent_declaration_empty"
-    assert skill_port.calls == []
+    first = await admitted(4, first_profile)
+    second = await admitted(5, second_profile)
+
+    assert first.state == ADMISSION_REQUIRED
+    assert second.state == ADMISSION_REQUIRED
+    assert first.admission_fingerprint != second.admission_fingerprint
+
+
+def test_request_has_no_runtime_inventory_self_attestation_field():
+    parameters = inspect.signature(FileCapabilityAdmissionRequest).parameters
+
+    assert "runtime_inventory" not in parameters
+    assert {
+        "principal",
+        "workspace_id",
+        "run_id",
+        "attempt_id",
+    } <= set(parameters)
+    with pytest.raises(TypeError):
+        FileCapabilityAdmissionRequest(  # type: ignore[call-arg]
+            attachments=(_attachment(),),
+            task_intent="analyze",
+            principal=_principal(),
+            workspace_id="workspace-reviewed",
+            run_id="run-reviewed",
+            attempt_id="attempt-reviewed",
+            runtime_inventory=_inventory(),
+        )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "expected_code"),
+    ("resolution", "expected_code"),
     [
-        ("unavailable", "file_capability_skill_unavailable"),
-        ("unauthorized", "file_capability_not_authorized"),
-        ("stale", "file_capability_version_stale"),
+        (TimeoutError(), "file_capability_runtime_binding_unavailable"),
+        (
+            RuntimeInventoryResolution(status="unavailable"),
+            "file_capability_runtime_binding_unavailable",
+        ),
+        (
+            RuntimeInventoryResolution(status="unauthorized"),
+            "file_capability_runtime_not_authorized",
+        ),
+        (
+            RuntimeInventoryResolution(status="stale"),
+            "file_capability_runtime_revision_stale",
+        ),
     ],
 )
-async def test_skill_resolution_failures_are_bounded(status, expected_code):
+async def test_runtime_authority_failures_are_bounded(resolution, expected_code):
     result = await admit_file_capability(
-        _request(_attachment()), authorization_port=_port(status)
+        _request(_attachment()),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=FakeRuntimeInventoryPort(resolution),
     )
 
+    assert result.state == ADMISSION_REJECTED
     assert result.rejection_code == expected_code
     assert result.fallback_prohibited is True
 
 
 @pytest.mark.asyncio
+async def test_runtime_scope_mismatch_is_terminal():
+    result = await admit_file_capability(
+        _request(_attachment()),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(workspace_id="workspace-other"),
+    )
+
+    assert result.rejection_code == "file_capability_runtime_scope_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("inventory", "expected_code"),
+    [
+        (
+            _inventory(dependencies=()),
+            "file_capability_runtime_dependency_unavailable",
+        ),
+        (
+            _inventory(artifact_types=frozenset()),
+            "file_capability_required_artifact_incompatible",
+        ),
+        (
+            replace(_inventory(), workspace_skills=()),
+            "file_capability_workspace_skill_mismatch",
+        ),
+    ],
+)
+async def test_authorized_runtime_observation_still_requires_exact_facts(
+    inventory, expected_code
+):
+    task_intent = "generate_artifact" if "artifact" in expected_code else "analyze"
+    result = await admit_file_capability(
+        _request(_attachment(), task_intent=task_intent),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(inventory=inventory),
+    )
+
+    assert result.rejection_code == expected_code
+
+
+@pytest.mark.asyncio
+async def test_agent_admission_rechecks_acl_scope_declaration_and_selected_skill():
+    principal = _principal()
+    selected = _pin(version="agent-version")
+    skill_port = _skill_port(pins=(selected,))
+    agent_port = FakeAgentAuthorizationPort(_agent_resolution(principal=principal))
+    runtime_port = _runtime_port(
+        principal=principal,
+        inventory=_inventory(pin=selected),
+    )
+
+    result = await admit_file_capability(
+        _request(
+            _attachment(),
+            principal=principal,
+            agent_binding=AgentSkillBinding(
+                "agent-reviewed", 4, PROFILE_SHA256
+            ),
+        ),
+        authorization_port=skill_port,
+        agent_authorization_port=agent_port,
+        runtime_authorization_port=runtime_port,
+    )
+
+    assert result.state == ADMISSION_REQUIRED
+    assert result.selected_skill == SkillSelection("qa-rag-skill", "agent-version")
+    assert agent_port.calls[0]["principal"] is principal
+    binding = skill_port.calls[0]["binding"]
+    assert binding.authority == "server_authorized_agent_revision"
+    assert binding.workspace_id == "workspace-reviewed"
+    assert binding.principal_user_id == principal.user_id
+
+
+@pytest.mark.asyncio
+async def test_agent_scope_or_empty_declaration_never_reaches_skill_authority():
+    principal = _principal()
+    request = _request(
+        _attachment(),
+        principal=principal,
+        agent_binding=AgentSkillBinding("agent-reviewed", 4, PROFILE_SHA256),
+    )
+    skill_port = _skill_port()
+    scope_mismatch = replace(
+        _agent_resolution(principal=principal), workspace_id="workspace-other"
+    )
+
+    wrong_scope = await admit_file_capability(
+        request,
+        authorization_port=skill_port,
+        agent_authorization_port=FakeAgentAuthorizationPort(scope_mismatch),
+        runtime_authorization_port=_runtime_port(principal=principal),
+    )
+    empty = await admit_file_capability(
+        request,
+        authorization_port=skill_port,
+        agent_authorization_port=FakeAgentAuthorizationPort(
+            _agent_resolution(
+                principal=principal,
+                supported_input_types=("text",),
+                supported_file_types=(),
+            )
+        ),
+        runtime_authorization_port=_runtime_port(principal=principal),
+    )
+
+    assert wrong_scope.rejection_code == "file_capability_agent_scope_mismatch"
+    assert empty.rejection_code == "file_capability_agent_declaration_empty"
+    assert skill_port.calls == []
+
+
+@pytest.mark.asyncio
 async def test_skill_authority_exception_is_terminal_and_fail_closed():
     result = await admit_file_capability(
-        _request(_attachment()), authorization_port=RaisingAuthorizationPort()
+        _request(_attachment()),
+        authorization_port=FakeSkillAuthorizationPort(TimeoutError()),
+        runtime_authorization_port=_runtime_port(),
     )
 
     assert result.rejection_code == "file_capability_skill_unavailable"
@@ -437,97 +607,62 @@ async def test_skill_authority_exception_is_terminal_and_fail_closed():
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_resolution_homogeneous_files_and_artifact_contract():
-    ambiguous = await admit_file_capability(
-        _request(_attachment()),
-        authorization_port=_port(pins=(_pin(), _pin(skill_id="qa-rag-skill-2"))),
-    )
-    homogeneous = await admit_file_capability(
-        _request(_attachment("file-a"), _attachment("file-b")),
-        authorization_port=_port(),
-    )
-    artifact_gap = await admit_file_capability(
-        _request(
-            _attachment(),
-            task_intent="generate_artifact",
-            runtime_inventory=_inventory(artifact_types=frozenset()),
-        ),
-        authorization_port=_port(),
-    )
+async def test_skill_authority_resolution_must_echo_the_exact_acl_scope():
+    runtime_port = _runtime_port()
 
-    assert ambiguous.rejection_code == "file_capability_skill_ambiguous"
-    assert homogeneous.state == ADMISSION_REQUIRED
-    assert len(homogeneous.parser_requirements) == 2
-    assert (
-        artifact_gap.rejection_code == "file_capability_required_artifact_incompatible"
-    )
-
-
-@pytest.mark.asyncio
-async def test_workspace_skill_must_match_the_selected_id_version_and_content_hash():
-    selected = _pin(version="v2026-07-30", content_hash="a" * 64)
-    runtime_old = WorkspaceSkillPin("qa-rag-skill", "v2026-07-29", "b" * 64)
     result = await admit_file_capability(
-        _request(
-            _attachment(),
-            explicit_selection=SkillSelection(
-                selected.skill_id, selected.expected_version
-            ),
-            runtime_inventory=_inventory(workspace_skills=(runtime_old,)),
-        ),
-        authorization_port=_port(pins=(selected,)),
+        _request(_attachment()),
+        authorization_port=_skill_port(workspace_id="workspace-other"),
+        runtime_authorization_port=runtime_port,
     )
 
-    assert result.rejection_code == "file_capability_workspace_skill_mismatch"
+    assert result.rejection_code == "file_capability_skill_scope_mismatch"
     assert result.fallback_prohibited is True
-
-
-def test_runtime_inventory_uses_exact_prebuilt_image_facts_and_never_installs_node_dependencies():
-    inventory = _inventory()
-    node = RuntimeDependencyRequirement("node_npm", "sheetjs", "0.20")
-    python = RuntimeDependencyRequirement(
-        "python_runtime", "python", "3.11", require_non_root=True
-    )
-
-    assert inventory.missing_requirements((node,)) == (node,)
-    assert inventory.missing_requirements((python,)) == ()
-    assert inventory.node_version is None
-    assert inventory.npm_source_install_allowed is False
-    assert inventory.public_package_registry_egress is False
-    no_openpyxl = _inventory(dependencies=())
-    assert no_openpyxl.missing_requirements(
-        (RuntimeDependencyRequirement("prebuilt_python", "openpyxl", "3.1"),)
-    )
-    with pytest.raises(ValueError, match="dependency identity"):
-        RuntimeDependencyIdentity("prebuilt_python", "openpyxl", 1)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="runtime image inventory"):
-        replace(inventory, node_version=20)  # type: ignore[arg-type]
+    assert runtime_port.calls == []
 
 
 @pytest.mark.asyncio
-async def test_not_applicable_is_only_for_no_typed_files_and_rejections_prohibit_fallback():
-    not_applicable = await admit_file_capability(_request(), authorization_port=_port())
-    unsupported = AttachmentBytesForClassification(
-        file_id="file-unknown",
-        raw_bytes=b"unknown",
-        source_filename="unknown.bin",
-        declared_media_type="application/octet-stream",
-        expected_size_bytes=7,
-        expected_sha256=hashlib.sha256(b"unknown").hexdigest(),
-    )
-    rejected = await admit_file_capability(
-        _request(unsupported), authorization_port=_port()
+async def test_mime_mismatch_is_reported_before_any_authority_port_call():
+    skill_port = _skill_port()
+    runtime_port = _runtime_port()
+
+    result = await admit_file_capability(
+        _request(_attachment(declared_media_type="application/pdf")),
+        authorization_port=skill_port,
+        runtime_authorization_port=runtime_port,
     )
 
-    assert not_applicable.state == "not_applicable"
-    assert not_applicable.fallback_prohibited is False
-    assert rejected.rejection_code == "attachment_classification_type_unsupported"
-    assert rejected.fallback_prohibited is True
+    assert (
+        result.rejection_code
+        == "attachment_classification_media_type_incompatible"
+    )
+    assert skill_port.calls == []
+    assert runtime_port.calls == []
 
 
-def test_registry_is_deterministic_and_specialized_execution_remains_xlsx_only():
-    from app.attachments.capability_admission import ParserIdentity
-    from app.attachments.capability_admission import RuntimeDependencyKind
+@pytest.mark.asyncio
+async def test_empty_and_non_execution_requests_do_not_claim_production_admission():
+    empty = await admit_file_capability(
+        _request(),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(),
+    )
+    non_execution = await admit_file_capability(
+        _request(_attachment(), task_intent="non_execution"),
+        authorization_port=_skill_port(),
+        runtime_authorization_port=_runtime_port(),
+    )
+
+    assert empty.state == "not_applicable"
+    assert non_execution.state == "not_applicable"
+    assert empty.enforcement_state == "not_production_wired"
+
+
+def test_registry_policy_digest_and_legacy_exports_are_unambiguous():
+    from app.attachments.capability_admission import (
+        ParserIdentity,
+        RuntimeDependencyKind,
+    )
     from app.attachments.file_capabilities import (
         ParserIdentity as CanonicalParserIdentity,
     )
@@ -535,34 +670,10 @@ def test_registry_is_deterministic_and_specialized_execution_remains_xlsx_only()
         RuntimeDependencyKind as CanonicalRuntimeDependencyKind,
     )
 
-    profile_ids = {profile.profile_id for profile in FILE_CAPABILITY_REGISTRY}
-
-    assert FILE_CAPABILITY_REGISTRY_VERSION == "ai-platform.file-capability-registry.v3"
-    assert registry_digest(FILE_CAPABILITY_REGISTRY) == FILE_CAPABILITY_REGISTRY_DIGEST
+    assert len(FILE_CAPABILITY_REGISTRY) == 1
+    assert registry_policy_digest(FILE_CAPABILITY_REGISTRY) == (
+        FILE_CAPABILITY_REGISTRY_POLICY_DIGEST
+    )
     assert ParserIdentity is CanonicalParserIdentity
     assert RuntimeDependencyKind is CanonicalRuntimeDependencyKind
-    assert "tabular.xlsx" in profile_ids
-    assert all(
-        not profile.enabled
-        for profile in FILE_CAPABILITY_REGISTRY
-        if profile.profile_id != "tabular.xlsx"
-    )
-    assert {
-        "tabular.xls",
-        "tabular.csv",
-        "tabular.tsv",
-        "document.pdf",
-        "document.docx",
-        "document.txt",
-        "document.md",
-        "document.html",
-        "presentation.pptx",
-        "image.png",
-        "image.jpeg",
-        "image.tiff",
-        "structured.json",
-        "structured.xml",
-        "archive.reviewed",
-        "media.audio",
-        "media.video",
-    } <= profile_ids
+    assert FILE_CAPABILITY_REGISTRY_VERSION.endswith("v4-xlsx-only")

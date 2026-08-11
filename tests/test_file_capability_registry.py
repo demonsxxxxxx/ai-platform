@@ -6,7 +6,6 @@ import pytest
 
 from app.attachments.file_capabilities import (
     AGENT_FILE_DECLARATION_EMPTY_POLICY,
-    AgentFileAuthorizationResolution,
     CAPABILITY_AGENT_INPUT,
     CAPABILITY_ARTIFACT_PREVIEW,
     CAPABILITY_INPUT_PREVIEW,
@@ -14,48 +13,55 @@ from app.attachments.file_capabilities import (
     CAPABILITY_SUPPORTED,
     CAPABILITY_TYPED_PARSE,
     CAPABILITY_UPLOAD,
-    FILE_CAPABILITY_AGENT_BINDING_INVALID,
     FILE_CAPABILITY_AGENT_BINDING_REQUIRED,
     FILE_CAPABILITY_AGENT_BINDING_UNAVAILABLE,
     FILE_CAPABILITY_AGENT_DECLARATION_EMPTY,
-    FILE_CAPABILITY_AGENT_DECLARATION_INCONSISTENT,
     FILE_CAPABILITY_AGENT_DECLARATION_INVALID,
-    FILE_CAPABILITY_AGENT_INPUT_UNSUPPORTED,
     FILE_CAPABILITY_AGENT_NOT_AUTHORIZED,
     FILE_CAPABILITY_AGENT_REVISION_STALE,
-    FILE_CAPABILITY_AGENT_TYPE_NOT_DECLARED,
-    FILE_CAPABILITY_ARTIFACT_PREVIEW_UNSUPPORTED,
+    FILE_CAPABILITY_AGENT_SCOPE_MISMATCH,
+    FILE_CAPABILITY_CONTRACT_SCOPE,
+    FILE_CAPABILITY_ENFORCEMENT_STATE,
     FILE_CAPABILITY_FILES_REQUIRED,
     FILE_CAPABILITY_IDENTITY_INVALID,
-    FILE_CAPABILITY_INPUT_PREVIEW_UNSUPPORTED,
     FILE_CAPABILITY_OPERATION_INVALID,
     FILE_CAPABILITY_REGISTRY,
-    FILE_CAPABILITY_REGISTRY_DIGEST,
+    FILE_CAPABILITY_REGISTRY_POLICY_DIGEST,
     FILE_CAPABILITY_REGISTRY_VERSION,
     FILE_CAPABILITY_REJECTION_CODES,
-    FILE_CAPABILITY_TYPED_PARSE_UNSUPPORTED,
-    FILE_CAPABILITY_UPLOAD_UNSUPPORTED,
+    FILE_CAPABILITY_TYPE_UNSUPPORTED,
+    AgentFileAuthorizationResolution,
     FileCapabilityContractError,
     FileCapabilityDecision,
-    ServerAuthorizedAgentFileBinding,
+    FileCapabilityProfile,
+    ParserIdentity,
     VerifiedFileIdentity,
+    authorization_scope_sha256,
     authorize_agent_file_capabilities,
     check_file_capabilities,
-    registry_digest,
+    registry_policy_digest,
 )
+from app.auth import AuthPrincipal
+from app.file_parser_contracts import XLSX_CONTENT_TYPE
 
 
-XLSX = VerifiedFileIdentity(
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"
-)
+XLSX = VerifiedFileIdentity(XLSX_CONTENT_TYPE, ".xlsx")
 PDF = VerifiedFileIdentity("application/pdf", ".pdf")
-PPTX = VerifiedFileIdentity(
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"
-)
-XLS = VerifiedFileIdentity("application/vnd.ms-excel", ".xls")
-TSV = VerifiedFileIdentity("text/tab-separated-values", ".tsv")
-PNG = VerifiedFileIdentity("image/png", ".png")
 PROFILE_SHA256 = "a" * 64
+
+
+def _principal(*, user_id: str = "user-reviewed") -> AuthPrincipal:
+    return AuthPrincipal(
+        user_id=user_id,
+        display_name="Reviewed User",
+        tenant_id="tenant-reviewed",
+        department_id="department-reviewed",
+        roles=["user"],
+        permissions=["agent:use"],
+        source="trusted-header",
+        authority_source="trusted-gateway",
+        authority_checked_at="2026-08-11T00:00:00+00:00",
+    )
 
 
 class FakeAgentAuthorizationPort:
@@ -66,12 +72,16 @@ class FakeAgentAuthorizationPort:
     async def resolve_authorized_revision(
         self,
         *,
+        principal: AuthPrincipal,
+        workspace_id: str,
         agent_id: str,
         expected_revision: int,
         expected_profile_sha256: str,
     ) -> object:
         self.calls.append(
             {
+                "principal": principal,
+                "workspace_id": workspace_id,
                 "agent_id": agent_id,
                 "expected_revision": expected_revision,
                 "expected_profile_sha256": expected_profile_sha256,
@@ -84,22 +94,29 @@ class FakeAgentAuthorizationPort:
 
 def _agent_resolution(
     *supported_file_types: str,
+    principal: AuthPrincipal | None = None,
+    workspace_id: str = "workspace-reviewed",
     agent_id: str = "agent-reviewed",
     agent_revision: int = 7,
     profile_sha256: str = PROFILE_SHA256,
     supported_input_types: tuple[str, ...] = ("text", "file"),
-    selected_skill_id: str = "qa-rag-skill",
-    selected_skill_version: str = "version-reviewed",
 ) -> AgentFileAuthorizationResolution:
+    scoped_principal = principal or _principal()
     return AgentFileAuthorizationResolution(
         status="authorized",
+        tenant_id=scoped_principal.tenant_id,
+        principal_user_id=scoped_principal.user_id,
+        workspace_id=workspace_id,
+        authorization_scope_sha256=authorization_scope_sha256(
+            scoped_principal, workspace_id
+        ),
         agent_id=agent_id,
         agent_revision=agent_revision,
         profile_sha256=profile_sha256,
         supported_input_types=supported_input_types,
         supported_file_types=tuple(supported_file_types),
-        selected_skill_id=selected_skill_id,
-        selected_skill_version=selected_skill_version,
+        selected_skill_id="qa-rag-skill",
+        selected_skill_version="version-reviewed",
     )
 
 
@@ -111,103 +128,65 @@ def _agent_resolution(
         (" application/pdf", ".pdf"),
         ("application/pdf", "pdf"),
         ("application/pdf", ".PDF"),
-        ("application", ".pdf"),
     ],
 )
-def test_verified_identity_rejects_noncanonical_or_unverified_pairs(
-    media_type, extension
-):
+def test_verified_identity_rejects_noncanonical_pairs(media_type, extension):
     with pytest.raises(FileCapabilityContractError) as exc_info:
         VerifiedFileIdentity(media_type, extension)
 
     assert exc_info.value.code == FILE_CAPABILITY_IDENTITY_INVALID
 
 
-def test_matrix_records_each_capability_axis_independently():
+def test_registry_is_truthfully_xlsx_only_and_explicitly_unwired():
+    assert len(FILE_CAPABILITY_REGISTRY) == 1
+    profile = FILE_CAPABILITY_REGISTRY[0]
+
+    assert FILE_CAPABILITY_REGISTRY_VERSION.endswith("v4-xlsx-only")
+    assert FILE_CAPABILITY_CONTRACT_SCOPE == "xlsx_only_contract"
+    assert FILE_CAPABILITY_ENFORCEMENT_STATE == "not_production_wired"
+    assert profile.profile_id == "tabular.xlsx"
+    assert profile.identities == (XLSX,)
+    assert profile.enabled is True
+    assert profile.capabilities.upload is True
+    assert profile.capabilities.typed_parse is True
+    assert profile.capabilities.input_preview is True
+    assert profile.capabilities.artifact_preview is True
+    assert profile.capabilities.agent_input is True
+
+
+def test_xlsx_policy_axes_are_independent_and_non_xlsx_is_unsupported():
     for capability in (
         CAPABILITY_UPLOAD,
         CAPABILITY_TYPED_PARSE,
         CAPABILITY_INPUT_PREVIEW,
         CAPABILITY_ARTIFACT_PREVIEW,
     ):
-        assert (
-            check_file_capabilities((XLSX,), capability=capability).state
-            == CAPABILITY_SUPPORTED
-        )
+        decision = check_file_capabilities((XLSX,), capability=capability)
+        assert decision.state == CAPABILITY_SUPPORTED
+        assert decision.enforcement_state == "not_production_wired"
 
     assert (
-        check_file_capabilities((PDF,), capability=CAPABILITY_TYPED_PARSE).state
-        == CAPABILITY_SUPPORTED
-    )
-    assert (
-        check_file_capabilities((PDF,), capability=CAPABILITY_ARTIFACT_PREVIEW).state
-        == CAPABILITY_SUPPORTED
-    )
-    assert (
-        check_file_capabilities((PPTX,), capability=CAPABILITY_UPLOAD).state
-        == CAPABILITY_SUPPORTED
-    )
-    assert (
-        check_file_capabilities((PPTX,), capability=CAPABILITY_INPUT_PREVIEW).state
-        == CAPABILITY_SUPPORTED
-    )
-    assert (
-        check_file_capabilities((PPTX,), capability=CAPABILITY_ARTIFACT_PREVIEW).state
-        == CAPABILITY_SUPPORTED
-    )
-
-    assert (
-        check_file_capabilities(
-            (PPTX,), capability=CAPABILITY_TYPED_PARSE
-        ).rejection_code
-        == FILE_CAPABILITY_TYPED_PARSE_UNSUPPORTED
+        check_file_capabilities((PDF,), capability=CAPABILITY_UPLOAD).rejection_code
+        == FILE_CAPABILITY_TYPE_UNSUPPORTED
     )
     assert (
         check_file_capabilities(
-            (XLS,), capability=CAPABILITY_INPUT_PREVIEW
+            (XLSX, PDF), capability=CAPABILITY_UPLOAD
         ).rejection_code
-        == FILE_CAPABILITY_INPUT_PREVIEW_UNSUPPORTED
-    )
-    assert (
-        check_file_capabilities(
-            (XLS,), capability=CAPABILITY_ARTIFACT_PREVIEW
-        ).rejection_code
-        == FILE_CAPABILITY_ARTIFACT_PREVIEW_UNSUPPORTED
-    )
-    assert (
-        check_file_capabilities((TSV,), capability=CAPABILITY_UPLOAD).rejection_code
-        == FILE_CAPABILITY_UPLOAD_UNSUPPORTED
+        == FILE_CAPABILITY_TYPE_UNSUPPORTED
     )
 
 
 @pytest.mark.asyncio
-async def test_agent_file_decision_requires_one_server_authorized_revision_binding():
-    no_binding = check_file_capabilities((PDF,), capability=CAPABILITY_AGENT_INPUT)
-    invalid_binding = await authorize_agent_file_capabilities(
-        (PDF,),
-        agent_id="agent-reviewed",
-        expected_revision=7,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=FakeAgentAuthorizationPort(object()),  # type: ignore[arg-type]
-    )
-    port = FakeAgentAuthorizationPort(
-        _agent_resolution("application/pdf", "xlsx", "document.md")
-    )
+async def test_agent_input_requires_acl_scoped_authority_and_exact_declaration():
+    principal = _principal()
+    no_binding = check_file_capabilities((XLSX,), capability=CAPABILITY_AGENT_INPUT)
+    port = FakeAgentAuthorizationPort(_agent_resolution("xlsx", principal=principal))
 
     accepted = await authorize_agent_file_capabilities(
-        (
-            PDF,
-            XLSX,
-            VerifiedFileIdentity("text/markdown", ".md"),
-            VerifiedFileIdentity("text/markdown", ".markdown"),
-        ),
-        agent_id="agent-reviewed",
-        expected_revision=7,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=port,
-    )
-    xlsx_accepted = await authorize_agent_file_capabilities(
         (XLSX,),
+        principal=principal,
+        workspace_id="workspace-reviewed",
         agent_id="agent-reviewed",
         expected_revision=7,
         expected_profile_sha256=PROFILE_SHA256,
@@ -215,39 +194,34 @@ async def test_agent_file_decision_requires_one_server_authorized_revision_bindi
     )
 
     assert no_binding.rejection_code == FILE_CAPABILITY_AGENT_BINDING_REQUIRED
-    assert invalid_binding.rejection_code == FILE_CAPABILITY_AGENT_BINDING_INVALID
     assert accepted.state == CAPABILITY_SUPPORTED
-    assert xlsx_accepted.state == CAPABILITY_SUPPORTED
     assert port.calls == [
         {
+            "principal": principal,
+            "workspace_id": "workspace-reviewed",
             "agent_id": "agent-reviewed",
             "expected_revision": 7,
             "expected_profile_sha256": PROFILE_SHA256,
-        },
-        {
-            "agent_id": "agent-reviewed",
-            "expected_revision": 7,
-            "expected_profile_sha256": PROFILE_SHA256,
-        },
+        }
     ]
 
 
 @pytest.mark.asyncio
-async def test_empty_agent_declaration_means_deny_all_without_wildcard_fallback():
-    port = FakeAgentAuthorizationPort(
-        _agent_resolution(
-            agent_id="agent-text-only",
-            agent_revision=3,
-            supported_input_types=("text",),
-        )
-    )
-
+async def test_empty_agent_declaration_is_deny_all_without_fallback():
+    principal = _principal()
     result = await authorize_agent_file_capabilities(
         (XLSX,),
-        agent_id="agent-text-only",
-        expected_revision=3,
+        principal=principal,
+        workspace_id="workspace-reviewed",
+        agent_id="agent-reviewed",
+        expected_revision=7,
         expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=port,
+        authorization_port=FakeAgentAuthorizationPort(
+            _agent_resolution(
+                principal=principal,
+                supported_input_types=("text",),
+            )
+        ),
     )
 
     assert AGENT_FILE_DECLARATION_EMPTY_POLICY == "deny_all"
@@ -256,139 +230,118 @@ async def test_empty_agent_declaration_means_deny_all_without_wildcard_fallback(
     assert result.fallback_prohibited is True
 
 
+@pytest.mark.asyncio
+async def test_non_xlsx_agent_declaration_and_scope_mismatch_fail_closed():
+    principal = _principal()
+    invalid_declaration = await authorize_agent_file_capabilities(
+        (XLSX,),
+        principal=principal,
+        workspace_id="workspace-reviewed",
+        agent_id="agent-reviewed",
+        expected_revision=7,
+        expected_profile_sha256=PROFILE_SHA256,
+        authorization_port=FakeAgentAuthorizationPort(
+            _agent_resolution("pdf", principal=principal)
+        ),
+    )
+    wrong_scope = replace(
+        _agent_resolution("xlsx", principal=principal),
+        workspace_id="workspace-other",
+    )
+    scope_mismatch = await authorize_agent_file_capabilities(
+        (XLSX,),
+        principal=principal,
+        workspace_id="workspace-reviewed",
+        agent_id="agent-reviewed",
+        expected_revision=7,
+        expected_profile_sha256=PROFILE_SHA256,
+        authorization_port=FakeAgentAuthorizationPort(wrong_scope),
+    )
+
+    assert (
+        invalid_declaration.rejection_code
+        == FILE_CAPABILITY_AGENT_DECLARATION_INVALID
+    )
+    assert scope_mismatch.rejection_code == FILE_CAPABILITY_AGENT_SCOPE_MISMATCH
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("declarations", "expected_code"),
+    ("resolution", "expected_code"),
     [
-        (("application/x-unreviewed",), FILE_CAPABILITY_AGENT_DECLARATION_INVALID),
-        ((" PDF ",), FILE_CAPABILITY_AGENT_DECLARATION_INVALID),
-        (("pdf", "application/pdf"), FILE_CAPABILITY_AGENT_DECLARATION_INVALID),
+        (TimeoutError(), FILE_CAPABILITY_AGENT_BINDING_UNAVAILABLE),
         (
-            (
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ),
-            FILE_CAPABILITY_AGENT_INPUT_UNSUPPORTED,
+            AgentFileAuthorizationResolution(status="unavailable"),
+            FILE_CAPABILITY_AGENT_BINDING_UNAVAILABLE,
+        ),
+        (
+            AgentFileAuthorizationResolution(status="unauthorized"),
+            FILE_CAPABILITY_AGENT_NOT_AUTHORIZED,
+        ),
+        (
+            AgentFileAuthorizationResolution(status="stale"),
+            FILE_CAPABILITY_AGENT_REVISION_STALE,
         ),
     ],
 )
-@pytest.mark.asyncio
-async def test_server_binding_rejects_unreviewed_or_non_agent_declarations(
-    declarations, expected_code
-):
+async def test_agent_authority_failures_have_stable_codes(resolution, expected_code):
     result = await authorize_agent_file_capabilities(
-        (PDF,),
+        (XLSX,),
+        principal=_principal(),
+        workspace_id="workspace-reviewed",
         agent_id="agent-reviewed",
         expected_revision=7,
         expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=FakeAgentAuthorizationPort(_agent_resolution(*declarations)),
+        authorization_port=FakeAgentAuthorizationPort(resolution),
     )
 
     assert result.rejection_code == expected_code
+    assert result.fallback_prohibited is True
 
 
-@pytest.mark.asyncio
-async def test_mixed_file_decision_is_atomic_for_declaration_and_operation_support():
-    xlsx_only = FakeAgentAuthorizationPort(
-        _agent_resolution("xlsx", agent_id="agent-xlsx", agent_revision=2)
-    )
-    both = FakeAgentAuthorizationPort(
-        _agent_resolution(
-            "xlsx",
-            "pdf",
-            agent_id="agent-docs",
-            agent_revision=4,
-            profile_sha256="b" * 64,
-        )
-    )
-
-    undeclared = await authorize_agent_file_capabilities(
-        (XLSX, PDF),
-        agent_id="agent-xlsx",
-        expected_revision=2,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=xlsx_only,
-    )
-    accepted = await authorize_agent_file_capabilities(
-        (XLSX, PDF),
-        agent_id="agent-docs",
-        expected_revision=4,
-        expected_profile_sha256="b" * 64,
-        authorization_port=both,
-    )
-    mixed_upload = check_file_capabilities((XLSX, XLS), capability=CAPABILITY_UPLOAD)
-    mixed_with_unsupported = check_file_capabilities(
-        (XLSX, TSV), capability=CAPABILITY_UPLOAD
-    )
-    mixed_typed_parse = check_file_capabilities(
-        (XLSX, PPTX), capability=CAPABILITY_TYPED_PARSE
-    )
-    mixed_input_preview = check_file_capabilities(
-        (XLSX, XLS), capability=CAPABILITY_INPUT_PREVIEW
-    )
-    mixed_artifact_preview = check_file_capabilities(
-        (PDF, PNG), capability=CAPABILITY_ARTIFACT_PREVIEW
-    )
-
-    assert undeclared.rejection_code == FILE_CAPABILITY_AGENT_TYPE_NOT_DECLARED
-    assert accepted.state == CAPABILITY_SUPPORTED
-    assert mixed_upload.state == CAPABILITY_SUPPORTED
-    assert mixed_with_unsupported.rejection_code == FILE_CAPABILITY_UPLOAD_UNSUPPORTED
-    assert mixed_typed_parse.rejection_code == FILE_CAPABILITY_TYPED_PARSE_UNSUPPORTED
-    assert (
-        mixed_input_preview.rejection_code == FILE_CAPABILITY_INPUT_PREVIEW_UNSUPPORTED
-    )
-    assert (
-        mixed_artifact_preview.rejection_code
-        == FILE_CAPABILITY_ARTIFACT_PREVIEW_UNSUPPORTED
-    )
-
-
-@pytest.mark.asyncio
-async def test_binding_and_operation_contract_fail_closed_with_stable_codes():
-    with pytest.raises(TypeError, match="Protocols cannot be instantiated"):
-        ServerAuthorizedAgentFileBinding()
-    port = FakeAgentAuthorizationPort(_agent_resolution("pdf"))
-    invalid_binding = await authorize_agent_file_capabilities(
-        (PDF,),
-        agent_id="agent-reviewed",
-        expected_revision=7,
-        expected_profile_sha256="not-a-sha256",
-        authorization_port=port,
-    )
-
-    invalid_operation = check_file_capabilities(
-        (PDF,),
-        capability="execute",  # type: ignore[arg-type]
-    )
-    empty_files = check_file_capabilities((), capability=CAPABILITY_UPLOAD)
-
-    assert invalid_binding.rejection_code == FILE_CAPABILITY_AGENT_BINDING_INVALID
-    assert port.calls == []
-    assert invalid_operation.rejection_code == FILE_CAPABILITY_OPERATION_INVALID
-    assert invalid_operation.rejection_code in FILE_CAPABILITY_REJECTION_CODES
-    assert invalid_operation.fallback_prohibited is True
-    assert empty_files.rejection_code == FILE_CAPABILITY_FILES_REQUIRED
-
-
-def test_public_decision_helpers_are_pinned_to_the_canonical_registry():
+def test_policy_helpers_are_canonical_and_legacy_pairs_constructor_still_works():
     import inspect
 
+    legacy = FileCapabilityProfile(
+        "legacy.xlsx",
+        "Legacy spreadsheet",
+        ((XLSX_CONTENT_TYPE, ".xlsx"),),
+        True,
+        ParserIdentity("legacy.parser", "1", 1024, "Legacy parser"),
+        "legacy-skill",
+        (),
+        (("analyze", ()),),
+        True,
+    )
+    changed = (replace(FILE_CAPABILITY_REGISTRY[0], homogeneous=False),)
+
+    assert legacy.pairs == ((XLSX_CONTENT_TYPE, ".xlsx"),)
+    assert legacy.identities == (XLSX,)
     assert "registry" not in inspect.signature(check_file_capabilities).parameters
+    assert "registry" not in inspect.signature(
+        authorize_agent_file_capabilities
+    ).parameters
     assert (
-        "registry"
-        not in inspect.signature(authorize_agent_file_capabilities).parameters
+        registry_policy_digest(FILE_CAPABILITY_REGISTRY)
+        == FILE_CAPABILITY_REGISTRY_POLICY_DIGEST
+    )
+    assert (
+        registry_policy_digest(changed)
+        != FILE_CAPABILITY_REGISTRY_POLICY_DIGEST
     )
 
 
-def test_decision_dto_rejects_noncanonical_registry_metadata():
-    with pytest.raises(ValueError, match="decision is invalid"):
-        FileCapabilityDecision(
-            CAPABILITY_SUPPORTED,
-            CAPABILITY_UPLOAD,
-            True,
-            None,
-            "caller-registry",
-            FILE_CAPABILITY_REGISTRY_DIGEST,
-        )
+def test_profile_rejects_a_non_parser_object_at_construction():
+    with pytest.raises(ValueError, match="file capability profile is invalid"):
+        replace(FILE_CAPABILITY_REGISTRY[0], parser=object())
+
+
+def test_policy_decision_metadata_is_not_an_admission_integrity_claim():
+    decision = check_file_capabilities((XLSX,), capability=CAPABILITY_UPLOAD)
+
+    assert decision.registry_policy_digest == FILE_CAPABILITY_REGISTRY_POLICY_DIGEST
+    assert decision.registry_digest == decision.registry_policy_digest
+    assert decision.enforcement_state == FILE_CAPABILITY_ENFORCEMENT_STATE
     with pytest.raises(ValueError, match="decision is invalid"):
         FileCapabilityDecision(
             CAPABILITY_SUPPORTED,
@@ -400,130 +353,12 @@ def test_decision_dto_rejects_noncanonical_registry_metadata():
         )
 
 
-@pytest.mark.asyncio
-async def test_server_binding_rejects_file_types_on_a_text_only_agent_revision():
-    resolution = _agent_resolution(
-        "pdf",
-        agent_id="agent-text-only",
-        agent_revision=5,
-        supported_input_types=("text",),
+def test_invalid_operation_and_empty_batch_are_stable_fail_closed_decisions():
+    invalid = check_file_capabilities(
+        (XLSX,), capability="execute"  # type: ignore[arg-type]
     )
-    result = await authorize_agent_file_capabilities(
-        (PDF,),
-        agent_id="agent-text-only",
-        expected_revision=5,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=FakeAgentAuthorizationPort(resolution),
-    )
+    empty = check_file_capabilities((), capability=CAPABILITY_UPLOAD)
 
-    assert result.rejection_code == FILE_CAPABILITY_AGENT_DECLARATION_INCONSISTENT
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "expected_code"),
-    [
-        ("unavailable", FILE_CAPABILITY_AGENT_BINDING_UNAVAILABLE),
-        ("unauthorized", FILE_CAPABILITY_AGENT_NOT_AUTHORIZED),
-        ("stale", FILE_CAPABILITY_AGENT_REVISION_STALE),
-    ],
-)
-async def test_agent_authority_port_statuses_are_stable_and_fail_closed(
-    status, expected_code
-):
-    result = await authorize_agent_file_capabilities(
-        (PDF,),
-        agent_id="agent-reviewed",
-        expected_revision=7,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=FakeAgentAuthorizationPort(
-            AgentFileAuthorizationResolution(status=status)
-        ),
-    )
-
-    assert result.rejection_code == expected_code
-    assert result.fallback_prohibited is True
-
-
-@pytest.mark.asyncio
-async def test_agent_authority_port_exception_is_stable_and_fail_closed():
-    result = await authorize_agent_file_capabilities(
-        (PDF,),
-        agent_id="agent-reviewed",
-        expected_revision=7,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=FakeAgentAuthorizationPort(TimeoutError()),
-    )
-
-    assert result.rejection_code == FILE_CAPABILITY_AGENT_BINDING_UNAVAILABLE
-    assert result.fallback_prohibited is True
-
-
-@pytest.mark.asyncio
-async def test_authorized_port_result_must_match_the_exact_requested_revision():
-    result = await authorize_agent_file_capabilities(
-        (PDF,),
-        agent_id="agent-reviewed",
-        expected_revision=7,
-        expected_profile_sha256=PROFILE_SHA256,
-        authorization_port=FakeAgentAuthorizationPort(
-            _agent_resolution("pdf", profile_sha256="b" * 64)
-        ),
-    )
-
-    assert result.rejection_code == FILE_CAPABILITY_AGENT_REVISION_STALE
-
-
-def test_registry_version_digest_and_profile_identities_are_deterministic():
-    identities = [
-        identity
-        for profile in FILE_CAPABILITY_REGISTRY
-        for identity in profile.identities
-    ]
-    profile_by_id = {
-        profile.profile_id: profile for profile in FILE_CAPABILITY_REGISTRY
-    }
-    changed_registry = (
-        FILE_CAPABILITY_REGISTRY[0],
-        replace(
-            FILE_CAPABILITY_REGISTRY[1],
-            capabilities=replace(
-                FILE_CAPABILITY_REGISTRY[1].capabilities, upload=False
-            ),
-        ),
-        *FILE_CAPABILITY_REGISTRY[2:],
-    )
-
-    assert FILE_CAPABILITY_REGISTRY_VERSION == "ai-platform.file-capability-registry.v3"
-    assert registry_digest(FILE_CAPABILITY_REGISTRY) == FILE_CAPABILITY_REGISTRY_DIGEST
-    assert registry_digest(changed_registry) != FILE_CAPABILITY_REGISTRY_DIGEST
-    assert len(identities) == len(set(identities))
-    assert profile_by_id["tabular.xlsx"].enabled is True
-    assert profile_by_id["document.pdf"].capabilities.agent_input is True
-    assert profile_by_id["presentation.pptx"].capabilities.typed_parse is False
-    assert all(
-        not profile.enabled
-        for profile in FILE_CAPABILITY_REGISTRY
-        if profile.profile_id != "tabular.xlsx"
-    )
-
-
-def test_preview_media_type_projections_match_current_route_contracts():
-    from app.artifact_preview import ARTIFACT_PREVIEW_ALLOWED_CONTENT_TYPES
-    from app.routes.files import INPUT_FILE_PREVIEW_CONTENT_TYPES
-
-    input_preview_media_types = {
-        identity.media_type
-        for profile in FILE_CAPABILITY_REGISTRY
-        if profile.capabilities.input_preview
-        for identity in profile.identities
-    }
-    artifact_preview_media_types = {
-        identity.media_type
-        for profile in FILE_CAPABILITY_REGISTRY
-        if profile.capabilities.artifact_preview
-        for identity in profile.identities
-    }
-
-    assert input_preview_media_types == INPUT_FILE_PREVIEW_CONTENT_TYPES
-    assert artifact_preview_media_types == ARTIFACT_PREVIEW_ALLOWED_CONTENT_TYPES
+    assert invalid.rejection_code == FILE_CAPABILITY_OPERATION_INVALID
+    assert invalid.rejection_code in FILE_CAPABILITY_REJECTION_CODES
+    assert empty.rejection_code == FILE_CAPABILITY_FILES_REQUIRED

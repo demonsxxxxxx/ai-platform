@@ -57,19 +57,49 @@ def _rewrite_archive(raw: bytes, mutate) -> bytes:
     return output.getvalue()
 
 
-def test_red_xlsx_classification_comes_from_bytes_not_declared_mime():
+@pytest.mark.parametrize(
+    "declared_media_type",
+    [
+        "",
+        "application/octet-stream",
+        XLSX_MIME,
+        f" {XLSX_MIME.upper()} ; charset=binary",
+    ],
+)
+def test_xlsx_classification_accepts_only_unknown_or_compatible_declared_mime(
+    declared_media_type,
+):
     raw = _xlsx_bytes()
 
     result = classify_attachment_bytes(
-        _input(raw, declared_media_type="text/plain", source_filename="report.xlsx")
+        _input(
+            raw,
+            declared_media_type=declared_media_type,
+            source_filename="report.xlsx",
+        )
     )
 
     assert result.state == CLASSIFICATION_CLASSIFIED
     assert result.media_type == XLSX_MIME
     assert result.verified_extension == ".xlsx"
     assert result.classifier_version
-    assert "text/plain" not in repr(result)
+    assert not hasattr(result, "declared_media_type")
     assert not hasattr(result, "identity")
+
+
+@pytest.mark.parametrize("declared_media_type", ["application/pdf", "text/plain"])
+def test_xlsx_bytes_reject_an_explicitly_incompatible_declared_mime(
+    declared_media_type,
+):
+    result = classify_attachment_bytes(
+        _input(_xlsx_bytes(), declared_media_type=declared_media_type)
+    )
+
+    assert (
+        result.rejection_code
+        == "attachment_classification_media_type_incompatible"
+    )
+    assert result.media_type is None
 
 
 def test_xlsx_bytes_require_a_compatible_untrusted_source_extension():

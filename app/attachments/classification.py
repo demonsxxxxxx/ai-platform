@@ -1,8 +1,9 @@
 """Fail-closed byte classification for attachment capability admission.
 
 Multipart MIME and the source filename are untrusted compatibility assertions.
-Only bounded bytes choose a type.  A byte-recognized XLSX must still carry the
-compatible ``.xlsx`` suffix; the suffix never selects XLSX on its own.
+Only bounded bytes choose a type.  A byte-recognized XLSX must still carry a
+compatible MIME declaration (or an explicit generic/unknown declaration) and
+the ``.xlsx`` suffix; neither assertion selects XLSX on its own.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ ATTACHMENT_CLASSIFICATION_REJECTION_CODES = frozenset(
         "attachment_classification_active_or_dangerous",
         "attachment_classification_type_unsupported",
         "attachment_classification_xlsx_invalid",
+        "attachment_classification_media_type_incompatible",
         "attachment_classification_extension_incompatible",
     }
 )
@@ -64,6 +66,8 @@ class AttachmentBytesForClassification:
             raise ValueError("expected_size_bytes must be a non-negative integer")
         if not isinstance(self.expected_sha256, str):
             raise ValueError("expected_sha256 must be a string")
+        if not isinstance(self.declared_media_type, str):
+            raise ValueError("declared_media_type must be a string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +135,9 @@ def _classify_attachment(
         _preflight_xlsx_bytes(raw)
     except AttachmentPreprocessingError:
         return _rejected("attachment_classification_xlsx_invalid")
+    declared_media_type = _normalized_declared_media_type(source.declared_media_type)
+    if declared_media_type not in {"", "application/octet-stream", XLSX_CONTENT_TYPE}:
+        return _rejected("attachment_classification_media_type_incompatible")
     if _source_extension(source.source_filename) != ".xlsx":
         return _rejected("attachment_classification_extension_incompatible")
     identity = _ClassifiedAttachment(
@@ -151,6 +158,10 @@ def _rejected(code: str) -> tuple[None, AttachmentClassification]:
 def _source_extension(source_filename: object) -> str:
     name = PurePosixPath(str(source_filename or "").replace("\\", "/")).name
     return PurePosixPath(name).suffix.casefold()
+
+
+def _normalized_declared_media_type(value: str) -> str:
+    return value.split(";", 1)[0].strip().casefold()
 
 
 def _preflight_xlsx_bytes(raw: bytes) -> None:
