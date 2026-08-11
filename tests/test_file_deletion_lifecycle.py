@@ -48,7 +48,7 @@ def file_row(*, lifecycle_state="active", storage_key="private/file-a"):
     }
 
 
-def outbox_row(*, state="pending", storage_key="private/file-a"):
+def outbox_row(*, state="file_pending", storage_key="private/file-a"):
     return {
         "id": "objdel_file-a",
         "tenant_id": "tenant-a",
@@ -59,7 +59,7 @@ def outbox_row(*, state="pending", storage_key="private/file-a"):
         "state": state,
         "attempts": 0,
         "lease_generation": 0,
-        "reconcile_required": state == "dead_letter",
+        "reconcile_required": state == "file_dead_letter",
     }
 
 
@@ -113,7 +113,7 @@ async def test_queue_owned_unbound_file_tombstones_and_enqueues_one_exact_intent
 async def test_duplicate_delete_returns_the_existing_intent_without_requeue():
     conn = ScriptedConnection(
         file_row(lifecycle_state="delete_pending"),
-        [outbox_row(state="processing")],
+        [outbox_row(state="file_processing")],
     )
 
     result = await repositories.queue_unbound_file_for_deletion(
@@ -233,6 +233,9 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     assert conn.calls[1][1] == (4, 7)
     assert "lease_generation = lease_generation + 1" in conn.calls[2][0]
     assert "target_type, artifact_id, file_id" in conn.calls[2][0]
+    assert "state in ('pending', 'failed', 'processing')" in conn.calls[0][0]
+    assert "state in ('file_pending', 'file_failed', 'file_processing')" in conn.calls[0][0]
+    assert "then 'file_processing'" in conn.calls[2][0]
 
     completion = ScriptedConnection({"id": "out-a"})
     assert await repositories.complete_object_deletion(
@@ -245,16 +248,19 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     assert "and lease_generation = %s" in complete_sql
     assert "updated_artifact" in complete_sql and "updated_file" in complete_sql
     assert "exists (select 1 from updated_target)" in complete_sql
+    assert "then 'file_deleted'" in complete_sql
     assert complete_params == ("out-a", "tenant-a", 9)
 
-    failure = ScriptedConnection({"state": "failed"})
+    failure = ScriptedConnection({"state": "file_failed"})
     assert await repositories.fail_object_deletion(
         failure,
         outbox_id="out-a",
         tenant_id="tenant-a",
         lease_generation=9,
         error_code="safe_error",
-    ) == "failed"
+    ) == "file_failed"
+    assert "then 'file_dead_letter'" in failure.calls[0][0]
+    assert "then 'file_failed'" in failure.calls[0][0]
     assert failure.calls[0][1][-3:] == ("out-a", "tenant-a", 9)
 
 

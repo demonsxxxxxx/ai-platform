@@ -151,8 +151,11 @@ def test_schema_declares_file_lifecycle_and_typed_object_deletion_targets():
     assert "file_id text references files(id)" in schema
     assert "lease_generation bigint not null default 0" in schema
     assert "chk_object_deletion_outbox_target" in schema
+    assert "chk_object_deletion_outbox_target_state" in schema
     assert "target_type = 'artifact' and artifact_id is not null and file_id is null" in schema
     assert "target_type = 'file' and artifact_id is null and file_id is not null" in schema
+    assert "when 'pending' then 'file_pending'" in schema
+    assert "'file_pending', 'file_processing', 'file_failed'" in schema
 
 
 def test_schema_declares_run_copy_and_cancel_columns():
