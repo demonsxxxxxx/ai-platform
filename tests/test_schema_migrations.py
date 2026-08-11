@@ -92,7 +92,7 @@ class FakeIndexConnection:
                     "column_names": list(migration.column_names),
                     "descending": list(migration.descending),
                     "opclass_names": list(migration.opclass_names),
-                    "predicate": " and ".join(migration.predicate_fragments) or None,
+                    "predicate": migration.predicate_expression or None,
                 }
                 if params[0] in self.state.indexes
                 else None
@@ -259,21 +259,17 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
-    assert migrations["idx_object_deletion_outbox_claim"].predicate_fragments == (
-        "state = 'pending'",
-        "state = 'processing'",
-        "state = 'failed'",
+    assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
+        "state = 'pending' or state = 'processing' or state = 'failed'"
     )
     assert migrations[
         "idx_object_deletion_outbox_artifact_storage_live"
-    ].predicate_fragments == (
-        "target_type = 'artifact'",
-        "state <> 'deleted'",
+    ].predicate_expression == (
+        "target_type = 'artifact' and state <> 'deleted'"
     )
     assert migrations["uq_object_deletion_outbox_file"].unique is True
-    assert migrations["uq_object_deletion_outbox_file"].predicate_fragments == (
-        "target_type = 'file'",
-        "file_id is not null",
+    assert migrations["uq_object_deletion_outbox_file"].predicate_expression == (
+        "target_type = 'file' and file_id is not null"
     )
     assert {
         name: (migrations[name].access_method, migrations[name].opclass_names)

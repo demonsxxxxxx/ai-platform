@@ -101,7 +101,7 @@ class ConcurrentIndexMigration:
     table_name: str
     column_names: tuple[str, ...]
     descending: tuple[bool, ...]
-    predicate_fragments: tuple[str, ...] = ()
+    predicate_expression: str = ""
     unique: bool = False
     access_method: str = "btree"
     opclass_names: tuple[str, ...] = ()
@@ -174,7 +174,7 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "artifacts",
         ("expires_at", "created_at", "id"),
         (False, False, False),
-        ("lifecycle_state = 'active'", "expires_at is not null"),
+        "lifecycle_state = 'active' and expires_at is not null",
     ),
     ConcurrentIndexMigration(
         "idx_artifacts_manifest_json_gin",
@@ -202,7 +202,7 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "object_deletion_outbox",
         ("state", "available_at", "created_at", "id"),
         (False, False, False, False),
-        ("state = 'pending'", "state = 'processing'", "state = 'failed'"),
+        "state = 'pending' or state = 'processing' or state = 'failed'",
     ),
     ConcurrentIndexMigration(
         "idx_object_deletion_outbox_artifact_storage_live",
@@ -213,7 +213,7 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "object_deletion_outbox",
         ("tenant_id", "storage_key"),
         (False, False),
-        ("target_type = 'artifact'", "state <> 'deleted'"),
+        "target_type = 'artifact' and state <> 'deleted'",
     ),
     ConcurrentIndexMigration(
         "uq_object_deletion_outbox_file",
@@ -223,7 +223,7 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "object_deletion_outbox",
         ("tenant_id", "file_id"),
         (False, False),
-        ("target_type = 'file'", "file_id is not null"),
+        "target_type = 'file' and file_id is not null",
         unique=True,
     ),
 )
@@ -357,10 +357,8 @@ async def _index_is_ready(conn: Any, migration: ConcurrentIndexMigration) -> boo
         .replace(")", " ")
         .split()
     )
-    return all(
-        " ".join(fragment.lower().split()) in predicate
-        for fragment in migration.predicate_fragments
-    ) and bool(predicate) == bool(migration.predicate_fragments)
+    expected_predicate = " ".join(migration.predicate_expression.lower().split())
+    return predicate == expected_predicate
 
 
 async def _apply_concurrent_indexes(conn: Any) -> bool:

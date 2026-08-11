@@ -399,6 +399,13 @@ async def test_real_postgres_readiness_rejects_and_migration_removes_orphan_inde
             "idx_runs_input_json_gin",
             "create index idx_runs_input_json_gin on runs using gin (input_json)",
         ),
+        (
+            "idx_object_deletion_outbox_claim",
+            "create index idx_object_deletion_outbox_claim "
+            "on object_deletion_outbox(state, available_at, created_at, id) "
+            "where (state = 'pending' or state = 'processing' or state = 'failed') "
+            "and tenant_id = 'default'",
+        ),
     ],
 )
 async def test_real_postgres_readiness_rejects_and_migration_repairs_wrong_index_definition(
