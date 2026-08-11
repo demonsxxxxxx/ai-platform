@@ -904,7 +904,7 @@ async def run_claude_agent_sdk(
                 "last_public_stage": last_public_stage,
             },
             error_code=error_code,
-            selected_skill_id=skill_id if skill_id != "general-chat" else "",
+            selected_skill_id=skill_id,
             used_skill_ids=list(used_skill_names),
             public_skill_metadata=public_skill_metadata,
         )
@@ -943,6 +943,7 @@ async def run_claude_agent_sdk(
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
+    explicit_skill_binding = skills is not None
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
     if any(
         not isinstance(name, str) or _SDK_SKILL_NAME_PATTERN.fullmatch(name) is None
@@ -956,7 +957,7 @@ async def run_claude_agent_sdk(
         )
     bound_sdk_skill = (
         skill_id
-        if skill_id != "general-chat" and skill_id in configured_skills
+        if explicit_skill_binding and skill_id in configured_skills
         else None
     )
     sandbox_partial_streaming = (
@@ -1111,9 +1112,9 @@ async def run_claude_agent_sdk(
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
-        available_skill_identities={
-            name for name in allowed_skill_names if name != "general-chat"
-        },
+        available_skill_identities=(
+            set(allowed_skill_names) if explicit_skill_binding else set()
+        ),
         registered_mcp_servers=mcp_servers,
     )
     required_capability_declarations = {

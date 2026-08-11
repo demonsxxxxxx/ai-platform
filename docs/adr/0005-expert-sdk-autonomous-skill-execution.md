@@ -91,7 +91,10 @@ phase/status, evidence source/trust basis, and declaration digest. Prompt text,
 tool arguments, tool responses, endpoints, credentials, and private errors are
 not persisted in this evidence. Release verification requires each observed
 invocation to contain exactly one `invocation_requested` followed by exactly one
-`completed` or `failed` record in that same run/attempt.
+`completed`, `failed`, or worker-owned `outcome_unknown` record in that same
+run/attempt. `outcome_unknown` is emitted only when a failed Run ends after the
+durable allow record but before an SDK terminal callback can be proven; it blocks
+the platform from treating the external side effect as safely retryable.
 
 Worker exception logs carry fixed event/phase names and a diagnostic ID. Public
 errors and dead-letter records use fixed messages or codes; exception text and

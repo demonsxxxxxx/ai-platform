@@ -109,6 +109,7 @@ def test_runtime_capability_authority_contains_only_dispatched_authorized_subjec
             ).to_payload()
             for kind, identity in (
                 ("mcp", "mcp__tenant-server__search"),
+                ("skill", "general-chat"),
                 ("skill", "qa-review"),
             )
         ],
@@ -1371,6 +1372,7 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                                 ).to_payload()
                                 for kind, identity in (
                                     ("mcp", "mcp__tenant-server__search"),
+                                    ("skill", "general-chat"),
                                     ("skill", "qa-review"),
                                 )
                             ],

@@ -83,7 +83,7 @@ def _runtime_capability_authority(request: SandboxRuntimeRequest) -> dict[str, A
     identities = {
         ("skill", skill_id)
         for skill_id in request.skill_ids
-        if skill_id and skill_id != "general-chat"
+        if skill_id
     }
     for raw in request.tool_policy_subjects:
         if not isinstance(raw, dict):

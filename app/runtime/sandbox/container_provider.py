@@ -2274,7 +2274,7 @@ def _open_workspace_file_fd(entry: _OpenSandboxWorkspaceFile) -> int:
 
 
 def _stage_skills_required(request: SandboxRuntimeRequest) -> bool:
-    return _staged_skill_mount_required(request) or any(skill_id != "general-chat" for skill_id in request.skill_ids)
+    return _staged_skill_mount_required(request)
 
 
 def _build_opensandbox_workspace_manifest(

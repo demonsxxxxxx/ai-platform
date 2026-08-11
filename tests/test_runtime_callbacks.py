@@ -956,6 +956,40 @@ def test_capability_lifecycle_rejects_cross_identity_call_id_reuse():
     assert error.value.detail == "capability_evidence_call_owner_mismatch"
 
 
+def test_executor_callback_rejects_worker_owned_outcome_unknown_evidence():
+    from app.routes import runtime_callbacks
+
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="bound-skill",
+    )
+    binding = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+    }
+    requested = RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration,
+        binding=binding,
+        tool_call_id="skill-call-a",
+        lifecycle_phase="invocation_requested",
+    )
+    outcome_unknown = RequiredCapabilityEvidence.outcome_unknown_from_requested(requested)
+
+    with pytest.raises(HTTPException) as error:
+        runtime_callbacks._validated_capability_evidence(
+            asdict(outcome_unknown),
+            expected_binding=binding,
+            declarations={("skill", "bound-skill"): declaration},
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "capability_evidence_invalid"
+
+
 def test_executor_callback_rejects_private_capability_evidence_with_foreign_binding(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
 

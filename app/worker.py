@@ -105,6 +105,7 @@ class _WorkerClock:
 
 time = _WorkerClock()
 logger = logging.getLogger(__name__)
+_WORKER_CAPABILITY_TERMINALIZATION_BATCH_ID = "worker-capability-terminalization-v1"
 
 
 @dataclass(frozen=True)
@@ -957,19 +958,8 @@ async def _reconcile_durable_sandbox_capability_evidence(
 ) -> ExecutorResult:
     """Replace executor claims with the frozen exact-attempt callback ledger."""
 
-    if (
-        result.executor_payload.get("sandbox_runtime_used") is not True
-        or result.status != "succeeded"
-    ):
+    if result.executor_payload.get("sandbox_runtime_used") is not True:
         return result
-    async with transaction() as conn:
-        rows = await repositories.list_run_capability_evidence(
-            conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            attempt_id=attempt_id,
-            limit=MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT + 1,
-        )
     expected_binding = {
         "tenant_id": payload.tenant_id,
         "workspace_id": payload.workspace_id,
@@ -978,6 +968,7 @@ async def _reconcile_durable_sandbox_capability_evidence(
         "run_id": payload.run_id,
         "attempt_id": attempt_id,
     }
+    outcome_unknown_count = 0
     result_without_capability_claims = {
         key: value
         for key, value in result.result.items()
@@ -990,22 +981,64 @@ async def _reconcile_durable_sandbox_capability_evidence(
         }
     }
     try:
-        records = [
-            RequiredCapabilityEvidence.from_payload(
-                row.get("payload_json") if isinstance(row, dict) else None
+        async with transaction() as conn:
+            rows = await repositories.list_run_capability_evidence(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                attempt_id=attempt_id,
+                limit=MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT + 1,
             )
-            for row in rows
-        ]
-        if any(
-            getattr(record, field) != value
-            for record in records
-            for field, value in expected_binding.items()
-        ):
-            raise RequiredToolContractError("capability_evidence_scope_mismatch")
-        validate_capability_evidence_lifecycle(
-            records,
-            require_terminal=result.status == "succeeded",
-        )
+            records = [
+                RequiredCapabilityEvidence.from_payload(
+                    row.get("payload_json") if isinstance(row, dict) else None
+                )
+                for row in rows
+            ]
+            if any(
+                getattr(record, field) != value
+                for record in records
+                for field, value in expected_binding.items()
+            ):
+                raise RequiredToolContractError("capability_evidence_scope_mismatch")
+            validate_capability_evidence_lifecycle(records)
+            if result.status == "succeeded" and any(
+                record.lifecycle_phase == "outcome_unknown" for record in records
+            ):
+                raise RequiredToolContractError("capability_evidence_outcome_unknown")
+            if result.status != "succeeded":
+                terminal_call_ids = {
+                    str(record.tool_call_id)
+                    for record in records
+                    if record.lifecycle_phase != "invocation_requested"
+                }
+                outcome_unknown_records = [
+                    RequiredCapabilityEvidence.outcome_unknown_from_requested(record)
+                    for record in records
+                    if record.lifecycle_phase == "invocation_requested"
+                    and str(record.tool_call_id) not in terminal_call_ids
+                ]
+                if outcome_unknown_records:
+                    await repositories.append_event_batch(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        attempt_id=attempt_id,
+                        batch_id=_WORKER_CAPABILITY_TERMINALIZATION_BATCH_ID,
+                        events=[
+                            {
+                                "event_type": "capability_invocation_evidence",
+                                "stage": "capability_evidence",
+                                "message": "Capability outcome could not be confirmed",
+                                "visible_to_user": False,
+                                "payload": asdict(record),
+                            }
+                            for record in outcome_unknown_records
+                        ],
+                    )
+                    records.extend(outcome_unknown_records)
+                    outcome_unknown_count = len(outcome_unknown_records)
+            validate_capability_evidence_lifecycle(records, require_terminal=True)
     except RequiredToolContractError:
         error_code = "capability_evidence_ledger_invalid"
         diagnostic_id = new_diagnostic_id()
@@ -1039,6 +1072,20 @@ async def _reconcile_durable_sandbox_capability_evidence(
                 "used_skills_source": "none",
                 "sdk_error": error_code,
                 "diagnostic_id": diagnostic_id,
+            },
+        )
+    if outcome_unknown_count:
+        log_safe_failure(
+            logger,
+            event="worker_capability_outcome_unknown",
+            phase="terminalization",
+            diagnostic_id=new_diagnostic_id(),
+            error_code="capability_outcome_unknown",
+            identifiers={
+                "run_id": payload.run_id,
+                "attempt_id": attempt_id,
+                "executor_type": payload.executor_type,
+                "count": outcome_unknown_count,
             },
         )
     evidence_payloads = [asdict(record) for record in records]
@@ -1554,9 +1601,7 @@ async def _reauthorize_worker_capabilities(
             )
             return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
         selected_catalog_entry = authorized_skill_catalog.snapshot.entry(run_identity["skill_id"])
-        if run_identity["skill_id"] != "general-chat" and (
-            selected_catalog_entry is None or not selected_catalog_entry.available
-        ):
+        if selected_catalog_entry is None or not selected_catalog_entry.available:
             denial = _worker_capability_record(
                 "skill",
                 run_identity["skill_id"],
@@ -2958,6 +3003,21 @@ async def process_run_payload(
                             else "invocation_failed",
                             "failed_count": agent_capability_state.invocation_failed_count,
                             "completed_count": agent_capability_state.invocation_completed_count,
+                        },
+                    )
+                if agent_capability_state.invocation_outcome_unknown_count:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="capability_invocation_outcome_unknown",
+                        stage="capability",
+                        message="One or more Agent capability outcomes are unknown",
+                        payload={
+                            "capability_state": "outcome_unknown",
+                            "unknown_count": (
+                                agent_capability_state.invocation_outcome_unknown_count
+                            ),
                         },
                     )
             for artifact in artifact_records:

@@ -343,18 +343,9 @@ def parse_authorized_skill_catalog_snapshot(
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_materialization_invalid")
     materialized_skill_ids = tuple(raw_materialized_skill_ids)
     available_skill_ids = {entry.skill_id for entry in entries if entry.available}
-    if (
-        (
-            expected_binding.selected_skill_id == "general-chat"
-            and materialized_skill_ids
-        )
-        or (
-            materialized_skill_ids
-            and (
-                materialized_skill_ids[0] != expected_binding.selected_skill_id
-                or expected_binding.selected_skill_id not in available_skill_ids
-            )
-        )
+    if materialized_skill_ids and (
+        materialized_skill_ids[0] != expected_binding.selected_skill_id
+        or expected_binding.selected_skill_id not in available_skill_ids
     ):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_materialization_invalid")
     prompt_payload = {
@@ -739,10 +730,7 @@ def _selected_materialization_candidates(
 ) -> list[_Candidate]:
     """Decode only the routed Skill and its authorized dependency closure."""
 
-    if (
-        selected_skill_id == "general-chat"
-        or not is_workbench_skill_public(selected_skill_id)
-    ):
+    if not is_workbench_skill_public(selected_skill_id):
         return []
     routed = candidates.get(selected_skill_id)
     if routed is None:
@@ -896,7 +884,7 @@ async def resolve_authorized_skill_catalog(
             if isinstance(dependency_id, str) and SAFE_ID_PATTERN.fullmatch(dependency_id):
                 include_selected_closure(dependency_id)
 
-    if is_admin and binding.selected_skill_id != "general-chat":
+    if is_admin:
         include_selected_closure(binding.selected_skill_id)
 
     pinned_by_id = {

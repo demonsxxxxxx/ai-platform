@@ -171,10 +171,11 @@ async def _resolve(
 
 
 @pytest.mark.asyncio
-async def test_catalog_exposes_exact_authorized_metadata_without_general_chat_materialization(monkeypatch):
-    rows = [_skill_row(f"skill-{suffix}") for suffix in "abcdef"]
+async def test_catalog_materializes_general_chat_like_any_authorized_skill(monkeypatch):
+    rows = [_skill_row("general-chat"), *[_skill_row(f"skill-{suffix}") for suffix in "abcdef"]]
     rows[-1]["version_status"] = "reviewed"
     distributions = [
+        _distribution("general-chat"),
         _distribution("skill-a"),
         _distribution("skill-b", departments=["rd"]),
         _distribution("skill-c", roles=["employee"]),
@@ -190,13 +191,14 @@ async def test_catalog_exposes_exact_authorized_metadata_without_general_chat_ma
     )
 
     assert set(resolution.snapshot.available_skill_ids) == {
+        "general-chat",
         "skill-a",
         "skill-b",
         "skill-c",
         "skill-d",
     }
-    assert resolution.snapshot.materialized_skill_ids == ()
-    assert resolution.manifests == []
+    assert resolution.snapshot.materialized_skill_ids == ("general-chat",)
+    assert [manifest["skill_id"] for manifest in resolution.manifests] == ["general-chat"]
     assert resolution.snapshot.entry("skill-e") is None
     assert resolution.snapshot.entry("skill-f") is None
     assert observed["catalog"] == {
@@ -862,23 +864,29 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
 
 
 @pytest.mark.asyncio
-async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains_metadata_only(
+async def test_adapter_catalog_question_stages_only_general_chat_and_catalog_metadata(
     monkeypatch,
     tmp_path,
 ):
-    rows = [
+    general_chat_row = _skill_row("general-chat", body_marker="BODY_ONLY_GENERAL_CHAT")
+    rows = [general_chat_row, *[
         _skill_row(f"skill-{suffix}", body_marker=f"BODY_ONLY_{suffix.upper()}")
         for suffix in "abcd"
-    ]
+    ]]
     distributions = [_distribution(str(row["skill_id"])) for row in rows]
-    resolution, _ = await _resolve(monkeypatch, rows=rows, distributions=distributions)
+    primary_manifest = _manifest_from_row(general_chat_row)
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=distributions,
+        pinned_manifests=[primary_manifest],
+    )
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
         skill_staging_subdir=".claude/skills",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
-    primary_manifest = _manifest_from_row(_skill_row("general-chat"))
     primary_version = str(primary_manifest["version"])
     payload = RunPayload(
         tenant_id="tenant-a",
@@ -910,10 +918,13 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
 
     assert failure is None
     assert prepared is not None
-    assert prepared.allowed_skill_names == []
-    assert prepared.staged_skill_names == []
-    assert list((workspace / ".claude" / "skills").iterdir()) == []
+    assert prepared.allowed_skill_names == ["general-chat"]
+    assert prepared.staged_skill_names == ["general-chat"]
+    assert {path.name for path in (workspace / ".claude" / "skills").iterdir()} == {
+        "general-chat"
+    }
     assert "AUTHORIZED_SKILL_CATALOG_JSON=" in prepared.prompt
+    assert "BODY_ONLY_GENERAL_CHAT" not in prepared.prompt
     assert all(f"BODY_ONLY_{suffix.upper()}" not in prepared.prompt for suffix in "abcd")
 
 
@@ -1045,15 +1056,21 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
 
 
 @pytest.mark.asyncio
-async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkeypatch, tmp_path):
-    resolution, _ = await _resolve(monkeypatch, rows=[], distributions=[])
+async def test_general_chat_authorized_catalog_stages_selected_skill(monkeypatch, tmp_path):
+    general_chat_row = _skill_row("general-chat")
+    primary_manifest = _manifest_from_row(general_chat_row)
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=[general_chat_row],
+        distributions=[_distribution("general-chat")],
+        pinned_manifests=[primary_manifest],
+    )
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
         skill_staging_subdir=".claude/skills",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
-    primary_manifest = _manifest_from_row(_skill_row("general-chat"))
     primary_version = str(primary_manifest["version"])
     payload = RunPayload(
         tenant_id="tenant-a",
@@ -1085,10 +1102,12 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
 
     assert failure is None
     assert prepared is not None
-    assert prepared.allowed_skill_names == []
-    assert prepared.staged_skill_names == []
-    assert list((workspace / ".claude" / "skills").iterdir()) == []
-    assert '"skills":[]' in prepared.prompt
+    assert prepared.allowed_skill_names == ["general-chat"]
+    assert prepared.staged_skill_names == ["general-chat"]
+    assert {path.name for path in (workspace / ".claude" / "skills").iterdir()} == {
+        "general-chat"
+    }
+    assert '"skill_id":"general-chat"' in prepared.prompt
 
 
 def _sdk_settings():

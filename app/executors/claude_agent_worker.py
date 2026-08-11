@@ -299,7 +299,7 @@ def _public_sdk_turn_diagnostics(
     return project_sdk_turn_diagnostics(
         value,
         error_code=error_code,
-        selected_skill_id=(payload.skill_id if payload.skill_id != "general-chat" else ""),
+        selected_skill_id=payload.skill_id,
         used_skill_ids=used_skill_ids,
         public_skill_metadata=public_skill_metadata,
     )
@@ -699,7 +699,6 @@ class ClaudeAgentWorkerAdapter:
             )
         if (
             authorized_catalog is not None
-            and payload.skill_id != "general-chat"
             and payload.skill_id not in authorized_catalog.materialized_skill_ids
         ):
             return None, self._authorized_skill_catalog_failure_result(

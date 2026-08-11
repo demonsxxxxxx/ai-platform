@@ -995,14 +995,10 @@ def default_cancel_not_requested(monkeypatch):
     class _DefaultCatalogResolution:
         def __init__(self, skill_id, manifests):
             self.manifests = list(manifests)
-            materialized_skill_ids = (
-                tuple(
-                    str(manifest.get("skill_id") or "")
-                    for manifest in self.manifests
-                    if isinstance(manifest, dict) and str(manifest.get("skill_id") or "")
-                )
-                if skill_id != "general-chat"
-                else ()
+            materialized_skill_ids = tuple(
+                str(manifest.get("skill_id") or "")
+                for manifest in self.manifests
+                if isinstance(manifest, dict) and str(manifest.get("skill_id") or "")
             )
             self.snapshot = _DefaultCatalogSnapshot(skill_id, materialized_skill_ids)
 
@@ -1314,6 +1310,55 @@ async def test_worker_fails_closed_on_incomplete_durable_capability_ledger(monke
     assert result.executor_payload["capability_evidence"] == []
     assert result.executor_payload["capability_evidence_validated"] is False
     assert result.executor_payload["used_skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_sandbox_run_closes_incomplete_capability_as_outcome_unknown(monkeypatch):
+    payload = QueueRunPayload.model_validate(
+        base_payload(_leased=False, executor_type="claude-agent-worker")
+    )
+    appended = {}
+
+    async def list_evidence(_conn, **_kwargs):
+        return _durable_skill_evidence_rows(
+            payload,
+            phases=("invocation_requested",),
+        )
+
+    async def append_event_batch(_conn, **kwargs):
+        appended.update(kwargs)
+        return {"batch_id": kwargs["batch_id"]}
+
+    monkeypatch.setattr(worker_module, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "list_run_capability_evidence",
+        list_evidence,
+    )
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "append_event_batch",
+        append_event_batch,
+    )
+
+    result = await worker_module._reconcile_durable_sandbox_capability_evidence(
+        _sandbox_success_with_capability_claims(status="failed"),
+        payload=payload,
+        attempt_id="qat-test-attempt",
+    )
+
+    assert result.status == "failed"
+    assert result.executor_payload["capability_evidence_validated"] is True
+    assert [
+        item["lifecycle_phase"]
+        for item in result.executor_payload["capability_evidence"]
+    ] == ["invocation_requested", "outcome_unknown"]
+    assert result.executor_payload["used_skills"] == []
+    assert appended["batch_id"] == "worker-capability-terminalization-v1"
+    terminal_payload = appended["events"][0]["payload"]
+    assert terminal_payload["evidence_source"] == "worker_terminalization"
+    assert terminal_payload["trust_basis"] == "attempt_ended_without_terminal_callback"
+    assert "forged-skill" not in str(result.result)
 
 
 def test_bound_agent_skill_ids_include_authorized_dependency_closure():
@@ -5139,9 +5184,10 @@ async def test_agent_app_ignores_unproven_optional_skill_claim(monkeypatch, sour
         "artifact_ready": False,
         "optional_not_invoked_count": 1,
         "invocation_attempt_count": 0,
-        "invocation_completed_count": 0,
-        "invocation_failed_count": 0,
-        "partial_failure": False,
+            "invocation_completed_count": 0,
+            "invocation_failed_count": 0,
+            "invocation_outcome_unknown_count": 0,
+            "partial_failure": False,
     }
     serialized = str(completed)
     assert "used_skills_source" not in serialized
@@ -5240,9 +5286,10 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
         "artifact_ready": False,
         "optional_not_invoked_count": 0,
         "invocation_attempt_count": 2,
-        "invocation_completed_count": 1,
-        "invocation_failed_count": 1,
-        "partial_failure": True,
+            "invocation_completed_count": 1,
+            "invocation_failed_count": 1,
+            "invocation_outcome_unknown_count": 0,
+            "partial_failure": True,
     }
     assert "capability_actually_invoked" in events
     assert "capability_completed" in events
@@ -5546,10 +5593,17 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
         calls.append(("fail", error_code, error_message, result_json))
         return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
+    async def list_evidence(_conn, **_kwargs):
+        return []
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.worker.repositories.list_run_capability_evidence",
+        list_evidence,
+    )
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),

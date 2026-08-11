@@ -32,6 +32,7 @@ class AgentCapabilityState:
     invocation_attempt_count: int
     invocation_completed_count: int
     invocation_failed_count: int
+    invocation_outcome_unknown_count: int
     partial_failure: bool
 
     def public_projection(self) -> dict[str, bool | int]:
@@ -46,6 +47,7 @@ class AgentCapabilityState:
             "invocation_attempt_count": self.invocation_attempt_count,
             "invocation_completed_count": self.invocation_completed_count,
             "invocation_failed_count": self.invocation_failed_count,
+            "invocation_outcome_unknown_count": self.invocation_outcome_unknown_count,
             "partial_failure": self.partial_failure,
         }
 
@@ -91,7 +93,12 @@ def exact_capability_lifecycle_counts(
 ) -> dict[str, int]:
     """Count validated SDK lifecycle facts for one authorized capability set."""
 
-    counts = {"invocation_requested": 0, "completed": 0, "failed": 0}
+    counts = {
+        "invocation_requested": 0,
+        "completed": 0,
+        "failed": 0,
+        "outcome_unknown": 0,
+    }
     if executor_payload.get("capability_evidence_validated") is not True:
         return counts
     staged = _string_set(executor_payload.get("staged_skills"))
@@ -169,6 +176,7 @@ def project_agent_capability_state(
     attempt_count = lifecycle_counts["invocation_requested"]
     completed_count = lifecycle_counts["completed"]
     failed_count = lifecycle_counts["failed"]
+    outcome_unknown_count = lifecycle_counts["outcome_unknown"]
     any_available = bool(bound_staged or bound_mcp)
     any_attempted = bool(bound_attempted or attempted_mcp)
     any_completed = bool(bound_invoked) or completed_count > 0
@@ -183,5 +191,6 @@ def project_agent_capability_state(
         invocation_attempt_count=attempt_count,
         invocation_completed_count=completed_count,
         invocation_failed_count=failed_count,
-        partial_failure=bool(any_completed and failed_count),
+        invocation_outcome_unknown_count=outcome_unknown_count,
+        partial_failure=bool(any_completed and (failed_count or outcome_unknown_count)),
     )

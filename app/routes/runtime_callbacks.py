@@ -30,6 +30,7 @@ from app.runtime.sandbox.contracts import (
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.required_tool_contract import (
     MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT,
+    SDK_HOOK_EVIDENCE_SOURCE,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
@@ -128,6 +129,11 @@ def _validated_capability_evidence(
         evidence = RequiredCapabilityEvidence.from_payload(raw)
     except RequiredToolContractError as exc:
         raise HTTPException(status_code=409, detail="capability_evidence_invalid") from exc
+    if (
+        evidence.evidence_source != SDK_HOOK_EVIDENCE_SOURCE
+        or evidence.lifecycle_phase == "outcome_unknown"
+    ):
+        raise HTTPException(status_code=409, detail="capability_evidence_invalid")
     if any(
         getattr(evidence, field) != expected_binding[field]
         for field in _CAPABILITY_EVIDENCE_BINDING_FIELDS

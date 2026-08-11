@@ -4,6 +4,7 @@ import pytest
 
 from app.required_tool_contract import (
     MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT,
+    MAX_CAPABILITY_INVOCATIONS_PER_ATTEMPT,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
@@ -543,6 +544,52 @@ def test_attempt_capability_lifecycle_requires_terminal_and_enforces_bound():
     ):
         validate_capability_evidence_lifecycle(
             [requested] * (MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT + 1)
+        )
+    with pytest.raises(
+        RequiredToolContractError,
+        match="capability_evidence_limit_exceeded",
+    ):
+        validate_capability_evidence_lifecycle(
+            [
+                _selected_evidence_record(
+                    declaration,
+                    "invocation_requested",
+                    call_id=f"call-{index}",
+                )
+                for index in range(MAX_CAPABILITY_INVOCATIONS_PER_ATTEMPT + 1)
+            ]
+        )
+
+
+def test_worker_terminalization_closes_missing_sdk_terminal_as_outcome_unknown():
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+    requested = _selected_evidence_record(declaration, "invocation_requested")
+
+    outcome_unknown = RequiredCapabilityEvidence.outcome_unknown_from_requested(requested)
+
+    assert outcome_unknown.lifecycle_phase == "outcome_unknown"
+    assert outcome_unknown.lifecycle_status == "unknown"
+    assert outcome_unknown.evidence_source == "worker_terminalization"
+    assert outcome_unknown.trust_basis == "attempt_ended_without_terminal_callback"
+    assert outcome_unknown.tool_call_id == requested.tool_call_id
+    assert outcome_unknown.declaration_sha256 == requested.declaration_sha256
+    assert RequiredCapabilityEvidence.from_payload(outcome_unknown.__dict__) == outcome_unknown
+    validate_capability_evidence_lifecycle(
+        [requested, outcome_unknown],
+        require_terminal=True,
+    )
+    with pytest.raises(
+        RequiredToolContractError,
+        match="required_tool_completion_evidence_mismatch",
+    ):
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=_binding(),
+            tool_call_id="call-b",
+            lifecycle_phase="outcome_unknown",
         )
 
 

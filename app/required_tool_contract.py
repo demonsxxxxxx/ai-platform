@@ -26,6 +26,7 @@ REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION = (
 REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY = "_required_capability_declaration"
 REQUIRED_CAPABILITY_EVIDENCE_KEY = "required_capability_evidence"
 MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT = 512
+MAX_CAPABILITY_INVOCATIONS_PER_ATTEMPT = MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT // 2
 CANONICAL_REQUIRED_TOOL_IDENTITY = "Bash"
 _BINDING_FIELDS = (
     "tenant_id",
@@ -49,13 +50,19 @@ _DECLARATION_HASH_FIELDS = (
 _CAPABILITY_KINDS = frozenset({"builtin", "skill", "mcp"})
 _DECLARATION_LIFECYCLE_PHASES = frozenset({"selected"})
 _DECLARATION_LIFECYCLE_STATUSES = frozenset({"required"})
-_EVIDENCE_LIFECYCLE_PHASES = frozenset({"invocation_requested", "completed", "failed"})
-_EVIDENCE_LIFECYCLE_STATUSES = frozenset({"invoking", "succeeded", "failed"})
+_SDK_EVIDENCE_LIFECYCLE_PHASES = frozenset({"invocation_requested", "completed", "failed"})
+_EVIDENCE_LIFECYCLE_PHASES = frozenset(
+    {*_SDK_EVIDENCE_LIFECYCLE_PHASES, "outcome_unknown"}
+)
+_EVIDENCE_LIFECYCLE_STATUSES = frozenset(
+    {"invoking", "succeeded", "failed", "unknown"}
+)
 _EVIDENCE_LIFECYCLE_PAIRS = frozenset(
     {
         ("invocation_requested", "invoking"),
         ("completed", "succeeded"),
         ("failed", "failed"),
+        ("outcome_unknown", "unknown"),
     }
 )
 _SAFE_PUBLIC_LABEL = "controlled_execution_capability"
@@ -63,10 +70,22 @@ _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
 _AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
 SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
 TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
+WORKER_TERMINALIZATION_EVIDENCE_SOURCE = "worker_terminalization"
+OUTCOME_UNKNOWN_TRUST_BASIS = "attempt_ended_without_terminal_callback"
 _EVIDENCE_TRUST_MATRIX = {
     "builtin": frozenset({("executor_private_payload", "attempt_bound_tool_invocation")}),
-    "mcp": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
-    "skill": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
+    "mcp": frozenset(
+        {
+            (SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS),
+            (WORKER_TERMINALIZATION_EVIDENCE_SOURCE, OUTCOME_UNKNOWN_TRUST_BASIS),
+        }
+    ),
+    "skill": frozenset(
+        {
+            (SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS),
+            (WORKER_TERMINALIZATION_EVIDENCE_SOURCE, OUTCOME_UNKNOWN_TRUST_BASIS),
+        }
+    ),
 }
 _AFFIRMATIVE_EXECUTION = re.compile(
     r"(?:请|帮我|麻烦|立即|现在|直接|please\s+)?"
@@ -178,7 +197,7 @@ class RequiredCapabilityEvidence:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         if not isinstance(tool_call_id, str) or not tool_call_id:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
+        if lifecycle_phase not in _SDK_EVIDENCE_LIFECYCLE_PHASES:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         lifecycle_status = dict(_EVIDENCE_LIFECYCLE_PAIRS)[lifecycle_phase]
         return {
@@ -222,7 +241,7 @@ class RequiredCapabilityEvidence:
             if not isinstance(succeeded, bool):
                 raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
             lifecycle_phase = "completed" if succeeded else "failed"
-        elif succeeded is not None or lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
+        elif succeeded is not None or lifecycle_phase not in _SDK_EVIDENCE_LIFECYCLE_PHASES:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         unbound = cls.sdk_hook_payload(
             declaration=declaration,
@@ -242,6 +261,37 @@ class RequiredCapabilityEvidence:
             public_label=unbound["public_label"],
             public_status=unbound["public_status"],
             declaration_sha256=unbound["declaration_sha256"],
+        )
+
+    @classmethod
+    def outcome_unknown_from_requested(
+        cls,
+        requested: RequiredCapabilityEvidence,
+    ) -> RequiredCapabilityEvidence:
+        """Close an admitted call whose SDK terminal hook was never observed."""
+
+        validated = cls.from_payload(asdict(requested))
+        if (
+            validated.capability_kind not in {"skill", "mcp"}
+            or validated.lifecycle_phase != "invocation_requested"
+            or validated.evidence_source != SDK_HOOK_EVIDENCE_SOURCE
+            or validated.trust_basis != TOOL_CALL_TRUST_BASIS
+            or validated.tool_call_id is None
+        ):
+            raise RequiredToolContractError("capability_evidence_lifecycle_invalid")
+        return cls(
+            schema_version=validated.schema_version,
+            **{field: getattr(validated, field) for field in _BINDING_FIELDS},
+            tool_call_id=validated.tool_call_id,
+            capability_kind=validated.capability_kind,
+            canonical_identity=validated.canonical_identity,
+            lifecycle_phase="outcome_unknown",
+            lifecycle_status="unknown",
+            evidence_source=WORKER_TERMINALIZATION_EVIDENCE_SOURCE,
+            trust_basis=OUTCOME_UNKNOWN_TRUST_BASIS,
+            public_label=_SAFE_PUBLIC_LABEL,
+            public_status="unknown",
+            declaration_sha256=validated.declaration_sha256,
         )
 
     @classmethod
@@ -315,6 +365,10 @@ def validate_capability_evidence_lifecycle(
     """Validate one bounded attempt ledger with globally unique call ownership."""
 
     if len(records) > MAX_CAPABILITY_EVIDENCE_PER_ATTEMPT:
+        raise RequiredToolContractError("capability_evidence_limit_exceeded")
+    if sum(
+        record.lifecycle_phase == "invocation_requested" for record in records
+    ) > MAX_CAPABILITY_INVOCATIONS_PER_ATTEMPT:
         raise RequiredToolContractError("capability_evidence_limit_exceeded")
     owners: dict[str, tuple[str, str]] = {}
     states: dict[str, str] = {}
