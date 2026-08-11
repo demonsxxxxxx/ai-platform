@@ -386,6 +386,41 @@ test("uses raw_status as the authoritative compatibility status", async () => {
   assert.deepEqual(bareError, { kind: "unavailable" });
 });
 
+test("resolves an idle session only for runless history reconciliation", async () => {
+  let statusCalls = 0;
+  const retryRef = { current: MAX_STATUS_QUERY_RETRIES };
+  const data = {
+    session_id: "session-idle",
+    status: "idle",
+    raw_status: "idle",
+  };
+
+  const result = await queryAuthoritativeRunStatus({
+    sessionId: "session-idle",
+    runId: "stale-history-candidate",
+    isCurrent: () => true,
+    statusRetryCountRef: retryRef,
+    allowIdle: true,
+    getStatus: async () => {
+      statusCalls += 1;
+      return data;
+    },
+  });
+
+  assert.deepEqual(result, { kind: "resolved", data, status: "idle" });
+  assert.equal(statusCalls, 1);
+  assert.equal(retryRef.current, 0);
+
+  const reconnectResult = await queryAuthoritativeRunStatus({
+    sessionId: "session-idle",
+    runId: "stale-history-candidate",
+    isCurrent: () => true,
+    statusRetryCountRef: { current: MAX_STATUS_QUERY_RETRIES },
+    getStatus: async () => data,
+  });
+  assert.deepEqual(reconnectResult, { kind: "unavailable" });
+});
+
 test("times out and aborts every hung authoritative status attempt before bounded convergence", async () => {
   let statusCalls = 0;
   const attemptSignals: AbortSignal[] = [];

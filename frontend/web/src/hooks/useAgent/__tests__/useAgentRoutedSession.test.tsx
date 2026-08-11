@@ -972,6 +972,42 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
   }
 });
 
+test("useAgent treats transport auth rejection as pre-persistence without a disposition", async () => {
+  for (const status of [401, 403]) {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originalSubmitChat = sessionApi.submitChat;
+    let submissions = 0;
+    sessionApi.submitChat = (async () => {
+      submissions += 1;
+      if (submissions === 1) {
+        throw new ApiRequestError("authentication rejected", status, "unauthorized");
+      }
+      return { status: "needs_confirmation", suggestions: [] };
+    }) as typeof sessionApi.submitChat;
+
+    try {
+      await harness.act(async () => {
+        assert.deepEqual(await harness.hook.sendMessage(`auth rejection ${status}`), {
+          status: "failed",
+        });
+      });
+      assert.equal(harness.hook.messages.length, 0);
+      assert.equal(harness.hook.canRetryPendingSubmission, false);
+
+      await harness.act(async () => {
+        assert.deepEqual(await harness.hook.sendMessage(`retry after ${status}`), {
+          status: "accepted",
+        });
+      });
+      assert.equal(submissions, 2);
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      await harness.cleanup();
+    }
+  }
+});
+
 test("useAgent presents the typed active-run admission limit without relabeling other rejections", async () => {
   const cases = [
     {

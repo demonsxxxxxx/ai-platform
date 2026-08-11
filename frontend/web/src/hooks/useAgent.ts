@@ -119,6 +119,9 @@ function getSelectedSkillRecoverableCode(
 }
 
 function isProvenPrePersistenceChatRejection(error: unknown): boolean {
+  const transportAuthRejection =
+    error instanceof ApiRequestError &&
+    (error.status === 401 || error.status === 403);
   const provenInternalRejection =
     error instanceof ApiRequestError &&
     error.status === 500 &&
@@ -126,8 +129,9 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
       error.code === "chat_submission_internal_error");
   return (
     error instanceof ApiRequestError &&
-    ((error.status >= 400 && error.status < 500) || provenInternalRejection) &&
-    error.submissionDisposition === "rejected_before_persist"
+    (transportAuthRejection ||
+      (((error.status >= 400 && error.status < 500) || provenInternalRejection) &&
+        error.submissionDisposition === "rejected_before_persist"))
   );
 }
 
@@ -1570,6 +1574,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 runId: historyCurrentRunId,
                 isCurrent: isCurrentHistoryLoadRequest,
                 statusRetryCountRef,
+                // A session history candidate can legitimately disappear when
+                // the server proves that the authorized session has no run.
+                allowIdle: true,
               })
             : null;
           if (!isCurrentHistoryLoadRequest()) {

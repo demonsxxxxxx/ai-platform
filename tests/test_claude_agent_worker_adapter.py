@@ -501,6 +501,33 @@ def _selected_capability_evidence(request):
     return evidence
 
 
+def _controlled_skill_capability_evidence(request, skill_id):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=skill_id,
+    )
+    binding = {
+        key: getattr(request, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    return [
+        RequiredCapabilityEvidence.from_controlled_runner(
+            declaration=declaration,
+            binding=binding,
+            tool_call_id="controlled-skill-call",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("invocation_requested", "completed")
+    ]
+
+
 def _payload_skill_evidence(current_payload):
     declaration = RequiredCapabilityDeclaration.from_authorized_subject(
         capability_kind="skill",
@@ -1816,6 +1843,65 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_sandbox_runtime_accepts_only_proven_controlled_skill_use(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills")
+    write_skill(
+        tmp_path / "skills",
+        name="minimax-docx",
+        description="Manipulate Word documents.",
+    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
+
+    async def no_files(_payload, _workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    install_sandbox_runtime(
+        monkeypatch,
+        executor_response=lambda request: {
+            "status": "completed",
+            "message": "controlled runner completed",
+            "sdk_used": False,
+            "used_skills": ["qa-file-reviewer", "unstaged-hostile-skill"],
+            "used_skills_source": "platform_controlled_runner",
+            "capability_evidence": _controlled_skill_capability_evidence(
+                request,
+                "qa-file-reviewer",
+            ),
+        },
+    )
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+            context_snapshot={"execution_tier": "sdk_only_writing"},
+            context_pack={"execution_tier": "sdk_only_writing"},
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
+    assert (
+        result.executor_payload["used_skills_source"]
+        == "platform_controlled_runner"
+    )
+    assert [
+        item["lifecycle_phase"]
+        for item in result.executor_payload["capability_evidence"]
+    ] == ["invocation_requested", "completed"]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")
@@ -1832,10 +1918,10 @@ async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkey
         monkeypatch,
         executor_response={
             "status": "completed",
-            "message": "manual answer without a Skill hook",
-            "sdk_used": True,
-            "used_skills": [],
-            "used_skills_source": "",
+            "message": "unproven controlled runner claim",
+            "sdk_used": False,
+            "used_skills": ["qa-file-reviewer"],
+            "used_skills_source": "platform_controlled_runner",
         },
     )
 

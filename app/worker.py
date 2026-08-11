@@ -12,8 +12,7 @@ from pydantic import ValidationError
 
 from app import repositories
 from app.agent_apps.capability_state import (
-    exact_hook_invoked_skills,
-    project_agent_capability_state,
+    bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
@@ -899,7 +898,7 @@ def _skill_snapshot_from_result(result: ExecutorResult) -> dict[str, list[str]]:
 
 def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
     semantic_evidence = {**result.result, **result.executor_payload}
-    exact_used = exact_hook_invoked_skills(semantic_evidence)
+    exact_used = exact_invoked_skills(semantic_evidence)
     raw = semantic_evidence.get("used_skills")
     if not isinstance(raw, list):
         return []
@@ -2492,6 +2491,7 @@ async def process_run_payload(
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         result = _normalize_sandbox_reported_failure(result)
+        result = replace(result, executor_payload=bind_validated_controlled_skill_evidence(payload, result, attempt_id, adapter))
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
         required_tool_decision = capability_authorization.required_tool_decision or RequiredCapabilityDecision(
@@ -2523,7 +2523,7 @@ async def process_run_payload(
             result.status == "succeeded"
             and required_agent_skill_id is not None
             and required_agent_skill_id
-            not in exact_hook_invoked_skills({**result.result, **result.executor_payload})
+            not in exact_invoked_skills({**result.result, **result.executor_payload})
         ):
             result = replace(
                 result,
