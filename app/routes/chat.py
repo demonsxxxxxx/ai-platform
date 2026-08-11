@@ -30,6 +30,7 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
+from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.intent_router import (
@@ -1939,7 +1940,22 @@ async def chat_stream(
                     ),
                 )
             input_modes = list(skill.get("input_modes") or [])
-            primary_file_ids = list(requested_file_ids)
+            reusable_file_rows = []
+            if request.session_id and not requested_file_ids and has_file_input_mode(input_modes):
+                reusable_file_rows = await repositories.list_authorized_session_input_files(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    workspace_id=effective_workspace_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                )
+            primary_file_ids = primary_file_ids_for_run(
+                requested_file_ids=requested_file_ids,
+                reusable_rows=[dict(row) for row in reusable_file_rows],
+                input_modes=input_modes,
+            )
+            if has_file_input_mode(input_modes) and not primary_file_ids:
+                raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
                 conn,
                 tenant_id=principal.tenant_id,
