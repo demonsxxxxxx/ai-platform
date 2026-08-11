@@ -22,6 +22,13 @@ const translate = (key: string) => `translated:${key}`;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 test("upload policy prefers the explicit byte contract and supports the byte-valued legacy alias", () => {
+  assert.equal(resolveUploadBytePolicy(null), null);
+  assert.equal(resolveUploadBytePolicy(undefined), null);
+  assert.equal(
+    resolveUploadBytePolicy("invalid-json-shape" as unknown as UploadConfig),
+    null,
+  );
+
   const explicit = resolveUploadBytePolicy({
     enabled: true,
     uploadLimitsBytes: {

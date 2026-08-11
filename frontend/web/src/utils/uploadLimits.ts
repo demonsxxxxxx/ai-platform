@@ -27,8 +27,11 @@ function resolveCategoryLimitBytes(
 
 /** Resolve the explicit byte contract, with the byte-valued legacy alias as fallback. */
 export function resolveUploadBytePolicy(
-  config: UploadConfig,
+  config: UploadConfig | null | undefined,
 ): ResolvedUploadBytePolicy | null {
+  if (!config || typeof config !== "object") {
+    return null;
+  }
   const image = resolveCategoryLimitBytes(config, "image");
   const video = resolveCategoryLimitBytes(config, "video");
   const audio = resolveCategoryLimitBytes(config, "audio");
