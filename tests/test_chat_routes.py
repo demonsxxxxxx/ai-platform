@@ -2780,14 +2780,18 @@ async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_rejects_unavailable_model_id_before_creating_run(monkeypatch):
+async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monkeypatch):
     calls = []
 
-    async def fail_create_run(*args, **kwargs):
-        calls.append(("create_run", args, kwargs))
-        raise AssertionError("invalid model_id must be rejected before run creation")
+    async def fail_side_effect(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("invalid model_id must be rejected before side effects")
 
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_side_effect)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
