@@ -1,5 +1,3 @@
-from contextlib import asynccontextmanager
-
 from fastapi.testclient import TestClient
 import pytest
 
@@ -7,11 +5,7 @@ from app import repositories
 from app.main import create_app
 from app.repositories import RepositoryNotFoundError
 from app.settings import Settings
-
-
-@asynccontextmanager
-async def fake_transaction():
-    yield object()
+from tests.support.db_transactions import opaque_transaction
 
 
 def admin_headers():
@@ -185,7 +179,7 @@ def test_admin_list_tool_policies_returns_same_tenant_operational_projection(mon
         return [tool_policy_row()]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_tool_policies.repositories.list_admin_tool_policies", fake_list_tool_policies, raising=False)
     client = TestClient(create_app())
 
@@ -267,7 +261,7 @@ def test_admin_tool_policy_history_returns_bounded_same_tenant_secret_safe_proje
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
         fake_history,
@@ -335,7 +329,7 @@ def test_admin_tool_policy_history_drops_dirty_scalars_and_nested_allowed_payloa
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr(
         "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
         fake_history,
@@ -391,7 +385,7 @@ def test_admin_update_tool_policy_audits_and_keeps_risky_tools_fail_closed(monke
         return "aud-tool-policy"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_tool_policies.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.admin_tool_policies.repositories.upsert_admin_tool_policy", fake_update_tool_policy, raising=False)
     monkeypatch.setattr("app.routes.admin_tool_policies.repositories.append_audit_log", fake_append_audit_log)
@@ -441,7 +435,7 @@ def test_admin_update_tool_policy_returns_404_for_missing_tool(monkeypatch):
         raise RepositoryNotFoundError("mcp_tool_not_found")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_tool_policies.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.admin_tool_policies.repositories.upsert_admin_tool_policy", fake_update_tool_policy, raising=False)
     client = TestClient(create_app())

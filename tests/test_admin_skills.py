@@ -6,7 +6,6 @@ from pathlib import Path
 import zipfile
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -20,6 +19,7 @@ from app.skills import packages as skill_packages
 from app.skills.dependencies import SkillDependencyPolicyError, skill_dependency_ids, skill_dependency_policy
 from app.settings import Settings
 from app.storage import StoredObject
+from tests.support.db_transactions import opaque_transaction
 
 
 def admin_headers():
@@ -1127,15 +1127,11 @@ def test_admin_preview_skill_package_uses_global_catalog_existence(monkeypatch):
 
 
 def test_admin_preview_skill_package_accepts_one_wrapped_skill_directory(monkeypatch):
-    @asynccontextmanager
-    async def fake_transaction():
-        yield object()
-
     async def fake_list_skill_ids(conn):
         return []
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
