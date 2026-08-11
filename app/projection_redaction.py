@@ -5,6 +5,9 @@ from typing import Any
 
 from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
+    is_legacy_synthetic_chat_identity,
     sanitize_public_payload,
     sanitize_public_text,
 )
@@ -114,6 +117,24 @@ def capability_id_from_skill(skill_id: object, agent_id: object | None = None) -
     if isinstance(agent_id, str) and agent_id in CAPABILITY_BY_AGENT_ID:
         return CAPABILITY_BY_AGENT_ID[agent_id]
     return None
+
+
+def public_execution_kind_for_projection(
+    execution_kind: object,
+    *,
+    agent_id: object,
+    skill_id: object,
+) -> str:
+    """Hide the retired synthetic Skill identity from ordinary-user projections."""
+
+    normalized_kind = str(execution_kind or RUN_EXECUTION_KIND_SKILL)
+    if is_legacy_synthetic_chat_identity(
+        agent_id=agent_id,
+        skill_id=skill_id,
+        execution_kind=normalized_kind,
+    ):
+        return RUN_EXECUTION_KIND_HARNESS_CHAT
+    return normalized_kind
 
 
 def public_agent_id_for_projection(agent_id: object, skill_id: object | None = None) -> str | None:

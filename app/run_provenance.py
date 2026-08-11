@@ -15,6 +15,7 @@ from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
     public_agent_id_for_projection,
+    public_execution_kind_for_projection,
 )
 from app.run_projection import (
     artifact_card,
@@ -309,7 +310,15 @@ def run_playback_summary(
         "agent_id": raw_agent_id
         if show_raw_skill
         else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
-        "execution_kind": str(run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL),
+        "execution_kind": (
+            str(run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL)
+            if show_raw_skill
+            else public_execution_kind_for_projection(
+                run.get("execution_kind"),
+                agent_id=raw_agent_id,
+                skill_id=raw_skill_id,
+            )
+        ),
         "skill_id": (raw_skill_id or None) if show_raw_skill else None,
         "capability_id": capability_id_from_skill(raw_skill_id, raw_agent_id),
         "trace_id": (

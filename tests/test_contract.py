@@ -5,7 +5,10 @@ from app.routes import health as health_routes
 from app.executors.base import RunPayload
 from app.models import CreateRunRequest, QueueRunPayload, SkillDefinition
 from app.product_events import initial_run_event_specs
-from app.control_plane_contracts import sanitize_public_payload
+from app.control_plane_contracts import (
+    is_legacy_synthetic_chat_identity,
+    sanitize_public_payload,
+)
 from app.repositories import new_id
 from fastapi.testclient import TestClient
 
@@ -33,6 +36,29 @@ def test_generated_ids_are_prefixed_and_unique():
     assert first.startswith("run_")
     assert second.startswith("run_")
     assert first != second
+
+
+def test_legacy_synthetic_chat_identity_is_exact_and_never_matches_v2_harness():
+    assert is_legacy_synthetic_chat_identity(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        execution_kind="skill",
+    )
+    assert not is_legacy_synthetic_chat_identity(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        execution_kind="harness_chat",
+    )
+    assert not is_legacy_synthetic_chat_identity(
+        agent_id="other-agent",
+        skill_id="general-chat",
+        execution_kind="skill",
+    )
+    assert not is_legacy_synthetic_chat_identity(
+        agent_id="general-agent",
+        skill_id="other-skill",
+        execution_kind="skill",
+    )
 
 
 def test_create_run_request_uses_file_ids_contract_only():

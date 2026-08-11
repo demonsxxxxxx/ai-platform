@@ -32,6 +32,7 @@ from app.control_plane_contracts import (
     AUDIT_EVENT_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
+    HARNESS_CHAT_EXECUTOR_TYPE,
     HASH_LIKE_VALUE_PATTERN,
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_CONTRACT_VERSION,
@@ -41,6 +42,7 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     artifact_lineage_contract,
     artifact_manifest_contract,
+    is_legacy_synthetic_chat_identity,
     sanitize_public_payload,
     sanitize_public_text,
     standard_error_code,
@@ -10189,7 +10191,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     else:
         source_execution_input = {}
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
-    execution_kind = str(
+    source_execution_kind = str(
         source.get("execution_kind")
         or source_execution_snapshot.get("execution_kind")
         or RUN_EXECUTION_KIND_SKILL
@@ -10200,17 +10202,37 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             source_execution_snapshot,
         )
     )
+    upgrade_legacy_chat_to_harness = (
+        is_legacy_synthetic_chat_identity(
+            agent_id=source.get("agent_id"),
+            skill_id=source.get("skill_id"),
+            execution_kind=source_execution_kind,
+        )
+        and admitted_profile_revision is None
+        and admitted_profile_hash is None
+    )
+    execution_kind = (
+        RUN_EXECUTION_KIND_HARNESS_CHAT
+        if upgrade_legacy_chat_to_harness
+        else source_execution_kind
+    )
+    copied_skill_id = None if upgrade_legacy_chat_to_harness else source.get("skill_id")
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
     executor_type = str(source_execution_snapshot.get("executor_type") or "")
+    if upgrade_legacy_chat_to_harness:
+        skill_version = None
+        skill_manifests = []
+        release_decision_payload = {}
+        executor_type = HARNESS_CHAT_EXECUTOR_TYPE
     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         if (
-            source.get("skill_id") is not None
+            copied_skill_id is not None
             or skill_version
             or release_decision_payload
             or skill_manifests
-            or executor_type != "claude-agent-worker"
+            or executor_type != HARNESS_CHAT_EXECUTOR_TYPE
         ):
             raise RepositoryConflictError("run_execution_skill_identity_mismatch")
         await authorize_selected_chat_mcp_tools(
@@ -10326,7 +10348,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             user_id,
             source["agent_id"],
             execution_kind,
-            source["skill_id"],
+            copied_skill_id,
             standard_trace_id(new_run_id),
             RUN_CONTRACT_VERSION,
             EXECUTOR_RESULT_SCHEMA_VERSION,
@@ -10371,7 +10393,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             "type": "copy_run_anchor",
             "copied_from_run_id": run_id,
             "agent_id": source["agent_id"],
-            "skill_id": source["skill_id"],
+            "skill_id": copied_skill_id,
         },
     )
     return {
@@ -10379,7 +10401,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "run_id": new_run_id,
         "agent_id": source["agent_id"],
         "execution_kind": execution_kind,
-        "skill_id": source["skill_id"],
+        "skill_id": copied_skill_id,
         "workspace_id": source["workspace_id"],
         "principal_roles": inherited_roles,
         "principal_department_id": inherited_department_id,

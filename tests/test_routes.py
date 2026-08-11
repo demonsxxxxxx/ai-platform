@@ -765,6 +765,28 @@ def test_run_playback_summary_preserves_skillless_harness_identity_for_admin():
     assert summary["capability_id"] == "general_chat"
 
 
+def test_run_playback_summary_projects_legacy_general_chat_as_harness_for_user():
+    run = {
+        "id": "run-legacy",
+        "session_id": "ses-a",
+        **RUN_SCHEMA_FIELDS,
+        "agent_id": "general-agent",
+        "execution_kind": "skill",
+        "skill_id": "general-chat",
+        "status": "running",
+        "error_code": None,
+        "error_message": None,
+    }
+
+    ordinary_summary = run_playback_summary(run, principal=principal())
+    admin_summary = run_playback_summary(run, principal=principal(roles=["admin"]))
+
+    assert ordinary_summary["execution_kind"] == "harness_chat"
+    assert ordinary_summary["skill_id"] is None
+    assert admin_summary["execution_kind"] == "skill"
+    assert admin_summary["skill_id"] == "general-chat"
+
+
 @pytest.mark.asyncio
 async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -2244,6 +2266,7 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["execution_kind"] == "harness_chat"
     assert payload["skill_id"] is None
     assert "executor_schema_version" not in payload or payload["executor_schema_version"] is None
     assert payload["capability_id"] == "general_chat"
@@ -4307,8 +4330,8 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         "workspace_id": "default",
         "session_id": "ses-original",
         "user_id": "user-a",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
         "status": "failed",
         "input_json": {
             "input": {"message": "retry"},
@@ -4320,7 +4343,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
                 "selected_version": "hash-v1",
                 "selected_track": "manifest_pin",
             },
-            "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
+            "skill_manifests": [replay_manifest("qa-file-reviewer", "hash-v1")],
         },
         "principal_roles": ["user"],
         "principal_department_id": "qa",
@@ -4410,7 +4433,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         ),
         ("reauthorization", resolver_error),
     ]
-    assert audits == [(route.__name__, "general-chat", "capability_not_authorized")]
+    assert audits == [(route.__name__, "qa-file-reviewer", "capability_not_authorized")]
 
 
 

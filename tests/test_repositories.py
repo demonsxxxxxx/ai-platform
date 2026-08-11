@@ -1780,6 +1780,101 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["copy", "retry", "resume"])
+async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless_harness(
+    monkeypatch,
+    operation,
+):
+    source = {
+        "id": "run-legacy",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "session_id": "session-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "execution_kind": "skill",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "principal_roles": ["user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+        "input_json": {
+            "input": {"message": "continue the historical chat"},
+            "file_ids": ["file-prior"],
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v1",
+        },
+    }
+    calls = {}
+
+    async def get_source(*args, **kwargs):
+        return source
+
+    async def authorize_mcp(conn, **kwargs):
+        calls["mcp"] = kwargs
+        return []
+
+    async def completed(*args, **kwargs):
+        return {"step-a": "done"}, {}
+
+    async def no_active_child(*args, **kwargs):
+        return None
+
+    async def no_write(*args, **kwargs):
+        return None
+
+    async def forbid_skill_authority(*args, **kwargs):
+        raise AssertionError("legacy base chat must not re-enter Skill replay authority")
+
+    async def record_message(conn, **kwargs):
+        calls["message"] = kwargs
+
+    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
+    monkeypatch.setattr(repositories, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbid_skill_authority)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", forbid_skill_authority)
+    monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", forbid_skill_authority)
+    monkeypatch.setattr(repositories, "_completed_steps_for_resume", completed)
+    monkeypatch.setattr(repositories, "get_active_retry_for_source_run", no_active_child)
+    monkeypatch.setattr(repositories, "get_active_resume_for_source_run", no_active_child)
+    monkeypatch.setattr(repositories, "append_event", no_write)
+    monkeypatch.setattr(repositories, "append_message", record_message)
+    monkeypatch.setattr(repositories, "append_audit_log", no_write)
+
+    conn = RecordingConnection()
+    operation_function = {
+        "copy": repositories.copy_run_as_new_task,
+        "retry": repositories.retry_run_as_new_task,
+        "resume": repositories.resume_run_as_new_task,
+    }[operation]
+    copied = await operation_function(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-legacy",
+    )
+
+    assert calls["mcp"]["tool_ids"] == []
+    assert copied["execution_kind"] == "harness_chat"
+    assert copied["skill_id"] is None
+    assert copied["schema_version"] == "ai-platform.run-payload.v2"
+    assert copied["skill_version"] is None
+    assert copied["release_decision"] == {}
+    assert copied["skill_manifests"] == []
+    assert copied["file_ids"] == ["file-prior"]
+    assert calls["message"]["metadata_json"]["skill_id"] is None
+
+    insert_sql, insert_params = next(
+        (sql, params) for sql, params in conn.calls if sql.startswith("insert into runs")
+    )
+    assert "execution_kind, skill_id" in insert_sql
+    assert insert_params[6:8] == ("harness_chat", None)
+    persisted_input = json.loads(insert_params[19])
+    assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
+    assert persisted_input["skill_manifests"] == []
+
+
+@pytest.mark.asyncio
 async def test_copy_run_rejects_expanded_resume_input_before_generation_write(monkeypatch):
     async def get_source(*_args, **_kwargs):
         return {

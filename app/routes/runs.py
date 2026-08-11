@@ -39,6 +39,7 @@ from app.projection_redaction import (
     capability_id_from_skill,
     internal_agent_id_for_request,
     public_agent_id_for_projection,
+    public_execution_kind_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
     strip_server_owned_control_metadata,
@@ -1746,6 +1747,15 @@ async def get_run(
     raw_agent_id = str(run["agent_id"])
     execution_kind = str(run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL)
     show_raw_skill = is_ai_admin(principal)
+    projected_execution_kind = (
+        execution_kind
+        if show_raw_skill
+        else public_execution_kind_for_projection(
+            execution_kind,
+            agent_id=raw_agent_id,
+            skill_id=raw_skill_id,
+        )
+    )
     terminal_projection = (
         public_terminal_projection(
             run_status,
@@ -1798,7 +1808,7 @@ async def get_run(
         agent_id=raw_agent_id
         if show_raw_skill
         else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
-        execution_kind=execution_kind,
+        execution_kind=projected_execution_kind,
         skill_id=(raw_skill_id or None) if show_raw_skill else None,
         capability_id=capability_id_from_skill(raw_skill_id, raw_agent_id),
         trace_id=(

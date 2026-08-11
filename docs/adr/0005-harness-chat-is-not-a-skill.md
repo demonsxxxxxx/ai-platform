@@ -59,14 +59,16 @@ replayable through compatibility branches. An upgrade does not delete legacy
 database Skill/version rows that historical foreign keys may still reference,
 but clean installs no longer seed them, the Workbench never publishes them, and
 `general-agent.default_skill_id` is null. New requests that
-explicitly select `general-chat` fail with `general_chat_is_not_a_skill`; only
-an explicit replay, retry, or copy of an already-persisted v1 run may retain
-that historical identity.
+explicitly select `general-chat` fail with `general_chat_is_not_a_skill`.
 
-Copied, retried, and resumed runs preserve their source execution identity.
-Harness copies use v2 and reauthorize current MCP access without manufacturing
-a Skill identity. Skill copies retain the pinned Skill authority and continue
-to fail closed on version, release, manifest, profile, model, or MCP conflicts.
+Historical source rows are never rewritten: already-queued v1 work can finish
+through the dual-read compatibility path, and the original row remains the
+audit fact. Copy, retry, and resume upgrade an unprofiled legacy
+`general-agent` / `general-chat` source into a new v2 `harness_chat` child with
+`skill_id = null`; that child reauthorizes current MCP access without
+manufacturing a Skill identity. All other Skill copies, including profile-bound
+history, retain pinned Skill authority and continue to fail closed on version,
+release, manifest, profile, model, or MCP conflicts.
 
 ## Consequences
 
