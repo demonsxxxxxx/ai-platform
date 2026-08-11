@@ -292,7 +292,7 @@ def test_chat_stream_request_accepts_lambchat_body_shape():
     assert request.enabled_skills == ["general-chat"]
 
 
-def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
+def test_lambchat_sessions_project_expert_profile_ids_without_legacy_aliases(monkeypatch):
     async def fake_list_authorized_sessions(conn, *, tenant_id, user_id):
         assert (tenant_id, user_id) == ("default", "user-a")
         return [
@@ -328,15 +328,15 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
 
     assert response.status_code == 200
     sessions = response.json()["sessions"]
-    assert sessions[0]["agent_id"] == "document-review"
-    assert sessions[0]["metadata"]["agent_id"] == "document-review"
-    assert sessions[1]["agent_id"] == "document-translation"
-    assert sessions[1]["metadata"]["agent_id"] == "document-translation"
-    assert "qa-word-review" not in str(response.json())
-    assert "baoyu-translate" not in str(response.json())
+    assert sessions[0]["agent_id"] == "qa-word-review"
+    assert sessions[0]["metadata"]["agent_id"] == "qa-word-review"
+    assert sessions[1]["agent_id"] == "baoyu-translate"
+    assert sessions[1]["metadata"]["agent_id"] == "baoyu-translate"
+    assert "document-review" not in str(response.json())
+    assert "document-translation" not in str(response.json())
 
 
-def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
+def test_lambchat_session_detail_projects_expert_profile_id(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_review")
         return {
@@ -361,12 +361,12 @@ def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_id"] == "document-review"
-    assert payload["metadata"]["agent_id"] == "document-review"
-    assert "qa-word-review" not in str(payload)
+    assert payload["agent_id"] == "qa-word-review"
+    assert payload["metadata"]["agent_id"] == "qa-word-review"
+    assert "document-review" not in str(payload)
 
 
-async def test_lambchat_agent_repository_exposes_only_canonical_agents():
+async def test_lambchat_agent_repository_exposes_all_active_experts():
     from app.repositories import list_lambchat_agents
 
     class FakeCursor:
@@ -387,8 +387,7 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
 
     assert rows == []
     sql, params = conn.executed[-1]
-    assert "agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')" in sql
-    assert "sop-assistant" not in sql
+    assert "agents.id in" not in sql
     assert "agents.status = 'active'" in sql
     assert "skills.status = 'active'" in sql
     assert "skill_release_policies.current_version" in sql
@@ -398,7 +397,7 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     assert params == ("default",)
 
 
-def test_lambchat_bootstrap_endpoints_match_frontend_contract():
+def test_frontend_bootstrap_endpoints_match_retained_contracts():
     client = TestClient(create_app())
 
     expectations = {
@@ -431,13 +430,31 @@ def test_lambchat_bootstrap_endpoints_match_frontend_contract():
                 assert payload[key] == value, path
 
 
-def test_lambchat_bootstrap_routes_do_not_shadow_authenticated_workbench_projections(monkeypatch):
+def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
+    from app.routes.lambchat_compat import router as lambchat_router
+    from app.routes.workbench_projections import router as workbench_router
     from tests.test_workbench_projection_routes import (
         install_workbench_route_fakes,
         user_headers,
     )
 
     install_workbench_route_fakes(monkeypatch)
+    for path in ("/settings/", "/notifications/active"):
+        workbench_owners = [
+            route.endpoint.__module__
+            for route in workbench_router.routes
+            if getattr(route, "path", None) == path
+            and "GET" in (getattr(route, "methods", None) or set())
+        ]
+        lambchat_owners = [
+            route.endpoint.__module__
+            for route in lambchat_router.routes
+            if getattr(route, "path", None) == path
+            and "GET" in (getattr(route, "methods", None) or set())
+        ]
+        assert workbench_owners == ["app.routes.workbench_projections"]
+        assert lambchat_owners == []
+
     client = TestClient(create_app())
 
     anonymous_settings = client.get("/api/settings/")
@@ -1598,7 +1615,7 @@ def test_lambchat_terminal_answer_uses_trusted_identifier_token_boundaries(
             "qa-word-review",
             "",
             "qa-word-review 拒绝执行",
-            "document-review 拒绝执行",
+            "任务完成",
         ),
         (
             "",
@@ -3151,7 +3168,7 @@ def test_lambchat_session_runs_normalizes_legacy_canceled_status(monkeypatch):
     assert "skill_id" not in response.json()["runs"][0]
 
 
-def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(monkeypatch):
+def test_lambchat_session_runs_projects_expert_without_legacy_capability(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         assert user_id == "user-a"
         return {"id": session_id}
@@ -3186,9 +3203,10 @@ def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(monk
 
     assert response.status_code == 200
     run = response.json()["runs"][0]
-    assert run["capability_id"] == "document_translation"
+    assert run["capability_id"] is None
+    assert run["agent_id"] == "baoyu-translate"
     assert "skill_id" not in run
-    assert "baoyu-translate" not in str(run)
+    assert "document_translation" not in str(run)
 
 
 def test_lambchat_session_runs_include_latest_frontend_run_aliases(monkeypatch):

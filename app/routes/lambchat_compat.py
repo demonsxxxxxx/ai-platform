@@ -1044,12 +1044,6 @@ async def model_configs() -> dict[str, object]:
     return {**catalog, "models": models}
 
 
-@router.get("/settings")
-@router.get("/settings/")
-async def settings() -> dict[str, object]:
-    return {"settings": {}}
-
-
 @router.get("/version")
 async def version() -> dict[str, object]:
     return {"version": "ai-platform-poc"}
@@ -1059,11 +1053,6 @@ async def version() -> dict[str, object]:
 @router.get("/projects/")
 async def projects() -> list[object]:
     return []
-
-
-@router.get("/notifications/active")
-async def active_notifications() -> dict[str, object]:
-    return {"notifications": []}
 
 
 @router.get("/upload/config")

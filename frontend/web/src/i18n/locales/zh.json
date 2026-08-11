@@ -1985,6 +1985,7 @@
       "visibleToUsers": "对普通用户可见"
     },
     "batchDeleteFailed": "部分技能删除失败",
+    "batchDeletePartial": "已删除 {{deleted}} 个 Skill，另有 {{failed}} 个删除失败。",
     "batchDeleteSuccess": "已删除 {{count}} 个技能",
     "batchDisableSuccess": "已禁用 {{count}} 个技能",
     "batchEnableSuccess": "已启用 {{count}} 个技能",
@@ -2034,6 +2035,10 @@
       "selectSkill": "选择 {{name}}",
       "selectedDetail": "当前 Skill 详情",
       "selectDetailPrompt": "请从目录选择一项查看详情。",
+      "selectionAfterDelete": "已删除 {{deleted}}，左侧列表和右侧详情已同步切换到 {{name}}。",
+      "selectionAfterDeleteEmpty": "已删除 {{deleted}}，当前没有可选择的 Skill。",
+      "selectionChanged": "左侧列表和右侧详情已同步切换到 {{name}}。",
+      "selectionCurrent": "左侧列表和右侧详情当前均为 {{name}}。",
       "skill": "技能",
       "tags": "标签",
       "catalogStatus": "目录状态",

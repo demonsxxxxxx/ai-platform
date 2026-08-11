@@ -6,6 +6,8 @@ import type { SkillResponse } from "../../../types/skill.ts";
 import {
   buildSkillCatalogEntries,
   filterSkillCatalogEntries,
+  removeArchivedActionSelections,
+  resolveArchivedSkillCatalogEntries,
   resolveSkillCatalogPage,
 } from "../SkillsPanel/skillCatalogEntries.ts";
 
@@ -56,6 +58,34 @@ test("catalog entries keep opaque skill ids while preserving runtime action name
   assert.equal(entries[0]?.actionName, "qa-file-reviewer");
   assert.equal(entries[0]?.adminSkill?.skillId, "skill-opaque-42");
   assert.equal(entries[0]?.runtimeSkill?.name, "qa-file-reviewer");
+});
+
+test("runtime delete results resolve to opaque catalog ids", () => {
+  assert.deepEqual(
+    resolveArchivedSkillCatalogEntries(
+      [adminSkill("skill-opaque-42", "qa-file-reviewer")],
+      ["qa-file-reviewer", "runtime-only"],
+    ),
+    [
+      {
+        id: "skill-opaque-42",
+        actionName: "qa-file-reviewer",
+        displayName: "qa-file-reviewer",
+      },
+      {
+        id: "runtime-only",
+        actionName: "runtime-only",
+        displayName: "runtime-only",
+      },
+    ],
+  );
+});
+
+test("single delete removes only the archived runtime action from batch selection", () => {
+  assert.deepEqual(
+    [...removeArchivedActionSelections(new Set(["skill-a", "skill-b"]), ["skill-a"])],
+    ["skill-b"],
+  );
 });
 
 test("admin draft records remain visible in the canonical list", () => {
