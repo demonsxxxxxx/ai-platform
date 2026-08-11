@@ -19,7 +19,7 @@ from app.skills import packages as skill_packages
 from app.skills.dependencies import SkillDependencyPolicyError, skill_dependency_ids, skill_dependency_policy
 from app.settings import Settings
 from app.storage import StoredObject
-from tests.support.db_transactions import opaque_transaction
+from tests.support.db_transactions import OpaqueConnection, opaque_connection_transaction, opaque_transaction
 
 
 def admin_headers():
@@ -166,15 +166,8 @@ def test_admin_skill_detail_requires_admin(monkeypatch):
 
 
 def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_list_summaries(conn, *, tenant_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert tenant_id == "default"
         return [
             {
@@ -192,7 +185,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_admin_skill_summaries", fake_list_summaries)
     client = TestClient(create_app())
 
@@ -223,15 +216,8 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
 
 
 def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_detail(conn, *, tenant_id, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert tenant_id == "default"
         assert skill_id == "qa-file-reviewer"
         return {
@@ -263,11 +249,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
         }
 
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["baoyu-translate", "minimax-docx", "qa-file-reviewer"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
@@ -405,13 +391,6 @@ def test_dependency_policy_reports_public_dependency_without_allowing_it(monkeyp
 
 
 def test_admin_skill_detail_returns_blocked_dependency_policy_for_admin_audit(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_detail(conn, *, tenant_id, skill_id):
         return {
             "skill": {"skill_id": skill_id, "name": "QA File Reviewer"},
@@ -423,7 +402,7 @@ def test_admin_skill_detail_returns_blocked_dependency_policy_for_admin_audit(mo
         return ["qa-file-reviewer"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
@@ -511,27 +490,20 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
                 ),
             ]
 
-    class FakeConnection:
-        pass
-
     synced = []
     catalog_updates = []
     snapshot_backfills = []
 
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_upsert(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         synced.append(kwargs)
 
     async def fake_update_catalog(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         catalog_updates.append(kwargs)
 
     async def fake_backfill_snapshot(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         snapshot_backfills.append(kwargs)
 
     skills_root_path = str(skills_root)
@@ -539,7 +511,7 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.admin_skills.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.admin_skills.BuiltinSkillRegistry", FakeRegistry)
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
     monkeypatch.setattr(
         "app.routes.admin_skills.repositories.backfill_builtin_skill_version_snapshot",
@@ -621,21 +593,14 @@ def test_admin_sync_builtin_skills_rejects_dependency_policy_violation(monkeypat
 
     settings = Settings(frontend_poc_auth_enabled=True, platform_skills_root=str(skills_root))
 
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_upsert(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
 
     async def fake_update_catalog(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
 
     async def fake_backfill_snapshot(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
 
     def disallowed_dependency(skill_id, available_skill_ids):
         if skill_id == "qa-file-reviewer":
@@ -644,7 +609,7 @@ def test_admin_sync_builtin_skills_rejects_dependency_policy_violation(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.admin_skills.get_settings", lambda: settings)
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.skill_dependency_ids", disallowed_dependency)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
     monkeypatch.setattr(
@@ -679,15 +644,8 @@ def test_admin_upload_skill_package_requires_admin(monkeypatch):
 
 
 def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "shared-research-skill"
         return {"skill_id": skill_id, "version": "builtin-shared-version", "status": "active"}
 
@@ -699,7 +657,7 @@ def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monk
             raise AssertionError("existing-skill denial must happen before package storage")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -722,24 +680,17 @@ def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monk
 
 
 def test_admin_upload_skill_package_rejects_missing_internal_dependency(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "qa-file-reviewer"
         return {"skill_id": skill_id, "status": "active"}
 
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["qa-file-reviewer"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
@@ -755,13 +706,6 @@ def test_admin_upload_skill_package_rejects_missing_internal_dependency(monkeypa
 
 
 def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     stored_objects = []
     upserts = []
     audits = []
@@ -774,24 +718,24 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
             return StoredObject(storage_key=storage_key, sha256="zip-sha256", size_bytes=len(content))
 
     async def fake_upsert(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         upserts.append(kwargs)
 
     async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "qa-file-reviewer"
         return {"skill_id": skill_id, "status": "active"}
 
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["qa-file-reviewer", "minimax-docx"]
 
     async def fake_get_version(conn, *, skill_id, version):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return None
 
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert tenant_id == "default"
         assert skill_id == "qa-file-reviewer"
         assert channel == "stable"
@@ -807,13 +751,13 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
         }
 
     async def fake_audit(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         audits.append(kwargs)
         return "aud-upload"
 
     package_content = skill_package_zip()
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -894,13 +838,6 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
 
 
 def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_visibility(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     package_content = skill_package_zip(
         name="new-research-skill",
         description="Summarize research briefs.",
@@ -920,43 +857,43 @@ def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_v
             return StoredObject(storage_key=storage_key, sha256="new-zip-sha256", size_bytes=len(content))
 
     async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "new-research-skill"
         return None
 
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["general-chat", "minimax-docx"]
 
     async def fake_get_version(conn, *, skill_id, version):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "new-research-skill"
         return None
 
     async def fake_create_catalog(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         catalog_creates.append(kwargs)
 
     async def fake_upsert_version(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         version_upserts.append(kwargs)
 
     async def fake_set_policy(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         release_policies.append(kwargs)
 
     async def fake_set_uploaded_workbench_status(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         visibility_updates.append(kwargs)
         return {"skill_id": kwargs["skill_id"], "status": kwargs["status"], "visible_to_user": True}
 
     async def fake_audit(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         audits.append(kwargs)
         return "aud-new-upload"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1015,13 +952,6 @@ def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_v
 
 
 def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     package_content = skill_package_zip(
         name="raced-research-skill",
         description="Summarize raced research briefs.",
@@ -1032,19 +962,19 @@ def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(
             raise AssertionError("catalog conflict must stop before package object storage")
 
     async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "raced-research-skill"
         return None
 
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["general-chat"]
 
     async def fake_get_version(conn, *, skill_id, version):
         raise AssertionError("catalog conflict must stop before existing-version reuse")
 
     async def fake_create_catalog(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert kwargs["skill_id"] == "raced-research-skill"
         raise RepositoryConflictError("skill_catalog_already_exists")
 
@@ -1055,7 +985,7 @@ def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(
         raise AssertionError("catalog conflict must stop before version, policy, or audit writes")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1083,19 +1013,12 @@ def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(
 
 
 def test_admin_preview_skill_package_uses_global_catalog_existence(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["tenant-invisible-skill", "general-chat"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
@@ -1164,13 +1087,6 @@ def test_admin_preview_skill_package_accepts_one_wrapped_skill_directory(monkeyp
 
 
 def test_admin_upload_existing_catalog_skill_creates_draft_without_policy_or_distribution(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     package_content = skill_package_zip(
         name="shared-research-skill",
         description="Summarize shared research briefs.",
@@ -1187,7 +1103,7 @@ def test_admin_upload_existing_catalog_skill_creates_draft_without_policy_or_dis
             return StoredObject(storage_key=storage_key, sha256="shared-zip-sha256", size_bytes=len(content))
 
     async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "shared-research-skill"
         return {
             "skill_id": skill_id,
@@ -1198,16 +1114,16 @@ def test_admin_upload_existing_catalog_skill_creates_draft_without_policy_or_dis
         }
 
     async def fake_list_skill_ids(conn):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         return ["shared-research-skill", "minimax-docx"]
 
     async def fake_get_version(conn, *, skill_id, version):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "shared-research-skill"
         return None
 
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert tenant_id == "default"
         assert skill_id == "shared-research-skill"
         assert channel == "stable"
@@ -1217,25 +1133,25 @@ def test_admin_upload_existing_catalog_skill_creates_draft_without_policy_or_dis
         raise AssertionError("existing global skill catalog row must not be recreated")
 
     async def fake_upsert_version(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         version_upserts.append(kwargs)
 
     async def fake_set_policy(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         release_policies.append(kwargs)
 
     async def fake_set_uploaded_workbench_status(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         visibility_updates.append(kwargs)
         return {"skill_id": kwargs["skill_id"], "status": kwargs["status"], "visible_to_user": True}
 
     async def fake_audit(conn, **kwargs):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         audits.append(kwargs)
         return "aud-existing-tenant-upload"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1392,18 +1308,11 @@ def test_admin_upload_skill_package_rejects_name_mismatch_before_storage(monkeyp
 
 @pytest.mark.asyncio
 async def test_admin_upload_skill_package_rejects_unsafe_skill_id_before_read(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     class UnreadableUpload:
         async def read(self, *args, **kwargs):
             raise AssertionError("upload body must not be read before skill id validation")
 
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
 
     with pytest.raises(Exception) as exc_info:
         await admin_upload_skill_package(
@@ -1422,13 +1331,6 @@ async def test_admin_upload_skill_package_rejects_unsafe_skill_id_before_read(mo
 
 
 def test_admin_upload_skill_package_reuses_existing_version_without_storage_overwrite(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     class FailingObjectStorage:
@@ -1484,7 +1386,7 @@ def test_admin_upload_skill_package_reuses_existing_version_without_storage_over
         return "aud-reused"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1506,13 +1408,6 @@ def test_admin_upload_skill_package_reuses_existing_version_without_storage_over
 
 
 def test_admin_upload_existing_version_reuses_draft_without_policy_or_distribution(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
     policies = []
     visibility_updates = []
@@ -1590,7 +1485,7 @@ def test_admin_upload_existing_version_reuses_draft_without_policy_or_distributi
         return "aud-reused"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1624,13 +1519,6 @@ def test_admin_upload_existing_version_reuses_draft_without_policy_or_distributi
 
 
 def test_admin_upload_skill_package_reuse_rejects_stale_dependency_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     class FailingObjectStorage:
@@ -1667,7 +1555,7 @@ def test_admin_upload_skill_package_reuse_rejects_stale_dependency_policy(monkey
         raise AssertionError("stale existing skill version must reject before audit")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1687,13 +1575,6 @@ def test_admin_upload_skill_package_reuse_rejects_stale_dependency_policy(monkey
 
 
 def test_admin_upload_skill_package_reuse_rejects_non_uploaded_existing_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     class FailingObjectStorage:
         def put_bytes(self, **kwargs):
             raise AssertionError("non-uploaded existing skill version must reject before object storage")
@@ -1721,7 +1602,7 @@ def test_admin_upload_skill_package_reuse_rejects_non_uploaded_existing_version(
         raise AssertionError("non-uploaded existing skill version must reject before audit")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1740,13 +1621,6 @@ def test_admin_upload_skill_package_reuse_rejects_non_uploaded_existing_version(
 
 
 def test_admin_upload_skill_package_rejects_concurrent_version_conflict_before_publish(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     stored_objects = []
 
     class FakeObjectStorage:
@@ -1779,7 +1653,7 @@ def test_admin_upload_skill_package_rejects_concurrent_version_conflict_before_p
         raise AssertionError("conflicting skill version must not write upload audit")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
@@ -1832,15 +1706,8 @@ def test_admin_skill_release_routes_require_admin(monkeypatch):
 
 
 def test_admin_skill_version_diff_returns_manifest_changes(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_diff(conn, *, skill_id, from_version, to_version):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         assert skill_id == "qa-file-reviewer"
         assert from_version == "hash-a"
         assert to_version == "hash-b"
@@ -1856,7 +1723,7 @@ def test_admin_skill_version_diff_returns_manifest_changes(monkeypatch):
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.diff_skill_versions", fake_diff)
     client = TestClient(create_app())
 
@@ -1933,13 +1800,6 @@ def test_skill_admin_permission_cannot_mutate_global_skill_lifecycle(monkeypatch
 
 
 def test_admin_skill_version_status_reviewed_requires_release_review(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             **materializable_uploaded_qa_version(version),
@@ -1950,7 +1810,7 @@ def test_admin_skill_version_status_reviewed_requires_release_review(monkeypatch
         raise AssertionError("blocked release review must not update status")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", blocked_skill_version_release)
@@ -1971,13 +1831,6 @@ def test_admin_skill_version_status_rejects_review_transition_from_non_draft_ver
     monkeypatch,
     current_status,
 ):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             **materializable_uploaded_qa_version(version),
@@ -1988,7 +1841,7 @@ def test_admin_skill_version_status_rejects_review_transition_from_non_draft_ver
         raise AssertionError("invalid lifecycle transition must not update status")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr(
         "app.routes.admin_skills.repositories.update_skill_version_status",
@@ -2008,13 +1861,6 @@ def test_admin_skill_version_status_rejects_review_transition_from_non_draft_ver
 
 
 def test_admin_skill_version_status_marks_reviewed_and_audits(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2036,7 +1882,7 @@ def test_admin_skill_version_status_marks_reviewed_and_audits(monkeypatch):
         return "aud-status-reviewed"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status, raising=False)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
@@ -2068,13 +1914,6 @@ def test_admin_skill_version_status_marks_reviewed_and_audits(monkeypatch):
 
 
 def test_admin_standard_uploaded_skill_package_can_progress_draft_reviewed_and_released(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     skill_markdown = b"---\nname: native-review\ndescription: Review with local commands.\n---\n\n# Native review\n"
     script = b"#!/bin/sh\nprintf reviewed\n"
     content_hash = skill_packages._content_hash(
@@ -2151,7 +1990,7 @@ def test_admin_standard_uploaded_skill_package_can_progress_draft_reviewed_and_r
         return "aud-native-review"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
@@ -2189,13 +2028,6 @@ def test_admin_standard_uploaded_skill_package_can_progress_draft_reviewed_and_r
 
 
 def test_admin_promote_rejects_tampered_uploaded_package_contract_before_policy_write(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(_conn, *, skill_id, version):
         return {
             **materializable_uploaded_qa_version(version),
@@ -2225,7 +2057,7 @@ def test_admin_promote_rejects_tampered_uploaded_package_contract_before_policy_
         raise AssertionError("tampered package contract must reject before release policy write")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_policy)
     client = TestClient(create_app())
@@ -2242,13 +2074,6 @@ def test_admin_promote_rejects_tampered_uploaded_package_contract_before_policy_
 
 @pytest.mark.parametrize("target_status", ["disabled", "deprecated"])
 def test_admin_skill_version_status_can_disable_or_deprecate_without_release_review(monkeypatch, target_status):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2273,7 +2098,7 @@ def test_admin_skill_version_status_can_disable_or_deprecate_without_release_rev
         raise AssertionError("disable/deprecate must not require release review")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status, raising=False)
@@ -2297,13 +2122,6 @@ def test_admin_skill_version_status_can_disable_or_deprecate_without_release_rev
 
 @pytest.mark.parametrize("target_status", ["disabled", "deprecated"])
 def test_admin_skill_version_status_rejects_disabling_current_release_policy(monkeypatch, target_status):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_uploaded_qa_version(version)
 
@@ -2314,7 +2132,7 @@ def test_admin_skill_version_status_rejects_disabling_current_release_policy(mon
         raise AssertionError("current release policy version must not be disabled or deprecated directly")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
@@ -2337,13 +2155,6 @@ def test_admin_skill_version_status_rejects_disabling_gray_rollout_previous_poli
     target_status,
     rollout_percent,
 ):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_uploaded_qa_version(version)
 
@@ -2358,7 +2169,7 @@ def test_admin_skill_version_status_rejects_disabling_gray_rollout_previous_poli
         raise AssertionError("gray rollout previous version must not be disabled or deprecated directly")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
@@ -2388,17 +2199,10 @@ def test_admin_skill_version_status_rejects_invalid_status(monkeypatch):
 
 
 def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
-        assert isinstance(conn, FakeConnection)
+        assert isinstance(conn, OpaqueConnection)
         calls.append(("get_version", skill_id, version))
         return materializable_builtin_qa_version(version)
 
@@ -2434,7 +2238,7 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
         return "aud-a"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -2478,13 +2282,6 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
 
 
 def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_builtin_qa_version(version)
 
@@ -2498,7 +2295,7 @@ def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", blocked_release_review)
@@ -2516,13 +2313,6 @@ def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(
 
 
 def test_admin_promote_rejects_draft_skill_version_before_release_review(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             **materializable_uploaded_qa_version(version),
@@ -2536,7 +2326,7 @@ def test_admin_promote_rejects_draft_skill_version_before_release_review(monkeyp
         raise AssertionError("draft version must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", fail_review)
@@ -2553,13 +2343,6 @@ def test_admin_promote_rejects_draft_skill_version_before_release_review(monkeyp
 
 
 def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2587,7 +2370,7 @@ def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
         return "aud-gray-promote"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -2616,13 +2399,6 @@ def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
 
 
 def test_admin_promote_gray_rejects_unmaterializable_existing_policy_current_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2660,7 +2436,7 @@ def test_admin_promote_gray_rejects_unmaterializable_existing_policy_current_ver
         raise AssertionError("gray promote must reject before audit")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_set_policy)
@@ -2681,13 +2457,6 @@ def test_admin_promote_gray_rejects_unmaterializable_existing_policy_current_ver
 
 
 def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2716,7 +2485,7 @@ def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monk
         return "aud-first-gray-promote"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
@@ -2749,13 +2518,6 @@ def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monk
 
 
 def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previous(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2801,7 +2563,7 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
         return "aud-first-full-promote"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
@@ -2837,13 +2599,6 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
 
 
 def test_admin_promote_rejects_inactive_skill_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -2858,7 +2613,7 @@ def test_admin_promote_rejects_inactive_skill_version(monkeypatch):
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
@@ -2873,13 +2628,6 @@ def test_admin_promote_rejects_inactive_skill_version(monkeypatch):
 
 
 def test_admin_promote_rejects_builtin_version_that_cannot_be_materialized(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -2894,7 +2642,7 @@ def test_admin_promote_rejects_builtin_version_that_cannot_be_materialized(monke
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "current-hash")
     client = TestClient(create_app())
@@ -2910,9 +2658,6 @@ def test_admin_promote_rejects_builtin_version_that_cannot_be_materialized(monke
 
 
 def test_admin_promote_rejects_builtin_snapshot_materialization_failure(monkeypatch):
-    class FakeConnection:
-        pass
-
     class FakeRegistry:
         def __init__(self, root):
             self.root = root
@@ -2923,10 +2668,6 @@ def test_admin_promote_rejects_builtin_snapshot_materialization_failure(monkeypa
                 name: str
 
             return [FakeSkill("qa-file-reviewer")]
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
 
     async def fake_get_version(conn, *, skill_id, version):
         return {
@@ -2945,7 +2686,7 @@ def test_admin_promote_rejects_builtin_snapshot_materialization_failure(monkeypa
         raise ValueError("skill snapshot too large")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.BuiltinSkillRegistry", FakeRegistry)
     monkeypatch.setattr("app.routes.admin_skills.build_skill_manifest_pins", fail_build_skill_manifest_pins)
@@ -2962,13 +2703,6 @@ def test_admin_promote_rejects_builtin_snapshot_materialization_failure(monkeypa
 
 
 def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -2998,7 +2732,7 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
         return "aud-uploaded-promote"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -3023,13 +2757,6 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
 
 
 def test_admin_promote_rejects_uploaded_version_with_stale_dependency_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3051,7 +2778,7 @@ def test_admin_promote_rejects_uploaded_version_with_stale_dependency_policy(mon
         raise AssertionError("stale uploaded dependency metadata must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
@@ -3067,13 +2794,6 @@ def test_admin_promote_rejects_uploaded_version_with_stale_dependency_policy(mon
 
 
 def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3092,7 +2812,7 @@ def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypat
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
@@ -3107,13 +2827,6 @@ def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypat
 
 
 def test_admin_promote_rejects_uploaded_version_with_missing_dependency_snapshots(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3135,7 +2848,7 @@ def test_admin_promote_rejects_uploaded_version_with_missing_dependency_snapshot
         raise AssertionError("unmaterializable dependency snapshots must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
@@ -3151,13 +2864,6 @@ def test_admin_promote_rejects_uploaded_version_with_missing_dependency_snapshot
 
 
 def test_admin_promote_rejects_fileless_builtin_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3175,7 +2881,7 @@ def test_admin_promote_rejects_fileless_builtin_version(monkeypatch):
         raise AssertionError("fileless builtin policy versions must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
@@ -3192,13 +2898,6 @@ def test_admin_promote_rejects_fileless_builtin_version(monkeypatch):
 
 
 def test_admin_promote_rejects_builtin_snapshot_with_stale_dependency_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3221,7 +2920,7 @@ def test_admin_promote_rejects_builtin_snapshot_with_stale_dependency_policy(mon
         raise AssertionError("stale builtin dependency metadata must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
@@ -3237,18 +2936,11 @@ def test_admin_promote_rejects_builtin_snapshot_with_stale_dependency_policy(mon
 
 
 def test_admin_promote_missing_version_returns_404(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return None
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
@@ -3263,13 +2955,6 @@ def test_admin_promote_missing_version_returns_404(monkeypatch):
 
 
 def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -3307,7 +2992,7 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
         return "aud-a"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -3349,18 +3034,11 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
 
 
 def test_admin_rollback_missing_version_returns_404(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return None
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
@@ -3375,13 +3053,6 @@ def test_admin_rollback_missing_version_returns_404(monkeypatch):
 
 
 def test_admin_rollback_rejects_inactive_skill_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3396,7 +3067,7 @@ def test_admin_rollback_rejects_inactive_skill_version(monkeypatch):
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
@@ -3411,13 +3082,6 @@ def test_admin_rollback_rejects_inactive_skill_version(monkeypatch):
 
 
 def test_admin_rollback_rejects_builtin_version_that_cannot_be_materialized(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3432,7 +3096,7 @@ def test_admin_rollback_rejects_builtin_version_that_cannot_be_materialized(monk
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "current-hash")
     client = TestClient(create_app())
@@ -3448,13 +3112,6 @@ def test_admin_rollback_rejects_builtin_version_that_cannot_be_materialized(monk
 
 
 def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -3480,7 +3137,7 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
         return "aud-uploaded-rollback"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -3500,13 +3157,6 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
 
 
 def test_admin_rollback_rejects_uploaded_version_with_stale_dependency_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3528,7 +3178,7 @@ def test_admin_rollback_rejects_uploaded_version_with_stale_dependency_policy(mo
         raise AssertionError("stale uploaded dependency metadata must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
@@ -3544,13 +3194,6 @@ def test_admin_rollback_rejects_uploaded_version_with_stale_dependency_policy(mo
 
 
 def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3569,7 +3212,7 @@ def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypa
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
@@ -3584,13 +3227,6 @@ def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypa
 
 
 def test_admin_rollback_rejects_uploaded_version_with_missing_dependency_snapshots(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3612,7 +3248,7 @@ def test_admin_rollback_rejects_uploaded_version_with_missing_dependency_snapsho
         raise AssertionError("unmaterializable dependency snapshots must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
@@ -3628,13 +3264,6 @@ def test_admin_rollback_rejects_uploaded_version_with_missing_dependency_snapsho
 
 
 def test_admin_rollback_rejects_fileless_builtin_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3652,7 +3281,7 @@ def test_admin_rollback_rejects_fileless_builtin_version(monkeypatch):
         raise AssertionError("fileless builtin policy versions must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
@@ -3669,13 +3298,6 @@ def test_admin_rollback_rejects_fileless_builtin_version(monkeypatch):
 
 
 def test_admin_rollback_rejects_builtin_snapshot_with_stale_dependency_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -3698,7 +3320,7 @@ def test_admin_rollback_rejects_builtin_snapshot_with_stale_dependency_policy(mo
         raise AssertionError("stale builtin dependency metadata must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
@@ -3714,13 +3336,6 @@ def test_admin_rollback_rejects_builtin_snapshot_with_stale_dependency_policy(mo
 
 
 def test_admin_rollback_requires_existing_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_builtin_qa_version(version)
 
@@ -3728,7 +3343,7 @@ def test_admin_rollback_requires_existing_policy(monkeypatch):
         return None
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
@@ -3745,13 +3360,6 @@ def test_admin_rollback_requires_existing_policy(monkeypatch):
 
 
 def test_admin_rollback_accepts_existing_gray_release_policy(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -3777,7 +3385,7 @@ def test_admin_rollback_accepts_existing_gray_release_policy(monkeypatch):
         return "aud-gray-rollback"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -3803,13 +3411,6 @@ def test_admin_rollback_accepts_existing_gray_release_policy(monkeypatch):
 
 
 def test_admin_rollback_converges_gray_policy_without_previous_version(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
@@ -3835,7 +3436,7 @@ def test_admin_rollback_converges_gray_policy_without_previous_version(monkeypat
         return "aud-gray-converge"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
@@ -3861,13 +3462,6 @@ def test_admin_rollback_converges_gray_policy_without_previous_version(monkeypat
 
 
 def test_admin_rollback_requires_previous_version_target(monkeypatch):
-    class FakeConnection:
-        pass
-
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
-
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_builtin_qa_version(version)
 
@@ -3884,7 +3478,7 @@ def test_admin_rollback_requires_previous_version_target(monkeypatch):
         }
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
