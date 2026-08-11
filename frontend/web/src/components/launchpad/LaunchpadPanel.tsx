@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bot,
@@ -11,9 +11,8 @@ import {
 import { PanelHeader } from "../common/PanelHeader";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import {
+  configureLaunchpadCatalog,
   filterLaunchpadGroups,
-  launchpadGroups,
-  launchpadTabs,
   resolveLaunchpadDestination,
   type LaunchpadEntry,
   type LaunchpadGroup,
@@ -21,6 +20,11 @@ import {
   type LaunchpadTabKey,
 } from "./catalog";
 import { workbenchSurface } from "../workbench/workbenchSurface";
+import {
+  fetchBrowserRuntimeConfig,
+  UNAVAILABLE_LAUNCHPAD_RUNTIME_URLS,
+  type LaunchpadRuntimeUrls,
+} from "../../services/api/browserRuntimeConfig";
 
 function getEntryIcon(entry: LaunchpadEntry) {
   if (entry.tab === "common") return Globe2;
@@ -32,14 +36,54 @@ function countEntries(groups: LaunchpadGroup[]) {
   return groups.reduce((sum, group) => sum + group.entries.length, 0);
 }
 
+interface RuntimeConfigState {
+  urls: LaunchpadRuntimeUrls;
+  unavailableReason: string;
+}
+
 export function LaunchpadPanel() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<LaunchpadTabKey>("common");
   const [query, setQuery] = useState("");
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState>({
+    urls: UNAVAILABLE_LAUNCHPAD_RUNTIME_URLS,
+    unavailableReason: "运行时配置加载中",
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchBrowserRuntimeConfig({ signal: controller.signal })
+      .then(({ launchpadUrls }) => {
+        if (!controller.signal.aborted) {
+          setRuntimeConfig({
+            urls: launchpadUrls,
+            unavailableReason: "运行时地址未配置",
+          });
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setRuntimeConfig({
+            urls: UNAVAILABLE_LAUNCHPAD_RUNTIME_URLS,
+            unavailableReason: "运行时配置不可用",
+          });
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  const { tabs: launchpadTabs, groups: launchpadGroups } = useMemo(
+    () =>
+      configureLaunchpadCatalog(
+        runtimeConfig.urls,
+        runtimeConfig.unavailableReason,
+      ),
+    [runtimeConfig],
+  );
 
   const activeGroups = useMemo(
     () => launchpadGroups.filter((group) => group.tab === activeTab),
-    [activeTab],
+    [activeTab, launchpadGroups],
   );
   const searchGroups = query.trim() ? launchpadGroups : activeGroups;
   const visibleGroups = useMemo(
@@ -57,6 +101,7 @@ export function LaunchpadPanel() {
       openUrl(tab.url);
       return;
     }
+    if (tab.runtimeUrlKey) return;
 
     setActiveTab(tab.key);
     setQuery("");
@@ -68,20 +113,25 @@ export function LaunchpadPanel() {
       className="min-w-0 overflow-x-auto pb-1 sm:pb-0"
     >
       <div className={`inline-flex min-w-max p-1 ${workbenchSurface.compactPanel}`}>
-        {launchpadTabs.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => handleTabSelect(tab)}
-            className={`h-10 min-w-[6.75rem] shrink-0 rounded-md px-4 text-sm font-medium transition-colors ${
-              activeTab === tab.key
-                ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
-                : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
-            }`}
-          >
-            {t(`launchpad.tabs.${tab.key}`, tab.label)}
-          </button>
-        ))}
+        {launchpadTabs.map((tab) => {
+          const tabUnavailable = Boolean(tab.runtimeUrlKey && !tab.url);
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              disabled={tabUnavailable}
+              title={tabUnavailable ? tab.unavailableReason : undefined}
+              onClick={() => handleTabSelect(tab)}
+              className={`h-10 min-w-[6.75rem] shrink-0 rounded-md px-4 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                activeTab === tab.key
+                  ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
+                  : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+              }`}
+            >
+              {t(`launchpad.tabs.${tab.key}`, tab.label)}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -107,21 +157,26 @@ export function LaunchpadPanel() {
       <div className={workbenchSurface.catalog.summaryGrid}>
         {launchpadTabs.map((tab) => {
           const groups = launchpadGroups.filter((group) => group.tab === tab.key);
+          const tabUnavailable = Boolean(tab.runtimeUrlKey && !tab.url);
           return (
             <button
               key={tab.key}
               type="button"
+              disabled={tabUnavailable}
+              title={tabUnavailable ? tab.unavailableReason : undefined}
               onClick={() => handleTabSelect(tab)}
-              className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3 text-left transition-[border-color,box-shadow] hover:border-[var(--theme-border-strong)] hover:shadow-[0_8px_18px_rgba(18,38,63,0.08)]`}
+              className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3 text-left transition-[border-color,box-shadow] hover:border-[var(--theme-border-strong)] hover:shadow-[0_8px_18px_rgba(18,38,63,0.08)] disabled:cursor-not-allowed disabled:opacity-60`}
             >
               <div className="min-w-0">
                 <p className={workbenchSurface.catalog.title}>
                   {t(`launchpad.tabs.${tab.key}`, tab.label)}
                 </p>
                 <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                  {t("launchpad.entriesCount", {
-                    count: countEntries(groups),
-                  })}
+                  {tabUnavailable
+                    ? tab.unavailableReason || t("launchpad.unavailable")
+                    : t("launchpad.entriesCount", {
+                        count: countEntries(groups),
+                      })}
                 </p>
               </div>
               <div className={workbenchSurface.catalog.compactIconBox}>
