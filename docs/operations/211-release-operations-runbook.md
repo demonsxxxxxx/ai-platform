@@ -225,6 +225,40 @@ operator-held secret and must never appear in commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
+For the s72 internal-test release, the controller first verifies that fresh
+`origin/main` has successful backend, frontend, and packaging runs. It then
+atomically prepares `/data/ai-platform-internal-test/incoming/latest-main.json`
+as a non-secret owner-managed file with exactly these fields:
+
+```json
+{
+  "source_commit": "<fresh-main-40-hex-sha>",
+  "backend_image": "ghcr.io/demonsxxxxxx/ai-platform-backend@sha256:<digest>",
+  "frontend_image": "ghcr.io/demonsxxxxxx/ai-platform-frontend@sha256:<digest>",
+  "ci_success": true
+}
+```
+
+After preparing the matching exact-main checkout at
+`/data/ai-platform-internal-test/releases/<source_commit>`, run from that
+checkout with no release arguments:
+
+```bash
+python3 tools/s72_quickstart.py
+```
+
+The quickstart rechecks fresh `origin/main`, requires immutable role-specific
+image refs, validates the existing runtime-scoped managed `.env` as an
+owner-matching `0600` regular file without reading or printing its values, and
+runs Compose `config --quiet` before either pull or up. It uses only the base
+file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
+and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
+it performs one `--no-build --pull never` up of the saved previous subject;
+Postgres, Redis, MinIO, and workspace volumes remain untouched.
+
+Its short API/ready/container/OpenSandbox health result is deployment smoke,
+not the application-owned OpenSandbox lifecycle acceptance described below.
+
 The `bridge` network is an accepted internal-test risk, not production
 isolation evidence. Acceptance still requires one application-owned run to
 prove SDK create and metadata readback, executor health and runtime identity,
