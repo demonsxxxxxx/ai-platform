@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { UploadRequestError } from "../../services/api/upload.ts";
-import type { MessageAttachment, UploadResult } from "../../types";
+import type {
+  MessageAttachment,
+  UploadConfig,
+  UploadResult,
+} from "../../types";
 import {
   cancelTemporaryUpload,
   settleUploadFailure,
@@ -87,6 +91,30 @@ test("upload policy prefers the explicit byte contract and supports the byte-val
   assert.deepEqual(legacyLimitsWithExplicitCount, {
     limitsBytes: explicit?.limitsBytes,
     maxFiles: 9,
+  });
+
+  const partialExplicitWire = {
+    enabled: true,
+    uploadLimitsBytes: {
+      image: 2,
+    },
+    maxFiles: Number.NaN,
+    uploadLimits: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+      maxFiles: 4,
+    },
+  } as unknown as UploadConfig;
+  assert.deepEqual(resolveUploadBytePolicy(partialExplicitWire), {
+    limitsBytes: {
+      image: 2,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+    },
+    maxFiles: 4,
   });
 });
 

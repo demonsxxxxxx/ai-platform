@@ -7,21 +7,50 @@ export interface ResolvedUploadBytePolicy {
   maxFiles: number;
 }
 
+function nonNegativeSafeInteger(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0
+    ? value
+    : null;
+}
+
+function resolveCategoryLimitBytes(
+  config: UploadConfig,
+  category: keyof UploadLimitsBytes,
+): number | null {
+  return (
+    nonNegativeSafeInteger(config.uploadLimitsBytes?.[category]) ??
+    nonNegativeSafeInteger(config.uploadLimits?.[category])
+  );
+}
+
 /** Resolve the explicit byte contract, with the byte-valued legacy alias as fallback. */
 export function resolveUploadBytePolicy(
   config: UploadConfig,
 ): ResolvedUploadBytePolicy | null {
-  const limitsBytes = config.uploadLimitsBytes ?? config.uploadLimits;
-  const maxFiles = config.maxFiles ?? config.uploadLimits?.maxFiles;
-  if (!limitsBytes || maxFiles === undefined) {
+  const image = resolveCategoryLimitBytes(config, "image");
+  const video = resolveCategoryLimitBytes(config, "video");
+  const audio = resolveCategoryLimitBytes(config, "audio");
+  const document = resolveCategoryLimitBytes(config, "document");
+  const maxFiles =
+    nonNegativeSafeInteger(config.maxFiles) ??
+    nonNegativeSafeInteger(config.uploadLimits?.maxFiles);
+  if (
+    image === null ||
+    video === null ||
+    audio === null ||
+    document === null ||
+    maxFiles === null
+  ) {
     return null;
   }
   return {
     limitsBytes: {
-      image: limitsBytes.image,
-      video: limitsBytes.video,
-      audio: limitsBytes.audio,
-      document: limitsBytes.document,
+      image,
+      video,
+      audio,
+      document,
     },
     maxFiles,
   };
