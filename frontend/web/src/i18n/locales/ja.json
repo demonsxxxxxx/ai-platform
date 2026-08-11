@@ -1628,6 +1628,7 @@
       "visibleToUsers": "一般ユーザーに表示"
     },
     "batchDeleteFailed": "一部のスキルの削除に失敗しました",
+    "batchDeletePartial": "{{deleted}} 件のスキルを削除しました。{{failed}} 件は削除できませんでした。",
     "batchDeleteSuccess": "{{count}}件のスキルを削除しました",
     "batchDisableSuccess": "{{count}}件のスキルを無効化しました",
     "batchEnableSuccess": "{{count}}件のスキルを有効化しました",
@@ -1677,6 +1678,10 @@
       "selectSkill": "{{name}}を選択",
       "selectedDetail": "選択したSkillの詳細",
       "selectDetailPrompt": "カタログからSkillを選択してください。",
+      "selectionAfterDelete": "{{deleted}}を削除しました。一覧と詳細を{{name}}に切り替えました。",
+      "selectionAfterDeleteEmpty": "{{deleted}}を削除しました。選択できるSkillはありません。",
+      "selectionChanged": "一覧と詳細を{{name}}に切り替えました。",
+      "selectionCurrent": "一覧と詳細には{{name}}が表示されています。",
       "skill": "スキル",
       "tags": "タグ",
       "catalogStatus": "カタログ状態",

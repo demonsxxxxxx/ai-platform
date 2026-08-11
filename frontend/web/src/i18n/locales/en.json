@@ -1984,6 +1984,7 @@
       "visibleToUsers": "Visible to regular users"
     },
     "batchDeleteFailed": "Failed to delete some skills",
+    "batchDeletePartial": "Deleted {{deleted}} skills; {{failed}} could not be deleted.",
     "batchDeleteSuccess": "{{count}} skill(s) deleted",
     "batchDisableSuccess": "{{count}} skill(s) disabled",
     "batchEnableSuccess": "{{count}} skill(s) enabled",
@@ -2033,6 +2034,10 @@
       "selectSkill": "Select {{name}}",
       "selectedDetail": "Selected Skill details",
       "selectDetailPrompt": "Select a Skill from the catalog to view its details.",
+      "selectionAfterDelete": "{{deleted}} was deleted. The list and details now show {{name}}.",
+      "selectionAfterDeleteEmpty": "{{deleted}} was deleted. No Skill remains selected.",
+      "selectionChanged": "The list and details now show {{name}}.",
+      "selectionCurrent": "The list and details are showing {{name}}.",
       "skill": "Skill",
       "tags": "Tags",
       "catalogStatus": "Catalog status",

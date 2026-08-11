@@ -167,20 +167,6 @@ export function buildMessageForkUrl(
   return `${API_BASE}/api/sessions/${sessionId}/messages/${messageId}/fork`;
 }
 
-export function buildMessageCheckpointUrl(
-  sessionId: string,
-  messageId: string,
-): string {
-  return `${API_BASE}/api/sessions/${sessionId}/messages/${messageId}/checkpoints`;
-}
-
-export function buildCheckpointForkUrl(
-  sessionId: string,
-  checkpointId: string,
-): string {
-  return `${API_BASE}/api/sessions/${sessionId}/checkpoints/${checkpointId}/fork`;
-}
-
 function getBrowserTimezone(): string | undefined {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return typeof timezone === "string" && timezone.trim() ? timezone : undefined;
@@ -473,27 +459,6 @@ export const sessionApi = {
   },
 
   /**
-   * Update session status
-   */
-  async updateStatus(sessionId: string, status: "active" | "archived") {
-    return authFetch(
-      `${API_BASE}/api/sessions/${sessionId}/status?status=${status}`,
-      {
-        method: "PATCH",
-      },
-    );
-  },
-
-  /**
-   * Clear messages for a session
-   */
-  async clearMessages(sessionId: string) {
-    return authFetch(`${API_BASE}/api/sessions/${sessionId}/clear-messages`, {
-      method: "POST",
-    });
-  },
-
-  /**
    * Generate title for session using LLM
    */
   async generateTitle(
@@ -672,30 +637,4 @@ export const sessionApi = {
     });
   },
 
-  async createCheckpoint(
-    sessionId: string,
-    messageId: string,
-    name?: string,
-  ): Promise<{
-    checkpoint: {
-      id: string;
-      name: string;
-      message_id: string;
-      created_at?: string;
-    };
-  }> {
-    return authFetch(buildMessageCheckpointUrl(sessionId, messageId), {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    });
-  },
-
-  async forkCheckpoint(
-    sessionId: string,
-    checkpointId: string,
-  ): Promise<{ session: BackendSession; source_session_id: string }> {
-    return authFetch(buildCheckpointForkUrl(sessionId, checkpointId), {
-      method: "POST",
-    });
-  },
 };
