@@ -1300,6 +1300,19 @@ shutil.copyfile(source, output / \"translated.docx\")
     assert body["executor_mode"] == "platform_controlled_runner"
     assert body["used_skills"] == ["baoyu-translate"]
     assert body["used_skills_source"] == "platform_controlled_runner"
+    assert [item["lifecycle_phase"] for item in body["capability_evidence"]] == [
+        "invocation_requested",
+        "completed",
+    ]
+    assert {
+        (item["evidence_source"], item["trust_basis"])
+        for item in body["capability_evidence"]
+    } == {("controlled_skill_runner", "process_bound_invocation")}
+    assert all(
+        item["run_id"] == payload["run_id"]
+        and item["attempt_id"] == payload["attempt_id"]
+        for item in body["capability_evidence"]
+    )
     assert (workspace / "output" / "translated.docx").is_file()
     assert "Controlled fast path" not in payload["prompt"]
     assert (workspace / "output" / "target-language.txt").read_text(encoding="utf-8") == "Chinese"

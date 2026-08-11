@@ -926,17 +926,94 @@ class AgentProfileAuthority:
         )
         profile_snapshot = snapshot.get("agent_profile")
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
+        try:
+            execution_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(execution_input))
+        except (
+            repositories.RepositoryAuthorizationError,
+            repositories.RepositoryConflictError,
+        ) as exc:
+            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+        expected_profile_snapshot = dict(admission.private_execution_input)
+        snapshot_skill_version = str(snapshot.get("skill_version") or "")
+        authority_skill_id = str(admission.skill.get("skill_id") or "")
+        governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
+            "required_skill_id" in profile_snapshot or "required_skill_version" in profile_snapshot
+        )
+        governed_mcp_tool_ids: tuple[str, ...] | None = None
+        if governed_profile_snapshot:
+            expected_profile_snapshot.update(
+                {
+                    "required_skill_id": authority_skill_id,
+                    "required_skill_version": snapshot_skill_version,
+                }
+            )
+            primary_manifest = next(
+                (
+                    manifest
+                    for manifest in snapshot.get("skill_manifests", [])
+                    if isinstance(manifest, dict)
+                    and str(manifest.get("skill_id") or "") == authority_skill_id
+                ),
+                None,
+            )
+            manifest_skill_version = (
+                str(primary_manifest.get("content_hash") or primary_manifest.get("version") or "")
+                if isinstance(primary_manifest, dict)
+                else ""
+            )
+            release_decision = snapshot.get("release_decision")
+            release_skill_version = (
+                str(release_decision.get("selected_version") or "")
+                if isinstance(release_decision, dict)
+                else ""
+            )
+            try:
+                repositories.require_replay_source_identity(
+                    pinned_version=snapshot_skill_version,
+                    pinned_executor_type=str(snapshot.get("executor_type") or ""),
+                    release_decision=release_decision if isinstance(release_decision, dict) else {},
+                    skill_manifests=[
+                        dict(item)
+                        for item in snapshot.get("skill_manifests", [])
+                        if isinstance(item, dict)
+                    ],
+                )
+                governed_mcp_tool_ids = tuple(
+                    await repositories.validate_replay_skill_manifests(
+                        conn,
+                        skill_id=authority_skill_id,
+                        pinned_version=snapshot_skill_version,
+                        pinned_executor_type=str(snapshot.get("executor_type") or ""),
+                        skill_manifests=[
+                            dict(item)
+                            for item in snapshot.get("skill_manifests", [])
+                            if isinstance(item, dict)
+                        ],
+                    )
+                )
+            except (
+                repositories.RepositoryAuthorizationError,
+                repositories.RepositoryConflictError,
+            ) as exc:
+                raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+            skill_version_matches = (
+                bool(snapshot_skill_version)
+                and snapshot_skill_version == manifest_skill_version == release_skill_version
+                and governed_mcp_tool_ids == admission.mcp_tool_ids
+            )
+        else:
+            skill_version_matches = snapshot_skill_version == str(
+                admission.skill.get("skill_version") or ""
+            )
         if (
-            profile_snapshot != admission.private_execution_input
+            profile_snapshot != expected_profile_snapshot
             or str(run.get("skill_id") or "") != str(admission.skill.get("skill_id") or "")
-            or str(snapshot.get("skill_version") or "")
-            != str(admission.skill.get("skill_version") or "")
+            or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")
             or str(snapshot.get("model_id") or "") != str(admission.model.get("id") or "")
             or str(snapshot.get("model_value") or "") != str(admission.model.get("value") or "")
-            or tuple(repositories.extract_run_mcp_tool_ids(execution_input))
-            != admission.mcp_tool_ids
+            or execution_mcp_tool_ids != admission.mcp_tool_ids
         ):
             raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
 

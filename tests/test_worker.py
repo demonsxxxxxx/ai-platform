@@ -2,7 +2,7 @@ import asyncio
 import json
 import types
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -25,7 +25,11 @@ from app.repositories import (
     RepositoryNotFoundError,
     ToolPermissionTerminalizationProgress,
 )
-from app.required_tool_contract import declaration_from_input
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    declaration_from_input,
+)
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
@@ -5072,11 +5076,37 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_never_persists_platform_controlled_runner_as_actually_used(monkeypatch):
+async def test_worker_persists_platform_controlled_runner_as_actually_used(monkeypatch):
     snapshots = []
 
     class ControlledRunnerSkillAdapter:
         async def submit_run(self, payload, event_sink=None):
+            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind="skill",
+                canonical_identity="qa-file-reviewer",
+            )
+            binding = {
+                field: getattr(payload, field)
+                for field in (
+                    "tenant_id",
+                    "workspace_id",
+                    "user_id",
+                    "session_id",
+                    "run_id",
+                    "attempt_id",
+                )
+            }
+            capability_evidence = [
+                asdict(
+                    RequiredCapabilityEvidence.from_controlled_runner(
+                        declaration=declaration,
+                        binding=binding,
+                        tool_call_id="controlled-skill-call",
+                        lifecycle_phase=phase,
+                    )
+                )
+                for phase in ("invocation_requested", "completed")
+            ]
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="test-adapter/1",
@@ -5090,8 +5120,10 @@ async def test_worker_never_persists_platform_controlled_runner_as_actually_used
                 },
                 artifacts=[reviewed_docx_artifact()],
                 executor_payload={
-                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer", "unstaged-hostile-skill"],
                     "used_skills_source": "platform_controlled_runner",
+                    "staged_skills": ["qa-file-reviewer", "minimax-docx"],
+                    "capability_evidence": capability_evidence,
                     "inferred_used_skills": ["qa-file-reviewer", "minimax-docx"],
                     "skill_manifests": [
                         {
@@ -5118,6 +5150,13 @@ async def test_worker_never_persists_platform_controlled_runner_as_actually_used
                 },
             )
 
+    controlled_adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        controlled_adapter,
+        "submit_run",
+        ControlledRunnerSkillAdapter().submit_run,
+    )
+
     async def mark_run_running(conn, *, tenant_id, run_id):
         return True
 
@@ -5139,6 +5178,14 @@ async def test_worker_never_persists_platform_controlled_runner_as_actually_used
 
     outcome = await process_run_payload(
         base_payload(
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "required_skill_id": "qa-file-reviewer",
+                "required_skill_version": "hash-reviewer",
+            },
             skill_manifests=[
                 {
                     **primary_manifest("qa-file-reviewer", "hash-reviewer"),
@@ -5150,14 +5197,14 @@ async def test_worker_never_persists_platform_controlled_runner_as_actually_used
                 },
             ]
         ),
-        AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}),
+        AdapterRegistry({"fake": controlled_adapter}),
     )
 
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_id"] == "qa-file-reviewer"
-    assert snapshots[0]["used"] is False
-    assert snapshots[0]["used_skills_source"] == "inferred"
-    assert snapshots[0]["inferred_used"] is True
+    assert snapshots[0]["used"] is True
+    assert snapshots[0]["used_skills_source"] == "platform_controlled_runner"
+    assert snapshots[0]["inferred_used"] is False
     assert snapshots[1]["skill_id"] == "minimax-docx"
     assert snapshots[1]["used"] is False
     assert snapshots[1]["used_skills_source"] == "inferred"
@@ -5165,12 +5212,49 @@ async def test_worker_never_persists_platform_controlled_runner_as_actually_used
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["executor_native", "platform_controlled_runner", "inferred"])
-async def test_agent_app_required_skill_without_exact_hook_forces_run_failure(monkeypatch, source):
+@pytest.mark.parametrize(
+    "source",
+    ["executor_native", "inferred", "platform_controlled_runner"],
+)
+async def test_agent_app_required_skill_without_exact_provenance_forces_run_failure(monkeypatch, source):
     failures = []
 
     class NonHookAgentAdapter:
         async def submit_run(self, payload, event_sink=None):
+            executor_payload = {}
+            if source == "platform_controlled_runner":
+                declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                    capability_kind="skill",
+                    canonical_identity="qa-file-reviewer",
+                )
+                binding = {
+                    field: getattr(payload, field)
+                    for field in (
+                        "tenant_id",
+                        "workspace_id",
+                        "user_id",
+                        "session_id",
+                        "run_id",
+                        "attempt_id",
+                    )
+                }
+                binding["attempt_id"] = "stale-attempt"
+                executor_payload = {
+                    "staged_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": source,
+                    "capability_evidence": [
+                        asdict(
+                            RequiredCapabilityEvidence.from_controlled_runner(
+                                declaration=declaration,
+                                binding=binding,
+                                tool_call_id="stale-controlled-call",
+                                lifecycle_phase=phase,
+                            )
+                        )
+                        for phase in ("invocation_requested", "completed")
+                    ],
+                }
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="test-adapter/1",
@@ -5183,6 +5267,7 @@ async def test_agent_app_required_skill_without_exact_hook_forces_run_failure(mo
                     "used_skills": ["qa-file-reviewer"],
                     "used_skills_source": source,
                 },
+                executor_payload=executor_payload,
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -5201,6 +5286,16 @@ async def test_agent_app_required_skill_without_exact_hook_forces_run_failure(mo
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
+    selected_adapter = NonHookAgentAdapter()
+    if source == "platform_controlled_runner":
+        trusted_adapter = ClaudeAgentWorkerAdapter()
+        monkeypatch.setattr(
+            trusted_adapter,
+            "submit_run",
+            selected_adapter.submit_run,
+        )
+        selected_adapter = trusted_adapter
+
     outcome = await process_run_payload(
         base_payload(
             agent_profile={
@@ -5212,7 +5307,7 @@ async def test_agent_app_required_skill_without_exact_hook_forces_run_failure(mo
                 "required_skill_version": "hash-qa-file-reviewer",
             }
         ),
-        AdapterRegistry({"fake": NonHookAgentAdapter()}),
+        AdapterRegistry({"fake": selected_adapter}),
     )
 
     assert outcome.status == "failed", outcome.error_message
