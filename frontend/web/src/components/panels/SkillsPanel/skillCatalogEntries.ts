@@ -28,6 +28,11 @@ export interface SkillCatalogPage {
   total: number;
 }
 
+export interface SkillCatalogSelection {
+  selectedSkillId: string | null;
+  changed: boolean;
+}
+
 function statusFor(
   adminSkill: AdminSkillCatalogItem | null,
   runtimeSkill: SkillResponse | null,
@@ -113,6 +118,24 @@ export function filterSkillCatalogEntries(
     }
     return selectedTags.every((tag) => entry.tags.includes(tag));
   });
+}
+
+/** Keep master-list selection and the detail panel on the same catalog entry. */
+export function resolveSkillCatalogSelection(
+  entries: ReadonlyArray<Pick<SkillCatalogEntry, "id">>,
+  selectedSkillId: string | null,
+): SkillCatalogSelection {
+  if (
+    selectedSkillId &&
+    entries.some((entry) => entry.id === selectedSkillId)
+  ) {
+    return { selectedSkillId, changed: false };
+  }
+  const nextSkillId = entries[0]?.id ?? null;
+  return {
+    selectedSkillId: nextSkillId,
+    changed: selectedSkillId !== nextSkillId,
+  };
 }
 
 /**

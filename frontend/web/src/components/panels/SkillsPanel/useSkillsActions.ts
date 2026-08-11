@@ -35,6 +35,7 @@ export function useSkillsActions(options?: {
   allAuthorizedCatalog?: boolean;
   enabled?: boolean;
   loadAdminCatalog?: boolean;
+  onSkillsArchived?: (skillIds: string[]) => void;
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -263,8 +264,19 @@ export function useSkillsActions(options?: {
 
   const confirmDelete = async () => {
     if (!deleteConfirmData) return;
+    const skillName = deleteConfirmData.name;
     try {
-      await deleteSkill(deleteConfirmData.name);
+      const deleted = await deleteSkill(skillName);
+      if (deleted) {
+        setAdminCatalogItems((current) =>
+          current.filter((item) => item.skillId !== skillName),
+        );
+        options?.onSkillsArchived?.([skillName]);
+        if (options?.loadAdminCatalog) {
+          await refreshAdminSkillCatalog();
+        }
+        toast.success(t("skills.deleteSuccess"));
+      }
     } finally {
       setIsDeleteConfirmOpen(false);
       setDeleteConfirmData(null);
@@ -308,13 +320,28 @@ export function useSkillsActions(options?: {
 
   const handleBatchDelete = async () => {
     if (selectedNames.size === 0) return;
+    const requestedNames = Array.from(selectedNames);
     setBatchLoading(true);
     try {
-      await batchDeleteSkills(Array.from(selectedNames));
+      const deletedNames = await batchDeleteSkills(requestedNames);
+      if (deletedNames.length > 0) {
+        const deletedSet = new Set(deletedNames);
+        setAdminCatalogItems((current) =>
+          current.filter((item) => !deletedSet.has(item.skillId)),
+        );
+        options?.onSkillsArchived?.(deletedNames);
+        if (options?.loadAdminCatalog) {
+          await refreshAdminSkillCatalog();
+        }
+      }
       clearSelection();
-      toast.success(
-        t("skills.batchDeleteSuccess", { count: selectedNames.size }),
-      );
+      if (deletedNames.length === requestedNames.length) {
+        toast.success(
+          t("skills.batchDeleteSuccess", { count: deletedNames.length }),
+        );
+      } else {
+        toast.error(t("skills.batchDeleteFailed"));
+      }
     } catch {
       toast.error(t("skills.batchDeleteFailed"));
     } finally {

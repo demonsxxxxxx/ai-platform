@@ -17,6 +17,7 @@ import {
   buildSkillCatalogEntries,
   filterSkillCatalogEntries,
   resolveSkillCatalogPage,
+  resolveSkillCatalogSelection,
 } from "./skillCatalogEntries";
 
 interface CatalogState {
@@ -50,13 +51,16 @@ export function SkillsPanel({
   const skillFileWriteBacked = true;
   const skillImportBacked = true;
   const skillBatchWriteBacked = true;
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const [archivedSkillIds, setArchivedSkillIds] = useState<string[]>([]);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
 
   const actions = useSkillsActions({
     allAuthorizedCatalog,
     enabled: !governedUnavailable,
     loadAdminCatalog: showDistributionEditor,
+    onSkillsArchived: setArchivedSkillIds,
   });
-  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const permissionDenied = isPermissionError(actions.listError);
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
@@ -119,12 +123,51 @@ export function SkillsPanel({
   );
 
   useEffect(() => {
-    setSelectedSkillId((current) =>
-      current && filteredCatalogEntries.some((entry) => entry.id === current)
-        ? current
-        : filteredCatalogEntries[0]?.id ?? null,
+    const resolution = resolveSkillCatalogSelection(
+      filteredCatalogEntries,
+      selectedSkillId,
     );
-  }, [filteredCatalogEntries]);
+    if (!resolution.changed) {
+      if (
+        archivedSkillIds.length > 0 &&
+        (!selectedSkillId || !archivedSkillIds.includes(selectedSkillId))
+      ) {
+        setArchivedSkillIds([]);
+      }
+      return;
+    }
+
+    const nextEntry = resolution.selectedSkillId
+      ? filteredCatalogEntries.find(
+          (entry) => entry.id === resolution.selectedSkillId,
+        ) ?? null
+      : null;
+    if (selectedSkillId && archivedSkillIds.includes(selectedSkillId)) {
+      setSelectionNotice(
+        nextEntry
+          ? t("skills.managementTable.selectionAfterDelete", {
+              deleted: selectedSkillId,
+              name: nextEntry.displayName,
+            })
+          : t("skills.managementTable.selectionAfterDeleteEmpty", {
+              deleted: selectedSkillId,
+            }),
+      );
+      setArchivedSkillIds([]);
+    } else if (selectedSkillId && nextEntry) {
+      setSelectionNotice(
+        t("skills.managementTable.selectionChanged", {
+          name: nextEntry.displayName,
+        }),
+      );
+    }
+    setSelectedSkillId(resolution.selectedSkillId);
+  }, [
+    archivedSkillIds,
+    filteredCatalogEntries,
+    selectedSkillId,
+    t,
+  ]);
 
   const selectedCatalogEntry = useMemo(
     () =>
@@ -136,7 +179,7 @@ export function SkillsPanel({
   const selectedSkill = selectedCatalogEntry?.runtimeSkill ?? null;
   const selectedAdminSkill = selectedCatalogEntry?.adminSkill ?? null;
 
-  const selectedDetail = showDistributionEditor ? (
+  const selectedDetailContent = showDistributionEditor ? (
     <SkillDistributionGovernancePanel
       selectedSkill={selectedAdminSkill}
       selectedSkillId={selectedAdminSkill?.skillId ?? null}
@@ -176,6 +219,36 @@ export function SkillsPanel({
       {t("skills.managementTable.selectDetailPrompt")}
     </div>
   );
+
+  const selectedDetail = (
+    <div className="min-h-0">
+      {selectedCatalogEntry ? (
+        <div
+          aria-live="polite"
+          className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-4 py-2.5 text-xs text-[var(--theme-text-secondary)]"
+          data-skill-selection-status
+          role="status"
+        >
+          {selectionNotice ??
+            t("skills.managementTable.selectionCurrent", {
+              name: selectedCatalogEntry.displayName,
+            })}
+        </div>
+      ) : null}
+      {selectedDetailContent}
+    </div>
+  );
+
+  const handleSelectDetail = (skillId: string) => {
+    if (skillId === selectedSkillId) return;
+    const entry = filteredCatalogEntries.find((item) => item.id === skillId);
+    setSelectedSkillId(skillId);
+    setSelectionNotice(
+      t("skills.managementTable.selectionChanged", {
+        name: entry?.displayName ?? skillId,
+      }),
+    );
+  };
 
   useEffect(() => {
     onCatalogStateChange?.({
@@ -237,7 +310,7 @@ export function SkillsPanel({
         onExportZip={actions.handleExportZip}
         onSelectSkill={actions.handleSelectSkill}
         onSelectAll={() => actions.handleSelectAll(selectableNames)}
-        onSelectDetail={setSelectedSkillId}
+        onSelectDetail={handleSelectDetail}
         onGithubClick={actions.handleGithubClick}
         onZipClick={actions.handleZipClick}
         selectedDetail={selectedDetail}

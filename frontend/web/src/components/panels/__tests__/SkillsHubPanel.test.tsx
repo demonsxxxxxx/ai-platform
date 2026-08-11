@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { projectOrdinarySkillCatalogItem } from "../ordinaryCatalogPolicy.ts";
 import { resolveSkillsHubGovernance } from "../SkillsHubPanel/state.ts";
+import { resolveSkillCatalogSelection } from "../SkillsPanel/skillCatalogEntries.ts";
 
 test("keeps Skill visibility administration server-governed and ordinary catalog projections safe", () => {
   const adminState = resolveSkillsHubGovernance({
@@ -68,12 +69,83 @@ test("canonical Skill page owns one catalog selection and one selected detail", 
     "utf8",
   );
 
-  assert.equal((panel.match(/useState<string \| null>/g) ?? []).length, 1);
+  assert.equal(
+    (panel.match(/const \[selectedSkillId, setSelectedSkillId\]/g) ?? []).length,
+    1,
+  );
   assert.match(panel, /data-selected-skill-detail/);
   assert.match(panel, /selectedSkillId=\{selectedAdminSkill\?\.skillId \?\? null\}/);
   assert.match(list, /data-skills-master-detail/);
   assert.match(list, /data-selected-skill-detail-shell/);
   assert.doesNotMatch(editor, /role="list"|aria-label="Skill 列表"/);
+});
+
+test("Skill master-detail selection moves deterministically when the selected Skill disappears", () => {
+  const entries = [{ id: "skill-b" }, { id: "skill-c" }];
+
+  assert.deepEqual(resolveSkillCatalogSelection(entries, "skill-b"), {
+    selectedSkillId: "skill-b",
+    changed: false,
+  });
+  assert.deepEqual(resolveSkillCatalogSelection(entries, "skill-a"), {
+    selectedSkillId: "skill-b",
+    changed: true,
+  });
+  assert.deepEqual(resolveSkillCatalogSelection([], "skill-a"), {
+    selectedSkillId: null,
+    changed: true,
+  });
+});
+
+test("Skill deletion refreshes both catalogs and announces the synchronized detail selection", () => {
+  const panel = readFileSync(
+    new URL("../SkillsPanel/index.tsx", import.meta.url),
+    "utf8",
+  );
+  const actions = readFileSync(
+    new URL("../SkillsPanel/useSkillsActions.ts", import.meta.url),
+    "utf8",
+  );
+  const skillsHook = readFileSync(
+    new URL("../../../hooks/useSkills.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(panel, /onSkillsArchived: setArchivedSkillIds/);
+  assert.match(panel, /data-skill-selection-status/);
+  assert.match(panel, /resolveSkillCatalogSelection/);
+  assert.match(actions, /setAdminCatalogItems\(\(current\) =>/);
+  assert.match(actions, /await refreshAdminSkillCatalog\(\)/);
+  assert.match(actions, /options\?\.onSkillsArchived\?\./);
+  assert.match(skillsHook, /Promise<string\[\]>/);
+  assert.match(skillsHook, /return result\.deleted/);
+});
+
+test("Skill selection synchronization copy exists in every supported locale", () => {
+  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
+    const catalog = JSON.parse(
+      readFileSync(
+        new URL(`../../../i18n/locales/${locale}.json`, import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      skills?: { managementTable?: Record<string, unknown> };
+    };
+    const managementTable = catalog.skills?.managementTable;
+    assert.ok(managementTable, `${locale} Skill management translations must exist`);
+    for (const key of [
+      "selectionAfterDelete",
+      "selectionAfterDeleteEmpty",
+      "selectionChanged",
+      "selectionCurrent",
+    ]) {
+      assert.equal(
+        typeof managementTable[key],
+        "string",
+        `${locale}.skills.managementTable.${key}`,
+      );
+    }
+  }
 });
 
 test("Skill catalog refreshes fail pending and hidden batch selections are cleared", () => {
