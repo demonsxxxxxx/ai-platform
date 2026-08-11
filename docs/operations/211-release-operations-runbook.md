@@ -245,7 +245,7 @@ After preparing the matching exact-main checkout at
 checkout with no release arguments:
 
 ```bash
-python3 tools/s72_quickstart.py
+./scripts/quickstart-s72.sh
 ```
 
 The quickstart rechecks fresh `origin/main`, requires immutable role-specific

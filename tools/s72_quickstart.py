@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import sys
+
+if __name__ == "__main__" and not sys.flags.isolated:
+    raise SystemExit("run s72 quickstart through scripts/quickstart-s72.sh")
+
 from dataclasses import dataclass
 import json
 import os
@@ -210,7 +215,7 @@ class Quickstart:
             raise QuickstartError("run quickstart from the prepared exact-main release checkout")
         head = self.runner.run(["git", "rev-parse", "HEAD"], cwd=repo, output=True)
         dirty = self.runner.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, output=True
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, output=True
         )
         if head != commit or dirty:
             raise QuickstartError("release checkout is not clean at the exact commit")
@@ -286,6 +291,17 @@ class Quickstart:
         finally:
             self.repo = current_repo
 
+    def _preflight_rollback(self, previous: Subject, env_file: Path) -> None:
+        previous_repo = self.root / "releases" / previous.commit
+        self._verify_checkout(previous_repo, previous.commit)
+        for image in (previous.backend_image, previous.frontend_image):
+            self.runner.run([*self.docker, "image", "inspect", image], timeout=30)
+        current_repo, self.repo = self.repo, previous_repo
+        try:
+            self._compose(env_file, previous, "config", "--quiet")
+        finally:
+            self.repo = current_repo
+
     def run(self) -> Subject:
         self._detect_docker()
         subject = _load_subject(self.subject_path, self.root)
@@ -303,6 +319,7 @@ class Quickstart:
         self._verify_source(subject)
         if self._current_runtime() != previous:
             raise QuickstartError("runtime changed while quickstart was preparing images")
+        self._preflight_rollback(previous, env_file)
         try:
             self._compose(env_file, subject, "up", "-d", "--no-build", "--pull", "never")
             self._wait_health(subject)

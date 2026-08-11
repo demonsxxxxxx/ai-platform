@@ -115,6 +115,7 @@ def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str])
     monkeypatch.setattr(release, "_wait_health", lambda _: events.append("health"))
     monkeypatch.setattr(release.runner, "run", lambda command, **_: events.append("pull") or "")
     monkeypatch.setattr(release, "_rollback", lambda *_: events.append("rollback"))
+    monkeypatch.setattr(release, "_preflight_rollback", lambda *_: events.append("rollback-preflight"))
     return release
 
 
@@ -127,7 +128,7 @@ def test_quickstart_orders_config_before_pull_and_up(
     release.run()
 
     assert events == [
-        "source", "compose:config --quiet", "pull", "pull", "source",
+        "source", "compose:config --quiet", "pull", "pull", "source", "rollback-preflight",
         "compose:up -d --no-build --pull never", "health",
     ]
 
@@ -148,6 +149,23 @@ def test_pull_failure_never_runs_up_or_rollback(
 
     assert not any("up" in event for event in events)
     assert "rollback" not in events
+
+
+def test_unavailable_rollback_blocks_target_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    release = _release(tmp_path, monkeypatch, events)
+    monkeypatch.setattr(
+        release,
+        "_preflight_rollback",
+        lambda *_: (_ for _ in ()).throw(quickstart.QuickstartError("rollback unavailable")),
+    )
+
+    with pytest.raises(quickstart.QuickstartError, match="rollback unavailable"):
+        release.run()
+
+    assert not any(event.startswith("compose:up") for event in events)
 
 
 def test_runtime_change_after_pull_blocks_up(
@@ -188,7 +206,10 @@ def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands
     assert all("down" not in event and "-v" not in event for event in events)
 
 
-def test_dirty_exact_checkout_is_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "status", [" M deploy/ai-platform/docker-compose.yml", "?? tools/json.py"]
+)
+def test_dirty_exact_checkout_is_rejected(tmp_path: Path, status: str) -> None:
     root = tmp_path / "managed"
     repo = root / "releases" / COMMIT
     for relative in quickstart.COMPOSE_FILES:
@@ -198,17 +219,56 @@ def test_dirty_exact_checkout_is_rejected(tmp_path: Path) -> None:
 
     class DirtyRunner(quickstart.Runner):
         def run(self, command: object, **_: object) -> str:
-            return " M deploy/ai-platform/docker-compose.yml" if "status" in command else COMMIT
+            return status if "status" in command else COMMIT
 
     release = quickstart.Quickstart(repo, root, runner=DirtyRunner())
     with pytest.raises(quickstart.QuickstartError, match="not clean"):
         release._verify_checkout(repo, COMMIT)
 
 
+def test_rollback_preflight_checks_checkout_images_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    for relative in quickstart.COMPOSE_FILES:
+        path = previous_repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("services: {}\n", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    class PreflightRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            command = list(command)
+            commands.append(command)
+            return "" if "status" in command else OLD_COMMIT
+
+    release = quickstart.Quickstart(tmp_path, root, runner=PreflightRunner())
+    release.docker = ["docker"]
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    config_repos: list[Path] = []
+    monkeypatch.setattr(
+        release, "_compose", lambda *_args: config_repos.append(release.repo)
+    )
+
+    release._preflight_rollback(previous, tmp_path / ".env")
+
+    assert config_repos == [previous_repo]
+    assert [command[-1] for command in commands if command[:3] == ["docker", "image", "inspect"]] == [
+        BACKEND, FRONTEND
+    ]
+    assert release.repo == tmp_path.resolve()
+
+
 def test_runbook_exposes_the_zero_argument_quickstart() -> None:
     runbook = (ROOT / "docs/operations/211-release-operations-runbook.md").read_text(
         encoding="utf-8"
     )
-    assert "python3 tools/s72_quickstart.py" in runbook
+    assert "./scripts/quickstart-s72.sh" in runbook
     assert "incoming/latest-main.json" in runbook
     assert "never runs `down`, `down -v`, or volume deletion" in runbook
+
+
+def test_shell_entry_uses_python_isolated_mode() -> None:
+    entry = (ROOT / "scripts/quickstart-s72.sh").read_text(encoding="utf-8")
+    assert "python3 -I" in entry
