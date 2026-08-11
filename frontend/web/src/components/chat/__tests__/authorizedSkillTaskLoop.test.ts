@@ -95,7 +95,7 @@ test("ordinary Skill copy hides release internals and describes tenant-scoped re
       locale.marketplace,
       locale.adminMarketplace,
     ]) {
-      assert.match(namespace.confirmDeleteMessage, /active use|活跃使用/);
+      assert.match(namespace.confirmDeleteMessage, /active use|活跃使用|停止该技能的使用/);
       assert.match(namespace.confirmDeleteMessage, /Historical|历史/);
       assert.doesNotMatch(namespace.confirmDeleteMessage, /permanent|永久|cannot be undone|不可撤销/i);
     }
@@ -160,6 +160,8 @@ test("composer preserves prompt and attachments until submission is accepted", (
   assert.match(chatView, /draft:\s*composerDraft/);
   assert.match(input, /await onSend/);
   assert.match(input, /outcome\.status === "accepted"/);
+  assert.match(input, /outcome\.status === "recoverable_error"/);
+  assert.match(input, /return;[\s\S]*outcome\.status === "accepted"/);
   assert.doesNotMatch(
     input,
     /onSend\([^;]+;\s*pushHistory\([^;]+;\s*setInput\(""\)/s,

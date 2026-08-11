@@ -28,6 +28,7 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   skill_package_too_large: "backendErrors.skillPackageTooLarge",
   skill_package_file_too_large: "backendErrors.skillPackageTooLarge",
   context_file_too_large: "backendErrors.contextFileTooLarge",
+  file_required_for_skill: "backendErrors.fileRequiredForSkill",
   queue_payload_invalid: "backendErrors.queuePayloadInvalid",
   chat_submission_internal_error: "backendErrors.chatSubmissionInternalError",
   skill_package_path_escape: "backendErrors.skillPackageUnsafe",

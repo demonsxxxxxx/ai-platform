@@ -153,7 +153,11 @@ def default_chat_stream_dependencies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prompt(monkeypatch):
+@pytest.mark.parametrize("file_source", ["missing", "current", "reused"])
+async def test_chat_stream_explicit_selected_file_skill_requires_or_reuses_file(
+    monkeypatch,
+    file_source,
+):
     calls = {}
     manifests = {
         skill_id: snapshot_manifest(skill_id)
@@ -171,7 +175,7 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
             "executor_type": "claude-agent-worker",
             "skill_version": manifest["version"],
             "skill_content_hash": manifest["content_hash"],
-            "input_modes": ["chat"],
+            "input_modes": ["docx"],
         }
 
     async def authorize_selected(*_args, **kwargs):
@@ -201,8 +205,37 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
             "agent_id": kwargs["agent_id"],
             "skill_id": kwargs["skill_id"],
             "skill_manifests": kwargs["input_json"]["skill_manifests"],
+            "file_ids": kwargs["input_json"]["file_ids"],
         }
         return "run-explicit-skill"
+
+    async def authorized_session(*_args, **_kwargs):
+        return {
+            "id": "ses-explicit-skill",
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+        }
+
+    async def reusable_files(*_args, **_kwargs):
+        return [
+            {
+                "id": "file-reused",
+                "original_name": "evidence.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "created_at": "2026-08-11T09:00:00+00:00",
+            }
+        ]
+
+    async def record_context(*_args, **kwargs):
+        calls["context_file_ids"] = list(kwargs["file_ids"])
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-explicit-skill",
+            "source": kwargs["source"],
+            "message_count": len(kwargs.get("message_ids") or []),
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
 
     async def insert_creation_snapshots(*_args, **kwargs):
         calls["snapshot_manifests"] = kwargs["skill_manifests"]
@@ -235,6 +268,12 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
     monkeypatch.setattr(repository_module, "ensure_user", noop)
     monkeypatch.setattr(repository_module, "create_session", create_session)
     monkeypatch.setattr(repository_module, "create_run", create_run)
+    monkeypatch.setattr(repository_module, "get_authorized_session", authorized_session)
+    monkeypatch.setattr(
+        repository_module,
+        "list_authorized_session_input_files",
+        reusable_files,
+    )
     monkeypatch.setattr(
         repository_module,
         "insert_run_skill_snapshots_at_creation",
@@ -244,20 +283,35 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
     monkeypatch.setattr(repository_module, "bind_files_to_run", noop)
     monkeypatch.setattr(repository_module, "append_event", append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", record_context)
+
+    request = ChatStreamRequest(
+        message="Review this document with the explicitly selected Skill.",
+        session_id="ses-explicit-skill" if file_source == "reused" else None,
+        file_ids=["file-current"] if file_source == "current" else [],
+        selected_mcp_tool_ids=[],
+        selected_skill={
+            "skill_id": "internal-comms",
+            "expected_version": selected_version,
+        },
+    )
+    if file_source == "missing":
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(
+                request,
+                principal=principal(department_id="communications", roles=["employee"]),
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "file_required_for_skill"
+        assert "run" not in calls
+        assert "queue_payload" not in calls
+        return
 
     response = await chat_stream(
-        ChatStreamRequest(
-            message=(
-                "Run internal-comms Skill for this announcement; "
-                "do not use MCP or create files."
-            ),
-            selected_skill={
-                "skill_id": "internal-comms",
-                "expected_version": selected_version,
-            },
-        ),
+        request,
         principal=principal(department_id="communications", roles=["employee"]),
     )
+    expected_file_id = "file-current" if file_source == "current" else "file-reused"
 
     assert response.status == "queued"
     assert calls.get("selected_authorization") == {
@@ -268,6 +322,8 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
     assert "default_authorization" not in calls
     assert calls["manifest_skill_id"] == "internal-comms"
     assert calls["run"]["skill_id"] == "internal-comms"
+    assert calls["run"]["file_ids"] == [expected_file_id]
+    assert calls["context_file_ids"] == [expected_file_id]
     assert calls["run"]["skill_manifests"][0]["skill_id"] == "internal-comms"
     assert calls["snapshot_manifests"][0]["skill_id"] == "internal-comms"
     assert calls["queue_payload"]["skill_id"] == "internal-comms"

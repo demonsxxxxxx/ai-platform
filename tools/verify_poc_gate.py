@@ -654,6 +654,15 @@ def check_governed_skill_runs(
                     "missing_pinned_snapshots": sorted(real_task_statuses),
                     "mismatched_pinned_snapshots": [],
                 },
+                "capability_lifecycle": {
+                    "batch_count": 0,
+                    "event_count": 0,
+                    "invocation_group_count": 0,
+                    "invalid_group_count": 0,
+                    "completed_skill_ids": [],
+                    "mcp_invocation_count": 0,
+                    "attempt_bindings": [],
+                },
             },
         )
     values = ", ".join(
@@ -750,6 +759,127 @@ select json_build_object(
 """
     rows = psql_rows(container, db_user, db_name, sql)
     snapshot_summary = rows[0] if rows else {}
+    capability_sql = f"""
+with target_runs(tenant_id, run_id, skill_id) as (
+  values {values}
+),
+target_run_ids as (
+  select distinct tenant_id, run_id from target_runs
+),
+batches as (
+  select b.tenant_id, b.run_id, b.attempt_id, b.event_ids_json
+  from run_event_batches b
+  join target_run_ids target
+    on target.tenant_id = b.tenant_id
+   and target.run_id = b.run_id
+  where b.batch_id = 'capability-evidence-v1'
+),
+evidence_events as (
+  select
+    b.tenant_id,
+    b.run_id,
+    b.attempt_id,
+    e.sequence,
+    e.payload_json->>'attempt_id' as payload_attempt_id,
+    e.payload_json->>'capability_kind' as capability_kind,
+    e.payload_json->>'canonical_identity' as canonical_identity,
+    e.payload_json->>'tool_call_id' as tool_call_id,
+    e.payload_json->>'lifecycle_phase' as lifecycle_phase,
+    e.payload_json->>'lifecycle_status' as lifecycle_status,
+    e.payload_json->>'evidence_source' as evidence_source,
+    e.payload_json->>'trust_basis' as trust_basis,
+    e.payload_json->>'declaration_sha256' as declaration_sha256,
+    (
+      e.event_type = 'capability_invocation_evidence'
+      and e.stage = 'capability_evidence'
+      and e.visible_to_user = false
+      and e.payload_json->>'schema_version' = 'ai-platform.required-capability-evidence.v1'
+    ) as envelope_valid
+  from batches b
+  cross join lateral jsonb_array_elements_text(b.event_ids_json) as event_ids(event_id)
+  join run_events e
+    on e.tenant_id = b.tenant_id
+   and e.run_id = b.run_id
+   and e.id = event_ids.event_id
+),
+invocation_groups as (
+  select
+    tenant_id,
+    run_id,
+    attempt_id,
+    capability_kind,
+    canonical_identity,
+    tool_call_id,
+    count(*) as event_count,
+    count(*) filter (where lifecycle_phase = 'invocation_requested') as requested_count,
+    count(*) filter (where lifecycle_phase in ('completed', 'failed')) as terminal_count,
+    min(sequence) filter (where lifecycle_phase = 'invocation_requested') as requested_sequence,
+    min(sequence) filter (where lifecycle_phase in ('completed', 'failed')) as terminal_sequence,
+    count(distinct declaration_sha256) as declaration_count,
+    coalesce(bool_and(
+      envelope_valid
+      and payload_attempt_id = attempt_id
+      and capability_kind in ('skill', 'mcp')
+      and coalesce(canonical_identity, '') <> ''
+      and coalesce(tool_call_id, '') <> ''
+      and coalesce(declaration_sha256, '') ~ '^[0-9a-f]{{64}}$'
+      and evidence_source = 'claude_agent_sdk_hook'
+      and trust_basis = 'tool_call_bound_invocation'
+      and (
+        (lifecycle_phase = 'invocation_requested' and lifecycle_status = 'invoking')
+        or (lifecycle_phase = 'completed' and lifecycle_status = 'succeeded')
+        or (lifecycle_phase = 'failed' and lifecycle_status = 'failed')
+      )
+    ), false) as records_valid
+  from evidence_events
+  group by tenant_id, run_id, attempt_id, capability_kind, canonical_identity, tool_call_id
+),
+validated_groups as (
+  select
+    *,
+    (
+      event_count = 2
+      and requested_count = 1
+      and terminal_count = 1
+      and requested_sequence < terminal_sequence
+      and declaration_count = 1
+      and records_valid
+    ) as lifecycle_valid
+  from invocation_groups
+)
+select json_build_object(
+  'batch_count', (select count(*) from batches),
+  'batch_event_count', coalesce(
+    (select sum(jsonb_array_length(event_ids_json)) from batches),
+    0
+  ),
+  'event_count', (select count(*) from evidence_events),
+  'invocation_group_count', (select count(*) from validated_groups),
+  'invalid_group_count', (select count(*) from validated_groups where lifecycle_valid is not true),
+  'completed_skill_ids', coalesce(
+    (
+      select json_agg(distinct canonical_identity order by canonical_identity)
+      from evidence_events
+      where capability_kind = 'skill' and lifecycle_phase = 'completed'
+    ),
+    '[]'::json
+  ),
+  'mcp_invocation_count', (
+    select count(*) from validated_groups where capability_kind = 'mcp'
+  ),
+  'attempt_bindings', coalesce(
+    (
+      select json_agg(binding order by binding)
+      from (
+        select distinct run_id || ':' || attempt_id as binding from batches
+      ) bindings
+    ),
+    '[]'::json
+  )
+)::text;
+"""
+    capability_rows = psql_rows(container, db_user, db_name, capability_sql)
+    capability_summary = capability_rows[0] if capability_rows else {}
     used_skill_ids = snapshot_summary.get("used_skill_ids")
     if not isinstance(used_skill_ids, list):
         used_skill_ids = []
@@ -768,14 +898,35 @@ select json_build_object(
         if isinstance(item, str) and item.strip()
     )
     expected_used_skill_ids = [skill_id for _, _, skill_id, _status in scopes]
+    expected_run_count = len({(tenant_id, run_id) for tenant_id, run_id, _, _ in scopes})
     row_count = int(snapshot_summary.get("row_count") or 0)
     used_count = int(snapshot_summary.get("used_count") or 0)
     pinned_snapshot_count = int(snapshot_summary.get("pinned_snapshot_count") or 0)
+    completed_skill_ids = capability_summary.get("completed_skill_ids")
+    if not isinstance(completed_skill_ids, list):
+        completed_skill_ids = []
+    attempt_bindings = capability_summary.get("attempt_bindings")
+    if not isinstance(attempt_bindings, list):
+        attempt_bindings = []
+    capability_batch_count = int(capability_summary.get("batch_count") or 0)
+    capability_batch_event_count = int(capability_summary.get("batch_event_count") or 0)
+    capability_event_count = int(capability_summary.get("event_count") or 0)
+    invocation_group_count = int(capability_summary.get("invocation_group_count") or 0)
+    invalid_group_count = int(capability_summary.get("invalid_group_count") or 0)
+    mcp_invocation_count = int(capability_summary.get("mcp_invocation_count") or 0)
     ok = (
         all(status == "succeeded" for status in real_task_statuses.values())
         and row_count >= len(scopes)
         and used_count >= len(scopes)
         and sorted(str(item) for item in used_skill_ids) == sorted(expected_used_skill_ids)
+        and used_skills_sources == ["executor_hook"]
+        and capability_batch_count == expected_run_count
+        and capability_batch_event_count == capability_event_count
+        and capability_event_count >= len(scopes) * 2
+        and invocation_group_count >= len(scopes)
+        and invalid_group_count == 0
+        and sorted(str(item) for item in completed_skill_ids) == sorted(expected_used_skill_ids)
+        and len(attempt_bindings) == expected_run_count
         and pinned_snapshot_count >= len(scopes)
         and not missing_pinned_snapshots
         and not mismatched_pinned_snapshots
@@ -799,6 +950,19 @@ select json_build_object(
             ],
             "mismatched_pinned_snapshots": [
                 str(item) for item in mismatched_pinned_snapshots if isinstance(item, str)
+            ],
+        },
+        "capability_lifecycle": {
+            "batch_count": capability_batch_count,
+            "event_count": capability_event_count,
+            "invocation_group_count": invocation_group_count,
+            "invalid_group_count": invalid_group_count,
+            "completed_skill_ids": [
+                str(item) for item in completed_skill_ids if isinstance(item, str)
+            ],
+            "mcp_invocation_count": mcp_invocation_count,
+            "attempt_bindings": [
+                str(item) for item in attempt_bindings if isinstance(item, str)
             ],
         },
     }

@@ -24,7 +24,11 @@ from app.repositories import (
     RepositoryNotFoundError,
     ToolPermissionTerminalizationProgress,
 )
-from app.required_tool_contract import declaration_from_input
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    declaration_from_input,
+)
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
@@ -4985,9 +4989,31 @@ async def test_agent_app_ignores_unproven_optional_skill_claim(monkeypatch, sour
 async def test_agent_app_recovered_capability_preserves_partial_failure_without_artifact(monkeypatch):
     completed = {}
     events = []
+    capability_batches = []
 
     class ExactHookWithoutRequiredArtifactAdapter:
         async def submit_run(self, payload, event_sink=None):
+            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind="skill",
+                canonical_identity="qa-file-reviewer",
+            )
+            binding = {
+                key: getattr(payload, key)
+                for key in (
+                    "tenant_id",
+                    "workspace_id",
+                    "user_id",
+                    "session_id",
+                    "run_id",
+                    "attempt_id",
+                )
+            }
+            lifecycle = [
+                ("skill-call-1", "invocation_requested"),
+                ("skill-call-1", "failed"),
+                ("skill-call-2", "invocation_requested"),
+                ("skill-call-2", "completed"),
+            ]
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="test-adapter/1",
@@ -5002,30 +5028,13 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
                     "sdk_used": True,
                     "capability_evidence_validated": True,
                     "capability_evidence": [
-                        {
-                            "capability_kind": "skill",
-                            "canonical_identity": "qa-file-reviewer",
-                            "tool_call_id": "skill-call-1",
-                            "lifecycle_phase": "invocation_requested",
-                        },
-                        {
-                            "capability_kind": "skill",
-                            "canonical_identity": "qa-file-reviewer",
-                            "tool_call_id": "skill-call-1",
-                            "lifecycle_phase": "failed",
-                        },
-                        {
-                            "capability_kind": "skill",
-                            "canonical_identity": "qa-file-reviewer",
-                            "tool_call_id": "skill-call-2",
-                            "lifecycle_phase": "invocation_requested",
-                        },
-                        {
-                            "capability_kind": "skill",
-                            "canonical_identity": "qa-file-reviewer",
-                            "tool_call_id": "skill-call-2",
-                            "lifecycle_phase": "completed",
-                        },
+                        RequiredCapabilityEvidence.from_sdk_hook(
+                            declaration=declaration,
+                            binding=binding,
+                            tool_call_id=tool_call_id,
+                            lifecycle_phase=phase,
+                        ).__dict__
+                        for tool_call_id, phase in lifecycle
                     ],
                 },
             )
@@ -5037,6 +5046,10 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
         events.append(kwargs["event_type"])
         return "evt-a"
 
+    async def append_event_batch(conn, **kwargs):
+        capability_batches.append(kwargs)
+        return {"accepted": True, "duplicate": False}
+
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         completed.update(result_json)
         return True
@@ -5044,6 +5057,7 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_event_batch", append_event_batch)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
@@ -5077,6 +5091,14 @@ async def test_agent_app_recovered_capability_preserves_partial_failure_without_
     assert "capability_completed" in events
     assert "capability_invocation_failed" in events
     assert "artifact_ready" not in events
+    assert len(capability_batches) == 1
+    assert capability_batches[0]["attempt_id"] == "qat-test-attempt"
+    assert capability_batches[0]["batch_id"] == "capability-evidence-v1"
+    assert [
+        item["payload"]["lifecycle_phase"] for item in capability_batches[0]["events"]
+    ] == ["invocation_requested", "failed", "invocation_requested", "completed"]
+    assert all(item["visible_to_user"] is False for item in capability_batches[0]["events"])
+    assert "Use the fixed enterprise expert policy." not in str(capability_batches)
 
 
 @pytest.mark.asyncio

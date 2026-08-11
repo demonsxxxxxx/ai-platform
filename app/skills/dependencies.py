@@ -148,10 +148,22 @@ def skill_dependency_policy(skill_id: str, available_skill_ids: set[str]) -> dic
 
 def with_skill_dependencies(selected: list[str], available_skill_ids: set[str]) -> list[str]:
     expanded: list[str] = []
-    for skill_id in selected:
-        if skill_id in available_skill_ids and skill_id not in expanded:
+    visited: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit(skill_id: str) -> None:
+        if skill_id in visiting:
+            raise SkillDependencyPolicyError(f"skill_dependency_cycle: {skill_id}")
+        if skill_id in visited:
+            return
+        visiting.add(skill_id)
+        if skill_id in available_skill_ids:
             expanded.append(skill_id)
         for dependency_id in skill_dependency_ids(skill_id, available_skill_ids):
-            if dependency_id not in expanded:
-                expanded.append(dependency_id)
+            visit(dependency_id)
+        visiting.remove(skill_id)
+        visited.add(skill_id)
+
+    for skill_id in selected:
+        visit(skill_id)
     return expanded

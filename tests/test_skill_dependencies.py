@@ -134,6 +134,41 @@ def test_skill_dependencies_reject_self_dependency(monkeypatch):
     ]
 
 
+def test_skill_dependencies_expand_full_internal_dependency_closure(monkeypatch):
+    metadata = {
+        "public-skill": {"visibility": "public", "dependencies": "helper-a"},
+        "helper-a": {"visibility": "internal", "dependencies": "helper-b"},
+        "helper-b": {"visibility": "internal"},
+    }
+    monkeypatch.setattr(
+        dependency_policy,
+        "_builtin_skill_metadata",
+        lambda skill_id: metadata.get(skill_id, {}),
+    )
+
+    assert with_skill_dependencies(["public-skill"], set(metadata)) == [
+        "public-skill",
+        "helper-a",
+        "helper-b",
+    ]
+
+
+def test_skill_dependencies_reject_deep_cycle(monkeypatch):
+    metadata = {
+        "public-skill": {"visibility": "public", "dependencies": "helper-a"},
+        "helper-a": {"visibility": "internal", "dependencies": "helper-b"},
+        "helper-b": {"visibility": "internal", "dependencies": "helper-a"},
+    }
+    monkeypatch.setattr(
+        dependency_policy,
+        "_builtin_skill_metadata",
+        lambda skill_id: metadata.get(skill_id, {}),
+    )
+
+    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_cycle"):
+        with_skill_dependencies(["public-skill"], set(metadata))
+
+
 def test_skill_dependency_policy_reports_missing_dependency():
     assert skill_dependency_policy("qa-file-reviewer", {"qa-file-reviewer"})["dependency_details"] == [
         {

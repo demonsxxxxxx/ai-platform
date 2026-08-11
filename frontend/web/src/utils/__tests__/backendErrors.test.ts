@@ -54,6 +54,23 @@ test("chat admission maps only the typed active-run 409 to actionable guidance",
   }
 });
 
+test("chat admission maps a file-required Skill rejection to actionable guidance", () => {
+  const projection = projectChatAdmissionError(
+    {
+      status: 409,
+      code: "file_required_for_skill",
+      message: "private backend detail",
+    },
+    t,
+  );
+
+  assert.deepEqual(projection, {
+    code: "file_required_for_skill",
+    message: "translated:backendErrors.fileRequiredForSkill",
+  });
+  assert.doesNotMatch(projection.message, /private|sendFailed/i);
+});
+
 test("chat admission retains only bounded codes and never exposes private detail", () => {
   assert.deepEqual(
     projectChatAdmissionError(
@@ -184,6 +201,7 @@ test("all shipped locales include fail-closed governance error copy", () => {
     "skillVersionNotMaterializable",
     "skillDependencyPolicyViolation",
     "skillVersionHasActiveReleasePolicy",
+    "fileRequiredForSkill",
   ];
 
   for (const locale of ["en", "zh", "ja", "ko", "ru"]) {

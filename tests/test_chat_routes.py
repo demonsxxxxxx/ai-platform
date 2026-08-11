@@ -3816,7 +3816,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 "skill_id": "profile-specialist",
                 "skill_version": profile_manifest["content_hash"],
                 "executor_type": "claude-agent-worker",
-                "input_modes": [],
+                "input_modes": ["docx"],
             },
             model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=(),
@@ -3848,7 +3848,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "skill_id": "profile-specialist",
             "skill_version": profile_manifest["content_hash"],
             "executor_type": "claude-agent-worker",
-            "input_modes": [],
+            "input_modes": ["docx"],
         }
 
     async def governed_manifest(*_args, **_kwargs):
@@ -4032,7 +4032,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     )
 
     request_payload = {
-        "message": "run the selected Agent",
+        "message": "你好",
         "agent_options": {"enable_thinking": "off"},
         "disabled_skills": [],
         "selected_mcp_tool_ids": [],

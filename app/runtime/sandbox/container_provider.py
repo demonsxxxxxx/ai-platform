@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - exercised through docker = None path
 
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
+    EXECUTOR_CONTEXT_STAGING_ROOT,
     CallbackTargetValidationError,
     ContainerLease,
     ContainerStatus,
@@ -52,6 +53,7 @@ from app.execution_boundary import (
     is_governed_egress_proof,
 )
 from app.settings import get_settings
+from app.validation import assert_safe_id
 from app.runtime.sandbox.executor_client import (
     EXECUTOR_CONNECT_BASE_URL_METADATA,
     prepare_executor_http_request,
@@ -379,11 +381,18 @@ def _container_status_from_labels(container: Any) -> ContainerStatus | None:
     if owner not in {"sandbox-runtime", "sandbox-native-tool"}:
         return None
     run_id = labels.get("ai-platform.run_id")
+    attempt_id = labels.get("ai-platform.attempt_id")
     sandbox_mode = labels.get("ai-platform.sandbox_mode")
     if sandbox_mode not in {"ephemeral", "persistent"}:
         sandbox_mode = None
+    if owner == "sandbox-native-tool" and (not run_id or not attempt_id):
+        return None
     if run_id:
-        container_id = f"native-tool-{run_id}" if owner == "sandbox-native-tool" else f"exec-{run_id}"
+        container_id = (
+            _native_tool_container_name(run_id, attempt_id)
+            if owner == "sandbox-native-tool"
+            else f"exec-{run_id}"
+        )
     else:
         container_id = getattr(container, "id", getattr(container, "name", ""))
     return ContainerStatus(
@@ -487,12 +496,16 @@ def _governed_egress_labels_match(
 
 
 def _container_scope_key(status: ContainerStatus) -> tuple[str | None, ...]:
+    labels = status.detail.get("labels")
+    if not isinstance(labels, dict):
+        labels = {}
     return (
         status.tenant_id,
         status.workspace_id,
         status.user_id,
         status.session_id,
         status.run_id,
+        str(labels.get("ai-platform.attempt_id") or "") or None,
         status.sandbox_mode,
     )
 
@@ -740,11 +753,30 @@ def _skill_mount_labels(skill_mount: _TrustedSkillMount | None) -> dict[str, str
     }
 
 
-def _native_tool_container_name(run_id: str) -> str:
-    return f"native-tool-{run_id}"
+def _native_tool_container_name(run_id: str, attempt_id: str) -> str:
+    identity = f"{run_id}\0{attempt_id}"
+    identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return f"native-tool-{run_id[:80]}-{identity_hash}"
 
 
-def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) -> Path:
+def _native_tool_attempt_id(
+    workspace: WorkspaceLease | ContainerLease,
+    attempt_id: str | None,
+) -> str:
+    resolved = str(attempt_id or "").strip()
+    if not resolved and isinstance(workspace, ContainerLease):
+        resolved = str(workspace.labels.get("ai-platform.attempt_id") or "").strip()
+    if not resolved:
+        raise ContainerStartFailedError("native tool attempt identity is missing")
+    return resolved
+
+
+def _native_tool_socket_host_path(
+    workspace: WorkspaceLease | ContainerLease,
+    *,
+    attempt_id: str | None = None,
+) -> Path:
+    resolved_attempt_id = _native_tool_attempt_id(workspace, attempt_id)
     identity = "\0".join(
         (
             workspace.tenant_id,
@@ -752,6 +784,7 @@ def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) ->
             workspace.user_id,
             workspace.session_id,
             workspace.run_id,
+            resolved_attempt_id,
         )
     )
     socket_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
@@ -766,10 +799,12 @@ def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) ->
 
 def _native_tool_admission_evidence(
     workspace: WorkspaceLease | ContainerLease,
+    *,
+    attempt_id: str | None = None,
 ) -> dict[str, str]:
     """Return path-length-only evidence for the container-local admission probe."""
 
-    host_socket_path = _native_tool_socket_host_path(workspace)
+    host_socket_path = _native_tool_socket_host_path(workspace, attempt_id=attempt_id)
     return {
         "ai-platform.native_tool_admission_phase": _NATIVE_TOOL_ADMISSION_PHASE,
         "ai-platform.native_tool_host_socket_path_bytes": str(
@@ -794,9 +829,10 @@ def _native_tool_labels(
         "ai-platform.user_id": request.user_id,
         "ai-platform.session_id": request.session_id,
         "ai-platform.run_id": request.run_id,
+        "ai-platform.attempt_id": request.attempt_id,
         "ai-platform.sandbox_mode": request.sandbox_mode,
         "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
-        **_native_tool_admission_evidence(workspace),
+        **_native_tool_admission_evidence(workspace, attempt_id=request.attempt_id),
         **_skill_mount_labels(skill_mount),
     }
 
@@ -985,6 +1021,135 @@ def _prepare_native_tool_workspace_volumes(
     return volumes
 
 
+def _prepare_executor_workspace_volumes(
+    workspace: WorkspaceLease,
+    *,
+    attempt_id: str,
+    socket_path: Path | None,
+    skill_mount: _TrustedSkillMount | None,
+) -> dict[str, dict[str, str]]:
+    """Expose a read-only workspace plus the executor's exact writable roots."""
+
+    workspace_root, _workspace_node = _real_directory(
+        Path(workspace.workspace_host_path),
+        error="executor workspace is invalid",
+    )
+    host_root, _host_node = _real_directory(
+        Path(workspace.host_root),
+        error="executor run root is invalid",
+    )
+    inputs_root, _inputs_node = _real_directory(
+        workspace_root / "inputs",
+        error="executor inputs directory is invalid",
+    )
+    context_root, _context_node = _real_directory(
+        workspace_root / "context",
+        error="executor context directory is invalid",
+    )
+    delivery_root, _delivery_node = _real_directory(
+        workspace_root / "outputs" / "delivery",
+        error="executor delivery directory is invalid",
+    )
+    try:
+        workspace_root.relative_to(host_root)
+        inputs_root.relative_to(workspace_root)
+        context_root.relative_to(workspace_root)
+        delivery_root.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ContainerStartFailedError("executor workspace mount escapes run root") from exc
+
+    allowed_hidden_entries = {
+        ".ai-platform",
+        ".claude",
+        ".claude-config",
+        ".home",
+        ".pins",
+        ".tmp",
+    }
+    try:
+        unexpected_hidden = sorted(
+            entry.name
+            for entry in workspace_root.iterdir()
+            if entry.name.startswith(".") and entry.name not in allowed_hidden_entries
+        )
+    except OSError as exc:
+        raise ContainerStartFailedError("executor workspace cannot be inspected") from exc
+    if unexpected_hidden:
+        raise ContainerStartFailedError("executor workspace contains an unapproved hidden entry")
+
+    runtime_root = host_root / "runtime"
+    attempt_key = hashlib.sha256(assert_safe_id(attempt_id, "attempt_id").encode("utf-8")).hexdigest()[:24]
+    state_root = runtime_root / "executor-state" / attempt_key
+    state_paths = {
+        "runtime": state_root / "runtime",
+        "home": state_root / "home",
+        "config": state_root / "config",
+        "tmp": state_root / "tmp",
+        "empty_claude": state_root / "empty-claude",
+        "empty_internal": state_root / "empty-internal",
+        "empty_pins": state_root / "empty-pins",
+    }
+    for path in state_paths.values():
+        try:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ContainerStartFailedError("executor writable mount cannot be prepared") from exc
+        if path.is_symlink() or not path.is_dir():
+            raise ContainerStartFailedError("executor writable mount is invalid")
+        _secure_native_tool_socket_directory(path)
+
+    container_root = workspace.workspace_container_path.rstrip("/")
+    volumes = {
+        str(workspace_root): {
+            "bind": workspace.workspace_container_path,
+            "mode": "ro",
+        },
+        str(inputs_root): {
+            "bind": f"{container_root}/inputs",
+            "mode": "ro",
+        },
+        str(context_root): {
+            "bind": EXECUTOR_CONTEXT_STAGING_ROOT,
+            "mode": "rw",
+        },
+        str(delivery_root): {
+            "bind": f"{container_root}/outputs/delivery",
+            "mode": "rw",
+        },
+        str(state_paths["runtime"]): {
+            "bind": f"{container_root}/runtime",
+            "mode": "rw",
+        },
+        str(state_paths["home"]): {
+            "bind": f"{container_root}/.home",
+            "mode": "rw",
+        },
+        str(state_paths["config"]): {
+            "bind": f"{container_root}/.claude-config",
+            "mode": "rw",
+        },
+        str(state_paths["tmp"]): {
+            "bind": f"{container_root}/.tmp",
+            "mode": "rw",
+        },
+        str(state_paths["empty_pins"]): {
+            "bind": f"{container_root}/.pins",
+            "mode": "ro",
+        },
+    }
+    claude_source = skill_mount.host_path if skill_mount is not None else state_paths["empty_claude"]
+    volumes[str(claude_source)] = {
+        "bind": skill_mount.container_path if skill_mount is not None else f"{container_root}/.claude",
+        "mode": "ro",
+    }
+    internal_source = socket_path.parent if socket_path is not None else state_paths["empty_internal"]
+    volumes[str(internal_source)] = {
+        "bind": f"{container_root}/.ai-platform",
+        "mode": "ro",
+    }
+    return volumes
+
+
 def _docker_workspace_user_kwargs(workspace_host_path: str) -> dict[str, str]:
     try:
         stat_result = _workspace_owner_stat(workspace_host_path)
@@ -1117,6 +1282,7 @@ def _executor_environment(
     executor_auth_token: str,
     egress_bases: _ExecutorEgressBases,
     workspace_container_path: str = "/workspace",
+    context_staging_root: str = "",
     native_tool_token: str = "",
     native_tool_socket: str = "",
 ) -> dict[str, str]:
@@ -1164,6 +1330,8 @@ def _executor_environment(
             262144,
         ),
     }
+    if context_staging_root:
+        environment["AI_PLATFORM_CONTEXT_STAGING_ROOT"] = context_staging_root
     if native_tool_token and native_tool_socket:
         environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"] = native_tool_token
         environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] = native_tool_socket
@@ -3328,11 +3496,15 @@ class DockerContainerProvider:
         return True
 
     @staticmethod
-    def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) -> Path:
-        return _native_tool_socket_host_path(workspace)
+    def _native_tool_socket_host_path(
+        workspace: WorkspaceLease | ContainerLease,
+        *,
+        attempt_id: str | None = None,
+    ) -> Path:
+        return _native_tool_socket_host_path(workspace, attempt_id=attempt_id)
 
-    def _prepare_native_tool_socket(self, workspace: WorkspaceLease) -> Path:
-        socket_path = self._native_tool_socket_host_path(workspace)
+    def _prepare_native_tool_socket(self, workspace: WorkspaceLease, *, attempt_id: str) -> Path:
+        socket_path = self._native_tool_socket_host_path(workspace, attempt_id=attempt_id)
         if len(os.fsencode(str(socket_path))) > _UNIX_SOCKET_PATH_MAX_BYTES:
             raise ContainerStartFailedError("native tool socket path exceeds platform limit")
         socket_root = socket_path.parent.parent
@@ -3371,9 +3543,14 @@ class DockerContainerProvider:
             socket_path.unlink()
         return socket_path
 
-    def _remove_native_tool_socket(self, workspace: WorkspaceLease | ContainerLease) -> bool:
+    def _remove_native_tool_socket(
+        self,
+        workspace: WorkspaceLease | ContainerLease,
+        *,
+        attempt_id: str | None = None,
+    ) -> bool:
         try:
-            socket_path = self._native_tool_socket_host_path(workspace)
+            socket_path = self._native_tool_socket_host_path(workspace, attempt_id=attempt_id)
             if socket_path.exists() or socket_path.is_symlink():
                 node = socket_path.lstat()
                 if not stat.S_ISSOCK(node.st_mode):
@@ -3422,8 +3599,13 @@ class DockerContainerProvider:
         raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
 
     def _owned_native_tool_container(self, lease: ContainerLease) -> Any | None:
+        attempt_id = str(lease.labels.get("ai-platform.attempt_id") or "").strip()
+        if not attempt_id:
+            return None
         try:
-            container = self._get_client().containers.get(_native_tool_container_name(lease.run_id))
+            container = self._get_client().containers.get(
+                _native_tool_container_name(lease.run_id, attempt_id)
+            )
         except Exception:
             return None
         labels = _container_labels(container)
@@ -3434,6 +3616,7 @@ class DockerContainerProvider:
             "ai-platform.user_id": lease.user_id,
             "ai-platform.session_id": lease.session_id,
             "ai-platform.run_id": lease.run_id,
+            "ai-platform.attempt_id": attempt_id,
         }
         if any(str(labels.get(key) or "") != value for key, value in expected.items()):
             return None
@@ -3549,7 +3732,10 @@ class DockerContainerProvider:
         socket_prepared = False
         try:
             trusted_skill_mount = skill_mount or _prepare_trusted_skill_mount(request, workspace)
-            socket_path = self._prepare_native_tool_socket(workspace)
+            socket_path = self._prepare_native_tool_socket(
+                workspace,
+                attempt_id=request.attempt_id,
+            )
             socket_prepared = True
             native_tool_volumes = _prepare_native_tool_workspace_volumes(
                 workspace,
@@ -3561,7 +3747,7 @@ class DockerContainerProvider:
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
             container = client.containers.create(
                 image=get_settings().sandbox_executor_image,
-                name=_native_tool_container_name(request.run_id),
+                name=_native_tool_container_name(request.run_id, request.attempt_id),
                 detach=True,
                 labels=_native_tool_labels(request, workspace, trusted_skill_mount),
                 volumes=native_tool_volumes,
@@ -3580,7 +3766,10 @@ class DockerContainerProvider:
             return container
         except asyncio.CancelledError:
             container_removed = container is None or _stop_and_remove_container(container)
-            socket_removed = not socket_prepared or self._remove_native_tool_socket(workspace)
+            socket_removed = not socket_prepared or self._remove_native_tool_socket(
+                workspace,
+                attempt_id=request.attempt_id,
+            )
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
             raise
@@ -3589,7 +3778,10 @@ class DockerContainerProvider:
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             container_removed = container is None or _stop_and_remove_container(container)
-            socket_removed = not socket_prepared or self._remove_native_tool_socket(workspace)
+            socket_removed = not socket_prepared or self._remove_native_tool_socket(
+                workspace,
+                attempt_id=request.attempt_id,
+            )
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed") from exc
             if normalized_exc is not None:
@@ -3893,7 +4085,12 @@ class DockerContainerProvider:
             skill_mount_labels = _skill_mount_labels(skill_mount)
             native_tool_required = _native_tool_required(request)
             native_tool_admission_evidence = (
-                _native_tool_admission_evidence(workspace) if native_tool_required else {}
+                _native_tool_admission_evidence(
+                    workspace,
+                    attempt_id=request.attempt_id,
+                )
+                if native_tool_required
+                else {}
             )
         except BaseException as exc:
             try:
@@ -4059,37 +4256,26 @@ class DockerContainerProvider:
                 )
                 owned_resources.native = native_tool_container
                 owned_resources.native_socket_owned = True
+            executor_socket_path = (
+                self._native_tool_socket_host_path(
+                    workspace,
+                    attempt_id=request.attempt_id,
+                )
+                if native_tool_required
+                else None
+            )
+            executor_volumes = _prepare_executor_workspace_volumes(
+                workspace,
+                attempt_id=request.attempt_id,
+                socket_path=executor_socket_path,
+                skill_mount=skill_mount,
+            )
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
                 name=bootstrap_lease.container_name,
                 detach=True,
                 labels={**bootstrap_lease.platform_labels(), **_executor_identity_labels()},
-                volumes={
-                    workspace.workspace_host_path: {
-                        "bind": workspace.workspace_container_path,
-                        "mode": "rw",
-                    },
-                    **(
-                        {
-                            str(skill_mount.host_path): {
-                                "bind": skill_mount.container_path,
-                                "mode": "ro",
-                            }
-                        }
-                        if skill_mount is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            str(self._native_tool_socket_host_path(workspace).parent): {
-                                "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
-                                "mode": "rw",
-                            }
-                        }
-                        if native_tool_required
-                        else {}
-                    ),
-                },
+                volumes=executor_volumes,
                 environment=_executor_environment(
                     request,
                     settings,
@@ -4099,6 +4285,7 @@ class DockerContainerProvider:
                         governed_docker_egress=True,
                     ),
                     workspace_container_path=workspace.workspace_container_path,
+                    context_staging_root=EXECUTOR_CONTEXT_STAGING_ROOT,
                     native_tool_token=native_tool_token,
                     native_tool_socket=_NATIVE_TOOL_SOCKET if native_tool_required else "",
                 ),

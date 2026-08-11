@@ -21,6 +21,14 @@ platform does not classify translation, review, writing, or other domain
 workflows and does not require a bound Skill or artifact to be used for a Run to
 succeed.
 
+File admission follows the same distinction. Binding an Expert to a Skill that
+supports file input does not make every Expert turn a file task, so a new Expert
+conversation can accept an ordinary greeting with no file. A standalone,
+explicitly selected Skill may still declare file input as required; when neither
+the current request nor authorized conversation continuity supplies a file, the
+server returns the stable `file_required_for_skill` rejection before persistence.
+The client maps that code to an actionable upload message and retains the draft.
+
 The Expert Instruction is integrity-protected configuration, not a secrets store.
 Ordinary-user configuration projections, events, errors, logs, and dead letters
 must not expose it directly, but the instruction is presented to the model and can
@@ -47,12 +55,33 @@ are read-only; only the delivery directory and authenticated broker socket are
 writable. The sidecar does not receive the primary workspace root or incidental
 hidden files.
 
+The primary Docker executor receives the workspace root read-only. Only
+`outputs/delivery`, runtime markers, the SDK home/config/temp directories, and a
+context broker staging alias are writable. The public `context/` path remains a
+read-only workspace view; the staging alias is outside the SDK workspace and is
+used only by the platform context broker. `.pins`, staged `.claude` material, and
+the native broker socket view are read-only. Unknown top-level hidden entries
+fail container admission before creation.
+
 When a governed Skill or MCP capability is registered, SDK lifecycle hooks are
 mandatory. Missing hooks fail admission before model dispatch. A selected Skill
 and its authorized dependency closure form one bound Expert capability group.
 Only validated hook transitions count invocation attempts, completions, and
 failures. A failed attempt remains visible even if a later retry completes; it
 is never relabeled as not invoked.
+
+The worker persists each validated Skill or MCP lifecycle as one private,
+idempotent run-event batch bound to the exact queue `attempt_id`. Each record is
+an allowlist of capability kind and canonical identity, tool-call ID, lifecycle
+phase/status, evidence source/trust basis, and declaration digest. Prompt text,
+tool arguments, tool responses, endpoints, credentials, and private errors are
+not persisted in this evidence. Release verification requires each observed
+invocation to contain exactly one `invocation_requested` followed by exactly one
+`completed` or `failed` record in that same run/attempt.
+
+Worker exception logs carry fixed event/phase names and a diagnostic ID. Public
+errors and dead-letter records use fixed messages or codes; exception text and
+queued payloads are not copied into either boundary.
 
 Public answer text is sealed while a governed capability is active. After the
 latest verified terminal hook, a successful terminal answer must end with the
@@ -63,6 +92,9 @@ successful answer.
 ## Consequences
 
 - A conversational turn may succeed with a Skill registered but uninvoked.
+- Current uploads and authorized historical file reuse remain valid for explicit
+  file tasks; there is no client-only file preflight that can block server-owned
+  continuity rules.
 - Adding a governed Skill does not require platform Python branches.
 - Recovered capability calls can finish the Run while retaining a truthful
   partial-failure projection and bounded counts.

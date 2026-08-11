@@ -285,6 +285,7 @@
     "emailVerificationRequired": "请先验证邮箱后再登录",
     "emptyFile": "文件为空",
     "fileNotFound": "文件不存在",
+    "fileRequiredForSkill": "该任务需要文件，请上传后重试。",
     "fileReadFailed": "读取文件失败",
     "fileTooLarge": "文件大小超过 {{max}}MB 限制",
     "contextFileTooLarge": "文件超过 32 MB 处理上限，请选择更小的文件后重试。",

@@ -1157,7 +1157,10 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
     outcome = await run_once(timeout_seconds=1, worker_id="worker-a", heartbeat_interval_seconds=60)
 
     assert outcome.status == "dead_letter"
-    assert calls == [("reclaim",), ("fail", "raw-run", "bad", "bad payload", "msg-a", "worker-a")]
+    assert calls == [
+        ("reclaim",),
+        ("fail", "raw-run", "bad", "Worker could not process leased payload.", "msg-a", "worker-a"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1252,8 +1255,9 @@ async def test_run_once_does_not_ack_cancelled_message_before_execution_owner_fi
 
 
 @pytest.mark.asyncio
-async def test_run_once_dead_letters_process_exception(monkeypatch):
+async def test_run_once_dead_letters_process_exception_without_leaking_private_text(monkeypatch, caplog):
     calls = []
+    private_instruction = "PRIVATE-EXPERT-INSTRUCTION-MUST-NOT-LEAK"
 
     async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
@@ -1264,7 +1268,7 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process", payload["run_id"], worker_id))
-        raise RuntimeError("boom")
+        raise RuntimeError(private_instruction)
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
@@ -1289,12 +1293,22 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
     assert outcome.status == "dead_letter"
     assert outcome.run_id == "run-a"
     assert outcome.error_code == "worker_process_exception"
-    assert outcome.error_message == "boom"
+    assert outcome.error_message == "Worker processing failed unexpectedly."
+    assert private_instruction not in caplog.text
+    assert any("diagnostic_id" in record.getMessage() for record in caplog.records)
+    assert private_instruction not in str(calls)
     assert calls == [
         ("reclaim",),
         ("lease", "worker-a"),
         ("process", "run-a", "worker-a"),
-        ("fail", "raw-run", "worker_process_exception", "boom", "msg-a", "worker-a"),
+        (
+            "fail",
+            "raw-run",
+            "worker_process_exception",
+            "Worker processing failed unexpectedly.",
+            "msg-a",
+            "worker-a",
+        ),
     ]
 
 
@@ -1429,7 +1443,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         failure = next(call for call in calls if call[0] == "fail")
         assert failure[3:] == (
             "worker_process_exception",
-            "snapshot persistence failed",
+            "Worker processing failed unexpectedly.",
             {"message": "Worker processing failed unexpectedly."},
         )
 

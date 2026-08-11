@@ -726,12 +726,9 @@ def _workspace_path_parameters_authorized(
 
     def writable_path_parts_authorized(relative: Path) -> bool:
         lowered = tuple(part.lower() for part in relative.parts)
-        if len(lowered) >= 2 and lowered[0] == "output":
-            return True
         return (
             len(lowered) >= 3
-            and lowered[0] == "outputs"
-            and "delivery" in lowered[1:-1]
+            and lowered[:2] == ("outputs", "delivery")
         )
 
     def path_authorized(raw: object, *, mutating: bool = False) -> bool:
@@ -790,7 +787,10 @@ def _workspace_path_parameters_authorized(
     key = _WORKSPACE_PATH_PARAMETER.get(tool_name)
     if key is None:
         return True
-    return path_authorized(tool_input.get(key))
+    raw_path = tool_input.get(key)
+    if tool_name == "LS" and raw_path in (None, ""):
+        raw_path = "."
+    return path_authorized(raw_path)
 
 
 def _native_tool_proxy_input(tool_input: object) -> dict[str, Any] | None:

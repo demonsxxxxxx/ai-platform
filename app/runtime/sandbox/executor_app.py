@@ -771,6 +771,8 @@ def _context_retrieval_for_request(
         callback_token=request.callback_token,
         attempt_id=request.attempt_id,
         scope=scope,
+        workspace_root=os.getenv("CLAUDE_AGENT_WORKSPACE_ROOT") or "/workspace",
+        workspace_staging_root=os.getenv("AI_PLATFORM_CONTEXT_STAGING_ROOT") or None,
     )
     identity = ScopedContextRetrievalIdentity(
         tenant_id=scope.tenant_id,

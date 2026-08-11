@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.required_tool_contract import RequiredCapabilityDeclaration
+from app.required_tool_contract import (
+    BUILTIN_CAPABILITY_PARAMETERS,
+    RequiredCapabilityDeclaration,
+)
 from app.tool_policy import evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
@@ -33,28 +36,13 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "stage_run_artifact_to_workspace": ("artifact_id",),
 }
 _BUILTIN_PARAMETER_KEYS = {
-    "Read": ("file_path",),
-    "Glob": ("pattern", "path"),
-    "LS": ("path",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Edit": ("file_path", "old_string", "new_string", "replace_all"),
-    "NotebookEdit": (
-        "notebook_path",
-        "new_source",
-        "cell_id",
-        "cell_type",
-        "edit_mode",
-    ),
-    "Agent": ("agent", "prompt", "description"),
-    "WebFetch": ("url", "prompt"),
-    "WebSearch": ("query",),
-    "Skill": ("skill",),
+    identity: tuple(allowed)
+    for identity, (allowed, _required) in BUILTIN_CAPABILITY_PARAMETERS.items()
 }
 _BUILTIN_REQUIRED_PARAMETER_KEYS = {
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Skill": ("skill",),
+    identity: tuple(required)
+    for identity, (_allowed, required) in BUILTIN_CAPABILITY_PARAMETERS.items()
+    if required
 }
 
 

@@ -862,6 +862,19 @@ def test_word_review_attachment_chat_honors_wait_attempts(monkeypatch):
     assert attempts == 3
 
 
+def _capability_lifecycle_summary(skill_ids: list[str], run_ids: list[str]) -> dict[str, object]:
+    return {
+        "batch_count": len(run_ids),
+        "batch_event_count": len(skill_ids) * 2,
+        "event_count": len(skill_ids) * 2,
+        "invocation_group_count": len(skill_ids),
+        "invalid_group_count": 0,
+        "completed_skill_ids": skill_ids,
+        "mcp_invocation_count": 0,
+        "attempt_bindings": [f"{run_id}:attempt-a" for run_id in run_ids],
+    }
+
+
 def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch):
     queries: list[str] = []
     run_rows = [
@@ -881,18 +894,34 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
 
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
         queries.append(sql)
-        if "from run_skill_snapshots" not in sql:
-            raise AssertionError(sql)
-        return [
-            {
-                "row_count": 2,
-                "used_count": 2,
-                "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
-                "used_skills_sources": ["executor_hook"],
-                "pinned_snapshot_count": 2,
-                "missing_pinned_snapshots": [],
-            }
-        ]
+        if "from run_skill_snapshots" in sql:
+            return [
+                {
+                    "row_count": 2,
+                    "used_count": 2,
+                    "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                    "used_skills_sources": ["executor_hook"],
+                    "pinned_snapshot_count": 2,
+                    "missing_pinned_snapshots": [],
+                }
+            ]
+        if "from run_event_batches" in sql:
+            lifecycle = _capability_lifecycle_summary(
+                ["qa-file-reviewer", "baoyu-translate"],
+                ["run_review_gate_1", "run_translate_gate_1"],
+            )
+            lifecycle.update(
+                {
+                    "batch_event_count": 6,
+                    "event_count": 6,
+                    "invocation_group_count": 3,
+                    "mcp_invocation_count": 1,
+                }
+            )
+            return [
+                lifecycle
+            ]
+        raise AssertionError(sql)
 
     monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
@@ -916,10 +945,23 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
             "missing_pinned_snapshots": [],
             "mismatched_pinned_snapshots": [],
         },
+        "capability_lifecycle": {
+            "batch_count": 2,
+            "event_count": 6,
+            "invocation_group_count": 3,
+            "invalid_group_count": 0,
+            "completed_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "mcp_invocation_count": 1,
+            "attempt_bindings": [
+                "run_review_gate_1:attempt-a",
+                "run_translate_gate_1:attempt-a",
+            ],
+        },
     }
     assert "run_review_gate_1" in queries[0]
     assert "run_translate_gate_1" in queries[0]
     assert "r.input_json ? 'release_decision'" in queries[0]
+    assert "b.batch_id = 'capability-evidence-v1'" in queries[1]
 
 
 def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(monkeypatch):
@@ -932,10 +974,11 @@ def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(m
         }
     ]
 
-    monkeypatch.setattr(
-        verify_poc_gate,
-        "psql_rows",
-        lambda *args, **kwargs: [
+    def fake_psql_rows(*args, **kwargs):
+        sql = args[3]
+        if "from run_event_batches" in sql:
+            return [_capability_lifecycle_summary(["qa-file-reviewer"], ["run_review_gate_1"])]
+        return [
             {
                 "row_count": 0,
                 "used_count": 0,
@@ -944,8 +987,9 @@ def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(m
                 "pinned_snapshot_count": 0,
                 "missing_pinned_snapshots": ["qa-file-reviewer"],
             }
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
     gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
 
@@ -967,10 +1011,11 @@ def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_ma
         }
     ]
 
-    monkeypatch.setattr(
-        verify_poc_gate,
-        "psql_rows",
-        lambda *args, **kwargs: [
+    def fake_psql_rows(*args, **kwargs):
+        sql = args[3]
+        if "from run_event_batches" in sql:
+            return [_capability_lifecycle_summary(["qa-file-reviewer"], ["run_review_gate_1"])]
+        return [
             {
                 "row_count": 1,
                 "used_count": 1,
@@ -980,8 +1025,9 @@ def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_ma
                 "missing_pinned_snapshots": [],
                 "mismatched_pinned_snapshots": ["qa-file-reviewer"],
             }
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
     gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
 
@@ -990,11 +1036,18 @@ def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_ma
     assert gate.evidence["run_skill_snapshots"]["mismatched_pinned_snapshots"] == ["qa-file-reviewer"]
 
 
-def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_translate_history(monkeypatch):
+def test_governed_skill_runs_gate_rejects_legacy_execution_source(monkeypatch):
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
         assert "run_review_current" in sql
         assert "run_review_stale" not in sql
         assert "run_translate_current" in sql
+        if "from run_event_batches" in sql:
+            return [
+                _capability_lifecycle_summary(
+                    ["qa-file-reviewer", "baoyu-translate"],
+                    ["run_review_current", "run_translate_current"],
+                )
+            ]
         return [
             {
                 "row_count": 3,
@@ -1037,7 +1090,8 @@ def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_tran
         ],
     )
 
-    assert gate.ok is True
+    assert gate.ok is False
+    assert gate.evidence["verified"] is False
     assert gate.evidence["real_task_statuses"] == {
         "qa-file-reviewer": "succeeded",
         "baoyu-translate": "succeeded",
@@ -1048,6 +1102,47 @@ def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_tran
         "executor_hook",
         "platform_controlled_runner",
     }
+
+
+def test_governed_skill_runs_gate_fails_closed_on_invalid_capability_lifecycle(monkeypatch):
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        if "from run_event_batches" in sql:
+            lifecycle = _capability_lifecycle_summary(
+                ["qa-file-reviewer"],
+                ["run_review_gate_1"],
+            )
+            lifecycle["invalid_group_count"] = 1
+            return [lifecycle]
+        return [
+            {
+                "row_count": 1,
+                "used_count": 1,
+                "used_skill_ids": ["qa-file-reviewer"],
+                "used_skills_sources": ["executor_hook"],
+                "pinned_snapshot_count": 1,
+                "missing_pinned_snapshots": [],
+                "mismatched_pinned_snapshots": [],
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_governed_skill_runs(
+        "postgres",
+        "user",
+        "db",
+        [
+            {
+                "run_id": "run_review_gate_1",
+                "tenant_id": "default",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+            }
+        ],
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["capability_lifecycle"]["invalid_group_count"] == 1
 
 
 def test_context_snapshot_public_projection_gate_requires_safe_explainable_summary(monkeypatch):

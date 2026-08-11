@@ -285,6 +285,7 @@
     "emailVerificationRequired": "Please verify your email before signing in.",
     "emptyFile": "The file is empty.",
     "fileNotFound": "File not found.",
+    "fileRequiredForSkill": "This task requires a file. Attach the required file and try again.",
     "fileReadFailed": "Failed to read file.",
     "fileTooLarge": "File size exceeds the {{max}}MB limit.",
     "contextFileTooLarge": "The file exceeds the 32 MB processing limit. Choose a smaller file and try again.",

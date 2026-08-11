@@ -15,6 +15,7 @@ from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
+from app.diagnostics import log_safe_exception, new_diagnostic_id
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
@@ -28,6 +29,38 @@ from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_p
 _next_memory_cleanup_at = 0.0
 logger = logging.getLogger(__name__)
 _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
+_WORKER_PROCESS_EXCEPTION_MESSAGE = "Worker processing failed unexpectedly."
+_DEAD_LETTER_ERROR_MESSAGES = {
+    "invalid_queue_attempt": "Queued run lease metadata is invalid",
+    "invalid_queue_payload": "Queued run payload is invalid",
+    "worker_process_exception": _WORKER_PROCESS_EXCEPTION_MESSAGE,
+}
+
+
+def _log_worker_exception(
+    *,
+    event: str,
+    phase: str,
+    exc: BaseException,
+    identifiers: dict[str, str | int | float | bool | None] | None = None,
+) -> str:
+    diagnostic_id = new_diagnostic_id()
+    log_safe_exception(
+        logger,
+        event=event,
+        phase=phase,
+        diagnostic_id=diagnostic_id,
+        exc=exc,
+        identifiers=identifiers,
+    )
+    return diagnostic_id
+
+
+def _dead_letter_error_message(error_code: str | None) -> str:
+    return _DEAD_LETTER_ERROR_MESSAGES.get(
+        str(error_code or ""),
+        "Worker could not process leased payload.",
+    )
 
 
 async def _close_runtime_clients() -> None:
@@ -73,10 +106,12 @@ class _ReconciliationFenceGuard:
                 self._fence,
                 ttl_seconds=self._ttl_seconds,
             )
-        except Exception:
-            logger.exception(
-                "Stale run queue fence renewal failed",
-                extra={"run_id": self._fence.run_id},
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_reconciliation_fence_renewal_failed",
+                phase="reconciliation_fence_renewal",
+                exc=exc,
+                identifiers={"run_id": self._fence.run_id},
             )
             self._lost = True
             return False
@@ -106,10 +141,12 @@ class _ReconciliationFenceGuard:
             return False
         try:
             return await queue.release_run_reconciliation_fence(self._fence)
-        except Exception:
-            logger.exception(
-                "Stale run queue fence release failed",
-                extra={"run_id": self._fence.run_id},
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_reconciliation_fence_release_failed",
+                phase="reconciliation_fence_release",
+                exc=exc,
+                identifiers={"run_id": self._fence.run_id},
             )
             return False
 
@@ -173,7 +210,13 @@ async def _heartbeat_until_done(
                 return
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except Exception as exc:
+        _log_worker_exception(
+            event="worker_queue_heartbeat_failed",
+            phase="queue_heartbeat",
+            exc=exc,
+            identifiers={"message_id": message_id, "worker_id": worker_id},
+        )
         ownership_lost.set()
 
 
@@ -336,8 +379,13 @@ async def reconcile_stale_runs_for_worker(
                 scan_limit=scan_limit,
                 ttl_seconds=fence_ttl_seconds,
             )
-        except Exception:
-            logger.exception("Stale run queue fence acquisition failed", extra={"run_id": run_id})
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_reconciliation_fence_acquisition_failed",
+                phase="reconciliation_fence_acquisition",
+                exc=exc,
+                identifiers={"run_id": run_id},
+            )
             results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owner_unknown", "did_transition": False})
             continue
         if fence is None:
@@ -374,8 +422,13 @@ async def reconcile_stale_runs_for_worker(
                         {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
                     )
                     continue
-                except Exception:
-                    logger.exception("Stale run DB reconciliation failed with fence retained", extra={"run_id": run_id})
+                except Exception as exc:
+                    _log_worker_exception(
+                        event="worker_stale_run_reconciliation_failed",
+                        phase="stale_run_db_reconciliation",
+                        exc=exc,
+                        identifiers={"run_id": run_id},
+                    )
                     results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "db_unknown", "did_transition": False})
                     continue
                 if staged is None:
@@ -406,8 +459,13 @@ async def reconcile_stale_runs_for_worker(
                         {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
                     )
                     continue
-                except Exception:
-                    logger.exception("Stale run permission drain failed with fence retained", extra={"run_id": run_id})
+                except Exception as exc:
+                    _log_worker_exception(
+                        event="worker_stale_run_permission_drain_failed",
+                        phase="stale_run_permission_drain",
+                        exc=exc,
+                        identifiers={"run_id": run_id},
+                    )
                     results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "drain_unknown", "did_transition": False})
                     continue
                 if outcome is not None and outcome.completed and outcome.is_terminal():
@@ -461,8 +519,12 @@ async def _maintenance_until_done(settings: object, interval_seconds: float) -> 
             await run_worker_maintenance(settings)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("Worker background maintenance failed")
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_background_maintenance_failed",
+                phase="background_maintenance",
+                exc=exc,
+            )
 
 
 async def _terminalize_escaped_process_exception(
@@ -474,18 +536,24 @@ async def _terminalize_escaped_process_exception(
 
     try:
         payload = parse_leased_queue_envelope(message.payload).payload
-    except Exception:
+    except Exception as parse_exc:
+        _log_worker_exception(
+            event="worker_process_exception_terminalization_payload_invalid",
+            phase="process_exception_payload_validation",
+            exc=parse_exc,
+            identifiers={"run_id": message.payload.get("run_id")},
+        )
         raw_run_id = message.payload.get("run_id")
         return WorkerOutcome(
             status="dead_letter",
             run_id=str(raw_run_id) if isinstance(raw_run_id, str) else None,
             error_code="worker_process_exception",
-            error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
+            error_message=_WORKER_PROCESS_EXCEPTION_MESSAGE,
         )
 
     run_id = payload.run_id
     error_code = "worker_process_exception"
-    error_message = sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly."
+    error_message = _WORKER_PROCESS_EXCEPTION_MESSAGE
     progress = None
     if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
         return _queue_ownership_lost_outcome(run_id)
@@ -567,10 +635,12 @@ async def _terminalize_escaped_process_exception(
                 progress=progress,
                 transaction_factory=transaction,
             )
-        except Exception:
-            logger.exception(
-                "Worker process exception terminalized before child reconciliation completed",
-                extra={"run_id": run_id},
+        except Exception as reconciliation_exc:
+            _log_worker_exception(
+                event="worker_process_exception_child_reconciliation_failed",
+                phase="process_exception_child_reconciliation",
+                exc=reconciliation_exc,
+                identifiers={"run_id": run_id},
             )
     if progress is not None and progress.is_terminal():
         terminal_status = str(progress.status)
@@ -641,24 +711,28 @@ async def run_once(
         try:
             return await process_run_payload(message.payload, registry=registry, worker_id=resolved_worker_id)
         except Exception as exc:
-            logger.exception(
-                "Worker payload processing escaped its terminal path",
-                extra={"run_id": message.payload.get("run_id")},
+            _log_worker_exception(
+                event="worker_payload_processing_escaped",
+                phase="payload_processing",
+                exc=exc,
+                identifiers={"run_id": message.payload.get("run_id")},
             )
             try:
                 return await _terminalize_escaped_process_exception(message, resolved_worker_id, exc)
             except _EscapedTerminalizationOwnershipLost:
                 return _queue_ownership_lost_outcome(message.payload.get("run_id"))
-            except Exception:
-                logger.exception(
-                    "Worker process exception terminalization failed",
-                    extra={"run_id": message.payload.get("run_id")},
+            except Exception as terminalization_exc:
+                _log_worker_exception(
+                    event="worker_process_exception_terminalization_failed",
+                    phase="process_exception_terminalization",
+                    exc=terminalization_exc,
+                    identifiers={"run_id": message.payload.get("run_id")},
                 )
                 return WorkerOutcome(
                     status="dead_letter",
                     run_id=message.payload.get("run_id"),
                     error_code="worker_process_exception",
-                    error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
+                    error_message=_WORKER_PROCESS_EXCEPTION_MESSAGE,
                 )
 
     processing_task = asyncio.create_task(process_leased_message())
@@ -692,18 +766,30 @@ async def run_once(
     if outcome.status in {"succeeded", "failed", "skipped", "cancelled"}:
         try:
             mutation = await queue.ack_run(message.raw, message_id=message.message_id)
-        except Exception:
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_queue_ack_failed",
+                phase="queue_acknowledgement",
+                exc=exc,
+                identifiers={"run_id": message.payload.get("run_id")},
+            )
             return _queue_ownership_lost_outcome(message.payload.get("run_id"))
     else:
         try:
             mutation = await queue.fail_leased_run(
                 message.raw,
                 error_code=outcome.error_code or "worker_unhandled",
-                error_message=outcome.error_message or "Worker could not process leased payload",
+                error_message=_dead_letter_error_message(outcome.error_code),
                 message_id=message.message_id,
                 worker_id=resolved_worker_id,
             )
-        except Exception:
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_queue_dead_letter_failed",
+                phase="queue_dead_letter",
+                exc=exc,
+                identifiers={"run_id": message.payload.get("run_id")},
+            )
             return _queue_ownership_lost_outcome(message.payload.get("run_id"))
     if not isinstance(mutation, queue.LeaseMutationOutcome) or not mutation.succeeded:
         return _queue_ownership_lost_outcome(message.payload.get("run_id"))
@@ -722,8 +808,12 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
         while True:
             try:
                 outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
-            except Exception:
-                logger.exception("Worker iteration failed")
+            except Exception as exc:
+                _log_worker_exception(
+                    event="worker_iteration_failed",
+                    phase="worker_iteration",
+                    exc=exc,
+                )
                 await asyncio.sleep(idle_sleep_seconds)
                 continue
             if outcome.status == "idle":
@@ -752,8 +842,13 @@ async def _run_worker_slot(
                 run_initial_maintenance=False,
                 run_background_maintenance=False,
             )
-        except Exception:
-            logger.exception("Worker slot iteration failed")
+        except Exception as exc:
+            _log_worker_exception(
+                event="worker_slot_iteration_failed",
+                phase="worker_slot_iteration",
+                exc=exc,
+                identifiers={"worker_id": worker_id},
+            )
             await asyncio.sleep(idle_sleep_seconds)
             continue
         if outcome.status == "idle":

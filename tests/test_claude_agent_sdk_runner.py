@@ -4,7 +4,9 @@ import types
 
 import pytest
 
+from app.executors.claude.capability_policy import _parameters_match_subject
 from app.executors.claude_agent_sdk_runner import (
+    _workspace_path_parameters_authorized,
     run_claude_agent_sdk,
 )
 def _settings():
@@ -24,6 +26,48 @@ def _settings():
         anthropic_auth_token="",
         openai_api_key="",
     )
+
+
+def test_builtin_parameter_contract_accepts_sdk_optional_arguments():
+    assert _parameters_match_subject(
+        {},
+        "Read",
+        {"file_path": "inputs/a.txt", "offset": 100, "limit": 20},
+    )
+    assert _parameters_match_subject(
+        {},
+        "Bash",
+        {"command": "pwd", "timeout": 30_000, "description": "inspect"},
+    )
+    assert _parameters_match_subject({}, "LS", {})
+
+
+def test_workspace_write_policy_only_allows_exact_delivery_tree(tmp_path):
+    subject = {"workspace_contract": "ai-platform.skill-workspace.v1"}
+
+    assert _workspace_path_parameters_authorized(
+        subject,
+        "LS",
+        {},
+        workspace_root=tmp_path,
+    )
+    assert _workspace_path_parameters_authorized(
+        subject,
+        "Write",
+        {"file_path": "outputs/delivery/report.txt", "content": "safe"},
+        workspace_root=tmp_path,
+    )
+    for denied in (
+        "output/private.txt",
+        "outputs/tmp/delivery/private.txt",
+        "outputs/delivery",
+    ):
+        assert not _workspace_path_parameters_authorized(
+            subject,
+            "Write",
+            {"file_path": denied, "content": "unsafe"},
+            workspace_root=tmp_path,
+        )
 
 
 def _subject(

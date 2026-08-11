@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from app.context.retrieval import ContextRetrievalDenied
+from app.context.retrieval import (
+    ContextRetrievalAuthority,
+    ContextRetrievalDenied,
+    ContextRetrievalInputError,
+)
 from app.path_safety import ensure_creatable_inside
 from app.runtime.sandbox.contracts import ContextRetrievalScope
 from app.validation import assert_safe_id
@@ -24,6 +29,8 @@ class PlatformContextRetrievalClient:
         callback_token: str,
         attempt_id: str,
         scope: ContextRetrievalScope,
+        workspace_root: str = "/workspace",
+        workspace_staging_root: str | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
         self._callback_url = callback_url
@@ -31,7 +38,77 @@ class PlatformContextRetrievalClient:
         self._callback_token = callback_token
         self._attempt_id = assert_safe_id(attempt_id, "attempt_id")
         self._scope = scope
+        self._workspace_root = str(Path(workspace_root))
+        self._workspace_staging_root = (
+            str(Path(workspace_staging_root)) if workspace_staging_root else None
+        )
         self._timeout_seconds = max(1.0, float(timeout_seconds))
+
+    async def execute(
+        self,
+        action: str,
+        scoped_identity: object,
+        arguments: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Execute the same bounded SDK-tool contract through the callback broker."""
+
+        action_name, values = ContextRetrievalAuthority._validated_arguments(action, arguments)
+        identity = self._scoped_identity(
+            scoped_identity,
+            require_agent=action_name == "search_memory",
+        )
+        self._require_scope(
+            tenant_id=identity["tenant_id"],
+            workspace_id=identity["workspace_id"],
+            user_id=identity["user_id"],
+            session_id=identity["session_id"],
+            run_id=identity["run_id"],
+            agent_id=identity.get("agent_id"),
+        )
+        if action_name not in {
+            "stage_context_file_to_workspace",
+            "stage_run_artifact_to_workspace",
+        }:
+            return await self._request(action_name, values)
+
+        id_key = "file_id" if action_name == "stage_context_file_to_workspace" else "artifact_id"
+        expected_id = str(values.get(id_key) or "")
+        default_max = 1_048_576 if id_key == "file_id" else 16_777_216
+        raw_max_bytes = values.get("max_bytes", default_max)
+        if isinstance(raw_max_bytes, bool) or not isinstance(raw_max_bytes, int):
+            raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
+        if raw_max_bytes < 1 or raw_max_bytes > default_max:
+            raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
+        result = await self._request(action_name, values)
+        return self._stage_result(
+            result,
+            id_key=id_key,
+            expected_id=expected_id,
+            workspace_root=self._workspace_root,
+            max_bytes=raw_max_bytes,
+        )
+
+    @staticmethod
+    def _scoped_identity(
+        scoped_identity: object,
+        *,
+        require_agent: bool,
+    ) -> dict[str, str]:
+        names = ["tenant_id", "workspace_id", "user_id", "session_id", "run_id"]
+        if require_agent:
+            names.append("agent_id")
+        identity: dict[str, str] = {}
+        for name in names:
+            raw = (
+                scoped_identity.get(name)
+                if isinstance(scoped_identity, Mapping)
+                else getattr(scoped_identity, name, None)
+            )
+            value = str(raw or "").strip()
+            if not value:
+                raise ContextRetrievalDenied("context_scope_denied")
+            identity[name] = value
+        return identity
 
     def _require_scope(
         self,
@@ -214,8 +291,14 @@ class PlatformContextRetrievalClient:
         safe_name = raw_name.rsplit("/", 1)[-1] or "context.bin"
         if safe_name in {".", ".."}:
             safe_name = "context.bin"
-        target = Path(workspace_root) / "context" / (safe_id or "context-file") / safe_name
-        ensure_creatable_inside(workspace_root, target, "context_retrieval_workspace_escape")
+        public_root = Path(workspace_root)
+        if self._workspace_staging_root:
+            write_root = Path(self._workspace_staging_root)
+            target = write_root / (safe_id or "context-file") / safe_name
+        else:
+            write_root = public_root
+            target = write_root / "context" / (safe_id or "context-file") / safe_name
+        ensure_creatable_inside(write_root, target, "context_retrieval_workspace_escape")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(raw_bytes)
         workspace_path = f"context/{safe_id or 'context-file'}/{safe_name}"

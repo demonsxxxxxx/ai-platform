@@ -242,6 +242,7 @@
     "emailVerificationRequired": "ログインする前にメールを認証してください。",
     "emptyFile": "ファイルが空です。",
     "fileNotFound": "ファイルが見つかりません。",
+    "fileRequiredForSkill": "このタスクにはファイルが必要です。必要なファイルを添付して再試行してください。",
     "fileReadFailed": "ファイルの読み込みに失敗しました。",
     "fileTooLarge": "ファイルサイズが上限 {{max}}MB を超えています。",
     "contextFileTooLarge": "ファイルが 32 MB の処理上限を超えています。より小さいファイルを選択して再試行してください。",

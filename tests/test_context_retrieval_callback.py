@@ -370,19 +370,23 @@ async def test_platform_context_client_stages_brokered_bytes_without_returning_t
         callback_token="secret",
         attempt_id="attempt-a",
         scope=scope,
+        workspace_root="/workspace",
+        workspace_staging_root=str(tmp_path / "context-stage"),
     )
 
-    result = await retrieval.stage_run_artifact_to_workspace(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        artifact_id="artifact-a",
-        workspace_root=str(tmp_path),
+    result = await retrieval.execute(
+        "stage_run_artifact_to_workspace",
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+        },
+        {"artifact_id": "artifact-a"},
     )
 
-    assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_bytes() == raw
+    assert (tmp_path / "context-stage" / "artifact-a" / "translated.docx").read_bytes() == raw
     assert result["workspace_path"] == "context/artifact-a/translated.docx"
     assert "secret" not in str(result)
     assert requests[0][1]["run_id"] == "run-a"

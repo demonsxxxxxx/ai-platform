@@ -450,7 +450,7 @@ def attach_required_tool_declaration(input_payload: dict[str, Any]) -> dict[str,
     return rebuilt
 
 
-_BUILTIN_CAPABILITY_PARAMETERS = {
+BUILTIN_CAPABILITY_PARAMETERS = {
     "Read": (["file_path", "offset", "limit", "pages"], ["file_path"]),
     "Glob": (["pattern", "path"], []),
     "LS": (["path"], []),
@@ -523,7 +523,7 @@ def builtin_capability_subjects(
         identities.add("Skill")
     subjects: list[dict[str, Any]] = []
     for identity in sorted(identities):
-        keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
+        keys, required_keys = BUILTIN_CAPABILITY_PARAMETERS[identity]
         profiles = profiles_by_identity.get(identity, [])
         profile = (
             primary_profile

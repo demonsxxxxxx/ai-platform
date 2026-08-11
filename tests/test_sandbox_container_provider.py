@@ -20,6 +20,10 @@ import httpx
 import pytest
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
+from app.runtime.sandbox.container_provider import _native_tool_container_name
+
+
+NATIVE_TOOL_CONTAINER_NAME = _native_tool_container_name("run-a", "qat-test-attempt")
 
 
 requires_secure_opensandbox_transfer = pytest.mark.skipif(
@@ -36,6 +40,28 @@ requires_secure_opensandbox_transfer = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def fixed_runtime_identity_test_seams(monkeypatch, request):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    real_prepare_executor_volumes = container_provider._prepare_executor_workspace_volumes
+
+    def prepare_executor_volumes(selected_workspace, *, attempt_id, socket_path, skill_mount):
+        if os.path.isdir(selected_workspace.workspace_host_path):
+            return real_prepare_executor_volumes(
+                selected_workspace,
+                attempt_id=attempt_id,
+                socket_path=socket_path,
+                skill_mount=skill_mount,
+            )
+        return executor_workspace_volumes_stub(
+            selected_workspace,
+            attempt_id=attempt_id,
+            socket_path=socket_path,
+            skill_mount=skill_mount,
+        )
+
+    monkeypatch.setattr(
+        container_provider,
+        "_prepare_executor_workspace_volumes",
+        prepare_executor_volumes,
+    )
     stat_result = type(
         "RuntimeWorkspaceStat",
         (),
@@ -202,6 +228,45 @@ def native_tool_workspace_volumes_stub(
             "bind": skill_mount.container_path,
             "mode": "ro",
         }
+    return volumes
+
+
+def executor_workspace_volumes_stub(
+    selected_workspace: WorkspaceLease,
+    *,
+    attempt_id: str,
+    socket_path: Path | None,
+    skill_mount: SimpleNamespace | None,
+) -> dict[str, dict[str, str]]:
+    workspace_root = selected_workspace.workspace_host_path.rstrip("/\\")
+    host_root = selected_workspace.host_root.rstrip("/\\")
+    attempt_key = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:24]
+    state_root = f"{host_root}/runtime/executor-state/{attempt_key}"
+    container_root = selected_workspace.workspace_container_path.rstrip("/")
+    volumes = {
+        selected_workspace.workspace_host_path: {
+            "bind": selected_workspace.workspace_container_path,
+            "mode": "ro",
+        },
+        f"{workspace_root}/inputs": {"bind": f"{container_root}/inputs", "mode": "ro"},
+        f"{workspace_root}/context": {"bind": "/ai-platform-context-stage", "mode": "rw"},
+        f"{workspace_root}/outputs/delivery": {
+            "bind": f"{container_root}/outputs/delivery",
+            "mode": "rw",
+        },
+        f"{state_root}/runtime": {"bind": f"{container_root}/runtime", "mode": "rw"},
+        f"{state_root}/home": {"bind": f"{container_root}/.home", "mode": "rw"},
+        f"{state_root}/config": {"bind": f"{container_root}/.claude-config", "mode": "rw"},
+        f"{state_root}/tmp": {"bind": f"{container_root}/.tmp", "mode": "rw"},
+        f"{state_root}/empty-pins": {"bind": f"{container_root}/.pins", "mode": "ro"},
+    }
+    claude_source = str(skill_mount.host_path) if skill_mount is not None else f"{state_root}/empty-claude"
+    volumes[str(claude_source)] = {
+        "bind": skill_mount.container_path if skill_mount is not None else f"{container_root}/.claude",
+        "mode": "ro",
+    }
+    internal_source = str(socket_path.parent) if socket_path is not None else f"{state_root}/empty-internal"
+    volumes[str(internal_source)] = {"bind": f"{container_root}/.ai-platform", "mode": "ro"}
     return volumes
 
 
@@ -1765,6 +1830,7 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
     assert health_calls and identity_calls
     assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["env"]
     assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["env"]
+    assert "AI_PLATFORM_CONTEXT_STAGING_ROOT" not in FakeOpenSandbox.created[0]["env"]
 
     await provider.validate_for_dispatch(lease, request(), workspace())
 
@@ -3427,8 +3493,23 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
     assert created["name"] == "executor-exec-run-a"
     assert created["labels"]["ai-platform.run_id"] == "run-a"
     assert created["volumes"][workspace().workspace_host_path]["bind"] == "/workspace"
-    assert created["volumes"] == {
-        workspace().workspace_host_path: {"bind": "/workspace", "mode": "rw"}
+    mount_modes = {
+        mount["bind"]: mount["mode"] for mount in created["volumes"].values()
+    }
+    assert mount_modes["/workspace"] == "ro"
+    assert mount_modes["/workspace/inputs"] == "ro"
+    assert mount_modes["/workspace/.claude"] == "ro"
+    assert mount_modes["/workspace/.ai-platform"] == "ro"
+    assert mount_modes["/workspace/.pins"] == "ro"
+    assert {
+        target for target, mode in mount_modes.items() if mode == "rw"
+    } == {
+        "/ai-platform-context-stage",
+        "/workspace/outputs/delivery",
+        "/workspace/runtime",
+        "/workspace/.home",
+        "/workspace/.claude-config",
+        "/workspace/.tmp",
     }
     assert created["labels"]["ai-platform.skill_mount.required"] == "false"
     assert "AI_PLATFORM_NATIVE_TOOL_TOKEN" not in created["environment"]
@@ -3558,7 +3639,7 @@ async def test_platform_controlled_implicit_catalog_mounts_claude_without_native
 
     assert [created["name"] for created in fake.created] == ["executor-exec-run-a"]
     executor = fake.containers_by_name[lease.container_name]
-    assert executor.volumes[str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert executor.volumes[str(workspace_path)] == {"bind": "/workspace", "mode": "ro"}
     assert executor.volumes[str((workspace_path / ".claude").resolve())] == {
         "bind": "/workspace/.claude",
         "mode": "ro",
@@ -3698,7 +3779,11 @@ async def test_docker_provider_scrubs_settings_and_preserves_delivery_writes_bef
     output_path.write_text("deliverable", encoding="utf-8")
     assert output_path.read_text(encoding="utf-8") == "deliverable"
     created = fake.created[0]
-    assert created["volumes"][str(workspace_path)]["mode"] == "rw"
+    assert created["volumes"][str(workspace_path)]["mode"] == "ro"
+    assert created["volumes"][str(output_path.parent.resolve())] == {
+        "bind": "/workspace/outputs/delivery",
+        "mode": "rw",
+    }
     assert created["volumes"][str((workspace_path / ".claude").resolve())] == {
         "bind": "/workspace/.claude",
         "mode": "ro",
@@ -3724,6 +3809,26 @@ async def test_docker_provider_rejects_unscrubbable_project_settings_before_crea
             request(tool_policy_subjects=native_tool_subjects()[:1]),
             leased_workspace,
         )
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_unapproved_hidden_workspace_entry_before_create(tmp_path):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    (workspace_path / ".env").write_text("must-not-be-mounted", encoding="utf-8")
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="unapproved hidden entry"):
+        await provider.create_or_reuse(request(), leased_workspace)
 
     assert fake.created == []
 
@@ -3775,7 +3880,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
 
     assert native_subjects[0]["execution_strategy"] == "sdk_restricted"
     assert native_subjects[0]["allowed_skill_names"] == ["native-review"]
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
+    assert [created["name"] for created in fake.created] == [NATIVE_TOOL_CONTAINER_NAME, "executor-exec-run-a"]
     sidecar, executor = fake.created
     assert sidecar["network_mode"] == "none"
     assert "network_disabled" not in sidecar
@@ -3802,7 +3907,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert Path(sidecar_root_host).name == "native-tool-workspace"
     assert Path(sidecar_root_host).parent.name == "runtime"
     assert str(workspace_path.resolve()) not in sidecar["volumes"]
-    assert executor["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert executor["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "ro"}
     assert sidecar["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
     assert executor["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
     sidecar_mount_modes = {
@@ -3815,9 +3920,47 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert {
         mount for mount, mode in sidecar_mount_modes.items() if mode == "rw"
     } == {"/workspace/outputs/delivery", "/workspace/.ai-platform"}
+    executor_mount_modes = {
+        volume["bind"]: volume["mode"] for volume in executor["volumes"].values()
+    }
+    assert executor_mount_modes["/workspace"] == "ro"
+    assert executor_mount_modes["/workspace/inputs"] == "ro"
+    assert executor_mount_modes["/ai-platform-context-stage"] == "rw"
+    assert executor_mount_modes["/workspace/outputs/delivery"] == "rw"
+    assert executor_mount_modes["/workspace/runtime"] == "rw"
+    assert executor_mount_modes["/workspace/.home"] == "rw"
+    assert executor_mount_modes["/workspace/.claude-config"] == "rw"
+    assert executor_mount_modes["/workspace/.tmp"] == "rw"
+    assert executor_mount_modes["/workspace/.pins"] == "ro"
+    assert executor_mount_modes["/workspace/.claude"] == "ro"
+    assert executor_mount_modes["/workspace/.ai-platform"] == "ro"
+    assert "/workspace/context" not in executor_mount_modes
+    assert executor["environment"]["AI_PLATFORM_CONTEXT_STAGING_ROOT"] == (
+        "/ai-platform-context-stage"
+    )
+    executor_home_host = next(
+        Path(host_path)
+        for host_path, mount in executor["volumes"].items()
+        if mount["bind"] == "/workspace/.home"
+    )
+    assert executor_home_host.parent.name == hashlib.sha256(
+        b"qat-test-attempt"
+    ).hexdigest()[:24]
+    assert executor_home_host.parent.parent.name == "executor-state"
+    assert {
+        mount for mount, mode in executor_mount_modes.items() if mode == "rw"
+    } == {
+        "/ai-platform-context-stage",
+        "/workspace/outputs/delivery",
+        "/workspace/runtime",
+        "/workspace/.home",
+        "/workspace/.claude-config",
+        "/workspace/.tmp",
+    }
     mount_fingerprint = lease.labels["ai-platform.skill_mount.fingerprint"]
     assert len(mount_fingerprint) == 64
     assert sidecar["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
+    assert sidecar["labels"]["ai-platform.attempt_id"] == "qat-test-attempt"
     assert executor["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
     kernel_attack_specs = {
         "direct": "printf tampered > /workspace/.claude/skills/native-review/SKILL.md",
@@ -3845,7 +3988,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     }
     assert all("AUTH" not in key and "CALLBACK" not in key for key in sidecar["environment"])
 
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME]
     primary = fake.containers_by_name[lease.container_name]
     assert fake.api.exec_create_calls == [
         (
@@ -3868,7 +4011,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert native.removed is True
     assert primary.removed is True
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
+    assert [created["name"] for created in fake.created] == [NATIVE_TOOL_CONTAINER_NAME, "executor-exec-run-a"]
 
 
 @pytest.mark.asyncio
@@ -3911,10 +4054,16 @@ async def test_docker_native_sidecar_uses_empty_claude_view_when_no_skill_is_sta
     assert Path(workspace_path / ".claude").resolve() not in {
         Path(host_path).resolve() for host_path in sidecar["volumes"]
     }
-    assert not any(
-        mount["bind"] == "/workspace/.claude"
-        for mount in executor["volumes"].values()
-    )
+    executor_claude_mounts = [
+        (host_path, mount)
+        for host_path, mount in executor["volumes"].items()
+        if mount["bind"] == "/workspace/.claude"
+    ]
+    assert len(executor_claude_mounts) == 1
+    executor_claude_host, executor_claude_mount = executor_claude_mounts[0]
+    assert executor_claude_mount["mode"] == "ro"
+    assert Path(executor_claude_host).name == "empty-claude"
+    assert Path(workspace_path / ".claude").resolve() != Path(executor_claude_host).resolve()
 
 
 @pytest.mark.asyncio
@@ -3958,8 +4107,8 @@ async def test_docker_provider_sanitizes_native_sidecar_admission_failure_withou
     assert str(workspace_path) not in "".join(
         traceback.format_exception(exc_info.value)
     )
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
-    assert fake.containers_by_name["native-tool-run-a"].removed is True
+    assert [created["name"] for created in fake.created] == [NATIVE_TOOL_CONTAINER_NAME]
+    assert fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME].removed is True
     assert provider._leases == {}
 
 
@@ -3987,9 +4136,15 @@ async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_r
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
-    socket_parent = provider._native_tool_socket_host_path(leased_workspace).parent
+    socket_parent = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    ).parent
     occupied_path = socket_parent / "native-tool.sock"
-    assert occupied_path == provider._native_tool_socket_host_path(leased_workspace)
+    assert occupied_path == provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    )
     socket_parent.mkdir(parents=True)
     occupied_path.write_text("owned by another subject", encoding="utf-8")
     native_subjects = native_tool_subjects()
@@ -4031,7 +4186,10 @@ async def test_docker_provider_rejects_preexisting_socket_directory_with_wrong_o
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
-    socket_dir = provider._native_tool_socket_host_path(leased_workspace).parent
+    socket_dir = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    ).parent
     socket_dir.mkdir(parents=True)
     expected_stat = type(
         "ExpectedRuntimeWorkspaceStat",
@@ -4116,9 +4274,9 @@ async def test_docker_provider_native_probe_timeout_is_admission_failure_without
     assert exc_info.value.error_code == "native_tool_admission_failed"
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert len(probe_calls) == 1
-    assert probe_calls[0] is fake.containers_by_name["native-tool-run-a"]
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
-    assert fake.containers_by_name["native-tool-run-a"].removed is True
+    assert probe_calls[0] is fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME]
+    assert [created["name"] for created in fake.created] == [NATIVE_TOOL_CONTAINER_NAME]
+    assert fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME].removed is True
     assert provider._leases == {}
 
 
@@ -4157,7 +4315,7 @@ async def test_docker_provider_bounds_stuck_native_exec_await_and_cleans_sidecar
 
         assert probe_started.is_set()
         assert probe_finished.is_set() is False
-        assert fake.containers_by_name["native-tool-run-a"].removed is True
+        assert fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME].removed is True
         assert provider._leases == {}
     finally:
         release_probe.set()
@@ -4210,7 +4368,7 @@ async def test_docker_provider_reuse_cancellation_cleans_runtime_pair_while_exec
         health_probe=lambda executor_url, timeout_seconds: True,
     )
     lease = await provider.create_or_reuse(selected_request, leased_workspace)
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME]
     primary = fake.containers_by_name[lease.container_name]
     provider._native_tool_probe = stuck_probe
     task = asyncio.create_task(
@@ -4258,12 +4416,18 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     )
     workspace_path = _workspace_path_for_native_socket_bytes(workspace_socket_path_bytes)
     leased_workspace = workspace(workspace_host_path=workspace_path)
-    host_socket_path = provider._native_tool_socket_host_path(leased_workspace)
+    host_socket_path = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    )
     host_socket_path_bytes = len(os.fsencode(str(host_socket_path)))
     monkeypatch.setattr(
         provider,
         "_prepare_native_tool_socket",
-        lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+        lambda selected_workspace, *, attempt_id: provider._native_tool_socket_host_path(
+            selected_workspace,
+            attempt_id=attempt_id,
+        ),
     )
     monkeypatch.setattr(
         "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
@@ -4280,7 +4444,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         leased_workspace,
     )
 
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME]
     executor = fake.containers_by_name[lease.container_name]
     token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
     serialized_exec = repr(fake.api.exec_create_calls)
@@ -4303,19 +4467,23 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     assert lease.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
     assert lease.labels["ai-platform.native_tool_container_socket_path_bytes"] == "40"
     assert native.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
-    expected_socket_mount = {
+    expected_sidecar_socket_mount = {
         "bind": "/workspace/.ai-platform",
         "mode": "rw",
     }
-    assert native.volumes[str(host_socket_path.parent)] == expected_socket_mount
-    assert executor.volumes[str(host_socket_path.parent)] == expected_socket_mount
+    expected_executor_socket_mount = {
+        "bind": "/workspace/.ai-platform",
+        "mode": "ro",
+    }
+    assert native.volumes[str(host_socket_path.parent)] == expected_sidecar_socket_mount
+    assert executor.volumes[str(host_socket_path.parent)] == expected_executor_socket_mount
     assert native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
     assert executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
     assert host_socket_path == (
         Path(next(
             host_path
             for host_path, mount in native.volumes.items()
-            if mount == expected_socket_mount
+            if mount == expected_sidecar_socket_mount
         ))
         / Path(native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]).name
     )
@@ -4323,7 +4491,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         Path(next(
             host_path
             for host_path, mount in executor.volumes.items()
-            if mount == expected_socket_mount
+            if mount == expected_executor_socket_mount
         ))
         / Path(executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]).name
     )
@@ -4339,14 +4507,66 @@ def test_docker_provider_native_socket_paths_are_scope_unique_and_bounded(monkey
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     provider = DockerContainerProvider(docker_client_factory=FakeDockerClient)
 
-    first = provider._native_tool_socket_host_path(workspace(run_id="run-a"))
-    second = provider._native_tool_socket_host_path(workspace(run_id="run-b"))
+    first = provider._native_tool_socket_host_path(
+        workspace(run_id="run-a"),
+        attempt_id="qat-attempt-a",
+    )
+    second = provider._native_tool_socket_host_path(
+        workspace(run_id="run-b"),
+        attempt_id="qat-attempt-a",
+    )
+    next_attempt = provider._native_tool_socket_host_path(
+        workspace(run_id="run-a"),
+        attempt_id="qat-attempt-b",
+    )
 
-    assert first != second
-    assert first.name == second.name == "native-tool.sock"
-    assert len(first.parent.name) == len(second.parent.name) == 24
+    assert len({first, second, next_attempt}) == 3
+    assert first.name == second.name == next_attempt.name == "native-tool.sock"
+    assert len(first.parent.name) == len(second.parent.name) == len(next_attempt.parent.name) == 24
+    assert _native_tool_container_name("run-a", "qat-attempt-a") != _native_tool_container_name(
+        "run-a",
+        "qat-attempt-b",
+    )
     assert len(os.fsencode(str(first))) <= 107
     assert len(os.fsencode(str(second))) <= 107
+
+
+@pytest.mark.asyncio
+async def test_docker_native_owner_cleanup_is_attempt_scoped(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+    )
+    current_attempt = "qat-current-attempt"
+    lease = await provider.create_or_reuse(
+        request(
+            attempt_id=current_attempt,
+            skill_ids=["native-review"],
+            tool_policy_subjects=native_tool_subjects(),
+        ),
+        leased_workspace,
+    )
+    current_name = _native_tool_container_name("run-a", current_attempt)
+    current_sidecar = fake.containers_by_name[current_name]
+    current_socket_dir = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id=current_attempt,
+    ).parent
+    stale_attempt_labels = dict(lease.labels)
+    stale_attempt_labels["ai-platform.attempt_id"] = "qat-stale-attempt"
+    stale_attempt_lease = lease.model_copy(update={"labels": stale_attempt_labels})
+
+    assert provider._owned_native_tool_container(stale_attempt_lease) is None
+    assert provider._remove_owned_native_tool_container(stale_attempt_lease) is True
+    assert provider._remove_native_tool_socket(stale_attempt_lease) is True
+    assert current_sidecar.removed is False
+    assert current_socket_dir.is_dir()
 
 
 @pytest.mark.asyncio
@@ -4422,7 +4642,7 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
         request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
         leased_workspace,
     )
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME]
     socket_dir = Path(next(
         host_path
         for host_path, mount in native.volumes.items()
@@ -4431,7 +4651,10 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
     actual_socket_path = socket_dir / Path(
         native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]
     ).name
-    assert actual_socket_path == provider._native_tool_socket_host_path(leased_workspace)
+    assert actual_socket_path == provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    )
     assert socket_dir.is_dir()
     actual_socket_path.write_text("test socket leaf", encoding="utf-8")
     unrelated_scope = socket_dir.parent / "unrelated-scope"
@@ -4466,7 +4689,10 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
     monkeypatch.setattr(
         provider,
         "_prepare_native_tool_socket",
-        lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+        lambda selected_workspace, *, attempt_id: provider._native_tool_socket_host_path(
+            selected_workspace,
+            attempt_id=attempt_id,
+        ),
     )
     monkeypatch.setattr(
         "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
@@ -4509,7 +4735,7 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
             leased_workspace,
         )
 
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[NATIVE_TOOL_CONTAINER_NAME]
     token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
     diagnostic = str(exc_info.value)
     rendered_exception = "".join(traceback.format_exception(exc_info.value))
@@ -4532,7 +4758,7 @@ async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure
     workspace_path.mkdir()
     old_sidecar = FakeDockerContainer(
         image="ai-platform-executor:dev",
-        name="native-tool-run-a",
+        name=NATIVE_TOOL_CONTAINER_NAME,
         detach=True,
         labels={
             "ai-platform.owner": "sandbox-native-tool",
@@ -4541,6 +4767,7 @@ async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure
             "ai-platform.user_id": "user-a",
             "ai-platform.session_id": "session-a",
             "ai-platform.run_id": "run-a",
+            "ai-platform.attempt_id": "qat-test-attempt",
         },
         volumes={},
         environment={},
@@ -6633,12 +6860,16 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
         "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m",
     }
     assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
-    assert created["volumes"] == {
-        leased_workspace.workspace_host_path: {
-            "bind": "/workspace",
-            "mode": "rw",
-        }
+    assert created["volumes"][leased_workspace.workspace_host_path] == {
+        "bind": "/workspace",
+        "mode": "ro",
     }
+    mount_modes = {
+        mount["bind"]: mount["mode"] for mount in created["volumes"].values()
+    }
+    assert mount_modes["/workspace/inputs"] == "ro"
+    assert mount_modes["/workspace/outputs/delivery"] == "rw"
+    assert mount_modes["/ai-platform-context-stage"] == "rw"
     serialized = str(created).lower()
     assert "/var/run/docker.sock" not in serialized
 
@@ -7954,7 +8185,7 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
 
-    def container(*, name, owner, run_id, tenant_id="tenant-a"):
+    def container(*, name, owner, run_id, attempt_id="qat-attempt-a", tenant_id="tenant-a"):
         labels = {
             "ai-platform.owner": owner,
             "ai-platform.tenant_id": tenant_id,
@@ -7962,6 +8193,7 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
             "ai-platform.user_id": "user-a",
             "ai-platform.session_id": "session-a",
             "ai-platform.run_id": run_id,
+            "ai-platform.attempt_id": attempt_id,
             "ai-platform.sandbox_mode": "ephemeral",
             "ai-platform.browser_enabled": "false",
         }
@@ -7985,31 +8217,44 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
         run_id="run-paired",
     )
     paired_native = container(
-        name="native-tool-run-paired",
+        name=_native_tool_container_name("run-paired", "qat-attempt-a"),
         owner="sandbox-native-tool",
         run_id="run-paired",
     )
+    foreign_attempt_native = container(
+        name=_native_tool_container_name("run-paired", "qat-attempt-b"),
+        owner="sandbox-native-tool",
+        run_id="run-paired",
+        attempt_id="qat-attempt-b",
+    )
     orphan_native = container(
-        name="native-tool-run-orphan",
+        name=_native_tool_container_name("run-orphan", "qat-attempt-a"),
         owner="sandbox-native-tool",
         run_id="run-orphan",
     )
     foreign_native = container(
-        name="native-tool-run-foreign",
+        name=_native_tool_container_name("run-foreign", "qat-attempt-a"),
         owner="sandbox-native-tool",
         run_id="run-foreign",
         tenant_id="tenant-b",
     )
     fake.containers_by_name = {
         item.name: item
-        for item in (primary, paired_native, orphan_native, foreign_native)
+        for item in (
+            primary,
+            paired_native,
+            foreign_attempt_native,
+            orphan_native,
+            foreign_native,
+        )
     }
 
     statuses = await provider.list_runtime_containers({"tenant_id": "tenant-a"})
     assert {status.container_id for status in statuses} == {
         "exec-run-paired",
-        "native-tool-run-paired",
-        "native-tool-run-orphan",
+        _native_tool_container_name("run-paired", "qat-attempt-a"),
+        _native_tool_container_name("run-paired", "qat-attempt-b"),
+        _native_tool_container_name("run-orphan", "qat-attempt-a"),
     }
 
     results = await provider.cleanup_orphan_containers(
@@ -8017,7 +8262,11 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
         reason="admin_runtime",
     )
 
-    assert [result.container_id for result in results] == ["native-tool-run-orphan"]
+    assert [result.container_id for result in results] == [
+        _native_tool_container_name("run-paired", "qat-attempt-b"),
+        _native_tool_container_name("run-orphan", "qat-attempt-a")
+    ]
     assert orphan_native.removed is True
     assert paired_native.removed is False
+    assert foreign_attempt_native.removed is True
     assert foreign_native.removed is False

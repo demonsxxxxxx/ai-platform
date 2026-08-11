@@ -21,6 +21,7 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
+EXECUTOR_CONTEXT_STAGING_ROOT = "/ai-platform-context-stage"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",

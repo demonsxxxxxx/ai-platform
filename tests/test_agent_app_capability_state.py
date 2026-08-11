@@ -182,6 +182,82 @@ def test_dependency_invocation_counts_for_the_expert_capability_group():
     assert state.invocation_completed_count == 1
 
 
+def test_mcp_lifecycle_is_included_in_expert_capability_state():
+    identity = "mcp__tenant-server__search"
+    payload = {
+        "staged_skills": ["bound-skill"],
+        "sdk_used": True,
+        "capability_evidence_validated": True,
+        "capability_evidence": [
+            {
+                "capability_kind": "mcp",
+                "canonical_identity": identity,
+                "tool_call_id": "mcp-call-1",
+                "lifecycle_phase": "invocation_requested",
+            },
+            {
+                "capability_kind": "mcp",
+                "canonical_identity": identity,
+                "tool_call_id": "mcp-call-1",
+                "lifecycle_phase": "completed",
+            },
+        ],
+    }
+
+    state = project_agent_capability_state(
+        bound_skill_ids={"bound-skill"},
+        bound_mcp_identities={identity},
+        executor_payload=payload,
+        run_succeeded=True,
+        durable_artifact_count=0,
+    )
+
+    assert state.actually_invoked is True
+    assert state.completed is True
+    assert state.invocation_attempt_count == 1
+    assert state.invocation_completed_count == 1
+    assert state.invocation_failed_count == 0
+
+
+def test_failed_mcp_is_preserved_when_skill_succeeds():
+    identity = "mcp__tenant-server__search"
+    payload = {
+        "used_skills_source": "executor_hook",
+        "staged_skills": ["bound-skill"],
+        "used_skills": ["bound-skill"],
+        "sdk_used": True,
+        "capability_evidence_validated": True,
+        "capability_evidence": [
+            {
+                "capability_kind": "mcp",
+                "canonical_identity": identity,
+                "tool_call_id": "mcp-call-1",
+                "lifecycle_phase": "invocation_requested",
+            },
+            {
+                "capability_kind": "mcp",
+                "canonical_identity": identity,
+                "tool_call_id": "mcp-call-1",
+                "lifecycle_phase": "failed",
+            },
+        ],
+    }
+
+    state = project_agent_capability_state(
+        bound_skill_ids={"bound-skill"},
+        bound_mcp_identities={identity},
+        executor_payload=payload,
+        run_succeeded=True,
+        durable_artifact_count=0,
+    )
+
+    assert state.completed is True
+    assert state.invocation_attempt_count == 1
+    assert state.invocation_completed_count == 0
+    assert state.invocation_failed_count == 1
+    assert state.partial_failure is True
+
+
 def test_public_capability_projection_contains_only_safe_semantic_state():
     state = project_agent_capability_state(
         bound_skill_ids={"bound-skill"},
