@@ -1374,7 +1374,7 @@ def build_skill_release_readiness(
             "inventory_present": inventory_present,
             "external_evidence": {
                 "mode": "optional_external_release_evidence",
-                "root": f"docs/release-evidence/skill-release",
+                "root": "docs/release-evidence/skill-release",
                 "present": bool(evidence_root is not None and evidence_root.is_dir()),
             },
         },

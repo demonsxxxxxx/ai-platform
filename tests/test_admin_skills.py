@@ -6,7 +6,6 @@ from pathlib import Path
 import zipfile
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
