@@ -8,6 +8,7 @@ if __name__ == "__main__" and not sys.flags.isolated:
     raise SystemExit("run s72 quickstart through scripts/quickstart-s72.sh")
 
 from dataclasses import dataclass
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,7 @@ ORIGIN_URLS = {
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
+PROJECT_SERVICES = (*SERVICES, "workspace-init", "migrate")
 
 
 class QuickstartError(RuntimeError): ...
@@ -158,31 +160,47 @@ class Quickstart:
             "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
             '{{index .Config.Labels "com.docker.compose.project"}}',
             '{{index .Config.Labels "com.docker.compose.service"}}',
+            '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
         ))
         fields = self.runner.run(
             [*self.docker, "container", "inspect", f"ai-platform-{service}", "--format", fmt],
             output=True, timeout=30,
         ).split("\t")
-        if len(fields) != 7:
+        if len(fields) != 8:
             raise QuickstartError("runtime metadata is invalid")
         return fields
 
     def _current_runtime(self) -> Subject:
-        values = {role: self._inspect(role) for role in ("api", "worker", "frontend")}
-        commits = {item[0] for item in values.values()}
+        values = {service: self._inspect(service) for service in PROJECT_SERVICES}
+        observed_services = self.runner.run(
+            [*self.docker, "container", "ls", "-a", "--filter",
+             f"label=com.docker.compose.project={PROJECT}", "--format",
+             '{{.Label "com.docker.compose.service"}}'],
+            output=True, timeout=30,
+        ).splitlines()
+        app_values = {role: values[role] for role in ("api", "worker", "frontend")}
+        commits = {item[0] for item in app_values.values()}
+        commit = next(iter(commits)) if len(commits) == 1 else ""
+        expected_config = ",".join(
+            str(self.root / "releases" / commit / path) for path in COMPOSE_FILES
+        )
         if (
-            len(commits) != 1 or COMMIT.fullmatch(next(iter(commits))) is None
-            or any(item[5:] != [PROJECT, role] for role, item in values.items())
+            COMMIT.fullmatch(commit) is None
+            or sorted(observed_services) != sorted(PROJECT_SERVICES)
+            or any(
+                item[5:] != [PROJECT, service, expected_config]
+                for service, item in values.items()
+            )
         ):
             raise QuickstartError("current runtime subject is invalid")
-        backend = values["api"][1]
-        if values["worker"][1] != backend:
+        backend = app_values["api"][1]
+        if app_values["worker"][1] != backend:
             raise QuickstartError("current runtime subject is invalid")
-        for ref, repository in ((backend, BACKEND_REPOSITORY), (values["frontend"][1], FRONTEND_REPOSITORY)):
+        for ref, repository in ((backend, BACKEND_REPOSITORY), (app_values["frontend"][1], FRONTEND_REPOSITORY)):
             match = DIGEST_REF.fullmatch(ref)
             if match is None or match.group("repository") != repository:
                 raise QuickstartError("current runtime subject is invalid")
-        return Subject(commits.pop(), backend, values["frontend"][1])
+        return Subject(commit, backend, app_values["frontend"][1])
 
     def _validate_env(self, path: Path) -> Path:
         try:
@@ -223,11 +241,13 @@ class Quickstart:
     def _verify_source(self, subject: Subject) -> None:
         self._verify_checkout(self.repo, subject.commit)
         origin = self.runner.run(["git", "config", "--get", "remote.origin.url"], cwd=self.repo, output=True)
+        if origin.rstrip("/") not in ORIGIN_URLS:
+            raise QuickstartError("prepared subject has an invalid origin")
         remote = self.runner.run(
             ["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"],
             cwd=self.repo, output=True, timeout=60,
         ).split()
-        if origin.rstrip("/") not in ORIGIN_URLS or remote != [subject.commit, "refs/heads/main"]:
+        if remote != [subject.commit, "refs/heads/main"]:
             raise QuickstartError("prepared subject is not fresh origin/main")
 
     def _compose(self, env_file: Path, subject: Subject, *arguments: str) -> None:
@@ -254,7 +274,7 @@ class Quickstart:
         if health.get("status") != "ok" or ready.get("status") != "ready" or ready.get("runtime_commit") != subject.commit:
             raise QuickstartError("API health failed")
         for service in SERVICES:
-            commit, image, _restarts, status, container_health, project, compose_service = self._inspect(service)
+            commit, image, _restarts, status, container_health, project, compose_service, _config = self._inspect(service)
             healthy = service == "worker" or container_health == "healthy"
             if project != PROJECT or compose_service != service or status != "running" or not healthy:
                 raise QuickstartError("container health failed")
@@ -275,7 +295,10 @@ class Quickstart:
             try:
                 self._health(subject)
                 return
-            except (OSError, UnicodeError, ValueError, json.JSONDecodeError, QuickstartError):
+            except (
+                OSError, UnicodeError, ValueError, json.JSONDecodeError,
+                HTTPException, QuickstartError,
+            ):
                 if time.monotonic() >= deadline:
                     raise QuickstartError("runtime health did not converge") from None
                 time.sleep(2)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from http.client import BadStatusLine
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,88 @@ def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
         release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
+def test_invalid_origin_is_rejected_before_network_access(tmp_path: Path) -> None:
+    root = tmp_path / "managed"
+    repo = root / "releases" / COMMIT
+    for relative in quickstart.COMPOSE_FILES:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("services: {}\n", encoding="utf-8")
+
+    class InvalidOriginRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            joined = " ".join(command)
+            if "rev-parse" in joined:
+                return COMMIT
+            if "status" in joined:
+                return ""
+            if "remote.origin.url" in joined:
+                return "ssh://unapproved.invalid/repository"
+            pytest.fail("invalid origin was contacted")
+
+    release = quickstart.Quickstart(repo, root, runner=InvalidOriginRunner())
+    with pytest.raises(quickstart.QuickstartError, match="invalid origin"):
+        release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
+
+
+@pytest.mark.parametrize("extra_service", [False, True])
+def test_current_runtime_requires_exact_internal_test_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_service: bool
+) -> None:
+    root = tmp_path / "managed"
+    release = quickstart.Quickstart(tmp_path, root)
+    release.docker = ["docker"]
+    expected_config = ",".join(
+        str(root / "releases" / COMMIT / path) for path in quickstart.COMPOSE_FILES
+    )
+    services = list(quickstart.PROJECT_SERVICES)
+    if extra_service:
+        services.append("old-proxy")
+    monkeypatch.setattr(
+        release.runner, "run", lambda *_args, **_kwargs: "\n".join(services)
+    )
+
+    def inspect(service: str) -> list[str]:
+        image = FRONTEND if service == "frontend" else BACKEND
+        commit = COMMIT if service in {"api", "worker", "frontend"} else ""
+        return [
+            commit, image, "0", "running", "healthy",
+            quickstart.PROJECT, service, expected_config,
+        ]
+
+    monkeypatch.setattr(release, "_inspect", inspect)
+    if extra_service:
+        with pytest.raises(quickstart.QuickstartError, match="runtime subject is invalid"):
+            release._current_runtime()
+    else:
+        assert release._current_runtime() == quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+
+
+def test_runtime_rejects_wrong_compose_file_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = quickstart.Quickstart(tmp_path, tmp_path / "managed")
+    release.docker = ["docker"]
+    monkeypatch.setattr(
+        release.runner,
+        "run",
+        lambda *_args, **_kwargs: "\n".join(quickstart.PROJECT_SERVICES),
+    )
+    monkeypatch.setattr(
+        release,
+        "_inspect",
+        lambda service: [
+            COMMIT if service in {"api", "worker", "frontend"} else "",
+            FRONTEND if service == "frontend" else BACKEND,
+            "0", "running", "healthy", quickstart.PROJECT, service,
+            "/data/ai-platform-internal-test/releases/other/docker-compose.yml",
+        ],
+    )
+
+    with pytest.raises(quickstart.QuickstartError, match="runtime subject is invalid"):
+        release._current_runtime()
+
+
 def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> quickstart.Quickstart:
     release = quickstart.Quickstart(tmp_path, tmp_path / "managed", health_timeout=0)
     release.docker = ["docker"]
@@ -185,6 +268,20 @@ def test_runtime_change_after_pull_blocks_up(
 
     assert not any(event.startswith("compose:up") for event in events)
     assert "rollback" not in events
+
+
+def test_http_protocol_error_is_normalized_for_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = quickstart.Quickstart(tmp_path, health_timeout=0)
+    monkeypatch.setattr(
+        release,
+        "_health",
+        lambda _subject: (_ for _ in ()).throw(BadStatusLine("untrusted response")),
+    )
+
+    with pytest.raises(quickstart.QuickstartError, match="health did not converge"):
+        release._wait_health(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
 def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands(
