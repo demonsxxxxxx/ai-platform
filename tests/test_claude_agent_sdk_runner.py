@@ -291,6 +291,11 @@ async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
     tmp_path,
 ):
     captured = {}
+    reported = []
+
+    async def on_skill_use(skill_name, metadata):
+        reported.append((skill_name, metadata))
+
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
@@ -305,12 +310,21 @@ async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
         skills=[],
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[],
+        on_skill_use=on_skill_use,
     )
 
     assert result.error is None
+    assert result.used_skills == []
+    assert reported == []
     assert captured["skills"] == []
     assert "Skill" not in captured["tools"]
     assert "Skill" not in captured["allowed_tools"]
+    assert all(
+        matcher.matcher != "Skill"
+        for matcher in captured["hooks"]["PostToolUse"]
+    )
+    denied = await captured["can_use_tool"]("Skill", {"skill": "untrusted-skill"})
+    assert denied.behavior == "deny"
 
 
 @pytest.mark.asyncio

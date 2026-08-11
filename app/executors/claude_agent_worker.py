@@ -858,6 +858,14 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         event_sink: ExecutorEventSink | None = None,
     ) -> ExecutorResult:
+        if (
+            payload.execution_kind != RUN_EXECUTION_KIND_SKILL
+            or payload.skill_id is None
+        ):
+            return self._multi_agent_file_skill_failed(
+                "skill_execution_identity_invalid",
+                "Harness chat cannot enter a Skill execution path",
+            )
         steps = _file_skill_steps(payload.input)
         completed_outputs = _resume_completed_step_outputs(payload.input)
         completed_checkpoints = _resume_completed_step_checkpoints(payload.input)
@@ -2263,7 +2271,11 @@ class ClaudeAgentWorkerAdapter:
                     else staged_skill_names
                 ),
                 "on_text": on_text,
-                "on_skill_use": on_skill_use,
+                "on_skill_use": (
+                    on_skill_use
+                    if payload.execution_kind == RUN_EXECUTION_KIND_SKILL
+                    else None
+                ),
                 "public_skill_metadata": public_skill_metadata,
                 "tool_policy_subjects": _runtime_tool_policy_subjects(
                     payload,

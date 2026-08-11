@@ -91,6 +91,14 @@ old producers continue to write non-null Skill rows through the default
 `execution_kind=skill`. Dropping the column, constraint, or legacy Skill rows
 is not a safe application rollback.
 
+A pre-v2 binary is not directly compatible with the upgraded state: it cannot
+parse queued v2 payloads with `skill_id = null`, and its inner Skill join hides
+`general-agent` after `default_skill_id` becomes null. Before deploying such a
+binary, operators must stop admission, drain every v2 run with a dual-read
+worker, and temporarily restore the legacy default binding while its retained
+compatibility row still exists. If those preconditions cannot be proved, roll
+forward instead of rolling the binary back.
+
 ## Evidence boundary
 
 Contract and focused route/worker tests prove source behavior. They do not prove

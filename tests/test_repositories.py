@@ -5281,6 +5281,7 @@ async def test_locked_run_query_projects_complete_auth_snapshot():
     await repositories.mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
 
     sql, _params = conn.calls[0]
+    assert "runs.execution_kind" in sql
     assert "runs.principal_roles" in sql
     assert "runs.principal_department_id" in sql
     assert "runs.auth_source" in sql

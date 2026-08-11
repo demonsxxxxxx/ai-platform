@@ -1433,6 +1433,39 @@ def test_harness_chat_keeps_scoped_file_tools_without_eager_preprocessing():
 
 
 @pytest.mark.asyncio
+async def test_harness_chat_cannot_enter_multi_agent_skill_resume_path(
+    monkeypatch,
+):
+    def fail_registry(*_args, **_kwargs):
+        raise AssertionError("Harness chat must not resolve the Skill catalog")
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.BuiltinSkillRegistry",
+        fail_registry,
+    )
+    adapter = ClaudeAgentWorkerAdapter()
+    result = await adapter._run_multi_agent_file_skill(
+        payload(
+            agent_id="general-agent",
+            execution_kind="harness_chat",
+            skill_id=None,
+            file_ids=[],
+            input={
+                "execution_mode": "multi_agent",
+                "resume": {"completed_step_outputs": {"answer": "done"}},
+            },
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "skill_execution_identity_invalid"
+
+
+@pytest.mark.asyncio
 async def test_legacy_general_chat_with_explicit_skill_keeps_typed_attachment_materialization(
     monkeypatch,
     tmp_path,
@@ -5417,6 +5450,48 @@ async def test_sdk_runner_requires_exact_selected_skill_despite_user_override(mo
         "After the tool succeeds, follow its instructions and answer the user."
     )
     assert 'exactly this input: {"skill":"minimax-docx"}' not in expected_prompt
+
+
+@pytest.mark.asyncio
+async def test_harness_sdk_wires_no_skill_callback(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    captured = {}
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return FakeQueryResult()
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+
+    result = await adapter._try_run_sdk(
+        payload(
+            agent_id="general-agent",
+            execution_kind="harness_chat",
+            skill_id=None,
+            file_ids=[],
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+        ),
+        workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[],
+        prompt="hello",
+        staged_skill_names=[],
+    )
+
+    assert result.error is None
+    assert captured["skill_id"] is None
+    assert captured["skills"] == []
+    assert captured["on_skill_use"] is None
 
 
 @pytest.mark.asyncio

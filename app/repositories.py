@@ -10870,7 +10870,8 @@ async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str
           and sessions.user_id = runs.user_id
           and sessions.agent_id = runs.agent_id
         returning runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
-                  runs.session_id, runs.agent_id, runs.skill_id, runs.trace_id,
+                  runs.session_id, runs.agent_id, runs.execution_kind,
+                  runs.skill_id, runs.trace_id,
                   runs.principal_roles, runs.principal_department_id, runs.auth_source,
                   runs.input_json
         """,

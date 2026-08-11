@@ -1128,7 +1128,7 @@ async def run_claude_agent_sdk(
 
     def claim_used_skill(skill_name: str) -> bool:
         nonlocal last_public_stage
-        if (allowed_skill_names and skill_name not in allowed_skill_names) or skill_name in used_skill_names:
+        if skill_name not in allowed_skill_names or skill_name in used_skill_names:
             return False
         used_skill_names.append(skill_name)
         diagnostic_counters["skill_invocations"] += 1

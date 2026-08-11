@@ -239,7 +239,7 @@ def _extract_skill_names_from_tool_input(
     _append_skill_candidate(candidates, tool_input)
     names: list[str] = []
     for candidate in candidates:
-        if allowed_skill_names and candidate not in allowed_skill_names:
+        if candidate not in allowed_skill_names:
             continue
         if candidate not in names:
             names.append(candidate)
