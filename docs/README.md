@@ -22,6 +22,9 @@ does not represent deployed runtime state.
 - `adr/0001-agent-app-revision-authorization-lifecycle.md` records the Agent App
   decision to pin conversations, reauthorize every run, and retain withdrawn
   history as read-only.
+- `adr/0005-expert-sdk-autonomous-skill-execution.md` records the Expert
+  instruction, Harness-selected Skill, uniform sandbox-tool, evidence, and
+  fail-closed public-answer decisions.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/redis-streams-sse-event-channel.md` indexes the current v2.1

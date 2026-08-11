@@ -676,9 +676,6 @@ _WORKSPACE_MUTATING_PATH_PARAMETER = {
     "Edit": "file_path",
     "NotebookEdit": "notebook_path",
 }
-_WORKSPACE_INTERNAL_ROOTS = frozenset(
-    {".ai-platform", ".claude-config", ".home", ".pins", ".tmp"}
-)
 _NATIVE_TOOL_MAX_COMMAND_BYTES = 64 * 1024
 _NATIVE_TOOL_DEFAULT_TIMEOUT_MS = 120_000
 _NATIVE_TOOL_MAX_TIMEOUT_MS = 600_000
@@ -719,10 +716,12 @@ def _workspace_path_parameters_authorized(
         if not relative.parts:
             return True
         lowered = tuple(part.lower() for part in relative.parts)
-        if lowered[0] in _WORKSPACE_INTERNAL_ROOTS:
-            return False
-        if lowered[0] == ".claude":
-            return len(lowered) >= 2 and lowered[1] == "skills"
+        if lowered[0].startswith("."):
+            return (
+                lowered[0] == ".claude"
+                and len(lowered) >= 2
+                and lowered[1] == "skills"
+            )
         return True
 
     def writable_path_parts_authorized(relative: Path) -> bool:
@@ -1095,6 +1094,13 @@ async def run_claude_agent_sdk(
         for declaration in capability_plan.required
     }
     capability_projection_enabled = bool(capability_plan.available)
+    if capability_projection_enabled and not callable(HookMatcher):
+        error_code = _SDK_TOOL_ADMISSION_FAILED
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=error_code,
+            turn_diagnostics=turn_diagnostics(error_code),
+        )
     private_mcp_replacements = {
         identity: "external tool"
         for kind, identity in capability_plan.available

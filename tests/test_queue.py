@@ -468,7 +468,17 @@ class FakeRedis:
                 queued_run_index_key,
                 queued_order_key,
             ) = keys_and_args[:numkeys]
-            raw, scan_limit, absolute_index, message_id, worker_id, now, error_message = keys_and_args[numkeys:]
+            (
+                raw,
+                scan_limit,
+                absolute_index,
+                message_id,
+                worker_id,
+                now,
+                error_message,
+                payload_sha256,
+                payload_bytes,
+            ) = keys_and_args[numkeys:]
             scan_limit = int(scan_limit)
             absolute_index = int(absolute_index)
             if absolute_index < 0 or absolute_index >= len(self.queued):
@@ -501,12 +511,15 @@ class FakeRedis:
                     dead_letter_key,
                     json.dumps(
                         {
-                            "schema_version": "ai-platform.dead-letter.v1",
+                            "schema_version": "ai-platform.dead-letter.v2",
                             "error_code": "invalid_queue_payload",
                             "error_message": error_message,
                             "attempts": attempts,
                             "worker_id": worker_id,
-                            "raw": raw,
+                            "payload_summary": {
+                                "sha256": payload_sha256,
+                                "bytes": int(payload_bytes),
+                            },
                             "created_at": float(now),
                         },
                         ensure_ascii=False,
@@ -1559,7 +1572,14 @@ async def test_lease_run_requeues_capacity_race_to_tail_with_matching_metadata_o
 
 @pytest.mark.asyncio
 async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
-    fake = FakeRedis(raw='{"run_id": "../bad"}')
+    private_instruction = "PRIVATE-EXPERT-INSTRUCTION-MUST-NOT-LEAK"
+    raw = json.dumps(
+        {
+            "run_id": "../bad",
+            "agent_profile": {"instructions": private_instruction},
+        }
+    )
+    fake = FakeRedis(raw=raw)
 
     async def get_redis():
         return fake
@@ -1571,7 +1591,16 @@ async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
     assert message is None
     assert fake.queued == []
     assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
-    assert json.loads(fake.pushed[0][1])["error_code"] == "invalid_queue_payload"
+    dead_letter = json.loads(fake.pushed[0][1])
+    assert dead_letter["schema_version"] == "ai-platform.dead-letter.v2"
+    assert dead_letter["error_code"] == "invalid_queue_payload"
+    assert dead_letter["error_message"] == "Queued run payload is invalid"
+    assert dead_letter["payload_summary"] == {
+        "sha256": queue.message_id_for_raw(raw),
+        "bytes": len(raw.encode("utf-8")),
+    }
+    assert "raw" not in dead_letter
+    assert private_instruction not in json.dumps(dead_letter)
     assert fake.ltrim_calls == [(queue.DEAD_LETTER_KEY, -1000, -1)]
 
 

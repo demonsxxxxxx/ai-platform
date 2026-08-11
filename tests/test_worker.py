@@ -16,7 +16,6 @@ from app.executors.base import (
     RunExecutionOwner,
     RunPayload,
 )
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
@@ -1148,6 +1147,30 @@ def base_payload(**overrides):
         if "release_decision" not in overrides:
             payload["release_decision"] = release_decision(locked_version)
     return payload
+
+
+def test_bound_agent_skill_ids_include_authorized_dependency_closure():
+    payload = QueueRunPayload.model_validate(
+        base_payload(
+            _leased=False,
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+            },
+            input={
+                "_runtime_authorized_skill_catalog": {
+                    "materialized_skill_ids": ["qa-file-reviewer", "minimax-docx"]
+                }
+            },
+        )
+    )
+
+    assert worker_module._bound_agent_skill_ids(payload) == {
+        "qa-file-reviewer",
+        "minimax-docx",
+    }
 
 
 def test_queue_agent_profile_preserves_only_private_expert_instruction_snapshot():
@@ -4948,6 +4971,10 @@ async def test_agent_app_ignores_unproven_optional_skill_claim(monkeypatch, sour
         "completed": False,
         "artifact_ready": False,
         "optional_not_invoked_count": 1,
+        "invocation_attempt_count": 0,
+        "invocation_completed_count": 0,
+        "invocation_failed_count": 0,
+        "partial_failure": False,
     }
     serialized = str(completed)
     assert "used_skills_source" not in serialized
@@ -4955,7 +4982,7 @@ async def test_agent_app_ignores_unproven_optional_skill_claim(monkeypatch, sour
 
 
 @pytest.mark.asyncio
-async def test_agent_app_invoked_capability_can_complete_without_artifact(monkeypatch):
+async def test_agent_app_recovered_capability_preserves_partial_failure_without_artifact(monkeypatch):
     completed = {}
     events = []
 
@@ -4973,6 +5000,33 @@ async def test_agent_app_invoked_capability_can_complete_without_artifact(monkey
                     "used_skills": ["qa-file-reviewer"],
                     "used_skills_source": "executor_hook",
                     "sdk_used": True,
+                    "capability_evidence_validated": True,
+                    "capability_evidence": [
+                        {
+                            "capability_kind": "skill",
+                            "canonical_identity": "qa-file-reviewer",
+                            "tool_call_id": "skill-call-1",
+                            "lifecycle_phase": "invocation_requested",
+                        },
+                        {
+                            "capability_kind": "skill",
+                            "canonical_identity": "qa-file-reviewer",
+                            "tool_call_id": "skill-call-1",
+                            "lifecycle_phase": "failed",
+                        },
+                        {
+                            "capability_kind": "skill",
+                            "canonical_identity": "qa-file-reviewer",
+                            "tool_call_id": "skill-call-2",
+                            "lifecycle_phase": "invocation_requested",
+                        },
+                        {
+                            "capability_kind": "skill",
+                            "canonical_identity": "qa-file-reviewer",
+                            "tool_call_id": "skill-call-2",
+                            "lifecycle_phase": "completed",
+                        },
+                    ],
                 },
             )
 
@@ -5014,9 +5068,14 @@ async def test_agent_app_invoked_capability_can_complete_without_artifact(monkey
         "completed": True,
         "artifact_ready": False,
         "optional_not_invoked_count": 0,
+        "invocation_attempt_count": 2,
+        "invocation_completed_count": 1,
+        "invocation_failed_count": 1,
+        "partial_failure": True,
     }
     assert "capability_actually_invoked" in events
     assert "capability_completed" in events
+    assert "capability_invocation_failed" in events
     assert "artifact_ready" not in events
 
 
@@ -5470,13 +5529,27 @@ async def test_worker_rejects_bad_queue_payload_without_touching_database(monkey
 
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
 
+    private_instruction = "PRIVATE-EXPERT-INSTRUCTION-MUST-NOT-LEAK"
+    invalid_payload = base_payload(
+        _leased=False,
+        agent_profile={
+            "agent_id": "agt_support",
+            "revision": 7,
+            "content_hash": "a" * 64,
+            "instructions": [private_instruction],
+        },
+    )
+    invalid_payload["_queue_attempt_id"] = "qat-test-attempt"
+
     outcome = await process_run_payload(
-        {"run_id": "../bad", "_queue_attempt_id": "qat-test-attempt"},
+        invalid_payload,
         AdapterRegistry({"fake": FakeSuccessAdapter()}),
     )
 
     assert outcome.status == "dead_letter"
     assert outcome.error_code == "invalid_queue_payload"
+    assert outcome.error_message == "Queued run payload is invalid"
+    assert private_instruction not in str(outcome)
     assert touched is False
 
 

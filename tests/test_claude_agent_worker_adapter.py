@@ -4920,6 +4920,12 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
         errors = []
         stop_reason = None
 
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -4949,6 +4955,7 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     fake_sdk = types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
@@ -5063,6 +5070,12 @@ async def test_sdk_runner_keeps_bound_skill_available_despite_user_override(monk
         errors = []
         stop_reason = None
 
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             captured.update(kwargs)
@@ -5096,6 +5109,7 @@ async def test_sdk_runner_keeps_bound_skill_available_despite_user_override(monk
     fake_sdk = types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,

@@ -402,7 +402,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
 
     assert sealed_probe == []
     if outcome in {"success", "failed", "multiple_completed", "multiple_failed"}:
-        assert result.error is None
+        assert result.error == "claude_agent_sdk_tool_admission_failed"
         assert (deltas, result.message) == ([], "")
         if outcome == "success":
             assert result.capability_evidence == acknowledged
@@ -532,8 +532,13 @@ async def test_sdk_bound_skill_is_available_without_forced_invocation_prompt(mon
     steps = [
         ("hook", ("PreToolUse", skill_input, "skill-call-1")),
         ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+        ("assistant", "Skill complete"),
     ]
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="Skill complete"),
+    )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
     result = await run_claude_agent_sdk(
@@ -554,7 +559,7 @@ async def test_sdk_bound_skill_is_available_without_forced_invocation_prompt(mon
         "skill",
         "skill",
     ]
-    assert (deltas, result.message) == ([], "")
+    assert (deltas, result.message) == (["Skill complete"], "Skill complete")
     assert "Authoritative platform Skill requirement" not in sdk_prompt
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
@@ -616,9 +621,17 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_omits_cumulative_terminal_text_without_post_capability_delta(
+@pytest.mark.parametrize(
+    "terminal_text",
+    [
+        "safe terminal answer without a streamed boundary",
+        "raw tool output and /private/path are sealed. cumulative terminal answer",
+    ],
+)
+async def test_sdk_selected_skill_fails_without_post_capability_stream_boundary(
     monkeypatch,
     tmp_path,
+    terminal_text,
 ):
     captured = {}
     deltas = []
@@ -639,7 +652,7 @@ async def test_sdk_selected_skill_omits_cumulative_terminal_text_without_post_ca
         _scripted_sdk(
             captured,
             steps,
-            result_text=f"{sealed_pre_capability_text} cumulative terminal answer",
+            result_text=terminal_text,
         ),
     )
     monkeypatch.setattr(
@@ -659,13 +672,62 @@ async def test_sdk_selected_skill_omits_cumulative_terminal_text_without_post_ca
     )
 
     assert deltas == []
-    assert result.error is None
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
     assert result.message == ""
     assert sealed_pre_capability_text not in result.message
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_skill_admission_fails_closed_without_hook_matcher(monkeypatch, tmp_path):
+    captured = {}
+    sdk = _scripted_sdk(captured, [], result_text="must not run")
+    delattr(sdk, "HookMatcher")
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_mcp_admission_fails_closed_without_hook_matcher(monkeypatch, tmp_path):
+    captured = {}
+    sdk = _scripted_sdk(captured, [], result_text="must not run")
+    delattr(sdk, "HookMatcher")
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_subject()],
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert captured == {}
 
 
 @pytest.mark.asyncio

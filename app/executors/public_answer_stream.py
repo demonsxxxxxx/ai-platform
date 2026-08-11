@@ -35,6 +35,7 @@ class PublicAnswerStreamGate:
         self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = False
+        self._release_public_start = 0
         self._failed = (
             not callable(sanitizer)
             or not isinstance(max_private_token_chars, int)
@@ -117,6 +118,7 @@ class PublicAnswerStreamGate:
         self._pending = ""
         self._sealed = False
         self._released_after_verified_capability = True
+        self._release_public_start = len(self._public_answer_text)
 
     def fail_closed(self) -> None:
         """Irreversibly discard retained text when an upstream projection is unsafe."""
@@ -159,6 +161,16 @@ class PublicAnswerStreamGate:
         emitted = self._project_across_publication_boundary(candidate)
         if emitted is None:
             return self._discard()
+        if self._released_after_verified_capability:
+            verified_suffix = (
+                self._public_answer_text[self._release_public_start :] + emitted
+            )
+            if not verified_suffix or not safe_final.endswith(verified_suffix):
+                # A cumulative terminal can contain pre-verification text. Require
+                # its suffix to prove every final character was observed after the
+                # latest verified capability boundary.
+                self._fail()
+                return self._discard()
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True

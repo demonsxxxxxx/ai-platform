@@ -29,6 +29,10 @@ class AgentCapabilityState:
     completed: bool
     artifact_ready: bool
     optional_not_invoked_count: int
+    invocation_attempt_count: int
+    invocation_completed_count: int
+    invocation_failed_count: int
+    partial_failure: bool
 
     def public_projection(self) -> dict[str, bool | int]:
         return {
@@ -39,6 +43,10 @@ class AgentCapabilityState:
             "completed": self.completed,
             "artifact_ready": self.artifact_ready,
             "optional_not_invoked_count": self.optional_not_invoked_count,
+            "invocation_attempt_count": self.invocation_attempt_count,
+            "invocation_completed_count": self.invocation_completed_count,
+            "invocation_failed_count": self.invocation_failed_count,
+            "partial_failure": self.partial_failure,
         }
 
 
@@ -75,6 +83,36 @@ def exact_attempted_skills(executor_payload: dict[str, Any]) -> set[str]:
     }
 
 
+def exact_skill_lifecycle_counts(
+    executor_payload: dict[str, Any],
+    *,
+    skill_ids: set[str],
+) -> dict[str, int]:
+    """Count worker-validated SDK lifecycle facts for one staged Skill set."""
+
+    counts = {"invocation_requested": 0, "completed": 0, "failed": 0}
+    if executor_payload.get("capability_evidence_validated") is not True:
+        return counts
+    staged = _string_set(executor_payload.get("staged_skills"))
+    eligible = staged & skill_ids
+    evidence = executor_payload.get("capability_evidence")
+    if not isinstance(evidence, list):
+        return counts
+    for item in evidence:
+        if not isinstance(item, dict) or item.get("capability_kind") != "skill":
+            continue
+        identity = item.get("canonical_identity")
+        phase = item.get("lifecycle_phase")
+        if (
+            isinstance(identity, str)
+            and isinstance(phase, str)
+            and identity.strip() in eligible
+            and phase in counts
+        ):
+            counts[phase] += 1
+    return counts
+
+
 def project_agent_capability_state(
     *,
     bound_skill_ids: set[str],
@@ -88,7 +126,13 @@ def project_agent_capability_state(
     bound_staged = bound_skill_ids & staged_skills
     bound_invoked = bound_skill_ids & invoked_skills
     bound_attempted = bound_skill_ids & attempted_skills
-    optional_not_invoked = bound_staged - bound_attempted
+    lifecycle_counts = exact_skill_lifecycle_counts(
+        executor_payload,
+        skill_ids=bound_skill_ids,
+    )
+    attempt_count = lifecycle_counts["invocation_requested"]
+    completed_count = lifecycle_counts["completed"]
+    failed_count = lifecycle_counts["failed"]
     return AgentCapabilityState(
         bound=bool(bound_skill_ids),
         staged=bool(bound_staged),
@@ -96,5 +140,9 @@ def project_agent_capability_state(
         actually_invoked=bool(bound_attempted),
         completed=run_succeeded and bool(bound_invoked),
         artifact_ready=durable_artifact_count > 0,
-        optional_not_invoked_count=len(optional_not_invoked),
+        optional_not_invoked_count=int(bool(bound_staged) and not bool(bound_attempted)),
+        invocation_attempt_count=attempt_count,
+        invocation_completed_count=completed_count,
+        invocation_failed_count=failed_count,
+        partial_failure=bool(completed_count and failed_count),
     )

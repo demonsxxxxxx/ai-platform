@@ -56,6 +56,7 @@ def test_prepare_creates_platform_workspace_namespace(tmp_path):
     assert Path(lease.host_root) == run_root
     assert (run_root / "workspace").is_dir()
     assert (run_root / "workspace" / "inputs").is_dir()
+    assert (run_root / "workspace" / "context").is_dir()
     assert (run_root / "workspace" / "outputs" / "delivery").is_dir()
     assert (run_root / "workspace" / ".ai-platform").is_dir()
     assert (run_root / "logs").is_dir()

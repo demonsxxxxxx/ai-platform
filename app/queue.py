@@ -350,7 +350,7 @@ return cjson.encode({
 
 
 DEAD_LETTER_INVALID_QUOTA_SCRIPT = """
--- ai-platform:dead-letter-invalid-quota:v1
+-- ai-platform:dead-letter-invalid-quota:v2
 local function remove_run_index_message(queued_run_index_key, run_index_field, message_id)
   local raw_index = redis.call("hget", queued_run_index_key, run_index_field)
   if not raw_index then
@@ -390,6 +390,8 @@ local message_id = ARGV[4]
 local worker_id = ARGV[5]
 local now = tonumber(ARGV[6])
 local error_message = ARGV[7]
+local payload_sha256 = ARGV[8]
+local payload_bytes = tonumber(ARGV[9])
 
 local queue_length = redis.call("llen", queued_key)
 if absolute_index < 0 or absolute_index >= queue_length then
@@ -436,12 +438,15 @@ end
 redis.call("hdel", queued_meta_key, message_id)
 redis.call("zrem", queued_order_key, message_id)
 redis.call("rpush", dead_letter_key, cjson.encode({
-  schema_version = "ai-platform.dead-letter.v1",
+  schema_version = "ai-platform.dead-letter.v2",
   error_code = "invalid_queue_payload",
   error_message = error_message,
   attempts = attempts,
   worker_id = worker_id,
-  raw = raw,
+  payload_summary = {
+    sha256 = payload_sha256,
+    bytes = payload_bytes,
+  },
   created_at = now,
 }))
 redis.call("hdel", retry_meta_key, message_id)
@@ -1072,18 +1077,27 @@ def _dead_letter_json(
     attempts: int | None = None,
     worker_id: str | None = None,
 ) -> str:
+    payload_summary = _dead_letter_payload_summary(raw)
     return json.dumps(
         {
-            "schema_version": "ai-platform.dead-letter.v1",
+            "schema_version": "ai-platform.dead-letter.v2",
             "error_code": error_code,
             "error_message": error_message,
             "attempts": attempts,
             "worker_id": worker_id,
-            "raw": raw,
+            "payload_summary": payload_summary,
             "created_at": _now(),
         },
         ensure_ascii=False,
     )
+
+
+def _dead_letter_payload_summary(raw: str) -> dict[str, str | int]:
+    encoded = raw.encode("utf-8", errors="replace")
+    return {
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "bytes": len(encoded),
+    }
 
 
 def _dead_letter_max_entries() -> int:
@@ -2146,6 +2160,7 @@ async def _dead_letter_invalid_queued_payload_atomic(
     absolute_index: int,
     error_message: str,
 ) -> dict[str, Any]:
+    payload_summary = _dead_letter_payload_summary(raw)
     result = await redis.eval(
         DEAD_LETTER_INVALID_QUOTA_SCRIPT,
         7,
@@ -2163,6 +2178,8 @@ async def _dead_letter_invalid_queued_payload_atomic(
         worker_id,
         _now(),
         error_message,
+        payload_summary["sha256"],
+        payload_summary["bytes"],
     )
     decoded = _decode_redis_script_result(result)
     if str(decoded.get("status") or "") == "dead_lettered":
@@ -2222,7 +2239,7 @@ async def _lease_run_with_quota(
             message_id = message_id_for_raw(raw)
             try:
                 payload_model = QueueRunPayload.model_validate_json(raw)
-            except Exception as exc:
+            except Exception:
                 await _dead_letter_invalid_queued_payload_atomic(
                     redis,
                     keys,
@@ -2231,7 +2248,7 @@ async def _lease_run_with_quota(
                     worker_id=worker_id,
                     lease_scan_limit=lease_scan_limit,
                     absolute_index=absolute_index,
-                    error_message=str(exc),
+                    error_message="Queued run payload is invalid",
                 )
                 continue
 

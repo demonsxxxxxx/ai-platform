@@ -185,8 +185,10 @@ class _ChatSubmissionNoStoreRoute(APIRoute):
             except RequestValidationError as exc:
                 response = await request_validation_exception_handler(request, exc)
             except Exception as exc:
-                diagnostic_id = _new_submission_diagnostic_id()
-                _log_safe_submission_exception(
+                diagnostic_id = new_diagnostic_id()
+                log_safe_exception(
+                    logger,
+                    event="chat_submission_failure",
                     phase="resolver",
                     diagnostic_id=diagnostic_id,
                     exc=exc,

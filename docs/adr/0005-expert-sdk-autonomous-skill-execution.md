@@ -1,4 +1,4 @@
-# ADR 0002: Let the Harness Choose Bound Expert Skills
+# ADR 0005: Let the Harness Choose Bound Expert Skills
 
 ## Status
 
@@ -22,10 +22,11 @@ workflows and does not require a bound Skill or artifact to be used for a Run to
 succeed.
 
 The Expert Instruction is integrity-protected configuration, not a secrets store.
-Ordinary-user configuration projections, events, errors, and logs must not expose
-it directly, but the instruction is presented to the model and can influence or be
-reflected in model output. Administrators must never put passwords, tokens, or
-other secrets in it.
+Ordinary-user configuration projections, events, errors, logs, and dead letters
+must not expose it directly, but the instruction is presented to the model and can
+influence or be reflected in model output. Administrators must never put passwords,
+tokens, or other secrets in it. Dead-letter records retain only a payload digest
+and byte count rather than the queued payload.
 
 The platform remains authoritative for identity, authorization, immutable Skill
 material, tool and file access, sandbox isolation, persistence, invocation
@@ -40,11 +41,32 @@ native-command proxy, command timeouts, the sandbox security profile, and Run
 resource limits constrain those tools. MCP tools, external network access,
 credentials, and control-plane operations remain separately authorized.
 
+Native commands execute through a networkless sidecar. It receives a
+controller-owned workspace view: authorized inputs, context, and staged Skills
+are read-only; only the delivery directory and authenticated broker socket are
+writable. The sidecar does not receive the primary workspace root or incidental
+hidden files.
+
+When a governed Skill or MCP capability is registered, SDK lifecycle hooks are
+mandatory. Missing hooks fail admission before model dispatch. A selected Skill
+and its authorized dependency closure form one bound Expert capability group.
+Only validated hook transitions count invocation attempts, completions, and
+failures. A failed attempt remains visible even if a later retry completes; it
+is never relabeled as not invoked.
+
+Public answer text is sealed while a governed capability is active. After the
+latest verified terminal hook, a successful terminal answer must end with the
+exact public text observed after that verification boundary. Missing or
+unmatched terminal text fails closed instead of producing an empty or truncated
+successful answer.
+
 ## Consequences
 
 - A conversational turn may succeed with a Skill registered but uninvoked.
 - Adding a governed Skill does not require platform Python branches.
-- Historical platform-controlled Expert execution is not supported; retired
-  definitions may remain readable but cannot create new Runs.
+- Recovered capability calls can finish the Run while retaining a truthful
+  partial-failure projection and bounded counts.
+- Historical platform-controlled Expert execution and raw dead-letter replay are
+  not supported.
 - Deterministic domain workflows require a separate product contract instead of
   overloading Expert chat.

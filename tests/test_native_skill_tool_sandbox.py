@@ -741,7 +741,15 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
             forbidden_input,
             workspace_root=workspace,
         )
-    for internal_root in (".claude-config", ".home", ".pins", ".tmp"):
+    for internal_root in (
+        ".claude-config",
+        ".env",
+        ".git",
+        ".home",
+        ".pins",
+        ".ssh",
+        ".tmp",
+    ):
         assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
             subject,
             "Read",

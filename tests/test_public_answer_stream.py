@@ -182,6 +182,24 @@ def test_verified_capability_release_never_falls_back_to_cumulative_terminal_tex
 
     assert finished.chunks == ()
     assert finished.final_text == ""
+    assert gate.failed is True
+
+
+def test_verified_capability_rejects_unstreamed_terminal_suffix():
+    gate = _gate()
+
+    gate.seal({CALL_ID: "tool invocation"})
+    gate.release_after_verified_capability()
+    streamed = gate.accept("Verified public prefix.")
+    finished = gate.finish(
+        final_text="Verified public prefix. Unverified terminal suffix.",
+        release=True,
+    )
+
+    assert streamed == ("Verified public prefix.",)
+    assert finished.chunks == ()
+    assert finished.final_text == ""
+    assert gate.failed is True
 
 
 def test_over_bound_initial_or_dynamic_private_token_fails_closed():

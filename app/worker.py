@@ -916,7 +916,17 @@ def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
 def _bound_agent_skill_ids(payload: QueueRunPayload) -> set[str]:
     if not isinstance(payload.agent_profile, dict):
         return set()
-    return {payload.skill_id} if payload.skill_id else set()
+    bound = {payload.skill_id} if payload.skill_id else set()
+    catalog = payload.input.get(RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY)
+    materialized = catalog.get("materialized_skill_ids") if isinstance(catalog, dict) else None
+    if not isinstance(materialized, list):
+        return bound
+    authorized = {
+        item.strip()
+        for item in materialized
+        if isinstance(item, str) and item.strip()
+    }
+    return authorized if payload.skill_id in authorized else bound
 
 
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
@@ -2030,18 +2040,34 @@ async def process_run_payload(
     try:
         envelope = parse_leased_queue_envelope(raw)
     except InvalidLeasedQueueEnvelope as exc:
+        diagnostic_id = new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="worker_queue_payload_rejected",
+            phase="queue_envelope_validation",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+        )
         return WorkerOutcome(
             status="dead_letter",
             run_id=None,
             error_code="invalid_queue_attempt",
-            error_message=str(exc),
+            error_message="Queued run lease metadata is invalid",
         )
     except ValidationError as exc:
+        diagnostic_id = new_diagnostic_id()
+        log_safe_exception(
+            logger,
+            event="worker_queue_payload_rejected",
+            phase="queue_payload_validation",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+        )
         return WorkerOutcome(
             status="dead_letter",
             run_id=None,
             error_code="invalid_queue_payload",
-            error_message=str(exc),
+            error_message="Queued run payload is invalid",
         )
     payload = envelope.payload
     attempt_id = envelope.attempt_id
@@ -2766,6 +2792,22 @@ async def process_run_payload(
                         payload={
                             "capability_state": "optional_not_invoked",
                             "count": agent_capability_state.optional_not_invoked_count,
+                        },
+                    )
+                if agent_capability_state.invocation_failed_count:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="capability_invocation_failed",
+                        stage="capability",
+                        message="One or more Agent capability invocations failed",
+                        payload={
+                            "capability_state": "partial_failure"
+                            if agent_capability_state.partial_failure
+                            else "invocation_failed",
+                            "failed_count": agent_capability_state.invocation_failed_count,
+                            "completed_count": agent_capability_state.invocation_completed_count,
                         },
                     )
             for artifact in artifact_records:

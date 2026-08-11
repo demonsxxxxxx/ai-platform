@@ -583,8 +583,7 @@ _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
 _NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS = 3.0
 _NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS = 0.01
 _NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
-_NATIVE_TOOL_MASKED_WORKSPACE_ROOTS = (".home", ".claude-config", ".pins", ".tmp")
-_NATIVE_TOOL_MASK_ROOT_NAME = "native-tool-masks"
+_NATIVE_TOOL_VIEW_ROOT_NAME = "native-tool-workspace"
 _CLAUDE_PROJECT_SETTING_NAMES = ("settings.json", "settings.local.json")
 
 
@@ -891,7 +890,7 @@ def _prepare_native_tool_workspace_volumes(
     socket_path: Path,
     skill_mount: _TrustedSkillMount | None,
 ) -> dict[str, dict[str, str]]:
-    """Expose one read-only run view with only delivery and the broker socket writable."""
+    """Expose only controller-owned inputs, context, Skills, and delivery paths."""
 
     workspace_root, _workspace_node = _real_directory(
         Path(workspace.workspace_host_path),
@@ -901,49 +900,72 @@ def _prepare_native_tool_workspace_volumes(
         Path(workspace.host_root),
         error="native tool run root is invalid",
     )
+    inputs_root, _inputs_node = _real_directory(
+        workspace_root / "inputs",
+        error="native tool inputs directory is invalid",
+    )
+    context_root, _context_node = _real_directory(
+        workspace_root / "context",
+        error="native tool context directory is invalid",
+    )
     delivery_root, _delivery_node = _real_directory(
         workspace_root / "outputs" / "delivery",
         error="native tool delivery directory is invalid",
     )
     try:
         workspace_root.relative_to(host_root)
+        inputs_root.relative_to(workspace_root)
+        context_root.relative_to(workspace_root)
         delivery_root.relative_to(workspace_root)
     except ValueError as exc:
         raise ContainerStartFailedError("native tool workspace mount escapes run root") from exc
 
-    mask_root = host_root / "runtime" / _NATIVE_TOOL_MASK_ROOT_NAME
+    view_root = host_root / "runtime" / _NATIVE_TOOL_VIEW_ROOT_NAME
     try:
-        mask_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        view_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as exc:
-        raise ContainerStartFailedError("native tool mask root cannot be created") from exc
-    if mask_root.is_symlink() or not mask_root.is_dir():
-        raise ContainerStartFailedError("native tool mask root is invalid")
-    _secure_native_tool_socket_directory(mask_root)
+        raise ContainerStartFailedError("native tool workspace view cannot be created") from exc
+    if view_root.is_symlink() or not view_root.is_dir():
+        raise ContainerStartFailedError("native tool workspace view is invalid")
+    _secure_native_tool_socket_directory(view_root)
 
-    masked_roots = list(_NATIVE_TOOL_MASKED_WORKSPACE_ROOTS)
-    if skill_mount is None:
-        masked_roots.append(".claude")
-    mask_paths: dict[str, Path] = {}
-    for workspace_name in masked_roots:
-        mask_path = mask_root / workspace_name.removeprefix(".")
+    view_directories = (
+        Path("inputs"),
+        Path("context"),
+        Path("outputs"),
+        Path("outputs") / "delivery",
+        Path(".ai-platform"),
+        Path(".claude"),
+    )
+    for relative_path in view_directories:
+        view_path = view_root / relative_path
         try:
-            mask_path.mkdir(mode=0o700, exist_ok=True)
+            view_path.mkdir(mode=0o700, parents=True, exist_ok=True)
         except OSError as exc:
-            raise ContainerStartFailedError("native tool mask directory cannot be created") from exc
-        if mask_path.is_symlink() or not mask_path.is_dir():
-            raise ContainerStartFailedError("native tool mask directory is invalid")
-        try:
-            if any(mask_path.iterdir()):
-                raise ContainerStartFailedError("native tool mask directory is occupied")
-        except OSError as exc:
-            raise ContainerStartFailedError("native tool mask directory cannot be inspected") from exc
-        _secure_native_tool_socket_directory(mask_path)
-        mask_paths[workspace_name] = mask_path.resolve(strict=True)
+            raise ContainerStartFailedError("native tool workspace view cannot be prepared") from exc
+        if view_path.is_symlink() or not view_path.is_dir():
+            raise ContainerStartFailedError("native tool workspace view is invalid")
+        _secure_native_tool_socket_directory(view_path)
+
+    allowed_view_entries = {"inputs", "context", "outputs", ".ai-platform", ".claude"}
+    try:
+        if any(entry.name not in allowed_view_entries for entry in view_root.iterdir()):
+            raise ContainerStartFailedError("native tool workspace view is occupied")
+    except OSError as exc:
+        raise ContainerStartFailedError("native tool workspace view cannot be inspected") from exc
 
     container_root = workspace.workspace_container_path.rstrip("/")
     volumes = {
-        str(workspace_root): {
+        str(view_root.resolve(strict=True)): {
             "bind": workspace.workspace_container_path,
+            "mode": "ro",
+        },
+        str(inputs_root): {
+            "bind": f"{container_root}/inputs",
+            "mode": "ro",
+        },
+        str(context_root): {
+            "bind": f"{container_root}/context",
             "mode": "ro",
         },
         str(delivery_root): {
@@ -955,11 +977,6 @@ def _prepare_native_tool_workspace_volumes(
             "mode": "rw",
         },
     }
-    for workspace_name, mask_path in mask_paths.items():
-        volumes[str(mask_path)] = {
-            "bind": f"{container_root}/{workspace_name}",
-            "mode": "ro",
-        }
     if skill_mount is not None:
         volumes[str(skill_mount.host_path)] = {
             "bind": skill_mount.container_path,

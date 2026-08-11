@@ -123,6 +123,7 @@ def workspace(**overrides) -> WorkspaceLease:
         (workspace_path / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     if workspace_path.is_dir():
         (workspace_path / "inputs").mkdir(parents=True, exist_ok=True)
+        (workspace_path / "context").mkdir(parents=True, exist_ok=True)
         (workspace_path / "outputs" / "delivery").mkdir(parents=True, exist_ok=True)
         (Path(values["host_root"]) / "runtime").mkdir(parents=True, exist_ok=True)
     return WorkspaceLease(**values)
@@ -3790,10 +3791,17 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
         "bind": "/workspace/.claude",
         "mode": "ro",
     }
-    assert sidecar["volumes"][str(workspace_path.resolve())] == {
-        "bind": "/workspace",
-        "mode": "ro",
-    }
+    sidecar_root_mounts = [
+        (host_path, mount)
+        for host_path, mount in sidecar["volumes"].items()
+        if mount["bind"] == "/workspace"
+    ]
+    assert len(sidecar_root_mounts) == 1
+    sidecar_root_host, sidecar_root_mount = sidecar_root_mounts[0]
+    assert sidecar_root_mount["mode"] == "ro"
+    assert Path(sidecar_root_host).name == "native-tool-workspace"
+    assert Path(sidecar_root_host).parent.name == "runtime"
+    assert str(workspace_path.resolve()) not in sidecar["volumes"]
     assert executor["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
     assert sidecar["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
     assert executor["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
@@ -3802,8 +3810,8 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     }
     assert sidecar_mount_modes["/workspace/outputs/delivery"] == "rw"
     assert sidecar_mount_modes["/workspace/.ai-platform"] == "rw"
-    for masked_root in (".home", ".claude-config", ".pins", ".tmp"):
-        assert sidecar_mount_modes[f"/workspace/{masked_root}"] == "ro"
+    assert sidecar_mount_modes["/workspace/inputs"] == "ro"
+    assert sidecar_mount_modes["/workspace/context"] == "ro"
     assert {
         mount for mount, mode in sidecar_mount_modes.items() if mode == "rw"
     } == {"/workspace/outputs/delivery", "/workspace/.ai-platform"}
@@ -3864,7 +3872,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
 
 
 @pytest.mark.asyncio
-async def test_docker_native_sidecar_masks_claude_tree_when_no_skill_is_staged(tmp_path):
+async def test_docker_native_sidecar_uses_empty_claude_view_when_no_skill_is_staged(tmp_path):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
     workspace_path = tmp_path / "run" / "workspace"
@@ -3889,17 +3897,20 @@ async def test_docker_native_sidecar_masks_claude_tree_when_no_skill_is_staged(t
     )
 
     sidecar, executor = fake.created
-    sidecar_claude_mounts = [
-        (host_path, mount)
+    assert not any(
+        mount["bind"] == "/workspace/.claude"
+        for mount in sidecar["volumes"].values()
+    )
+    view_root = Path(next(
+        host_path
         for host_path, mount in sidecar["volumes"].items()
-        if mount["bind"] == "/workspace/.claude"
-    ]
-    assert len(sidecar_claude_mounts) == 1
-    masked_host_path, masked_mount = sidecar_claude_mounts[0]
-    assert masked_mount["mode"] == "ro"
-    assert Path(masked_host_path).name == "claude"
-    assert Path(masked_host_path).parent.name == "native-tool-masks"
-    assert Path(masked_host_path).resolve() != (workspace_path / ".claude").resolve()
+        if mount["bind"] == "/workspace"
+    ))
+    assert (view_root / ".claude").is_dir()
+    assert list((view_root / ".claude").iterdir()) == []
+    assert Path(workspace_path / ".claude").resolve() not in {
+        Path(host_path).resolve() for host_path in sidecar["volumes"]
+    }
     assert not any(
         mount["bind"] == "/workspace/.claude"
         for mount in executor["volumes"].values()

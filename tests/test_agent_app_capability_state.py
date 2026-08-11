@@ -52,7 +52,7 @@ def test_exact_sdk_hook_claim_is_limited_to_the_staged_set():
     assert state.actually_invoked is True
     assert state.completed is True
     assert state.artifact_ready is True
-    assert state.optional_not_invoked_count == 1
+    assert state.optional_not_invoked_count == 0
 
 
 def test_failed_sdk_skill_call_is_attempted_but_not_completed():
@@ -89,6 +89,97 @@ def test_failed_sdk_skill_call_is_attempted_but_not_completed():
     assert state.actually_invoked is True
     assert state.completed is False
     assert state.optional_not_invoked_count == 0
+    assert state.invocation_attempt_count == 1
+    assert state.invocation_completed_count == 0
+    assert state.invocation_failed_count == 1
+    assert state.partial_failure is False
+
+
+def test_recovered_skill_invocation_preserves_partial_failure_counts():
+    payload = {
+        "used_skills_source": "executor_hook",
+        "staged_skills": ["bound-skill"],
+        "used_skills": ["bound-skill"],
+        "sdk_used": True,
+        "capability_evidence_validated": True,
+        "capability_evidence": [
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "bound-skill",
+                "tool_call_id": "call-1",
+                "lifecycle_phase": "invocation_requested",
+            },
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "bound-skill",
+                "tool_call_id": "call-1",
+                "lifecycle_phase": "failed",
+            },
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "bound-skill",
+                "tool_call_id": "call-2",
+                "lifecycle_phase": "invocation_requested",
+            },
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "bound-skill",
+                "tool_call_id": "call-2",
+                "lifecycle_phase": "completed",
+            },
+        ],
+    }
+
+    state = project_agent_capability_state(
+        bound_skill_ids={"bound-skill"},
+        executor_payload=payload,
+        run_succeeded=True,
+        durable_artifact_count=0,
+    )
+
+    assert state.actually_invoked is True
+    assert state.completed is True
+    assert state.invocation_attempt_count == 2
+    assert state.invocation_completed_count == 1
+    assert state.invocation_failed_count == 1
+    assert state.partial_failure is True
+
+
+def test_dependency_invocation_counts_for_the_expert_capability_group():
+    payload = {
+        "used_skills_source": "executor_hook",
+        "staged_skills": ["primary-skill", "dependency-skill"],
+        "used_skills": ["dependency-skill"],
+        "sdk_used": True,
+        "capability_evidence_validated": True,
+        "capability_evidence": [
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "dependency-skill",
+                "tool_call_id": "dependency-call-1",
+                "lifecycle_phase": "invocation_requested",
+            },
+            {
+                "capability_kind": "skill",
+                "canonical_identity": "dependency-skill",
+                "tool_call_id": "dependency-call-1",
+                "lifecycle_phase": "completed",
+            },
+        ],
+    }
+
+    state = project_agent_capability_state(
+        bound_skill_ids={"primary-skill", "dependency-skill"},
+        executor_payload=payload,
+        run_succeeded=True,
+        durable_artifact_count=0,
+    )
+
+    assert state.actually_invoked is True
+    assert state.completed is True
+    assert state.optional_not_invoked_count == 0
+    assert state.invocation_attempt_count == 1
+    assert state.invocation_completed_count == 1
 
 
 def test_public_capability_projection_contains_only_safe_semantic_state():
@@ -115,6 +206,10 @@ def test_public_capability_projection_contains_only_safe_semantic_state():
         "completed": True,
         "artifact_ready": False,
         "optional_not_invoked_count": 0,
+        "invocation_attempt_count": 0,
+        "invocation_completed_count": 0,
+        "invocation_failed_count": 0,
+        "partial_failure": False,
     }
     serialized = str(projection)
     for forbidden in (
