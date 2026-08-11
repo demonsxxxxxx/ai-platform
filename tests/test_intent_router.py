@@ -119,7 +119,7 @@ def test_plain_question_routes_to_general_chat():
     assert decision.intent == "general_chat"
     assert decision.selected_capability == "general_chat"
     assert decision.agent_id == "general-agent"
-    assert decision.skill_id == "general-chat"
+    assert decision.skill_id is None
 
 
 @pytest.mark.parametrize(
@@ -138,7 +138,7 @@ def test_required_bash_intent_is_exact_and_does_not_change_chat_routing(message,
     decision = route_intent(message=message, files=[])
 
     assert decision.intent in {"general_chat", "long_task"}
-    assert decision.skill_id == "general-chat"
+    assert decision.skill_id is None
     assert (decision.required_tool is not None) is required
     if required:
         assert decision.required_tool["canonical_identity"] == "Bash"
@@ -152,7 +152,7 @@ def test_implicit_route_fallback_uses_non_confirmed_general_chat_decision():
     assert decision.intent == "general_chat"
     assert decision.selected_capability == "general_chat"
     assert decision.agent_id == "general-agent"
-    assert decision.skill_id == "general-chat"
+    assert decision.skill_id is None
     assert decision.reason == "已使用通用对话处理"
     assert decision.confirmed_by_user is False
 

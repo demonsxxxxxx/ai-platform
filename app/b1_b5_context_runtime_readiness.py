@@ -11,7 +11,12 @@ from typing import Any
 from app.control_plane_contracts import sanitize_public_payload
 from app.context_manifest import ContextPlanner
 from app.context.retrieval import ContextRetrievalAuthority, ContextRetrievalDenied
-from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity, build_skill_prompt, run_claude_agent_sdk
+from app.executors.claude.prompts import build_harness_chat_prompt
+from app.executors.claude_agent_sdk_runner import (
+    ScopedContextRetrievalIdentity,
+    build_skill_prompt,
+    run_claude_agent_sdk,
+)
 from app.session_continuity import sdk_session_id_for_run
 
 
@@ -56,7 +61,7 @@ def build_b1_b5_context_runtime_readiness(
     """Build a local B1/B5 bounded-context runtime readiness verifier result."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     chat_probe = _prompt_probe(
-        skill_id="general-chat",
+        skill_id=None,
         user_message="continue this chat",
         file_rows=[],
         private_payload=prompt_probe_private_payload,
@@ -192,7 +197,7 @@ def render_b1_b5_context_runtime_readiness_markdown(readiness: dict[str, Any]) -
 
 def _prompt_probe(
     *,
-    skill_id: str,
+    skill_id: str | None,
     user_message: str,
     file_rows: list[dict[str, Any]],
     private_payload: dict[str, Any] | None,
@@ -203,7 +208,7 @@ def _prompt_probe(
         workspace_id="workspace-a",
         user_id="user-a",
         session_id="session-a",
-        run_id=f"run-{skill_id}",
+        run_id=f"run-{skill_id or 'harness-chat'}",
         agent_id="general-agent",
         skill_id=skill_id,
         current_message=user_message,
@@ -222,11 +227,17 @@ def _prompt_probe(
     if private_payload:
         manifest["private_payload"] = private_payload
     context_pack = planner.executor_context_pack(manifest)
-    prompt = build_skill_prompt(
-        skill_id=skill_id,
-        user_message=user_message,
-        file_names=[str(row.get("original_name") or row.get("id") or "") for row in file_rows],
-        context_pack=context_pack,
+    prompt_kwargs = {
+        "user_message": user_message,
+        "file_names": [
+            str(row.get("original_name") or row.get("id") or "") for row in file_rows
+        ],
+        "context_pack": context_pack,
+    }
+    prompt = (
+        build_harness_chat_prompt(**prompt_kwargs)
+        if skill_id is None
+        else build_skill_prompt(skill_id=skill_id, **prompt_kwargs)
     )
     files = context_pack.get("context_manifest", {}).get("files", [])
     large_file = files[0] if files else {}
@@ -343,7 +354,8 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
             result = await run_claude_agent_sdk(
                 prompt="hello",
                 cwd=tmp_root,
-                skill_id="general-chat",
+                skill_id=None,
+                skills=[],
                 context_retrieval=retrieval,
                 context_retrieval_identity=ScopedContextRetrievalIdentity(
                     tenant_id="tenant-a",

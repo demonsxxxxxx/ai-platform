@@ -93,10 +93,14 @@ class ClaudeAgentRoleRunner:
                 if inspect.isawaitable(result):
                     await result
 
+        raw_skill_id = (
+            step.skill_ids[0] if step.skill_ids else context.metadata.get("skill_id")
+        )
+        skill_id = str(raw_skill_id).strip() if raw_skill_id else None
         sdk_result = await self._sdk_runner(
             prompt=_role_prompt(role=role, context=context, previous_outputs=previous_outputs, step=step),
             cwd=role_workspace,
-            skill_id=str(step.skill_ids[0] if step.skill_ids else context.metadata.get("skill_id") or "general-chat"),
+            skill_id=skill_id,
             on_text=on_text,
         )
         if getattr(sdk_result, "error", None):

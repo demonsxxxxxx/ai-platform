@@ -14,7 +14,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.09.2"
+TARGET_SCHEMA_VERSION = "2026.08.12.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -29,6 +29,8 @@ CRITICAL_RELATIONS = (
     "audit_logs",
 )
 CRITICAL_COLUMNS = (
+    ("runs", "execution_kind", "text", True),
+    ("runs", "skill_id", "text", False),
     ("runs", "authz_policy_version", "int4", True),
     ("runs", "authority_source", "text", True),
     ("runs", "authority_checked_at", "timestamptz", False),
@@ -45,6 +47,7 @@ CRITICAL_COLUMNS = (
 CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
+    ("runs", "chk_runs_execution_skill_identity"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
 )

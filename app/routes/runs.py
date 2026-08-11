@@ -25,7 +25,12 @@ from app.models import (
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
+    HARNESS_CHAT_EXECUTOR_TYPE,
     HASH_LIKE_VALUE_PATTERN,
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
+    RUN_PAYLOAD_SCHEMA_VERSION_V2,
     sanitize_public_payload,
     sanitize_public_text,
     standard_trace_id,
@@ -34,6 +39,7 @@ from app.projection_redaction import (
     capability_id_from_skill,
     internal_agent_id_for_request,
     public_agent_id_for_projection,
+    public_execution_kind_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
     strip_server_owned_control_metadata,
@@ -528,7 +534,7 @@ def copy_recovery_plan(run: dict[str, Any], rows: list[dict[str, object]], *, in
     raw_skill_id = str(run.get("skill_id") or "")
     capability_id = capability_id_from_skill(raw_skill_id, run.get("agent_id"))
     capability = get_capability(str(capability_id)) if capability_id else None
-    if include_raw_skill:
+    if include_raw_skill and raw_skill_id:
         skills = [{"skill_id": raw_skill_id, "label": raw_skill_id}]
     elif capability is not None:
         skills = [{"capability_id": capability.capability_id, "label": capability.label}]
@@ -624,25 +630,46 @@ async def prepare_copied_run_for_queue(
     snapshot_auth_source = copied.get("auth_source") if queue_principal is not None else principal.source
     copied_snapshot = repositories.copied_run_execution_snapshot(copied)
     copied_input = copied_snapshot["input"]
+    execution_kind = str(
+        copied_snapshot.get("execution_kind") or RUN_EXECUTION_KIND_SKILL
+    )
     if contains_persisted_platform_multi_agent_control(copied):
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifests = copied_snapshot["skill_manifests"]
-    await repositories.authorize_replay_run_capabilities(
-        conn,
-        tenant_id=effective_principal.tenant_id,
-        agent_id=str(copied["agent_id"]),
-        skill_id=str(copied["skill_id"]),
-        pinned_version=copied_skill_version,
-        pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
-        skill_manifests=skill_manifests,
-        normalized_input=copied_input,
-        principal_department_id=effective_principal.department_id,
-        principal_roles=effective_principal.roles,
-        is_admin=is_ai_admin(effective_principal),
-        permissions=effective_principal.permissions,
-    )
+    copied_skill_id = copied.get("skill_id")
+    if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+        if copied_skill_id is not None:
+            raise RepositoryConflictError("run_execution_skill_identity_mismatch")
+        await repositories.authorize_selected_chat_mcp_tools(
+            conn,
+            tenant_id=effective_principal.tenant_id,
+            tool_ids=repositories.extract_run_mcp_tool_ids(copied_input),
+            principal_department_id=effective_principal.department_id,
+            principal_roles=effective_principal.roles,
+            is_admin=is_ai_admin(effective_principal),
+            permissions=effective_principal.permissions,
+        )
+    elif execution_kind == RUN_EXECUTION_KIND_SKILL:
+        if not isinstance(copied_skill_id, str) or not copied_skill_id.strip():
+            raise RepositoryConflictError("run_execution_skill_identity_mismatch")
+        await repositories.authorize_replay_run_capabilities(
+            conn,
+            tenant_id=effective_principal.tenant_id,
+            agent_id=str(copied["agent_id"]),
+            skill_id=copied_skill_id,
+            pinned_version=copied_skill_version,
+            pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
+            skill_manifests=skill_manifests,
+            normalized_input=copied_input,
+            principal_department_id=effective_principal.department_id,
+            principal_roles=effective_principal.roles,
+            is_admin=is_ai_admin(effective_principal),
+            permissions=effective_principal.permissions,
+        )
+    else:
+        raise RepositoryConflictError("run_execution_skill_identity_mismatch")
     copied["skill_version"] = copied_skill_version
     copied["release_decision"] = copied_snapshot["release_decision"]
     await repositories.update_run_auth_snapshot(
@@ -652,19 +679,27 @@ async def prepare_copied_run_for_queue(
         principal_roles=effective_principal.roles,
         principal_department_id=effective_principal.department_id,
         auth_source=snapshot_auth_source,
-    )
-    await repositories.append_event(
-        conn,
-        tenant_id=effective_principal.tenant_id,
-        run_id=copied["run_id"],
-        event_type="skill_release_decision",
-        stage="control",
-        message="已锁定 Skill 发布决策",
-        payload=_release_decision_event_payload(
-            copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
-            skill_id=str(copied["skill_id"]),
+        authz_policy_version=effective_principal.authz_policy_version,
+        authority_source=(
+            effective_principal.authority_source or effective_principal.source
         ),
+        authority_checked_at=effective_principal.authority_checked_at or None,
     )
+    if execution_kind == RUN_EXECUTION_KIND_SKILL:
+        await repositories.append_event(
+            conn,
+            tenant_id=effective_principal.tenant_id,
+            run_id=copied["run_id"],
+            event_type="skill_release_decision",
+            stage="control",
+            message="已锁定 Skill 发布决策",
+            payload=_release_decision_event_payload(
+                copied.get("release_decision")
+                if isinstance(copied.get("release_decision"), dict)
+                else {},
+                skill_id=copied_skill_id,
+            ),
+        )
     context_ref = await record_initial_context_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -674,7 +709,9 @@ async def prepare_copied_run_for_queue(
         run_id=str(copied["run_id"]),
         trace_id=standard_trace_id(str(copied["run_id"])),
         agent_id=str(copied["agent_id"]),
-        skill_id=str(copied["skill_id"]),
+        skill_id=(
+            str(copied["skill_id"]) if copied.get("skill_id") is not None else None
+        ),
         input_payload=copied_input,
         message_ids=[],
         file_ids=list(copied_snapshot["file_ids"]),
@@ -683,11 +720,14 @@ async def prepare_copied_run_for_queue(
     )
     for event in initial_run_event_specs(
         agent_id=str(copied["agent_id"]),
-        skill_id=str(copied["skill_id"]),
+        skill_id=(
+            str(copied["skill_id"]) if copied.get("skill_id") is not None else None
+        ),
         skill_version=copied_skill_version,
         executor_type=str(copied_snapshot["executor_type"]),
         file_ids=list(copied_snapshot["file_ids"]),
         source=source,
+        execution_kind=execution_kind,
     ):
         await repositories.append_event(
             conn,
@@ -716,6 +756,7 @@ async def prepare_copied_run_for_queue(
             "session_id": copied["session_id"],
             "run_id": copied["run_id"],
             "agent_id": copied["agent_id"],
+            "execution_kind": execution_kind,
             "skill_id": copied["skill_id"],
             **queue_snapshot,
         }
@@ -730,15 +771,19 @@ async def prepare_copied_run_for_queue(
     return queue_payload
 
 
-def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str]:
+def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str | None]:
     requested_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
     if request.selected_skill is not None:
         if request.skill_id:
             raise HTTPException(status_code=400, detail="skill_selector_conflict")
+        if request.selected_skill.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+            raise HTTPException(status_code=400, detail="general_chat_is_not_a_skill")
         return requested_agent_id, request.selected_skill.skill_id
     if request.skill_id and not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     if request.skill_id:
+        if request.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+            raise HTTPException(status_code=400, detail="general_chat_is_not_a_skill")
         return requested_agent_id, request.skill_id
 
     capability_id = request.capability_id or capability_id_from_skill(None, requested_agent_id)
@@ -761,6 +806,11 @@ async def create_run(
     tenant_id = principal.tenant_id
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
+    execution_kind = (
+        RUN_EXECUTION_KIND_HARNESS_CHAT
+        if resolved_skill_id is None
+        else RUN_EXECUTION_KIND_SKILL
+    )
     try:
         run_input = _strip_server_owned_control_metadata(
             request.input,
@@ -771,29 +821,55 @@ async def create_run(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
-            authorization_kwargs = {
-                "tenant_id": tenant_id,
-                "agent_id": resolved_agent_id,
-                "skill_id": resolved_skill_id,
-                "normalized_input": run_input,
-                "principal_department_id": principal.department_id,
-                "principal_roles": principal.roles,
-                "is_admin": is_ai_admin(principal),
-                "permissions": principal.permissions,
-            }
-            if request.selected_skill is not None:
-                skill = await repositories.authorize_selected_run_capabilities(
+            if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+                harness_agent = await repositories.get_agent(
                     conn,
-                    expected_version=request.selected_skill.expected_version,
-                    rollout_key=user_id,
-                    **authorization_kwargs,
+                    tenant_id=tenant_id,
+                    agent_id=resolved_agent_id,
                 )
+                if (
+                    harness_agent is None
+                    or str(harness_agent.get("agent_type") or "") != "chat"
+                ):
+                    raise RepositoryConflictError("harness_chat_agent_unavailable")
+                await repositories.authorize_selected_chat_mcp_tools(
+                    conn,
+                    tenant_id=tenant_id,
+                    tool_ids=repositories.extract_run_mcp_tool_ids(run_input),
+                    principal_department_id=principal.department_id,
+                    principal_roles=principal.roles,
+                    is_admin=is_ai_admin(principal),
+                    permissions=principal.permissions,
+                )
+                skill = None
+                executor_type = HARNESS_CHAT_EXECUTOR_TYPE
+                input_modes = ["chat"]
             else:
-                skill = await repositories.authorize_run_capabilities(
-                    conn,
-                    **authorization_kwargs,
-                )
-            input_modes = list(skill.get("input_modes") or [])
+                assert resolved_skill_id is not None
+                authorization_kwargs = {
+                    "tenant_id": tenant_id,
+                    "agent_id": resolved_agent_id,
+                    "skill_id": resolved_skill_id,
+                    "normalized_input": run_input,
+                    "principal_department_id": principal.department_id,
+                    "principal_roles": principal.roles,
+                    "is_admin": is_ai_admin(principal),
+                    "permissions": principal.permissions,
+                }
+                if request.selected_skill is not None:
+                    skill = await repositories.authorize_selected_run_capabilities(
+                        conn,
+                        expected_version=request.selected_skill.expected_version,
+                        rollout_key=user_id,
+                        **authorization_kwargs,
+                    )
+                else:
+                    skill = await repositories.authorize_run_capabilities(
+                        conn,
+                        **authorization_kwargs,
+                    )
+                executor_type = str(skill["executor_type"])
+                input_modes = list(skill.get("input_modes") or [])
             reusable_file_rows = []
             if request.session_id and not request.file_ids and has_file_input_mode(input_modes):
                 reusable_file_rows = await repositories.list_authorized_session_input_files(
@@ -811,40 +887,46 @@ async def create_run(
             if has_file_input_mode(input_modes) and not primary_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(conn, tenant_id=tenant_id, user_id=user_id)
-            release_decision = resolve_rollout_skill_decision(
-                skill,
-                tenant_id=tenant_id,
-                skill_id=resolved_skill_id,
-                rollout_key=user_id,
-            )
-            selected_policy_version = release_decision.selected_version
-            release_decision_payload = release_decision.to_payload()
-            release_policy_version = selected_policy_version if release_decision.policy_active else None
-            skill_manifests = await _governed_skill_manifest_pins(
-                conn,
-                skill_id=resolved_skill_id,
-                input_payload=run_input,
-                release_policy_version=release_policy_version,
-            )
-            skill_version = governed_locked_skill_version(
-                skill_id=resolved_skill_id,
-                skill_manifests=skill_manifests,
-                fallback_version=selected_policy_version,
-                release_policy_version=release_policy_version,
-            )
-            release_decision_payload = release_decision_payload_for_locked_version(
-                release_decision,
-                locked_version=skill_version,
-            )
-            skill_manifests = attach_skill_snapshot_governance(
-                skill_manifests,
-                release_decision=release_decision_payload,
-            )
-            skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
-                skill_manifests,
-                skill_id=resolved_skill_id,
-                mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
-            )
+            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                assert skill is not None and resolved_skill_id is not None
+                release_decision = resolve_rollout_skill_decision(
+                    skill,
+                    tenant_id=tenant_id,
+                    skill_id=resolved_skill_id,
+                    rollout_key=user_id,
+                )
+                selected_policy_version = release_decision.selected_version
+                release_decision_payload = release_decision.to_payload()
+                release_policy_version = selected_policy_version if release_decision.policy_active else None
+                skill_manifests = await _governed_skill_manifest_pins(
+                    conn,
+                    skill_id=resolved_skill_id,
+                    input_payload=run_input,
+                    release_policy_version=release_policy_version,
+                )
+                skill_version = governed_locked_skill_version(
+                    skill_id=resolved_skill_id,
+                    skill_manifests=skill_manifests,
+                    fallback_version=selected_policy_version,
+                    release_policy_version=release_policy_version,
+                )
+                release_decision_payload = release_decision_payload_for_locked_version(
+                    release_decision,
+                    locked_version=skill_version,
+                )
+                skill_manifests = attach_skill_snapshot_governance(
+                    skill_manifests,
+                    release_decision=release_decision_payload,
+                )
+                skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                    skill_manifests,
+                    skill_id=resolved_skill_id,
+                    mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
+                )
+            else:
+                skill_version = None
+                release_decision_payload = {}
+                skill_manifests = []
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             base_queue_payload = {
@@ -854,13 +936,19 @@ async def create_run(
                 "session_id": session_id,
                 "run_id": run_id,
                 "agent_id": resolved_agent_id,
+                "execution_kind": execution_kind,
                 "skill_id": resolved_skill_id,
                 "file_ids": primary_file_ids,
                 "input": run_input,
-                "executor_type": skill["executor_type"],
+                "executor_type": executor_type,
                 "skill_version": skill_version,
                 "release_decision": release_decision_payload,
                 "skill_manifests": skill_manifests,
+                **(
+                    {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
+                    if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+                    else {}
+                ),
             }
             queue_payload = _validate_queue_payload_for_enqueue(base_queue_payload)
             await repositories.ensure_workspace_belongs_to_tenant(
@@ -900,14 +988,17 @@ async def create_run(
                 session_id=session_id,
                 user_id=user_id,
                 agent_id=resolved_agent_id,
+                execution_kind=execution_kind,
                 skill_id=resolved_skill_id,
                 input_json={
                     "input": run_input,
                     "file_ids": primary_file_ids,
-                    "executor_type": skill["executor_type"],
+                    "execution_kind": execution_kind,
+                    "executor_type": executor_type,
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                     "skill_manifests": queue_payload["skill_manifests"],
+                    "schema_version": queue_payload["schema_version"],
                 },
                 principal_roles=principal.roles,
                 principal_department_id=principal.department_id,
@@ -917,13 +1008,14 @@ async def create_run(
                 authority_checked_at=principal.authority_checked_at or None,
                 run_id=run_id,
             )
-            await repositories.insert_run_skill_snapshots_at_creation(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                skill_manifests=queue_payload["skill_manifests"],
-                release_decision=release_decision_payload,
-            )
+            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                await repositories.insert_run_skill_snapshots_at_creation(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    skill_manifests=queue_payload["skill_manifests"],
+                    release_decision=release_decision_payload,
+                )
             await repositories.bind_files_to_run(
                 conn,
                 tenant_id=tenant_id,
@@ -962,9 +1054,10 @@ async def create_run(
                 agent_id=resolved_agent_id,
                 skill_id=resolved_skill_id,
                 skill_version=skill_version,
-                executor_type=str(skill["executor_type"]),
+                executor_type=executor_type,
                 file_ids=primary_file_ids,
                 source="runs_api",
+                execution_kind=execution_kind,
             ):
                 await repositories.append_event(
                     conn,
@@ -975,15 +1068,20 @@ async def create_run(
                     message=event["message"],
                     payload=event["payload"],
                 )
-            await repositories.append_event(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                event_type="skill_release_decision",
-                stage="control",
-                message="已锁定 Skill 发布决策",
-                payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
-            )
+            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                assert resolved_skill_id is not None
+                await repositories.append_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type="skill_release_decision",
+                    stage="control",
+                    message="已锁定 Skill 发布决策",
+                    payload=_release_decision_event_payload(
+                        release_decision_payload,
+                        skill_id=resolved_skill_id,
+                    ),
+                )
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
@@ -1645,9 +1743,19 @@ async def get_run(
     contract_version = run_contract_version(run)
     executor_schema_version = executor_result_schema_version(run)
     result = run["result_json"] if isinstance(run["result_json"], dict) else {}
-    raw_skill_id = str(run["skill_id"])
+    raw_skill_id = str(run.get("skill_id") or "")
     raw_agent_id = str(run["agent_id"])
+    execution_kind = str(run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL)
     show_raw_skill = is_ai_admin(principal)
+    projected_execution_kind = (
+        execution_kind
+        if show_raw_skill
+        else public_execution_kind_for_projection(
+            execution_kind,
+            agent_id=raw_agent_id,
+            skill_id=raw_skill_id,
+        )
+    )
     terminal_projection = (
         public_terminal_projection(
             run_status,
@@ -1697,8 +1805,11 @@ async def get_run(
     return RunResponse(
         run_id=run["id"],
         session_id=run["session_id"],
-        agent_id=raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
-        skill_id=raw_skill_id if show_raw_skill else None,
+        agent_id=raw_agent_id
+        if show_raw_skill
+        else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
+        execution_kind=projected_execution_kind,
+        skill_id=(raw_skill_id or None) if show_raw_skill else None,
         capability_id=capability_id_from_skill(raw_skill_id, raw_agent_id),
         trace_id=(
             str(run.get("trace_id") or standard_trace_id(str(run["id"])))

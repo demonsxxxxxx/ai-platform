@@ -1,6 +1,10 @@
 import pytest
 
-from app.runtime.embedded_poco_kernel import InProcessEmbeddedPocoKernel
+from app.runtime.embedded_poco_kernel import (
+    AgentStepExecutionContext,
+    ClaudeAgentRoleRunner,
+    InProcessEmbeddedPocoKernel,
+)
 from app.runtime.kernel_contracts import RunContext
 
 
@@ -59,3 +63,47 @@ async def test_submit_run_emits_started_failed_when_chat_permission_is_missing()
     assert [event.type for event in events] == ["run_started", "run_failed"]
     assert events[1].payload["error_code"] == "permission_denied"
     assert "chat.respond" in events[1].message
+
+
+@pytest.mark.asyncio
+async def test_claude_role_runner_does_not_invent_general_chat_skill(tmp_path):
+    captured = {}
+
+    async def fake_sdk_runner(**kwargs):
+        captured.update(kwargs)
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "done",
+                "session_id": "sdk-a",
+                "usage": {},
+                "error": None,
+            },
+        )()
+
+    runner = ClaudeAgentRoleRunner(
+        workspace_root=tmp_path,
+        sdk_runner=fake_sdk_runner,
+    )
+    step = AgentStepExecutionContext(
+        step_key="draft",
+        role="writer",
+        step_index=0,
+        depends_on=[],
+        skill_ids=[],
+        mcp_tool_ids=[],
+        resource_limits={},
+        sandbox_mode="none",
+        browser_enabled=False,
+    )
+
+    await runner.run_role(
+        role="writer",
+        context=build_context(skill_ids=[], metadata={}),
+        previous_outputs=[],
+        step=step,
+    )
+
+    assert captured["skill_id"] is None

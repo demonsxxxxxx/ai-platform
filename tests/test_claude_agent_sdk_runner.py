@@ -286,6 +286,48 @@ def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
 
 
 @pytest.mark.asyncio
+async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    reported = []
+
+    async def on_skill_use(skill_name, metadata):
+        reported.append((skill_name, metadata))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, _stream_steps("done"), result_text="done"),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        skills=[],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[],
+        on_skill_use=on_skill_use,
+    )
+
+    assert result.error is None
+    assert result.used_skills == []
+    assert reported == []
+    assert captured["skills"] == []
+    assert "Skill" not in captured["tools"]
+    assert "Skill" not in captured["allowed_tools"]
+    assert all(
+        matcher.matcher != "Skill"
+        for matcher in captured["hooks"]["PostToolUse"]
+    )
+    denied = await captured["can_use_tool"]("Skill", {"skill": "untrusted-skill"})
+    assert denied.behavior == "deny"
+
+
+@pytest.mark.asyncio
 async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks(
     monkeypatch,
     tmp_path,

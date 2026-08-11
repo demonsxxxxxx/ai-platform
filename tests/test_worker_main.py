@@ -1627,6 +1627,7 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
         session_id="session-a",
         run_id="run-a",
         agent_id="agent-a",
+        execution_kind="skill",
         skill_id="skill-a",
     )
     message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
@@ -1664,6 +1665,7 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
         session_id="session-a",
         run_id="run-a",
         agent_id="agent-a",
+        execution_kind="skill",
         skill_id="skill-a",
     )
     message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")

@@ -1048,6 +1048,107 @@ def default_cancel_not_requested(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
+    monkeypatch,
+):
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "file_ids": [],
+            "input": {"message": "hello", "mcp_tool_ids": ["search-a"]},
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v2",
+        }
+    )
+    run_identity = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": "",
+    }
+    sentinel = object()
+    captured = {}
+
+    async def forbid_skill_snapshot(*_args, **_kwargs):
+        raise AssertionError("Harness chat must not resolve Skill snapshots")
+
+    async def fake_reauthorize_mcp(_conn, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "validate_run_skill_snapshots_for_dispatch",
+        forbid_skill_snapshot,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_reauthorize_mcp_capabilities",
+        fake_reauthorize_mcp,
+    )
+
+    result = await worker_module._reauthorize_worker_capabilities(
+        object(),
+        payload=payload,
+        run_identity=run_identity,
+        attempt_id="attempt-a",
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+        ),
+    )
+
+    assert result is sentinel
+    assert captured["requested_tool_ids"] == ["search-a"]
+    assert captured["tool_policy_subjects"] == []
+
+
+def test_locked_harness_run_reconstructs_null_skill_identity():
+    run_identity = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": "",
+    }
+    locked_run = {
+        "input_json": {
+            "input": {"message": "hello"},
+            "file_ids": [],
+            "execution_kind": "harness_chat",
+            "executor_type": "claude-agent-worker",
+            "skill_version": None,
+            "release_decision": {},
+            "skill_manifests": [],
+            "schema_version": "ai-platform.run-payload.v2",
+        }
+    }
+
+    reconstructed = worker_module._payload_from_locked_run(
+        locked_run,
+        run_identity=run_identity,
+    )
+
+    assert reconstructed is not None
+    assert reconstructed.execution_kind == "harness_chat"
+    assert reconstructed.skill_id is None
+
+
+@pytest.mark.asyncio
 async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):
     calls = []
 
@@ -1360,6 +1461,7 @@ def locked_run_from_payload(payload):
         "user_id": validated["user_id"],
         "session_id": validated["session_id"],
         "agent_id": validated["agent_id"],
+        "execution_kind": validated["execution_kind"],
         "skill_id": validated["skill_id"],
         "trace_id": f"trace_{validated['run_id']}",
         "principal_roles": [],
@@ -1376,6 +1478,7 @@ def locked_run_from_payload(payload):
                 "session_id",
                 "run_id",
                 "agent_id",
+                "execution_kind",
                 "skill_id",
             }
         },

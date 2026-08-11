@@ -3170,8 +3170,8 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
             "id": run_id,
             "workspace_id": "default",
             "session_id": "ses_old",
-            "agent_id": "general-agent",
-            "skill_id": "general-chat",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
             "input_json": {
                 "skillIds": ["qa-file-reviewer"],
                 "allowedSkills": ["qa-file-reviewer"],
@@ -3197,7 +3197,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
                     ],
                 },
                 "executor_type": "embedded-poco-kernel",
-                **replay_provenance("general-chat", "hash-v1"),
+                **replay_provenance("qa-file-reviewer", "hash-v1"),
                 "model_id": "model-catalog-a",
                 "model_value": "provider-model-a",
             },
@@ -3206,7 +3206,11 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        assert (tenant_id, agent_id, skill_id) == ("default", "general-agent", "general-chat")
+        assert (tenant_id, agent_id, skill_id) == (
+            "default",
+            "qa-word-review",
+            "qa-file-reviewer",
+        )
         return {"executor_type": "claude-agent-worker", "skill_version": "2.0.0"}
 
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
@@ -3291,17 +3295,25 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
             "id": run_id,
             "workspace_id": "default",
             "session_id": "ses_old",
-            "agent_id": "general-agent",
-            "skill_id": "general-chat",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
             "input_json": {
                 "input": {"message": "retry"},
                 "executor_type": "embedded-poco-kernel",
-                **replay_provenance("general-chat", "hash-old", selected_track="previous"),
+                **replay_provenance(
+                    "qa-file-reviewer",
+                    "hash-old",
+                    selected_track="previous",
+                ),
             },
         }
 
     async def fake_resolve_rollout_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        assert (tenant_id, agent_id, skill_id) == ("default", "general-agent", "general-chat")
+        assert (tenant_id, agent_id, skill_id) == (
+            "default",
+            "qa-word-review",
+            "qa-file-reviewer",
+        )
         return {
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-new",

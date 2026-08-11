@@ -231,6 +231,41 @@ def build_skill_prompt(
     )
 
 
+def build_harness_chat_prompt(
+    *,
+    user_message: str,
+    file_names: list[str],
+    context_pack: dict[str, Any] | None = None,
+) -> str:
+    """Build the base Harness prompt without advertising a Skill capability."""
+
+    bounded_user_message = truncate_utf8_text(
+        user_message, max_bytes=_MAX_CURRENT_PROMPT_BYTES
+    )
+    file_lines: list[str] = []
+    used_file_bytes = 0
+    for name in file_names:
+        line = f"- {truncate_utf8_text(name, max_bytes=512)}"
+        line_bytes = utf8_token_estimate(line) + 1
+        if line_bytes > _MAX_FILE_LIST_PROMPT_BYTES - used_file_bytes:
+            break
+        file_lines.append(line)
+        used_file_bytes += line_bytes
+    files_text = "\n".join(file_lines) if file_lines else "- no files"
+    return (
+        "You are running inside the ai-platform controlled Harness. "
+        "Do not access arbitrary shell, SQL, unregistered external services, or host "
+        "filesystem paths.\n\n"
+        f"User request: {bounded_user_message}\n"
+        f"Authorized attachment names (read content only through platform context tools):\n"
+        f"{files_text}\n\n"
+        "Use only platform-authorized context and tools. If a context tool stages a file, "
+        "use its returned workspace path. Save any user-deliverable files under "
+        "outputs/delivery/ and return a concise response."
+        f"{context_pack_prompt_section(context_pack)}"
+    )
+
+
 def with_selected_skill_invocation_requirement(
     prompt: str,
     selected_sdk_skill: str | None,

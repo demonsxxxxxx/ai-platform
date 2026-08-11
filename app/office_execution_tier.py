@@ -34,7 +34,7 @@ def _explicit_sandbox_requested(input_payload: dict[str, Any] | None) -> bool:
 def route_office_execution_tier(
     *,
     agent_id: str,
-    skill_id: str,
+    skill_id: str | None,
     input_payload: dict[str, Any] | None,
     file_ids: list[str] | None = None,
 ) -> dict[str, Any]:

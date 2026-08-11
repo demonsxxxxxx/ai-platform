@@ -199,6 +199,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "audit_logs",
     )
     assert (
+        "runs",
+        "chk_runs_execution_skill_identity",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
         "object_deletion_outbox",
         "chk_object_deletion_outbox_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS

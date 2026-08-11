@@ -23,6 +23,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
+
 try:
     import docker  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - exercised through docker = None path
@@ -2004,7 +2006,9 @@ def _open_workspace_file_fd(entry: _OpenSandboxWorkspaceFile) -> int:
 
 
 def _stage_skills_required(request: SandboxRuntimeRequest) -> bool:
-    return _staged_skill_mount_required(request) or any(skill_id != "general-chat" for skill_id in request.skill_ids)
+    return _staged_skill_mount_required(request) or any(
+        skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID for skill_id in request.skill_ids
+    )
 
 
 def _build_opensandbox_workspace_manifest(

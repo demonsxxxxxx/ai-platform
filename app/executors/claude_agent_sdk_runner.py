@@ -18,7 +18,11 @@ from app.context.retrieval import (
     ContextRetrievalIdentity,
     ContextRetrievalInputError,
 )
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
+from app.control_plane_contracts import (
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    sanitize_public_payload,
+    sanitize_public_text,
+)
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
     _BUILTIN_PARAMETER_KEYS,
@@ -199,7 +203,7 @@ def _diagnostic_terminal_class(error_code: str | None) -> tuple[str, str | None,
 
 
 def _public_diagnostic_skill(
-    skill_id: str,
+    skill_id: str | None,
     public_skill_metadata: dict[str, dict[str, str]] | None,
 ) -> dict[str, str] | None:
     metadata = (public_skill_metadata or {}).get(skill_id)
@@ -845,7 +849,7 @@ async def run_claude_agent_sdk(
     *,
     prompt: str,
     cwd: Path,
-    skill_id: str,
+    skill_id: str | None,
     session_id: str | None = None,
     context_retrieval: ContextRetrievalAuthority | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
@@ -888,7 +892,12 @@ async def run_claude_agent_sdk(
                 "last_public_stage": last_public_stage,
             },
             error_code=error_code,
-            selected_skill_id=skill_id if skill_id != "general-chat" else "",
+            selected_skill_id=(
+                skill_id
+                if skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                else ""
+            )
+            or "",
             used_skill_ids=list(used_skill_names),
             public_skill_metadata=public_skill_metadata,
         )
@@ -918,7 +927,11 @@ async def run_claude_agent_sdk(
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
-    configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
+    configured_skills = (
+        skills
+        if skills is not None
+        else (_split_csv(settings.claude_agent_sdk_skills) or ([skill_id] if skill_id else []))
+    )
     if any(
         not isinstance(name, str) or _SDK_SKILL_NAME_PATTERN.fullmatch(name) is None
         for name in configured_skills
@@ -931,7 +944,8 @@ async def run_claude_agent_sdk(
         )
     selected_sdk_skill = (
         skill_id
-        if skill_id != "general-chat" and skill_id in configured_skills
+        if skill_id not in {None, LEGACY_SYNTHETIC_CHAT_SKILL_ID}
+        and skill_id in configured_skills
         else None
     )
     sandbox_partial_streaming = (
@@ -1114,7 +1128,7 @@ async def run_claude_agent_sdk(
 
     def claim_used_skill(skill_name: str) -> bool:
         nonlocal last_public_stage
-        if (allowed_skill_names and skill_name not in allowed_skill_names) or skill_name in used_skill_names:
+        if skill_name not in allowed_skill_names or skill_name in used_skill_names:
             return False
         used_skill_names.append(skill_name)
         diagnostic_counters["skill_invocations"] += 1

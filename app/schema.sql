@@ -516,7 +516,8 @@ create table if not exists runs (
   session_id text not null references sessions(id),
   user_id text references users(id),
   agent_id text not null,
-  skill_id text not null references skills(id),
+  execution_kind text not null default 'skill',
+  skill_id text references skills(id),
   trace_id text not null default '',
   schema_version text not null default 'ai-platform.run.v1',
   executor_schema_version text not null default 'ai-platform.executor-result.v1',
@@ -556,7 +557,11 @@ create table if not exists runs (
     references agents(tenant_id, id),
   constraint fk_runs_agent_profile_pin foreign key (
     tenant_id, agent_id, admitted_agent_profile_revision
-  ) references agent_profile_revisions(tenant_id, agent_id, revision)
+  ) references agent_profile_revisions(tenant_id, agent_id, revision),
+  constraint chk_runs_execution_skill_identity check (
+    (execution_kind = 'harness_chat' and skill_id is null)
+    or (execution_kind = 'skill' and skill_id is not null)
+  )
 );
 
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
@@ -565,6 +570,31 @@ create index if not exists idx_runs_status on runs(status);
 create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
 
 alter table runs add column if not exists trace_id text not null default '';
+alter table runs add column if not exists execution_kind text not null default 'skill';
+do $$
+begin
+  if exists (
+    select 1
+    from pg_attribute
+    where attrelid = 'runs'::regclass
+      and attname = 'skill_id'
+      and attnotnull
+  ) then
+    alter table runs alter column skill_id drop not null;
+  end if;
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'runs'::regclass
+      and conname = 'chk_runs_execution_skill_identity'
+  ) then
+    alter table runs add constraint chk_runs_execution_skill_identity check (
+      (execution_kind = 'harness_chat' and skill_id is null)
+      or (execution_kind = 'skill' and skill_id is not null)
+    );
+  end if;
+end
+$$;
 alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
 alter table runs add column if not exists executor_schema_version text not null default 'ai-platform.executor-result.v1';
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
@@ -2174,7 +2204,6 @@ values
   ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
   ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
-  ('general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker.', '["chat"]'::jsonb, '["answer"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
@@ -2187,7 +2216,6 @@ on conflict (id) do update set
 
 insert into skill_versions(id, skill_id, version, content_hash, description, source_json, dependency_ids, status, created_by)
 values
-  ('skv_seed_general_chat_0_1_0', 'general-chat', '0.1.0', '0.1.0', 'Schema-seeded baseline for General Chat Agent.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
   ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_baoyu_translate_0_1_0', 'baoyu-translate', '0.1.0', '0.1.0', 'Schema-seeded baseline for Baoyu Translate.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
@@ -2196,7 +2224,6 @@ on conflict (skill_id, version) do nothing;
 
 insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
 values
-  ('default', 'general-chat', 'active', true),
   ('default', 'qa-file-reviewer', 'active', true),
   ('default', 'baoyu-translate', 'active', true),
   ('default', 'ragflow-knowledge-search', 'active', true)
@@ -2240,7 +2267,7 @@ insert into agents(id, tenant_id, name, agent_type, description, default_skill_i
 values
   ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
   ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
-  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat agent backed by ai-platform sessions and Claude Agent SDK worker.', 'general-chat', 'active'),
+  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat backed by the governed Harness without a Skill identity.', null, 'active'),
   ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
   ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
   ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')

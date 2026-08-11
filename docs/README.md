@@ -22,6 +22,8 @@ does not represent deployed runtime state.
 - `adr/0001-agent-app-revision-authorization-lifecycle.md` records the Agent App
   decision to pin conversations, reauthorize every run, and retain withdrawn
   history as read-only.
+- `adr/0005-harness-chat-is-not-a-skill.md` records the execution-identity
+  boundary between ordinary Harness chat and explicitly authorized Skills.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/redis-streams-sse-event-channel.md` indexes the current v2.1

@@ -15,7 +15,10 @@ from app.capability_distribution import (
     resolve_capability_access,
 )
 from app.context_manifest import truncate_utf8_text
-from app.control_plane_contracts import sanitize_public_text
+from app.control_plane_contracts import (
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    sanitize_public_text,
+)
 from app.skills.dependencies import (
     INTERNAL_DEPENDENCY_SKILL_IDS,
     SkillDependencyPolicyError,
@@ -344,9 +347,13 @@ def parse_authorized_skill_catalog_snapshot(
     materialized_skill_ids = tuple(raw_materialized_skill_ids)
     available_skill_ids = {entry.skill_id for entry in entries if entry.available}
     if (
-        (
-            expected_binding.selected_skill_id == "general-chat"
-            and materialized_skill_ids
+        expected_binding.selected_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
+        and materialized_skill_ids
+    ) or (
+        materialized_skill_ids
+        and (
+            materialized_skill_ids[0] != expected_binding.selected_skill_id
+            or expected_binding.selected_skill_id not in available_skill_ids
         )
         or (
             materialized_skill_ids
@@ -740,7 +747,7 @@ def _selected_materialization_candidates(
     """Decode only the routed Skill and its authorized dependency closure."""
 
     if (
-        selected_skill_id == "general-chat"
+        selected_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
         or selected_skill_id in INTERNAL_DEPENDENCY_SKILL_IDS
     ):
         return []

@@ -3,6 +3,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 from app.auth import AuthPrincipal
+from app.control_plane_contracts import RUN_EXECUTION_KIND_SKILL
 from app.models import QueueRunPayload
 from app.principal_authority import PrincipalAuthorityDenied
 
@@ -14,12 +15,13 @@ RUN_IDENTITY_FIELDS = (
     "session_id",
     "run_id",
     "agent_id",
+    "execution_kind",
     "skill_id",
 )
 
 
 def _payload_identity(payload: QueueRunPayload) -> dict[str, str]:
-    return {field: str(getattr(payload, field)) for field in RUN_IDENTITY_FIELDS}
+    return {field: str(getattr(payload, field) or "") for field in RUN_IDENTITY_FIELDS}
 
 
 def _locked_run_identity(payload: QueueRunPayload, locked_run: object) -> dict[str, str]:
@@ -28,6 +30,8 @@ def _locked_run_identity(payload: QueueRunPayload, locked_run: object) -> dict[s
     identity: dict[str, str] = {}
     for field in RUN_IDENTITY_FIELDS:
         value = locked_run.get("id") if field == "run_id" else locked_run.get(field)
+        if field == "execution_kind" and value is None:
+            value = RUN_EXECUTION_KIND_SKILL
         identity[field] = str(value) if value else ""
     return identity
 

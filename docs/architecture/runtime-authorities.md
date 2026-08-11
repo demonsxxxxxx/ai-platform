@@ -19,6 +19,12 @@ behind an adapter.
 | Files and artifacts | Platform file/artifact records and authenticated download contract | Sandbox staging and SDK upload helpers only transfer bytes for an authorized run |
 | Sandbox runtime | `SandboxRuntime` control authority and its durable run-attempt binding | Docker/OpenSandbox provider translation is allowed; provider SDK state is not a business lifecycle authority |
 
+Base Harness chat and specialized Skills are separate execution identities. A
+base chat run carries `execution_kind=harness_chat`, no `skill_id`, and an empty
+Skill authority. A specialized run carries `execution_kind=skill` plus an exact
+authorized Skill/version/release snapshot. A Harness implementation is not
+modeled as a synthetic default Skill.
+
 ## Compatibility rule
 
 A compatibility module may normalize an import, request, response, or persisted

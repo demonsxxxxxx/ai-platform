@@ -299,6 +299,45 @@ def sdk_result(message: str = "done", **overrides):
     return type("SdkResult", (), values)()
 
 
+@pytest.mark.asyncio
+async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        executor_app,
+        "run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    request = ExecutorTaskRequest.model_validate(task_payload())
+    events = []
+
+    async def emit_event(event):
+        events.append(event)
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert captured["skill_id"] is None
+    assert captured["skills"] == []
+    assert not any(
+        isinstance(event, executor_app._PlatformExecutionPhaseFact)
+        and event.phase == "skill_staging"
+        for event in events
+    )
+
+
 def test_executor_health_returns_ready(tmp_path):
     client = create_test_client(tmp_path)
 
@@ -1238,9 +1277,9 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert body["status"] == "completed"
     assert body["sdk_session_id"] == "sdk-session-a"
     assert calls["cwd"] == Path(tmp_path)
-    assert calls["skill_id"] == "general-chat"
+    assert calls["skill_id"] is None
     assert calls["model_id"] == "deepseek-v4-flash"
-    assert calls["skills"] == ["general-chat"]
+    assert calls["skills"] == []
     assert calls["subjects"][0]["identity"] == "Bash"
     assert any(
         event["type"] == "assistant_delta"

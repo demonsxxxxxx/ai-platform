@@ -87,9 +87,11 @@ backend/worker/frontend same-commit review. This does not create a new runtime
 entry or a Docker compose release shortcut. See `frontend/web/README.md` and
 `docs/README.md` for the governing document hierarchy.
 
-General chat uses the `general-agent` / `general-chat` seed and requires
-`WORKER_CLAUDE_AGENT_SDK_ENABLED=true` plus server-side new-api credentials.
-API containers intentionally do not receive the SDK execution switch; workers
-execute SDK Skill runs. Word review/translation still use the controlled
-migration delegate for artifact generation while the SDK skill files are being
-ported into the worker image.
+General chat uses the `general-agent` Harness path with `execution_kind=harness_chat`
+and no Skill identity. It requires `WORKER_CLAUDE_AGENT_SDK_ENABLED=true` plus
+server-side new-api credentials. API containers intentionally do not receive the
+SDK execution switch; workers execute both base Harness chat and explicitly
+authorized specialized Skill runs. The `general-chat` database row exists only
+in upgraded databases that already contain historical v1 Skill runs; clean
+installs do not seed it and it is not a selectable Workbench Skill. See
+`docs/adr/0005-harness-chat-is-not-a-skill.md`.

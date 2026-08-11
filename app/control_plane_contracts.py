@@ -11,6 +11,36 @@ from app.validation import assert_safe_id
 
 RUN_CONTRACT_VERSION = "ai-platform.run.v1"
 RUN_PAYLOAD_SCHEMA_VERSION = "ai-platform.run-payload.v1"
+RUN_PAYLOAD_SCHEMA_VERSION_V2 = "ai-platform.run-payload.v2"
+SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS = frozenset(
+    {RUN_PAYLOAD_SCHEMA_VERSION, RUN_PAYLOAD_SCHEMA_VERSION_V2}
+)
+RUN_EXECUTION_KIND_SKILL = "skill"
+RUN_EXECUTION_KIND_HARNESS_CHAT = "harness_chat"
+RUN_EXECUTION_KINDS = frozenset(
+    {RUN_EXECUTION_KIND_SKILL, RUN_EXECUTION_KIND_HARNESS_CHAT}
+)
+HARNESS_CHAT_EXECUTOR_TYPE = "claude-agent-worker"
+HARNESS_CHAT_AGENT_ID = "general-agent"
+# Read/replay compatibility only. New requests must never select this as a Skill.
+LEGACY_SYNTHETIC_CHAT_SKILL_ID = "general-chat"
+
+
+def is_legacy_synthetic_chat_identity(
+    *,
+    agent_id: object,
+    skill_id: object,
+    execution_kind: object = None,
+) -> bool:
+    """Recognize only the pre-v2 synthetic Skill identity kept for compatibility."""
+
+    return (
+        agent_id == HARNESS_CHAT_AGENT_ID
+        and skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
+        and execution_kind in {None, "", RUN_EXECUTION_KIND_SKILL}
+    )
+
+
 EXECUTOR_RESULT_SCHEMA_VERSION = "ai-platform.executor-result.v1"
 EVENT_ENVELOPE_SCHEMA_VERSION = "ai-platform.event-envelope.v1"
 ARTIFACT_MANIFEST_SCHEMA_VERSION = "ai-platform.artifact-manifest.v1"
