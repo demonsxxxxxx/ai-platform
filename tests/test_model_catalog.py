@@ -64,10 +64,12 @@ def test_explicit_catalog_is_authoritative_and_preserves_configured_fields():
     }
 
 
-def test_explicit_catalog_uses_gateway_provider_without_environment_description():
+def test_explicit_catalog_normalizes_blank_value_and_provider_without_environment_description():
     catalog = build_model_catalog(
         settings(
-            model_catalog_json='[{"id":"configured-model","provider":"   "}]',
+            model_catalog_json=(
+                '[{"id":"configured-model","value":"   ","provider":"   "}]'
+            ),
             llm_gateway_provider="configured-gateway",
         )
     )

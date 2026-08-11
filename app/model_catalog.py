@@ -27,7 +27,7 @@ def _model_from_item(
     if not raw_id:
         return None
     model_id = assert_safe_id(raw_id, "model_id")
-    value = str(item.get("value") or model_id).strip()
+    value = str(item.get("value") or "").strip() or model_id
     value = assert_safe_id(value, "model_value")
     provider = str(item.get("provider") or "").strip() or default_provider
     label = str(item.get("label") or model_id).strip() or model_id
