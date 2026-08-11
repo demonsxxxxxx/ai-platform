@@ -1,15 +1,20 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL = "2026-10-31"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = Field(default="postgresql://ai_platform:ai_platform_dev_password@localhost:54329/ai_platform")
+    database_url: str = Field(
+        default="postgresql://ai_platform:ai_platform_dev_password@localhost:54329/ai_platform"
+    )
     database_pool_min_size: int = Field(default=1)
     database_pool_max_size: int = Field(default=10)
     database_pool_timeout_seconds: float = Field(default=10.0)
@@ -30,14 +35,18 @@ class Settings(BaseSettings):
     sandbox_container_provider: str = Field(default="fake")
     # Production remains governed. The explicit internal-test profile exists
     # only for bounded functional acceptance against the official service.
-    sandbox_security_profile: Literal["governed", "internal-test"] = Field(default="governed")
+    sandbox_security_profile: Literal["governed", "internal-test"] = Field(
+        default="governed"
+    )
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_browser_image: str = Field(default="")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
     sandbox_callback_base_url: str = Field(default="http://127.0.0.1:8000")
     sandbox_callback_token: str = Field(default="")
     sandbox_egress_policy_enabled: bool = Field(default=False)
-    sandbox_egress_network_name: str = Field(default="ai-platform-sandbox-egress-internal-v1")
+    sandbox_egress_network_name: str = Field(
+        default="ai-platform-sandbox-egress-internal-v1"
+    )
     sandbox_egress_proof_signing_key: str = Field(default="")
     sandbox_egress_proof_key_id: str = Field(default="current")
     sandbox_egress_proof_previous_keys_json: str = Field(default="")
@@ -52,7 +61,9 @@ class Settings(BaseSettings):
     opensandbox_request_timeout_seconds: float = Field(default=30.0)
     opensandbox_timeout_seconds: int = Field(default=1800)
     opensandbox_executor_image: str = Field(default="")
-    opensandbox_executor_entrypoint: str = Field(default="/app/docker-entrypoint.sh uvicorn")
+    opensandbox_executor_entrypoint: str = Field(
+        default="/app/docker-entrypoint.sh uvicorn"
+    )
     opensandbox_workspace_mount_enabled: bool = Field(default=True)
     opensandbox_startup_io_probe_enabled: bool = Field(default=True)
     opensandbox_allowed_egress_hosts: str = Field(default="")
@@ -90,9 +101,40 @@ class Settings(BaseSettings):
     data_retention_worker_cleanup_enabled: bool = Field(default=True)
     data_retention_worker_cleanup_interval_seconds: float = Field(default=300.0, ge=1.0)
     artifact_retention_cleanup_limit: int = Field(default=50, ge=1, le=200)
-    artifact_object_delete_max_attempts: int = Field(default=5, ge=1, le=100)
-    artifact_object_delete_retry_base_seconds: int = Field(default=60, ge=1, le=3600)
-    artifact_object_delete_retry_cap_seconds: int = Field(default=3600, ge=1, le=86400)
+    object_delete_batch_limit: int = Field(default=50, ge=1, le=200)
+    object_delete_max_attempts: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias=AliasChoices(
+            "object_delete_max_attempts",
+            "OBJECT_DELETE_MAX_ATTEMPTS",
+            "artifact_object_delete_max_attempts",
+            "ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS",
+        ),
+    )
+    object_delete_retry_base_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        validation_alias=AliasChoices(
+            "object_delete_retry_base_seconds",
+            "OBJECT_DELETE_RETRY_BASE_SECONDS",
+            "artifact_object_delete_retry_base_seconds",
+            "ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS",
+        ),
+    )
+    object_delete_retry_cap_seconds: int = Field(
+        default=3600,
+        ge=1,
+        le=86400,
+        validation_alias=AliasChoices(
+            "object_delete_retry_cap_seconds",
+            "OBJECT_DELETE_RETRY_CAP_SECONDS",
+            "artifact_object_delete_retry_cap_seconds",
+            "ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS",
+        ),
+    )
     memory_physical_purge_limit: int = Field(default=50, ge=1, le=200)
     memory_physical_purge_grace_days: int = Field(default=7, ge=1, le=3650)
     run_event_retention_days: int = Field(default=0, ge=0)
@@ -101,7 +143,9 @@ class Settings(BaseSettings):
     message_retention_days: int = Field(default=0, ge=0)
     file_retention_days: int = Field(default=0, ge=0)
     run_event_stream_max_heartbeats: int = Field(default=3600)
-    deployment_environment: Literal["development", "test", "production"] = Field(default="development")
+    deployment_environment: Literal["development", "test", "production"] = Field(
+        default="development"
+    )
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")
     cors_allow_origins: str = Field(
@@ -121,7 +165,9 @@ class Settings(BaseSettings):
     ai_session_cookie_name: str = Field(default="ai_platform_session")
     ai_session_cookie_secure: bool = Field(default=False)
     ai_session_max_age_seconds: int = Field(default=8 * 60 * 60)
-    company_authority_freshness_seconds: int = Field(default=15 * 60, ge=60, le=8 * 60 * 60)
+    company_authority_freshness_seconds: int = Field(
+        default=15 * 60, ge=60, le=8 * 60 * 60
+    )
     auth_context_secret: str = Field(default="")
     auth_context_cookie_name: str = Field(default="ai_platform_auth_context")
     auth_context_cookie_secure: bool = Field(default=False)
@@ -148,11 +194,57 @@ class Settings(BaseSettings):
     claude_agent_allowed_tools: str = Field(default="Read,Glob,LS")
     claude_agent_disallowed_tools: str = Field(default="Write,Edit,NotebookEdit")
     claude_agent_permission_mode: str = Field(default="dontAsk")
-    claude_agent_workspace_root: str = Field(default="/tmp/ai-platform-agent-workspaces")
+    claude_agent_workspace_root: str = Field(
+        default="/tmp/ai-platform-agent-workspaces"
+    )
     claude_agent_sdk_skills: str = Field(default="")
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
+
+    @property
+    def artifact_object_delete_max_attempts(self) -> int:
+        """Deprecated Python alias for the shared object-deletion setting."""
+
+        return self.object_delete_max_attempts
+
+    @artifact_object_delete_max_attempts.setter
+    def artifact_object_delete_max_attempts(self, value: int) -> None:
+        self.object_delete_max_attempts = value
+
+    @property
+    def artifact_object_delete_retry_base_seconds(self) -> int:
+        """Deprecated Python alias for the shared object-deletion setting."""
+
+        return self.object_delete_retry_base_seconds
+
+    @artifact_object_delete_retry_base_seconds.setter
+    def artifact_object_delete_retry_base_seconds(self, value: int) -> None:
+        self.object_delete_retry_base_seconds = value
+
+    @property
+    def artifact_object_delete_retry_cap_seconds(self) -> int:
+        """Deprecated Python alias for the shared object-deletion setting."""
+
+        return self.object_delete_retry_cap_seconds
+
+    @artifact_object_delete_retry_cap_seconds.setter
+    def artifact_object_delete_retry_cap_seconds(self, value: int) -> None:
+        self.object_delete_retry_cap_seconds = value
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_legacy_object_delete_batch_fallback(cls, values: Any) -> Any:
+        if (
+            isinstance(values, dict)
+            and "object_delete_batch_limit" not in values
+            and "artifact_retention_cleanup_limit" in values
+        ):
+            values = dict(values)
+            values["object_delete_batch_limit"] = values[
+                "artifact_retention_cleanup_limit"
+            ]
+        return values
 
     @field_validator(
         "browser_public_launchpad_lingxi_url",
@@ -222,11 +314,8 @@ class Settings(BaseSettings):
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
         if self.default_tenant_id != "default":
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
-        if (
-            self.artifact_object_delete_retry_cap_seconds
-            < self.artifact_object_delete_retry_base_seconds
-        ):
-            raise ValueError("artifact_object_delete_retry_cap_below_base")
+        if self.object_delete_retry_cap_seconds < self.object_delete_retry_base_seconds:
+            raise ValueError("object_delete_retry_cap_below_base")
         if self.sandbox_security_profile == "internal-test" and not (
             self.deployment_environment == "test"
             and self.sandbox_container_provider == "opensandbox"
@@ -259,7 +348,10 @@ class Settings(BaseSettings):
                 raise ValueError("unsupported_retention_policy_in_production")
             missing_private_upstreams = sorted(
                 field_name
-                for field_name in ("existing_auth_base_url", "existing_user_info_base_url")
+                for field_name in (
+                    "existing_auth_base_url",
+                    "existing_user_info_base_url",
+                )
                 if not str(getattr(self, field_name)).strip()
             )
             if missing_private_upstreams:
@@ -268,6 +360,7 @@ class Settings(BaseSettings):
                     + ",".join(missing_private_upstreams)
                 )
         return self
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

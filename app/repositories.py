@@ -9,7 +9,6 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from app import artifact_lifecycle_repository as _artifact_lifecycle_repository
 from app.auth import ADMIN_ROLE_ALIASES, normalize_roles
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -50,7 +49,14 @@ from app.control_plane_contracts import (
 )
 from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
-from app.persistence import RepositoryNotFoundError, chat_submissions
+from app.persistence import (
+    RepositoryNotFoundError,
+    artifacts,
+    chat_submissions,
+    file_deletions,
+    object_deletions,
+    retention,
+)
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
     AUDIT_PAYLOAD_MAX_BYTES,
@@ -86,21 +92,21 @@ from app.tool_permission_lifecycle import (
     TOOL_PERMISSION_REQUEST_TTL_SECONDS,
 )
 
-claim_object_deletions = _artifact_lifecycle_repository.claim_object_deletions
-complete_object_deletion = _artifact_lifecycle_repository.complete_object_deletion
-fail_object_deletion = _artifact_lifecycle_repository.fail_object_deletion
-FileDeletionBlockedError = _artifact_lifecycle_repository.FileDeletionBlockedError
-get_admin_artifact = _artifact_lifecycle_repository.get_admin_artifact
-get_artifact = _artifact_lifecycle_repository.get_artifact
-get_authorized_artifact = _artifact_lifecycle_repository.get_authorized_artifact
-get_data_retention_backlog = _artifact_lifecycle_repository.get_data_retention_backlog
-list_revealed_artifact_sessions = _artifact_lifecycle_repository.list_revealed_artifact_sessions
-list_revealed_artifacts = _artifact_lifecycle_repository.list_revealed_artifacts
-purge_deleted_memory_records = _artifact_lifecycle_repository.purge_deleted_memory_records
-queue_unbound_file_for_deletion = _artifact_lifecycle_repository.queue_unbound_file_for_deletion
-queue_expired_artifacts_for_deletion = _artifact_lifecycle_repository.queue_expired_artifacts_for_deletion
-requeue_dead_letter_object_deletion = _artifact_lifecycle_repository.requeue_dead_letter_object_deletion
-ObjectDeletionStateError = _artifact_lifecycle_repository.ObjectDeletionStateError
+claim_object_deletions = object_deletions.claim_object_deletions
+complete_object_deletion = object_deletions.complete_object_deletion
+fail_object_deletion = object_deletions.fail_object_deletion
+requeue_dead_letter_object_deletion = object_deletions.requeue_dead_letter_object_deletion
+ObjectDeletionStateError = object_deletions.ObjectDeletionStateError
+FileDeletionBlockedError = file_deletions.FileDeletionBlockedError
+queue_unbound_file_for_deletion = file_deletions.queue_unbound_file_for_deletion
+get_admin_artifact = artifacts.get_admin_artifact
+get_artifact = artifacts.get_artifact
+get_authorized_artifact = artifacts.get_authorized_artifact
+list_revealed_artifact_sessions = artifacts.list_revealed_artifact_sessions
+list_revealed_artifacts = artifacts.list_revealed_artifacts
+queue_expired_artifacts_for_deletion = artifacts.queue_expired_artifacts_for_deletion
+get_data_retention_backlog = retention.get_data_retention_backlog
+purge_deleted_memory_records = retention.purge_deleted_memory_records
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
