@@ -113,6 +113,8 @@ test("Skill deletion refreshes both catalogs and announces the synchronized deta
 
   assert.match(panel, /onSkillsArchived: setArchivedSkills/);
   assert.match(panel, /data-skill-selection-status/);
+  assert.match(panel, /selectionNotice \|\| selectedCatalogEntry/);
+  assert.match(panel, /else if \(!selectedSkillId && nextEntry\)/);
   assert.match(panel, /resolveSkillCatalogSelection/);
   assert.match(actions, /setAdminCatalogItems\(\(current\) =>/);
   assert.match(actions, /await refreshAdminSkillCatalog\(\)/);

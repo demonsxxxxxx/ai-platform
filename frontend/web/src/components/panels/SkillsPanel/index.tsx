@@ -167,6 +167,8 @@ export function SkillsPanel({
           name: nextEntry.displayName,
         }),
       );
+    } else if (!selectedSkillId && nextEntry) {
+      setSelectionNotice(null);
     }
     setSelectedSkillId(resolution.selectedSkillId);
   }, [
@@ -229,7 +231,7 @@ export function SkillsPanel({
 
   const selectedDetail = (
     <div className="min-h-0">
-      {selectedCatalogEntry ? (
+      {selectionNotice || selectedCatalogEntry ? (
         <div
           aria-live="polite"
           className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-4 py-2.5 text-xs text-[var(--theme-text-secondary)]"
@@ -237,9 +239,11 @@ export function SkillsPanel({
           role="status"
         >
           {selectionNotice ??
-            t("skills.managementTable.selectionCurrent", {
-              name: selectedCatalogEntry.displayName,
-            })}
+            (selectedCatalogEntry
+              ? t("skills.managementTable.selectionCurrent", {
+                  name: selectedCatalogEntry.displayName,
+                })
+              : null)}
         </div>
       ) : null}
       {selectedDetailContent}
