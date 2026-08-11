@@ -1475,6 +1475,7 @@ async def _reauthorize_worker_capabilities(
                 binding=_authorized_skill_catalog_binding(run_identity),
                 department_id=principal.department_id,
                 roles=principal.roles,
+                is_admin=context.is_admin,
                 permissions=principal.permissions,
                 pinned_manifests=payload.skill_manifests,
             )

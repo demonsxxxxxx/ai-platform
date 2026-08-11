@@ -118,6 +118,30 @@ def _skill_subject(skill_name="qa-review"):
     }
 
 
+def _local_side_effect_subject(tool_name):
+    parameters = {
+        "Bash": (["command", "timeout", "description"], ["command"]),
+        "Write": (["file_path", "content"], ["file_path", "content"]),
+    }
+    allowed, required = parameters[tool_name]
+    return {
+        "identity": tool_name,
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "allowed_parameter_keys": allowed,
+        "required_parameter_keys": required,
+        "risk_level": "high",
+        "write_capable": True,
+        "workspace_contract": "ai-platform.skill-workspace.v1",
+        "command_isolation": "sibling-tool-sandbox-v1",
+    }
+
+
 def _captured_sdk_prompt(captured):
     return captured["sdk_user_messages"][0]["message"]["content"]
 
@@ -163,7 +187,8 @@ def _fake_sdk(captured, *, hook_invocations):
                 tool_name = str(hook_input.get("tool_name") or "")
                 matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
                 matcher = next(item for item in matchers if item.matcher == matcher_name)
-            await matcher.hooks[0](hook_input, tool_call_id, {})
+            result = await matcher.hooks[0](hook_input, tool_call_id, {})
+            captured.setdefault("hook_results", []).append((hook_name, result))
         yield ResultMessage()
 
     return types.SimpleNamespace(
@@ -223,7 +248,8 @@ def _scripted_sdk(captured, steps, *, result_text="done"):
                 tool_name = str(hook_input.get("tool_name") or "")
                 matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
                 matcher = next(item for item in matchers if item.matcher == matcher_name)
-            await matcher.hooks[0](hook_input, tool_call_id, {})
+            result = await matcher.hooks[0](hook_input, tool_call_id, {})
+            captured.setdefault("hook_results", []).append((hook_name, result))
 
         for step in steps:
             kind, value = step
@@ -772,6 +798,154 @@ async def test_sdk_mcp_admission_fails_closed_without_hook_matcher(monkeypatch, 
 
     assert result.error == "claude_agent_sdk_tool_admission_failed"
     assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_pre_tool_use_denies_when_capability_evidence_is_not_acknowledged(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    subject = _subject()
+    pre_hook, _completed_hook = _mcp_hook_steps(subject)
+
+    async def reject_evidence(_evidence):
+        return False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, [pre_hook]),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=reject_evidence,
+    )
+
+    pre_result = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pre_result["permissionDecision"] == "deny"
+    assert pre_result["permissionDecisionReason"] == "capability_evidence_not_acknowledged"
+    assert result.error == "required_tool_completion_evidence_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_sdk_serializes_local_side_effect_tools_across_complete_hook_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class AssistantMessage:
+        pass
+
+    class TextBlock:
+        pass
+
+    class StreamEvent:
+        pass
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = "done"
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        num_turns = 1
+        permission_denials = None
+
+    class HookMatcher:
+        def __init__(self, *, matcher, hooks):
+            self.matcher = matcher
+            self.hooks = hooks
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    bash_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call",
+        "tool_input": {"command": "printf ready"},
+    }
+    write_input = {
+        "tool_name": "Write",
+        "tool_use_id": "write-call",
+        "tool_input": {
+            "file_path": "outputs/delivery/report.txt",
+            "content": "report",
+        },
+    }
+
+    async def query(*, prompt, options):
+        del options
+        captured["sdk_user_messages"] = [item async for item in prompt]
+        pre_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+        post_hook = next(
+            item.hooks[0]
+            for item in captured["hooks"]["PostToolUse"]
+            if item.matcher is None
+        )
+
+        bash_result = await pre_hook(bash_input, "bash-call", {})
+        write_pre_task = asyncio.create_task(
+            pre_hook(write_input, "write-call", {})
+        )
+        await asyncio.sleep(0)
+        captured["write_pre_blocked"] = not write_pre_task.done()
+        await post_hook(bash_input, "bash-call", {})
+        write_result = await asyncio.wait_for(write_pre_task, timeout=1)
+        await post_hook(write_input, "write-call", {})
+        captured["side_effect_results"] = [bash_result, write_result]
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            HookMatcher=HookMatcher,
+            ResultMessage=ResultMessage,
+            StreamEvent=StreamEvent,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", "/workspace/.ai-platform/native-tool.sock")
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)
+
+    result = await run_claude_agent_sdk(
+        prompt="create a report",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            _local_side_effect_subject("Bash"),
+            _local_side_effect_subject("Write"),
+        ],
+    )
+
+    assert result.error is None
+    assert captured["write_pre_blocked"] is True
+    assert all(
+        item["hookSpecificOutput"]["permissionDecision"] == "allow"
+        for item in captured["side_effect_results"]
+    )
 
 
 @pytest.mark.asyncio

@@ -784,6 +784,7 @@ async def resolve_authorized_skill_catalog(
     binding: AuthorizedSkillCatalogBinding,
     department_id: str,
     roles: list[str],
+    is_admin: bool,
     permissions: list[str],
     pinned_manifests: list[dict[str, Any]] | None = None,
 ) -> AuthorizedSkillCatalogResolution:
@@ -820,10 +821,18 @@ async def resolve_authorized_skill_catalog(
         tenant_id=binding.tenant_id,
         department_id=str(department_id or ""),
         roles=list(roles),
+        is_admin=is_admin,
+        permissions=list(permissions),
+    )
+    ordinary_context = CapabilityAccessContext(
+        tenant_id=binding.tenant_id,
+        department_id=str(department_id or ""),
+        roles=list(roles),
         is_admin=False,
         permissions=list(permissions),
     )
     authorized_rows: dict[str, dict[str, Any]] = {}
+    bypass_rows: dict[str, dict[str, Any]] = {}
     for raw_row in rows:
         row = dict(raw_row)
         skill_id = str(row.get("skill_id") or "")
@@ -843,9 +852,52 @@ async def resolve_authorized_skill_catalog(
             ),
             intent="discover",
         )
-        if not decision.visible or not decision.usable or decision.admin_bypass:
+        if not decision.visible or not decision.usable:
             continue
+        if not decision.admin_bypass:
+            authorized_rows[skill_id] = row
+            continue
+        ordinary_decision = resolve_capability_access(
+            ordinary_context,
+            CapabilityDistributionSubject(
+                capability_kind="skill",
+                capability_id=skill_id,
+                lifecycle_status="active",
+                distribution=distribution_by_id.get(skill_id),
+            ),
+            intent="discover",
+        )
+        if ordinary_decision.visible and ordinary_decision.usable:
+            authorized_rows[skill_id] = row
+        else:
+            bypass_rows[skill_id] = row
+
+    supplied_pins = {
+        str(item.get("skill_id") or ""): dict(item)
+        for item in pinned_manifests or []
+        if isinstance(item, dict) and SAFE_ID_PATTERN.fullmatch(str(item.get("skill_id") or ""))
+    }
+    all_accessible_rows = {**authorized_rows, **bypass_rows}
+    selected_closure_seen: set[str] = set()
+
+    def include_selected_closure(skill_id: str) -> None:
+        if skill_id in selected_closure_seen:
+            return
+        selected_closure_seen.add(skill_id)
+        row = all_accessible_rows.get(skill_id)
+        if row is None:
+            return
         authorized_rows[skill_id] = row
+        dependency_source = supplied_pins.get(skill_id, row)
+        dependency_ids = dependency_source.get("dependency_ids")
+        if not isinstance(dependency_ids, list):
+            return
+        for dependency_id in dependency_ids:
+            if isinstance(dependency_id, str) and SAFE_ID_PATTERN.fullmatch(dependency_id):
+                include_selected_closure(dependency_id)
+
+    if is_admin and binding.selected_skill_id != "general-chat":
+        include_selected_closure(binding.selected_skill_id)
 
     pinned_by_id = {
         str(item.get("skill_id") or ""): dict(item)

@@ -30,7 +30,13 @@ _SANDBOX_LOCAL_TOOL_IDENTITIES = (
     "Write",
     "Edit",
 )
-_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS = _SANDBOX_LOCAL_TOOL_IDENTITIES
+# OpenSandbox currently has no process-isolated command broker. Keep its
+# provider-wide SDK profile autonomous for file work, but do not expose Bash in
+# the networked executor container. Docker admits Bash through its networkless
+# sibling tool sandbox instead.
+_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS = tuple(
+    identity for identity in _SANDBOX_LOCAL_TOOL_IDENTITIES if identity != "Bash"
+)
 _TRUSTED_UPLOADED_STATUSES = frozenset({SKILL_VERSION_REVIEWED, SKILL_VERSION_RELEASED})
 _TRUSTED_BUILTIN_STATUSES = frozenset(
     {SKILL_VERSION_LEGACY_ACTIVE, SKILL_VERSION_RELEASED, SKILL_VERSION_REVIEWED}

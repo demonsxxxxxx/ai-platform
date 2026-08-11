@@ -143,6 +143,7 @@ async def _resolve(
     distributions: list[dict[str, Any]],
     binding: AuthorizedSkillCatalogBinding | None = None,
     roles: list[str] | None = None,
+    is_admin: bool = False,
     pinned_manifests: list[dict[str, Any]] | None = None,
 ):
     observed: dict[str, Any] = {}
@@ -162,6 +163,7 @@ async def _resolve(
         binding=binding or _binding(),
         department_id="rd",
         roles=roles or ["employee"],
+        is_admin=is_admin,
         permissions=["skill:read"],
         pinned_manifests=pinned_manifests,
     )
@@ -270,6 +272,37 @@ async def test_catalog_fails_closed_for_role_scope_and_never_uses_admin_bypass(m
 
     assert resolution.snapshot.available_skill_ids == ("open-skill",)
     assert resolution.snapshot.entry("role-skill") is None
+
+
+@pytest.mark.asyncio
+async def test_admin_catalog_materializes_only_explicit_selected_bypass_closure(monkeypatch):
+    selected_skill_id = "ctd-32s73-stability-template-fill"
+    dependency_skill_id = "reference-fact-extraction"
+    rows = [
+        _skill_row(selected_skill_id, dependency_ids=[dependency_skill_id]),
+        _skill_row(dependency_skill_id),
+        _skill_row("admin-only-unrelated"),
+    ]
+    distributions = [
+        _distribution(str(row["skill_id"]), visible=False)
+        for row in rows
+    ]
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=distributions,
+        binding=_binding(selected_skill_id=selected_skill_id),
+        roles=["admin"],
+        is_admin=True,
+    )
+
+    assert resolution.snapshot.available_skill_ids == (selected_skill_id,)
+    assert resolution.snapshot.entry("admin-only-unrelated") is None
+    assert resolution.materialized_skill_ids == (
+        selected_skill_id,
+        dependency_skill_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -439,8 +472,16 @@ async def test_worker_overwrites_injected_catalog_without_authorizing_discovery_
     assert all(subject["identity"] != "Skill" for subject in subjects)
 
 
+@pytest.mark.parametrize(
+    ("principal_roles", "expected_is_admin"),
+    [(["employee"], False), (["admin"], True)],
+)
 @pytest.mark.asyncio
-async def test_worker_dispatch_authorizes_only_selected_private_dependency_closure(monkeypatch):
+async def test_worker_dispatch_authorizes_only_selected_private_dependency_closure(
+    monkeypatch,
+    principal_roles,
+    expected_is_admin,
+):
     rows = [
         _skill_row(
             "ctd-32s73-stability-template-fill",
@@ -481,6 +522,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
         observed["current_authority"] = {
             "department_id": kwargs["department_id"],
             "roles": kwargs["roles"],
+            "is_admin": kwargs["is_admin"],
             "permissions": kwargs["permissions"],
         }
         return await resolve_authorized_skill_catalog(conn, **kwargs)
@@ -535,7 +577,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
             display_name="User A",
             tenant_id="tenant-a",
             department_id="rd",
-            roles=["employee"],
+            roles=principal_roles,
             permissions=["skill:read"],
             source="company-user-info-current",
         )
@@ -578,7 +620,8 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     assert observed["catalog"]["rollout_key"] == "user-a"
     assert observed["current_authority"] == {
         "department_id": "rd",
-        "roles": ["employee"],
+        "roles": principal_roles,
+        "is_admin": expected_is_admin,
         "permissions": ["skill:read"],
     }
 
@@ -1102,7 +1145,8 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
     captured: dict[str, Any] = {}
 
     class AssistantMessage:
-        content: list[Any] = []
+        def __init__(self, text: str):
+            self.content = [TextBlock(text)]
 
     class TextBlock:
         def __init__(self, text: str):
@@ -1152,6 +1196,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
             "tool-use-c",
             {},
         )
+        yield AssistantMessage("done")
         yield ResultMessage()
 
     fake_sdk = types.SimpleNamespace(
@@ -1187,7 +1232,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
     assert result.error is None
     assert result.used_skills == ["skill-c"]
     assert result.used_skills_source == "executor_hook"
-    assert 'exactly this input: {"skill":"skill-c"}' in (
+    assert 'exactly this input: {"skill":"skill-c"}' not in (
         captured["prompt_messages"][0]["message"]["content"]
     )
 
@@ -1199,8 +1244,13 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
 ):
     captured: dict[str, Any] = {}
 
-    class Message:
-        pass
+    class TextBlock:
+        def __init__(self, text: str):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, text: str):
+            self.content = [TextBlock(text)]
 
     class ResultMessage:
         session_id = "sdk-session"
@@ -1260,16 +1310,17 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
                 tool_use_id,
                 {},
             )
+        yield AssistantMessage("done")
         yield ResultMessage()
 
     fake_sdk = types.SimpleNamespace(
-        AssistantMessage=Message,
+        AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
         HookMatcher=HookMatcher,
         PermissionResultAllow=PermissionResultAllow,
         PermissionResultDeny=PermissionResultDeny,
         ResultMessage=ResultMessage,
-        TextBlock=Message,
+        TextBlock=TextBlock,
         query=query,
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
@@ -1299,7 +1350,7 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         },
     )
 
-    assert 'exactly this input: {"skill":"ctd-32s73-stability-template-fill"}' in captured[
+    assert 'exactly this input: {"skill":"ctd-32s73-stability-template-fill"}' not in captured[
         "prompt"
     ]
     assert captured["skills"] == skill_ids

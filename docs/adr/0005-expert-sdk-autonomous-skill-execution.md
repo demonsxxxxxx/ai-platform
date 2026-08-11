@@ -42,18 +42,27 @@ evidence, artifacts, diagnostics, and public error projection. Skill-specific
 instructions, scripts, input expectations, and output behavior belong to the
 Skill package rather than platform runtime branches.
 
-Every admitted Agent SDK Run receives the same platform-owned sandbox-local
-tool set: `Read`, `Glob`, `LS`, `Bash`, `Write`, and `Edit`. Skill package
-content cannot add or remove runtime authority. Workspace path policy, the
-native-command proxy, command timeouts, the sandbox security profile, and Run
-resource limits constrain those tools. MCP tools, external network access,
-credentials, and control-plane operations remain separately authorized.
+Every admitted Agent SDK Run receives a provider-owned sandbox-local tool set;
+Skill package content cannot add or remove runtime authority. Docker admits
+`Read`, `Glob`, `LS`, `Bash`, `Write`, and `Edit`, with Bash routed through the
+networkless native-command broker. Governed OpenSandbox admits `Read`, `Glob`,
+`LS`, `Write`, and `Edit`, but not Bash: its executor does not yet provide an
+equivalent process-isolated command broker, and its provider profile is an
+upper bound that removes any broader worker subject. Workspace path policy,
+command timeouts, the sandbox security profile, and Run resource limits
+constrain the admitted tools. MCP tools, external network access, credentials,
+and control-plane operations remain separately authorized.
 
 Native commands execute through a networkless sidecar. It receives a
 controller-owned workspace view: authorized inputs, context, and staged Skills
 are read-only; only the delivery directory and authenticated broker socket are
 writable. The sidecar does not receive the primary workspace root or incidental
 hidden files.
+
+Local side-effect tools are serialized from their accepted `PreToolUse` hook
+through the matching `PostToolUse` or `PostToolUseFailure` hook. A Docker Bash
+command therefore completes descendant-process cleanup before primary-executor
+Write or Edit starts, closing the shared-delivery symlink race window.
 
 The primary Docker executor receives the workspace root read-only. Only
 `outputs/delivery`, runtime markers, the SDK home/config/temp directories, and a
@@ -69,6 +78,11 @@ and its authorized dependency closure form one bound Expert capability group.
 Only validated hook transitions count invocation attempts, completions, and
 failures. A failed attempt remains visible even if a later retry completes; it
 is never relabeled as not invoked.
+
+The `invocation_requested` evidence callback must be durably acknowledged before
+the corresponding Skill or MCP `PreToolUse` hook returns allow. A missing,
+rejected, or failed acknowledgement denies the tool before its side effect and
+fails the Run closed.
 
 The worker persists each validated Skill or MCP lifecycle as one private,
 idempotent run-event batch bound to the exact queue `attempt_id`. Each record is

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import worker
+from app.executors.claude_agent_sdk_runner import _with_execution_profile_skill_tools
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
@@ -18,6 +19,7 @@ from app.skills.pinning import build_skill_version_manifest_pin
 
 
 _SDK_NATIVE_TOOLS = ["Read", "Glob", "LS", "Bash", "Write", "Edit"]
+_OPEN_SANDBOX_SAFE_TOOLS = ["Read", "Glob", "LS", "Write", "Edit"]
 def _builtin_skill_version(skill_id: str, *, status: str = "released") -> dict[str, object]:
     version = f"hash-{skill_id}"
     return {
@@ -116,7 +118,7 @@ def test_reviewed_uploaded_skill_uses_same_sdk_native_profile():
     assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
 
 
-def test_governed_opensandbox_admits_file_tools_for_a_bound_authorized_skill():
+def test_governed_opensandbox_excludes_unbrokered_bash_for_a_bound_authorized_skill():
     admission = sdk_skill_tool_admission_for_execution_profile(
         execution_profile=OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
         bound_skill_id="reviewed-upload",
@@ -125,7 +127,7 @@ def test_governed_opensandbox_admits_file_tools_for_a_bound_authorized_skill():
     )
 
     assert admission is not None
-    assert admission.tool_names == tuple(_SDK_NATIVE_TOOLS)
+    assert admission.tool_names == tuple(_OPEN_SANDBOX_SAFE_TOOLS)
     assert admission.command_isolation == OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION
     assert (
         sdk_skill_tool_admission_for_execution_profile(
@@ -136,6 +138,38 @@ def test_governed_opensandbox_admits_file_tools_for_a_bound_authorized_skill():
         )
         is None
     )
+
+
+def test_governed_opensandbox_profile_removes_preexisting_unbrokered_bash_subject():
+    admission = sdk_skill_tool_admission_for_execution_profile(
+        execution_profile=OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
+        bound_skill_id="reviewed-upload",
+        staged_skill_ids=["reviewed-upload"],
+        authorized_skill_ids={"reviewed-upload"},
+    )
+    assert admission is not None
+    skill_subject = {
+        "identity": "Skill",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+    }
+    subjects = {
+        "Skill": skill_subject,
+        **{
+            tool_name: {**skill_subject, "identity": tool_name}
+            for tool_name in _SDK_NATIVE_TOOLS
+        },
+    }
+
+    resolved = _with_execution_profile_skill_tools(subjects, admission=admission)
+
+    assert set(resolved) == {"Skill", *_OPEN_SANDBOX_SAFE_TOOLS}
+    assert "Bash" not in resolved
 
 
 @pytest.mark.parametrize(

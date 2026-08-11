@@ -78,6 +78,7 @@ _SDK_AVAILABLE_TOOLS = [*_SDK_BASE_AVAILABLE_TOOLS, *_SDK_SUBAGENT_TOOLS]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_LOCAL_READ_ONLY_TOOLS = ("Read", "Glob", "LS")
+_SDK_LOCAL_SIDE_EFFECT_TOOLS = frozenset({"Bash", "Write", "Edit", "NotebookEdit"})
 _SDK_BROKERED_BUILTIN_TOOLS = (
     "Bash",
     "Write",
@@ -382,7 +383,18 @@ def _with_execution_profile_skill_tools(
     skill_subject = subjects.get("Skill")
     if admission is None or not isinstance(skill_subject, dict):
         return subjects
-    resolved = dict(subjects)
+    admitted_tools = set(admission.tool_names)
+    profile_local_tools = {
+        *_SDK_LOCAL_READ_ONLY_TOOLS,
+        *_SDK_LOCAL_SIDE_EFFECT_TOOLS,
+    }
+    # A provider execution profile is an upper bound, not an additive hint.
+    # This removes worker subjects that the selected sandbox cannot isolate.
+    resolved = {
+        identity: subject
+        for identity, subject in subjects.items()
+        if identity not in profile_local_tools or identity in admitted_tools
+    }
     for tool_name in admission.tool_names:
         if tool_name in resolved:
             continue
@@ -869,6 +881,8 @@ async def run_claude_agent_sdk(
     actual_capability_invocation_observed = False
     actual_mcp_invocation_observed = False
     started_tool_lifecycles: set[tuple[str, str]] = set()
+    side_effect_tool_lock = asyncio.Lock()
+    side_effect_tool_owner: tuple[str, str] | None = None
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
         return project_sdk_turn_diagnostics(
@@ -1256,6 +1270,33 @@ async def run_claude_agent_sdk(
             return ""
         return supplied[0] if len(set(supplied)) == 1 else ""
 
+    async def acquire_side_effect_tool(
+        *,
+        tool_name: str,
+        tool_call_id: str,
+    ) -> bool:
+        """Serialize local mutations across their complete SDK hook lifecycle."""
+
+        nonlocal side_effect_tool_owner
+        if tool_name not in _SDK_LOCAL_SIDE_EFFECT_TOOLS:
+            return True
+        owner = (tool_name, tool_call_id)
+        if not tool_call_id or side_effect_tool_owner == owner:
+            return False
+        await side_effect_tool_lock.acquire()
+        if side_effect_tool_owner is not None:
+            side_effect_tool_lock.release()
+            return False
+        side_effect_tool_owner = owner
+        return True
+
+    def release_side_effect_tool(*, tool_name: str, tool_call_id: str) -> None:
+        nonlocal side_effect_tool_owner
+        if side_effect_tool_owner != (tool_name, tool_call_id):
+            return
+        side_effect_tool_owner = None
+        side_effect_tool_lock.release()
+
     async def record_tool_lifecycle(
         *, tool_name: object, tool_call_id: object, lifecycle: str
     ) -> None:
@@ -1413,6 +1454,13 @@ async def run_claude_agent_sdk(
                     output["permissionDecisionReason"] = "native_tool_isolation_unavailable"
                 else:
                     output["updatedInput"] = updated_input
+            if output["permissionDecision"] == "allow" and not await acquire_side_effect_tool(
+                tool_name=tool_name,
+                tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
+            ):
+                output["permissionDecision"] = "deny"
+                output["permissionDecisionReason"] = "side_effect_tool_identity_invalid"
+                diagnostic_counters["tool_admission_denials"] += 1
         if decision.allowed is True and output["permissionDecision"] == "allow" and hook_input:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
@@ -1428,19 +1476,28 @@ async def run_claude_agent_sdk(
                     hook_input.get("tool_input"),
                     allowed_skill_names,
                 ):
-                    await record_capability_evidence(
+                    acknowledged = await record_capability_evidence(
                         capability_kind="skill",
                         canonical_identity=skill_name,
                         tool_call_id=resolved_tool_call_id,
                         lifecycle_phase="invocation_requested",
                     )
+                    if not acknowledged:
+                        output["permissionDecision"] = "deny"
+                        output["permissionDecisionReason"] = "capability_evidence_not_acknowledged"
+                        diagnostic_counters["tool_admission_denials"] += 1
+                        break
             elif identity in authorized_subjects and identity.startswith("mcp__"):
-                await record_capability_evidence(
+                acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
                     canonical_identity=identity,
                     tool_call_id=resolved_tool_call_id,
                     lifecycle_phase="invocation_requested",
                 )
+                if not acknowledged:
+                    output["permissionDecision"] = "deny"
+                    output["permissionDecisionReason"] = "capability_evidence_not_acknowledged"
+                    diagnostic_counters["tool_admission_denials"] += 1
         return {"hookSpecificOutput": output}
     def skill_tool_hook(lifecycle_phase: str):
         async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
@@ -1478,11 +1535,18 @@ async def run_claude_agent_sdk(
         async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
             hook_input = hook_input if isinstance(hook_input, dict) else {}
             tool_name = str(hook_input.get("tool_name") or "")
-            if tool_name.lower() != "skill" and not adapter_identity(tool_name).startswith("mcp__"):
-                await record_tool_lifecycle(
+            tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            try:
+                if tool_name.lower() != "skill" and not adapter_identity(tool_name).startswith("mcp__"):
+                    await record_tool_lifecycle(
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        lifecycle=lifecycle,
+                    )
+            finally:
+                release_side_effect_tool(
                     tool_name=tool_name,
-                    tool_call_id=str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    lifecycle=lifecycle,
+                    tool_call_id=tool_call_id,
                 )
             return {}
         return handler
