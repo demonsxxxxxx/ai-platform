@@ -729,7 +729,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         skill_id=authorized_skill,
         file_ids=[],
         input={},
-        executor_type="embedded-poco",
+        executor_type="sandbox-inspection-fixture",
         skill_version=primary_version,
         release_decision={
             "schema_version": RELEASE_DECISION_SCHEMA_VERSION,

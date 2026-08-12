@@ -8000,56 +8000,6 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_processes_embedded_poco_kernel_and_persists_stream_events(monkeypatch):
-    from app.executors.embedded_poco import EmbeddedPocoAdapter
-
-    events = []
-    messages = []
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        events.append(kwargs)
-        return f"evt_{len(events)}"
-
-    async def complete_run(conn, **kwargs):
-        events.append({"event_type": "complete_run", "result_json": kwargs["result_json"]})
-        return True
-
-    async def append_message(conn, **kwargs):
-        messages.append(kwargs)
-        return "msg-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-
-    outcome = await process_run_payload(
-        base_payload(
-            agent_id="general-agent",
-            skill_id="general-chat",
-            file_ids=[],
-            input={"message": "hello"},
-            executor_type="embedded-poco-kernel",
-        ),
-        registry=AdapterRegistry({"embedded-poco-kernel": EmbeddedPocoAdapter()}),
-        worker_id="worker-embedded",
-    )
-
-    assert outcome.status == "succeeded"
-    event_types = [event["event_type"] for event in events]
-    assert "run_started" in event_types
-    assert "assistant_delta" not in event_types
-    assert "run_completed" in event_types
-    assert "assistant_message_created" in event_types
-    assert messages[0]["role"] == "assistant"
-    assert messages[0]["content"] == "hello"
-
-
-@pytest.mark.asyncio
 async def test_worker_persists_terminal_assistant_message(monkeypatch):
     calls = []
 

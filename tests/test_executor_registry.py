@@ -5,8 +5,16 @@ import pytest
 from app.executors.registry import AdapterRegistry
 
 
-def test_production_executor_package_does_not_ship_test_stubs():
-    assert importlib.util.find_spec("app.executors.fake") is None
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "app.executors.fake",
+        "app.executors.embedded_poco",
+        "app.runtime.embedded_poco_kernel",
+    ],
+)
+def test_production_package_does_not_ship_unsupported_executors(module_name):
+    assert importlib.util.find_spec(module_name) is None
 
 
 @pytest.mark.parametrize("executor_type", ["fake", "embedded-poco-kernel"])

@@ -9,6 +9,62 @@ from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import AgentEvent
 
 
+def test_agent_event_to_executor_event_maps_runtime_event_to_worker_shape():
+    event = AgentEvent(
+        type="assistant_delta",
+        message="partial answer",
+        payload={"delta": "partial answer"},
+    )
+
+    converted = agent_event_to_executor_event(event)
+
+    assert converted == {
+        "event_type": "assistant_delta",
+        "stage": "message",
+        "message": "partial answer",
+        "payload": {
+            "delta": "partial answer",
+            "visible_to_user": True,
+        },
+    }
+
+
+def test_agent_event_to_executor_event_hides_admin_only_events_from_ordinary_users():
+    event = AgentEvent(
+        type="browser_snapshot",
+        message="browser state captured",
+        payload={"url": "https://example.test", "visible_to_user": True},
+        admin_only=True,
+    )
+
+    converted = agent_event_to_executor_event(event)
+
+    assert converted["event_type"] == "browser_snapshot"
+    assert converted["stage"] == "browser"
+    assert converted["payload"]["visible_to_user"] is False
+    assert converted["payload"]["admin_only"] is True
+
+
+@pytest.mark.parametrize("event_type", ["intent_detected", "skill_selected", "skill_used"])
+def test_executor_progress_types_are_not_kernel_agent_events(event_type):
+    with pytest.raises(ValueError, match=f"Unsupported agent event type: {event_type}"):
+        AgentEvent(type=event_type)
+
+
+def test_checkpoint_and_subagent_events_have_stable_stage_mapping():
+    checkpoint = agent_event_to_executor_event(
+        AgentEvent(type="checkpoint_created", message="checkpoint saved", payload={"checkpoint_id": "checkpoint-a"})
+    )
+    subagent = agent_event_to_executor_event(
+        AgentEvent(type="subagent_completed", message="reviewer done", payload={"subagent_id": "subagent-a"})
+    )
+
+    assert checkpoint["stage"] == "checkpoint"
+    assert checkpoint["payload"] == {"checkpoint_id": "checkpoint-a", "visible_to_user": True}
+    assert subagent["stage"] == "subagent"
+    assert subagent["payload"] == {"subagent_id": "subagent-a", "visible_to_user": True}
+
+
 @pytest.mark.parametrize(
     ("event_type", "status"),
     [
@@ -57,7 +113,7 @@ def test_bridge_fails_closed_for_known_event_with_private_execution_fields():
     }
 
 
-def test_bridge_rejects_projector_payload_until_typed_runtime_integration_exists():
+def test_bridge_accepts_typed_public_execution_projector_payload():
     projected = PublicExecutionV2Projector().project(
         {
             "invocation_id": "private-read-1",
@@ -76,10 +132,10 @@ def test_bridge_rejects_projector_payload_until_typed_runtime_integration_exists
     )
 
     assert bridged == {
-        "event_type": "executor_private_event",
-        "stage": "runtime",
+        "event_type": projected.event_type,
+        "stage": projected.payload_json["stage"],
         "message": "",
-        "payload": {"visible_to_user": False, "admin_only": True},
+        "payload": projected.payload_json,
     }
 
 
