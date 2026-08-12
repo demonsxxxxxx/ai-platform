@@ -53,6 +53,7 @@ import {
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
+import { resolveAgentAcceptedFileTypes } from "./agentProfileFileTypes";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../types/agentOptions";
 import { shouldShowMessageOutline } from "./messageOutline";
@@ -433,11 +434,10 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const agentAcceptedFileTypes = agentWorkspace
-    ? agentWorkspace.supported_input_types.includes("file")
-      ? agentWorkspace.supported_file_types
-      : []
-    : undefined;
+  const agentAcceptedFileTypes = useMemo(
+    () => resolveAgentAcceptedFileTypes(agentWorkspace),
+    [agentWorkspace],
+  );
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
     useDragAndDrop(agentAcceptedFileTypes);
 
@@ -558,6 +558,7 @@ export function ChatAppContent({
     sessionId,
     onIdentityChange: () => {
       agentWorkspaceSelectionRequestIdRef.current += 1;
+      setAgentWorkspaceError(null);
       clearMessages();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
@@ -1076,6 +1077,7 @@ export function ChatAppContent({
       attachments?: MessageAttachment[],
       selectedSkill?: SelectedSkillRequest | null,
     ): Promise<SubmissionOutcome> => {
+      setAgentWorkspaceError(null);
       if (!agentWorkspace || sessionId) {
         return sendMessage(content, options, attachments, selectedSkill);
       }
@@ -1096,7 +1098,7 @@ export function ChatAppContent({
       }
 
       try {
-        return await submitAgentFirstMessageSingleFlight({
+        const outcome = await submitAgentFirstMessageSingleFlight({
           coordinator: agentWorkspaceFirstSubmissionRef,
           submissionKey: JSON.stringify({
             content,
@@ -1133,11 +1135,6 @@ export function ChatAppContent({
                 buildAgentMarketWorkspacePath(startProfile, createdSessionId),
                 { replace: true },
               );
-              clearAgentConversationOperationId({
-                agentId: startProfile.agent_id,
-                revision: startProfile.expected_revision,
-                storage: browserSessionStorage(),
-              });
               onAgentWorkspaceSessionCreated?.(createdSessionId);
               return createdSessionId;
             }),
@@ -1146,8 +1143,15 @@ export function ChatAppContent({
             return sendMessage(content, undefined, attachments, null);
           },
         });
+        if (outcome.status === "accepted") {
+          clearAgentConversationOperationId({
+            agentId: startProfile.agent_id,
+            revision: startProfile.expected_revision,
+            storage: browserSessionStorage(),
+          });
+        }
+        return outcome;
       } catch (error) {
-        agentWorkspaceCreationRef.current = null;
         agentWorkspaceFirstSubmissionRef.current = null;
         const status =
           error !== null && typeof error === "object"

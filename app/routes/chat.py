@@ -313,6 +313,31 @@ def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResp
     raise HTTPException(status_code=409, detail="chat_submission_unresolved")
 
 
+def _existing_chat_submission_response(
+    row: dict[str, Any],
+    *,
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    query_agent_id: str | None,
+    request_fingerprint: str,
+) -> ChatStreamResponse:
+    """Resolve an existing claim identically for generic and Agent submissions."""
+
+    if _is_preledger_recovery_tombstone(row, principal=principal):
+        return _chat_stream_response_from_submission(row)
+    claimed_fingerprint = request_fingerprint
+    if row.get("state") == "rejected_before_persist":
+        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code=str(row.get("rejection_code") or "chat_submission_rejected"),
+        )
+    if row.get("request_fingerprint_sha256") != claimed_fingerprint:
+        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+    return _chat_stream_response_from_submission(row)
+
+
 def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
     if str(row.get("state") or "") == "admission_rejected":
         raise HTTPException(
@@ -1788,25 +1813,13 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
-                    if _is_preledger_recovery_tombstone(
+                    return _existing_chat_submission_response(
                         claimed_submission,
+                        request=request,
                         principal=principal,
-                    ):
-                        return _chat_stream_response_from_submission(claimed_submission)
-                    claimed_fingerprint = request_fingerprint
-                    if claimed_submission.get("state") == "rejected_before_persist":
-                        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-                            request=request,
-                            principal=principal,
-                            query_agent_id=query_agent_id,
-                            code=str(
-                                claimed_submission.get("rejection_code")
-                                or "chat_submission_rejected"
-                            ),
-                        )
-                    if claimed_submission.get("request_fingerprint_sha256") != claimed_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
 
             if preserve_continuation_skill and admitted_agent_profile is None:
                 continuation_prior_runs = await repositories.list_authorized_session_runs(
@@ -2222,9 +2235,13 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
-                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
+                    return _existing_chat_submission_response(
+                        claimed_submission,
+                        request=request,
+                        principal=principal,
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
             if request.session_id is None:
                 session_create_kwargs = {
                     "tenant_id": principal.tenant_id,

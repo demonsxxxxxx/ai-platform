@@ -197,8 +197,7 @@ export function AgentWorkspaceRoute() {
   // Route params can change before the passive fetch cleanup runs. Never let
   // the previous URL's profile reach canonical Chat.
   const resolvedWorkspace =
-    phase !== "unavailable" &&
-    phase !== "error" &&
+    phase === "ready" &&
     loadedWorkspace !== null &&
     loadedWorkspace.agentId === agentId &&
     loadedWorkspace.revision === revision

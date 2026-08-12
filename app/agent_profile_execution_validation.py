@@ -26,9 +26,14 @@ def validate_agent_profile_execution_input(
     content_hash = value.get("content_hash")
     instructions = value.get("instructions")
     required_skill_id = str(value.get("required_skill_id") or skill_id or "").strip()
-    required_skill_version = str(
-        value.get("required_skill_version") or skill_version or ""
-    ).strip()
+    raw_required_skill_version = (
+        value["required_skill_version"]
+        if "required_skill_version" in value
+        else skill_version or ""
+    )
+    if not isinstance(raw_required_skill_version, str):
+        raise ValueError("agent_profile_required_skill_version_invalid")
+    required_skill_version = raw_required_skill_version.strip()
     if not isinstance(profile_agent_id, str):
         raise ValueError("agent_profile_agent_id_invalid")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
@@ -66,5 +71,8 @@ def validate_agent_profile_execution_input(
             required_skill_id,
             "agent_profile.required_skill_id",
         ),
-        "required_skill_version": required_skill_version,
+        "required_skill_version": assert_safe_id(
+            required_skill_version,
+            "agent_profile.required_skill_version",
+        ),
     }

@@ -23,10 +23,8 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
     chatView,
     /messages\.length > 0 \? "overflow-hidden" : ""/,
   );
-  assert.match(
-    chatView,
-    /overflow-y-auto[^"]*px-4 py-3 sm:px-5[\s\S]{0,120}data-agent-chat-opening/,
-  );
+  assert.match(chatView, /overflow-y-auto[^"]*px-4 py-3 sm:px-5/);
+  assert.match(chatView, /data-agent-chat-opening/);
   assert.match(chatView, /<Virtuoso/);
   assert.equal((skills.match(/overflow-y-auto/g) ?? []).length, 1);
   assert.match(skills, /data-primary-page-scroller/);

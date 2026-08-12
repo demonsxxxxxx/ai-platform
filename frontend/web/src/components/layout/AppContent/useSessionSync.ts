@@ -187,7 +187,11 @@ export function shouldClearConversationOnRouteIdentityChange({
   routeSessionId,
   sessionId,
 }: ShouldClearConversationOnRouteIdentityChangeInput): boolean {
-  if (hasAgentWorkspace && routeSessionId === sessionId) {
+  if (
+    hasAgentWorkspace &&
+    sessionId !== null &&
+    (!routeSessionId || routeSessionId === sessionId)
+  ) {
     return false;
   }
 

@@ -104,6 +104,7 @@ import {
   mergeProjectedSessionFiles,
   sessionInputFileToAttachment,
 } from "./sessionInputFiles";
+import { resolveAgentAcceptedFileTypes } from "./agentProfileFileTypes";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -236,6 +237,10 @@ export function ChatView({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const agentAcceptedFileTypes = useMemo(
+    () => resolveAgentAcceptedFileTypes(agentEmptyProfile),
+    [agentEmptyProfile],
+  );
   const artifactDownloadScopeContext = useMemo(
     () =>
       createArtifactDownloadScopeContext({
@@ -732,11 +737,7 @@ export function ChatView({
     isLoading: sessionRunning,
     canSend: canSendMessage,
     placeholder: composerPlaceholder,
-    acceptedFileTypes: agentEmptyProfile
-      ? agentEmptyProfile.supported_input_types.includes("file")
-        ? agentEmptyProfile.supported_file_types
-        : []
-      : undefined,
+    acceptedFileTypes: agentAcceptedFileTypes,
     tools,
     onToggleTool,
     onToggleCategory,

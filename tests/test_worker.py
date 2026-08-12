@@ -758,7 +758,10 @@ def default_cancel_not_requested(monkeypatch):
         profile = dict(queue_payload.get("agent_profile") or {})
         return types.SimpleNamespace(
             private_execution_input=profile,
-            skill={"skill_id": profile.get("required_skill_id")},
+            skill={
+                "skill_id": profile.get("required_skill_id"),
+                "skill_version": profile.get("required_skill_version"),
+            },
             model={
                 "id": queue_payload.get("model_id"),
                 "value": queue_payload.get("model_value"),
@@ -1355,6 +1358,15 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
                 agent_profile={**profile, "required_skill_version": "hostile-version"},
             )
         )
+    for non_string_version in (123, True, [], {}):
+        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+            parse_queue_payload(
+                base_payload(
+                    _leased=False,
+                    agent_id="agt_support",
+                    agent_profile={**profile, "required_skill_version": non_string_version},
+                )
+            )
 
 
 def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
@@ -1380,16 +1392,33 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
     )
 
     assert parse_queue_payload(harness_payload).agent_profile == profile
-    for hostile_profile in (
-        {**profile, "agent_id": "other-agent"},
-        {**profile, "required_skill_id": "other-skill"},
-        {**profile, "required_skill_version": ""},
-        {**profile, "content_hash": "A" * 64},
-        {**profile, "content_hash": "g" * 64},
-        {**profile, "content_hash": "a" * 63 + " "},
+    for hostile_profile, expected_error in (
+        ({**profile, "agent_id": "other-agent"}, "agent_profile_harness_identity_invalid"),
+        (
+            {**profile, "required_skill_id": "other-skill"},
+            "agent_profile_harness_identity_invalid",
+        ),
+        (
+            {**profile, "required_skill_version": ""},
+            "agent_profile_harness_identity_invalid",
+        ),
+        ({**profile, "content_hash": "A" * 64}, "agent_profile_hash_invalid"),
+        ({**profile, "content_hash": "g" * 64}, "agent_profile_hash_invalid"),
+        ({**profile, "content_hash": "a" * 63 + " "}, "agent_profile_hash_invalid"),
     ):
-        with pytest.raises(ValueError, match="agent_profile_(harness_identity|hash)_invalid"):
+        with pytest.raises(ValueError, match=expected_error):
             parse_queue_payload({**harness_payload, "agent_profile": hostile_profile})
+    for non_string_version in (123, True, [], {}):
+        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+            parse_queue_payload(
+                {
+                    **harness_payload,
+                    "agent_profile": {
+                        **profile,
+                        "required_skill_version": non_string_version,
+                    },
+                }
+            )
 
 
 def test_run_payload_accepts_only_complete_pinned_harness_profile():
@@ -1428,6 +1457,40 @@ def test_run_payload_accepts_only_complete_pinned_harness_profile():
     ):
         with pytest.raises(ValueError, match="agent_profile_"):
             RunPayload(**harness, agent_profile=hostile_profile)
+    for non_string_version in (123, True, [], {}):
+        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+            RunPayload(
+                **harness,
+                agent_profile={
+                    **profile,
+                    "required_skill_version": non_string_version,
+                },
+            )
+
+
+def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "qa-file-reviewer",
+        "required_skill_version": "hash-qa-file-reviewer",
+    }
+    payload = parse_queue_payload(
+        base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
+    )
+    admission = types.SimpleNamespace(
+        private_execution_input=profile,
+        skill={
+            "skill_id": "qa-file-reviewer",
+            "skill_version": "different-version",
+        },
+        model={"id": payload.model_id, "value": payload.model_value},
+        mcp_tool_ids=tuple(repository_module.extract_run_mcp_tool_ids(payload.input)),
+    )
+
+    assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is False
 
 
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):

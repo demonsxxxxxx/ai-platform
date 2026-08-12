@@ -920,9 +920,14 @@ def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
     if not isinstance(profile, dict):
         return None
     required_skill_id = str(profile.get("required_skill_id") or payload.skill_id).strip()
-    required_skill_version = str(
-        profile.get("required_skill_version") or payload.skill_version or ""
-    ).strip()
+    raw_required_skill_version = (
+        profile["required_skill_version"]
+        if "required_skill_version" in profile
+        else payload.skill_version or ""
+    )
+    if not isinstance(raw_required_skill_version, str):
+        return ""
+    required_skill_version = raw_required_skill_version.strip()
     if required_skill_id != payload.skill_id:
         return ""
     if required_skill_version and required_skill_version != str(payload.skill_version or ""):
@@ -1201,6 +1206,8 @@ def _agent_profile_snapshot_matches_authority(
         if (
             not isinstance(authority_skill, dict)
             or str(authority_skill.get("skill_id") or "") != str(payload.skill_id or "")
+            or str(authority_skill.get("skill_version") or "")
+            != str(payload.skill_version or "")
             or not payload.skill_version
         ):
             return False

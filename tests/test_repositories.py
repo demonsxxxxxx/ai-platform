@@ -10629,6 +10629,59 @@ async def test_authorize_files_for_run_rejects_mixed_requested_and_reusable_prof
 
 
 @pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_reusable_id_outside_requested_set():
+    class ForbiddenConnection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("invalid reusable file scope must fail before SQL")
+
+    with pytest.raises(repositories.RepositoryConflictError, match="file_scope_mismatch"):
+        await repositories.authorize_files_for_run(
+            ForbiddenConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-current",
+            file_ids=["file-requested"],
+            reusable_file_ids=["file-prior"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_reusable_file_from_other_session():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-prior",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-other",
+                "run_id": "run-prior",
+                "original_name": "prior.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection:
+        async def execute(self, *_args, **_kwargs):
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="file_session_mismatch"):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-current",
+            file_ids=["file-prior"],
+            reusable_file_ids=["file-prior"],
+        )
+
+
+@pytest.mark.asyncio
 async def test_list_run_skill_snapshots_projects_persisted_telemetry():
     class SnapshotCursor:
         async def fetchall(self):

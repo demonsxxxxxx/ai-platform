@@ -114,6 +114,14 @@ test("Agent first-send canonicalization retains the already bound Session", () =
   assert.equal(
     shouldClearConversationOnRouteIdentityChange({
       hasAgentWorkspace: true,
+      routeSessionId: undefined,
+      sessionId: "session-agent",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
       routeSessionId: "session-agent",
       sessionId: "session-agent",
     }),

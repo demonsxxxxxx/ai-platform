@@ -442,6 +442,67 @@ test("an accepted first submission releases its flight while reusing the bound c
   assert.deepEqual(submittedSessionIds, ["session-agent", "session-agent"]);
 });
 
+test("a failed first submission retries on the same bound Agent conversation", async () => {
+  const creationCoordinator = { current: null as Promise<string> | null };
+  const submissionCoordinator = {
+    current: null as {
+      submissionKey: string;
+      promise: Promise<{ status: "accepted" }>;
+    } | null,
+  };
+  let createCalls = 0;
+  let bindCalls = 0;
+  let submitCalls = 0;
+  const ensureConversation = () =>
+    ensureAgentConversationForFirstSend({
+      coordinator: creationCoordinator,
+      profile: safeWorkspace,
+      createConversation: async () => {
+        createCalls += 1;
+        return {
+          session_id: "session-agent",
+          workspace_id: "default",
+          agent_id: safeIdentity.agent_id,
+          title: safeIdentity.name,
+          purpose: "conversation" as const,
+          agent_conversation: safeIdentity,
+        };
+      },
+      bindConversation: async () => {
+        bindCalls += 1;
+        return true;
+      },
+    });
+  const submitMessage = async (sessionId: string) => {
+    assert.equal(sessionId, "session-agent");
+    submitCalls += 1;
+    if (submitCalls === 1) throw new Error("transient submit failure");
+    return { status: "accepted" as const };
+  };
+
+  await assert.rejects(
+    submitAgentFirstMessageSingleFlight({
+      coordinator: submissionCoordinator,
+      submissionKey: JSON.stringify({ content: "retry", fileIds: [] }),
+      ensureConversation,
+      submitMessage,
+    }),
+    /transient submit failure/,
+  );
+  assert.deepEqual(
+    await submitAgentFirstMessageSingleFlight({
+      coordinator: submissionCoordinator,
+      submissionKey: JSON.stringify({ content: "retry", fileIds: [] }),
+      ensureConversation,
+      submitMessage,
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(createCalls, 1);
+  assert.equal(bindCalls, 1);
+  assert.equal(submitCalls, 2);
+});
+
 test("a late first-submission completion cannot clear a newer flight", async () => {
   const coordinator = {
     current: null as {

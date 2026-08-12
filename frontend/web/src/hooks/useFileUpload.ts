@@ -78,6 +78,18 @@ export function isAcceptedProfileFile(
   });
 }
 
+export function partitionAcceptedProfileFiles(
+  files: readonly File[],
+  acceptedFileTypes: readonly string[] | undefined,
+): { accepted: File[]; rejected: File[] } {
+  const accepted: File[] = [];
+  const rejected: File[] = [];
+  for (const file of files) {
+    (isAcceptedProfileFile(file, acceptedFileTypes) ? accepted : rejected).push(file);
+  }
+  return { accepted, rejected };
+}
+
 interface FileUploadTaskOptions {
   file: File;
   fileCategory: FileCategory;
@@ -351,13 +363,16 @@ export function useFileUpload({
       const fileArray = Array.from(files);
       if (fileArray.length === 0) return;
 
-      if (!validateCount(fileArray.length)) return;
+      const { accepted: acceptedFiles, rejected } = partitionAcceptedProfileFiles(
+        fileArray,
+        acceptedFileTypes,
+      );
+      if (rejected.length > 0) {
+        toast.error(String(t("fileUpload.serverUnsupportedFileType")));
+      }
+      if (acceptedFiles.length === 0 || !validateCount(acceptedFiles.length)) return;
 
-      for (const file of fileArray) {
-        if (!isAcceptedProfileFile(file, acceptedFileTypes)) {
-          toast.error(String(t("fileUpload.serverUnsupportedFileType")));
-          continue;
-        }
+      for (const file of acceptedFiles) {
         const fileCategory = category || getFileCategory(file);
         if (!validateSize(file, fileCategory)) continue;
         uploadFile(file, fileCategory);
