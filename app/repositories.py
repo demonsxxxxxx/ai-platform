@@ -58,6 +58,7 @@ from app.persistence import (
     object_deletions,
     retention,
 )
+from app.platform.postgres.errors import RepositoryConflictError
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
     AUDIT_PAYLOAD_MAX_BYTES,
@@ -137,10 +138,6 @@ def new_id(prefix: str) -> str:
 def memory_policy_id(*, tenant_id: str, workspace_id: str, user_id: str, agent_id: str | None) -> str:
     raw = "\x1f".join([tenant_id, workspace_id, user_id, agent_id or ""])
     return f"mempol_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
-
-
-class RepositoryConflictError(ValueError):
-    pass
 
 
 def _require_json_size(value: Any, *, max_bytes: int, code: str) -> None:
