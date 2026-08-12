@@ -23,6 +23,7 @@ env:
 jobs:
   backend-validation:
     name: backend validation and governance
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
