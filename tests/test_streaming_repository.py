@@ -5,6 +5,7 @@ import pytest
 
 from app import repositories
 from app import run_event_repository
+from app.platform.postgres.errors import RepositoryConflictError
 from app.streaming import postgres as ledger
 from app.streaming.authority import RunCursor
 
@@ -87,9 +88,8 @@ async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
             ),
         )
     ]
-    assert (
-        repositories.RepositoryConflictError is not ledger.RunEventLedgerConflictError
-    )
+    assert repositories.RepositoryConflictError is RepositoryConflictError
+    assert RepositoryConflictError is not ledger.RunEventLedgerConflictError
 
 
 @pytest.mark.asyncio
