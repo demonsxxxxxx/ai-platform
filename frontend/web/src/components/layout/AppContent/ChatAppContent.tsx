@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, Bot, FileText, Headphones, History, MessageCircle, Search, ShieldCheck } from "lucide-react";
+import { Bot, FileText, Headphones, History, Search } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
@@ -24,8 +24,11 @@ import { useSelectedSkillTask, type SelectedSkillTaskState } from "../../../hook
 import { useSessionConfig } from "../../../hooks/useSessionConfig";
 import {
   Permission,
+  type MessageAttachment,
+  type SelectedSkillRequest,
   type ToolCategory,
 } from "../../../types";
+import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
 import { useDragAndDrop } from "./useDragAndDrop";
 import { useWebSocketNotifications } from "./useWebSocketNotifications";
 import { useAgentOptions } from "./useAgentOptions";
@@ -50,6 +53,7 @@ import {
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
+import { resolveAgentAcceptedFileTypes } from "./agentProfileFileTypes";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../types/agentOptions";
 import { shouldShowMessageOutline } from "./messageOutline";
@@ -64,6 +68,10 @@ import {
   type AgentProfileAvatarRef,
   type AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
+import {
+  buildAgentMarketDetailPath,
+  buildAgentMarketWorkspacePath,
+} from "../../../features/agent-market/agentMarketSelection";
 
 export type AgentConversationRecoveryPhase = "generic" | "loading" | "bound" | "blocked";
 
@@ -133,6 +141,90 @@ export function clearAgentConversationOperationId({
   storage: Pick<Storage, "removeItem"> | null;
 }): void {
   storage?.removeItem(agentConversationOperationStorageKey(agentId, revision));
+}
+
+interface AgentFirstSendCoordinator {
+  current: Promise<string> | null;
+}
+
+interface AgentFirstSubmissionCoordinator {
+  current: {
+    submissionKey: string;
+    promise: Promise<SubmissionOutcome>;
+  } | null;
+}
+
+/** Single-flight pinned creation; the caller may submit only after bind succeeds. */
+export async function ensureAgentConversationForFirstSend({
+  coordinator,
+  profile,
+  createConversation,
+  bindConversation,
+}: {
+  coordinator: AgentFirstSendCoordinator;
+  profile: Pick<AgentProfilePublicProjection, "agent_id" | "expected_revision">;
+  createConversation: () => ReturnType<typeof agentProfileApi.createConversation>;
+  bindConversation: (sessionId: string) => Promise<boolean>;
+}): Promise<string> {
+  if (!coordinator.current) {
+    coordinator.current = (async () => {
+      const created = await createConversation();
+      const identity = created.agent_conversation;
+      if (
+        !created.session_id ||
+        created.agent_id !== profile.agent_id ||
+        !identity ||
+        identity.agent_id !== profile.agent_id ||
+        identity.revision !== profile.expected_revision
+      ) {
+        throw new Error("agent_workspace_identity_mismatch");
+      }
+      if (!(await bindConversation(created.session_id))) {
+        throw new Error("agent_conversation_history_unavailable");
+      }
+      return created.session_id;
+    })();
+  }
+  try {
+    return await coordinator.current;
+  } catch (error) {
+    coordinator.current = null;
+    throw error;
+  }
+}
+
+/** Share the entire first-send result so click/keyboard races submit once. */
+export async function submitAgentFirstMessageSingleFlight({
+  coordinator,
+  submissionKey,
+  ensureConversation,
+  submitMessage,
+}: {
+  coordinator: AgentFirstSubmissionCoordinator;
+  submissionKey: string;
+  ensureConversation: () => Promise<string>;
+  submitMessage: (sessionId: string) => Promise<SubmissionOutcome>;
+}): Promise<SubmissionOutcome> {
+  const active = coordinator.current;
+  if (active && active.submissionKey !== submissionKey) {
+    return { status: "failed" };
+  }
+  let flight = active?.promise;
+  if (!active) {
+    flight = (async () => {
+      const createdSessionId = await ensureConversation();
+      return submitMessage(createdSessionId);
+    })();
+    coordinator.current = { submissionKey, promise: flight };
+  }
+  try {
+    if (!flight) return { status: "failed" };
+    return await flight;
+  } finally {
+    if (coordinator.current?.promise === flight) {
+      coordinator.current = null;
+    }
+  }
 }
 
 const LOCKED_SELECTED_SKILL_STATE: SelectedSkillTaskState = {
@@ -264,172 +356,6 @@ export function AgentConversationIdentityBanner({
   );
 }
 
-export function AgentWorkspaceWelcome({
-  profile,
-  creating,
-  readOnly,
-  error,
-  historyError,
-  onRetryHistory,
-  onStart,
-  onStarterPrompt,
-  onOpenDetail,
-}: {
-  profile: AgentProfilePublicProjection;
-  creating: boolean;
-  readOnly: boolean;
-  error: string | null;
-  historyError: string | null;
-  onRetryHistory?: () => void;
-  onStart: () => void;
-  onStarterPrompt: (prompt: string) => void;
-  onOpenDetail: () => void;
-}) {
-  return (
-    <main
-      className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] px-4 py-7 text-[var(--theme-text)] sm:px-7 sm:py-10"
-      data-agent-workspace-welcome
-    >
-      <div className="mx-auto max-w-4xl">
-        <section className="border-b border-[var(--theme-border)] pb-7 sm:pb-9">
-          <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-            <span
-              aria-label={`${profile.name} 头像`}
-              className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-              data-agent-avatar-ref={profile.avatar_ref}
-              role="img"
-            >
-              <AgentConversationAvatar avatarRef={profile.avatar_ref} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
-                <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
-                  <ShieldCheck size={14} aria-hidden="true" />
-                  企业已发布
-                </span>
-                <span className="border-l border-[var(--theme-border)] pl-2 text-[var(--theme-text-secondary)]">
-                  {AGENT_PROFILE_CATEGORY_LABELS[profile.category]}
-                </span>
-                <span className="border-l border-[var(--theme-border)] pl-2 text-[var(--theme-text-secondary)]">
-                  版本 {profile.expected_revision}
-                </span>
-              </div>
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">
-                {profile.name}
-              </h1>
-              <p className="mt-3 max-w-2xl whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
-                {profile.capability_summary || profile.description}
-              </p>
-              {profile.welcome_message ? (
-                <p className="mt-5 border-l-2 border-emerald-500 pl-4 text-sm leading-7">
-                  {profile.welcome_message}
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </section>
-
-        <section className="grid border-b border-[var(--theme-border)] py-6 sm:grid-cols-3 sm:divide-x sm:divide-[var(--theme-border)]">
-          <div className="pb-5 sm:pb-0 sm:pr-6">
-            <h2 className="text-xs font-semibold text-[var(--theme-text-secondary)]">推荐任务</h2>
-            <p className="mt-2 text-sm leading-6">
-              {profile.recommended_tasks.join("、") || profile.description}
-            </p>
-          </div>
-          <div className="border-t border-[var(--theme-border)] py-5 sm:border-0 sm:px-6 sm:py-0">
-            <h2 className="text-xs font-semibold text-[var(--theme-text-secondary)]">支持输入</h2>
-            <p className="mt-2 text-sm leading-6">
-              {profile.supported_input_types.join(" / ")}
-              {profile.supported_file_types.length
-                ? ` · ${profile.supported_file_types.join("、")}`
-                : ""}
-            </p>
-          </div>
-          <div className="border-t border-[var(--theme-border)] pt-5 sm:border-0 sm:pl-6 sm:pt-0">
-            <h2 className="text-xs font-semibold text-[var(--theme-text-secondary)]">预期输出</h2>
-            <p className="mt-2 text-sm leading-6">
-              {profile.expected_outputs.join("、") || "对话答复"}
-            </p>
-          </div>
-        </section>
-
-        {profile.starter_prompts.length ? (
-          <section className="border-b border-[var(--theme-border)] py-6">
-            <h2 className="text-sm font-semibold">示例问题</h2>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {profile.starter_prompts.map((prompt) => (
-                <button
-                  className="min-h-11 rounded-md border border-[var(--theme-border)] px-3 py-2 text-left text-sm leading-6 transition-colors hover:border-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={creating || readOnly}
-                  key={prompt}
-                  onClick={() => onStarterPrompt(prompt)}
-                  type="button"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        {profile.permissions_and_data_access_notice ? (
-          <section className="flex gap-3 border-b border-[var(--theme-border)] py-5 text-sm leading-6">
-            <ShieldCheck className="mt-0.5 shrink-0 text-emerald-600" size={17} aria-hidden="true" />
-            <div>
-              <h2 className="font-semibold">权限与数据访问</h2>
-              <p className="mt-1 text-[var(--theme-text-secondary)]">
-                {profile.permissions_and_data_access_notice}
-              </p>
-            </div>
-          </section>
-        ) : null}
-
-        <div className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <button
-            className="inline-flex items-center gap-1 text-sm font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-primary)]"
-            onClick={onOpenDetail}
-            type="button"
-          >
-            查看智能体详情
-            <ArrowRight size={15} aria-hidden="true" />
-          </button>
-          <button
-            aria-label={`开始与 ${profile.name} 对话`}
-            className="btn-primary inline-flex min-h-10 items-center justify-center gap-2 px-5 disabled:cursor-not-allowed disabled:opacity-60"
-            data-agent-workspace-start
-            disabled={creating || readOnly}
-            onClick={() => onStart()}
-            type="button"
-          >
-            <MessageCircle size={17} aria-hidden="true" />
-            {readOnly
-              ? "已下架，仅可查看历史"
-              : creating
-                ? "正在创建专属会话…"
-                : "开始新对话"}
-          </button>
-        </div>
-      </div>
-
-      {error ? (
-        <p className="mx-auto mt-4 max-w-3xl text-sm text-[var(--theme-danger)]" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {historyError ? (
-        <div className="mx-auto mt-4 flex max-w-3xl items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
-          <span>历史会话暂时无法加载，新建会话不受影响。</span>
-          {onRetryHistory ? (
-            <button className="font-medium underline" onClick={onRetryHistory} type="button">
-              重试
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </main>
-  );
-}
-
 export interface ChatAppContentProps {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -467,13 +393,15 @@ export function ChatAppContent({
       routeSessionId ?? null,
     ),
   );
-  const [agentWorkspaceCreating, setAgentWorkspaceCreating] = useState(false);
+  const agentWorkspaceCreationRef = useRef<Promise<string> | null>(null);
+  const agentWorkspaceFirstSubmissionRef =
+    useRef<AgentFirstSubmissionCoordinator["current"]>(null);
   const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
   const agentWorkspaceRouteBasePath = agentWorkspace
-    ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}/chat`
+    ? buildAgentMarketWorkspacePath(agentWorkspace)
     : "/chat";
   const agentWorkspaceDetailPath = agentWorkspace
-    ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}`
+    ? buildAgentMarketDetailPath(agentWorkspace)
     : "/agent-market";
   const agentWorkspaceStarterDraft = useMemo(() => {
     if (!agentWorkspace) return "";
@@ -506,8 +434,12 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
+  const agentAcceptedFileTypes = useMemo(
+    () => resolveAgentAcceptedFileTypes(agentWorkspace),
+    [agentWorkspace],
+  );
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop();
+    useDragAndDrop(agentAcceptedFileTypes);
 
   const {
     approvals,
@@ -626,6 +558,7 @@ export function ChatAppContent({
     sessionId,
     onIdentityChange: () => {
       agentWorkspaceSelectionRequestIdRef.current += 1;
+      setAgentWorkspaceError(null);
       clearMessages();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
@@ -665,6 +598,18 @@ export function ChatAppContent({
             identity,
           ),
         );
+        if (!agentWorkspace && identity) {
+          navigate(
+            buildAgentMarketWorkspacePath(
+              {
+                agent_id: identity.agent_id,
+                expected_revision: identity.revision,
+              },
+              agentConversationTargetSessionId,
+            ),
+            { replace: true },
+          );
+        }
       })
       .catch(() => {
         if (!active) return;
@@ -971,7 +916,9 @@ export function ChatAppContent({
     agentConversationState.phase !== "loading" &&
     agentConversationState.phase !== "blocked" &&
     recoveredSessionReady &&
-    (!agentWorkspace || agentWorkspaceTranscriptReady);
+    (!agentWorkspace ||
+      (!routeSessionId && !sessionId) ||
+      agentWorkspaceTranscriptReady);
 
   const sidebarRef = useRef<SessionSidebarHandle>(null);
 
@@ -1084,80 +1031,14 @@ export function ChatAppContent({
     historyLoadEnabled: agentWorkspaceHistoryLoadEnabled,
   });
 
-  const handleNewSessionWithReset = useCallback((starterPrompt?: string) => {
+  const handleNewSessionWithReset = useCallback(() => {
     if (agentWorkspace) {
-      if (agentWorkspaceCreating) return;
-      const startProfile = agentWorkspaceStartProfile;
-      if (agentWorkspaceReadOnly || !startProfile) {
-        setAgentWorkspaceError("该智能体已下架，历史会话仅供查看。");
-        return;
-      }
-      if (
-        startProfile.agent_id !== agentWorkspace.agent_id ||
-        startProfile.expected_revision !== agentWorkspace.expected_revision
-      ) {
-        clearMessages();
-        navigate(
-          `/agent-market/${encodeURIComponent(startProfile.agent_id)}/${startProfile.expected_revision}/chat`,
-        );
-        return;
-      }
+      agentWorkspaceCreationRef.current = null;
+      agentWorkspaceFirstSubmissionRef.current = null;
       setAgentWorkspaceError(null);
-      const operationId = getOrCreateAgentConversationOperationId({
-        agentId: startProfile.agent_id,
-        revision: startProfile.expected_revision,
-        storage: browserSessionStorage(),
-        createId: uuid,
-      });
-      if (!operationId) {
-        setAgentWorkspaceError("浏览器无法安全保存本次创建标识，请启用会话存储后重试。");
-        return;
-      }
-      setAgentWorkspaceCreating(true);
-      void agentProfileApi
-        .createConversation({
-          agent_id: startProfile.agent_id,
-          expected_revision: startProfile.expected_revision,
-        }, operationId)
-        .then((session) => {
-          const identity = session.agent_conversation;
-          if (
-            !session.session_id ||
-            session.agent_id !== agentWorkspace.agent_id ||
-            !identity ||
-            identity.agent_id !== agentWorkspace.agent_id ||
-            identity.revision !== agentWorkspace.expected_revision
-          ) {
-            throw new Error("agent_workspace_identity_mismatch");
-          }
-          clearAgentConversationOperationId({
-            agentId: startProfile.agent_id,
-            revision: startProfile.expected_revision,
-            storage: browserSessionStorage(),
-          });
-          clearMessages();
-          onAgentWorkspaceSessionCreated?.(session.session_id);
-          navigate(
-            `${agentWorkspaceRouteBasePath}/${encodeURIComponent(session.session_id)}`,
-            starterPrompt
-              ? { state: { agentStarterPrompt: starterPrompt } }
-              : undefined,
-          );
-        })
-        .catch((error: unknown) => {
-          const status =
-            error !== null && typeof error === "object"
-              ? (error as { status?: number }).status
-              : undefined;
-          setAgentWorkspaceError(
-            status === 403
-              ? "当前账号无权使用该智能体。"
-              : status === 404 || status === 409
-                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
-                : "暂时无法创建智能体对话，请稍后重试。",
-          );
-        })
-        .finally(() => setAgentWorkspaceCreating(false));
+      clearMessages();
+      setAgentConversationState(conversationState("generic", null));
+      navigate(agentWorkspaceRouteBasePath);
       return;
     }
     const nextSelection = resolveDefaultModelSelection({
@@ -1184,14 +1065,122 @@ export function ChatAppContent({
     resetToDefaults,
     resetAgentOptionDefaults,
     agentWorkspace,
-    agentWorkspaceStartProfile,
-    agentWorkspaceReadOnly,
-    agentWorkspaceCreating,
     agentWorkspaceRouteBasePath,
-    onAgentWorkspaceSessionCreated,
     clearMessages,
     navigate,
   ]);
+
+  const handleSendMessage = useCallback(
+    async (
+      content: string,
+      options?: Record<string, boolean | string | number>,
+      attachments?: MessageAttachment[],
+      selectedSkill?: SelectedSkillRequest | null,
+    ): Promise<SubmissionOutcome> => {
+      setAgentWorkspaceError(null);
+      if (!agentWorkspace || sessionId) {
+        return sendMessage(content, options, attachments, selectedSkill);
+      }
+      const startProfile = agentWorkspaceStartProfile;
+      if (agentWorkspaceReadOnly || !startProfile) {
+        setAgentWorkspaceError("该智能体已下架，历史会话仅供查看。");
+        return { status: "failed" };
+      }
+      if (
+        startProfile.agent_id !== agentWorkspace.agent_id ||
+        startProfile.expected_revision !== agentWorkspace.expected_revision
+      ) {
+        navigate(
+          buildAgentMarketWorkspacePath(startProfile),
+          { replace: true },
+        );
+        return { status: "failed" };
+      }
+
+      try {
+        const outcome = await submitAgentFirstMessageSingleFlight({
+          coordinator: agentWorkspaceFirstSubmissionRef,
+          submissionKey: JSON.stringify({
+            content,
+            fileIds: (attachments ?? []).map((attachment) => attachment.key),
+          }),
+          ensureConversation: () =>
+            ensureAgentConversationForFirstSend({
+              coordinator: agentWorkspaceCreationRef,
+              profile: startProfile,
+              createConversation: () => {
+                const operationId = getOrCreateAgentConversationOperationId({
+                  agentId: startProfile.agent_id,
+                  revision: startProfile.expected_revision,
+                  storage: browserSessionStorage(),
+                  createId: uuid,
+                });
+                if (!operationId) {
+                  return Promise.reject(
+                    new Error("agent_conversation_operation_storage_unavailable"),
+                  );
+                }
+                return agentProfileApi.createConversation(
+                  {
+                    agent_id: startProfile.agent_id,
+                    expected_revision: startProfile.expected_revision,
+                  },
+                  operationId,
+                );
+              },
+              bindConversation: async (createdSessionId) =>
+                Boolean(await loadHistory(createdSessionId)),
+            }).then((createdSessionId) => {
+              navigate(
+                buildAgentMarketWorkspacePath(startProfile, createdSessionId),
+                { replace: true },
+              );
+              onAgentWorkspaceSessionCreated?.(createdSessionId);
+              return createdSessionId;
+            }),
+          submitMessage: async () => {
+            setAgentWorkspaceError(null);
+            return sendMessage(content, undefined, attachments, null);
+          },
+        });
+        if (outcome.status === "accepted") {
+          clearAgentConversationOperationId({
+            agentId: startProfile.agent_id,
+            revision: startProfile.expected_revision,
+            storage: browserSessionStorage(),
+          });
+        }
+        return outcome;
+      } catch (error) {
+        agentWorkspaceFirstSubmissionRef.current = null;
+        const status =
+          error !== null && typeof error === "object"
+            ? (error as { status?: number }).status
+            : undefined;
+        setAgentWorkspaceError(
+          error instanceof Error &&
+            error.message === "agent_conversation_operation_storage_unavailable"
+            ? "浏览器无法安全保存本次创建标识，请启用会话存储后重试。"
+            : status === 403
+              ? "当前账号无权使用该智能体。"
+              : status === 404 || status === 409
+                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
+                : "暂时无法创建智能体对话，请稍后重试。",
+        );
+        return { status: "failed" };
+      }
+    },
+    [
+      agentWorkspace,
+      agentWorkspaceReadOnly,
+      agentWorkspaceStartProfile,
+      loadHistory,
+      navigate,
+      onAgentWorkspaceSessionCreated,
+      sendMessage,
+      sessionId,
+    ],
+  );
 
   const handleMobileClose = useCallback(
     () => setMobileSidebarOpen(false),
@@ -1315,7 +1304,7 @@ export function ChatAppContent({
         />
       }
     >
-      <>
+      <div className="min-h-0 flex-1 overflow-hidden flex flex-col">
         {isPageDragging && (
           <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-stone-500/5 transition-colors dark:bg-stone-500/10">
             <div className="flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-stone-400 bg-[var(--theme-bg-card)] px-16 py-12 shadow-[0_12px_28px_rgba(18,38,63,0.08)] transition-colors dark:border-stone-500 dark:bg-stone-900">
@@ -1356,20 +1345,7 @@ export function ChatAppContent({
             identity={agentConversationState.identity}
           />
         ) : null}
-        {agentWorkspace && !routeSessionId && !sessionId ? (
-          <AgentWorkspaceWelcome
-            creating={agentWorkspaceCreating}
-            error={agentWorkspaceError}
-            historyError={agentWorkspaceHistoryError}
-            readOnly={agentWorkspaceReadOnly}
-            onOpenDetail={() => navigate(agentWorkspaceDetailPath)}
-            onRetryHistory={onAgentWorkspaceHistoryRetry}
-            onStart={handleNewSessionWithReset}
-            onStarterPrompt={(prompt) => handleNewSessionWithReset(prompt)}
-            profile={agentWorkspace}
-          />
-        ) : (
-          <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
+        <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
             <ChatView
             messages={visibleMessages}
             sessionId={visibleSessionId}
@@ -1380,6 +1356,7 @@ export function ChatAppContent({
             canSendMessage={canSendMessage}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
+            agentEmptyProfile={agentWorkspace}
             composerPlaceholder={
               agentWorkspaceReadOnly
                 ? "该历史会话为只读状态"
@@ -1433,7 +1410,7 @@ export function ChatAppContent({
             approvals={approvals}
             onRespondApproval={respondToApproval}
             approvalLoading={approvalLoading}
-            onSendMessage={sendMessage}
+            onSendMessage={handleSendMessage}
             canRetryPendingSubmission={canRetryPendingSubmission}
             onRetryPendingSubmission={retryPendingSubmission}
             onStopGeneration={stopGeneration}
@@ -1451,9 +1428,23 @@ export function ChatAppContent({
             sessionRouteBasePath={agentWorkspaceRouteBasePath}
             />
           </ChatMcpCatalogContext.Provider>
-        )}
+        {agentWorkspaceError ? (
+          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
+            {agentWorkspaceError}
+          </p>
+        ) : null}
+        {agentWorkspaceHistoryError ? (
+          <div className="flex items-center justify-center gap-3 px-4 pb-2 text-sm text-[var(--theme-warning)]">
+            <span>历史会话暂时无法加载。</span>
+            {onAgentWorkspaceHistoryRetry ? (
+              <button className="underline" onClick={onAgentWorkspaceHistoryRetry} type="button">
+                重试
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <BlockPreviewPortal />
-      </>
+      </div>
     </AppShell>
   );
 }

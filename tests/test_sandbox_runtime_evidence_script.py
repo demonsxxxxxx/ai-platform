@@ -4153,11 +4153,16 @@ def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_pa
         assert evidence["profile"] == {
             "selected": profile,
             "catalog": "implicit",
-            "primary_skill": "general-chat",
+            "primary_skill": {
+                "platform-controlled": "qa-file-reviewer",
+                "sdk-native": "minimax-docx",
+            }[profile],
             "authorized_implicit_skill": (
                 "qa-file-reviewer" if profile == "platform-controlled" else "minimax-docx"
             ),
-            "primary_execution_strategy": "sdk_restricted",
+            "primary_execution_strategy": (
+                "sdk_native" if profile == "sdk-native" else "platform_controlled"
+            ),
             "authorized_skill_count": 1,
             "native_sidecar_expected": profile == "sdk-native",
             "authorization_basis": "deterministic_verifier_fixture",
@@ -4189,7 +4194,7 @@ def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_pa
         assert not list(evidence_path.parent.glob(f".{evidence_path.name}.*.tmp"))
 
     platform_request, native_request = captured_requests
-    assert platform_request.skill_ids == ["general-chat", "qa-file-reviewer"]
+    assert platform_request.skill_ids == ["qa-file-reviewer"]
     assert platform_request.mcp_tool_ids == []
     platform_by_identity = {
         subject["identity"]: subject for subject in platform_request.tool_policy_subjects
@@ -4198,7 +4203,7 @@ def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_pa
     assert platform_by_identity["Skill"]["allowed_skill_names"] == ["qa-file-reviewer"]
     assert platform_by_identity["Bash"]["execution_strategy"] == "platform_controlled"
     assert platform_by_identity["Bash"]["command_isolation"] == "minimal-environment-v1"
-    assert native_request.skill_ids == ["general-chat", "minimax-docx"]
+    assert native_request.skill_ids == ["minimax-docx"]
     native_by_identity = {subject["identity"]: subject for subject in native_request.tool_policy_subjects}
     assert set(native_by_identity) == {"Skill", "Bash", "Write"}
     assert native_by_identity["Skill"]["allowed_skill_names"] == ["minimax-docx"]

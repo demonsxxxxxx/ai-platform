@@ -96,7 +96,13 @@ export function AgentWorkspaceRoute() {
   useEffect(() => {
     let active = true;
     setPhase("loading");
-    setLoadedWorkspace(null);
+    setLoadedWorkspace((current) =>
+      current !== null &&
+      current.agentId === agentId &&
+      current.revision === revision
+        ? current
+        : null,
+    );
 
     if (!agentId || !revision || validRevision === undefined) {
       setPhase("unavailable");

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import s72_quickstart as quickstart
+from tools import sandbox_quickstart as quickstart
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +69,8 @@ def test_compose_command_has_only_internal_test_files_and_exact_overrides(tmp_pa
     assert "docker-compose.s72-colocation.yml" not in " ".join(command)
     rendered = " ".join(command)
     assert BACKEND in rendered and FRONTEND in rendered and COMMIT in rendered
+    assert f"OPENSANDBOX_EXECUTOR_IMAGE={BACKEND}" in command
+    assert f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:{'3' * 64}" in command
 
 
 def test_managed_env_is_only_checked_for_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -258,7 +260,16 @@ def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str])
     monkeypatch.setattr(release, "_validate_env", lambda _: tmp_path / ".env")
     monkeypatch.setattr(release, "_compose", lambda _env, _subject, *args: events.append("compose:" + " ".join(args)))
     monkeypatch.setattr(release, "_wait_health", lambda _: events.append("health"))
-    monkeypatch.setattr(release.runner, "run", lambda command, **_: events.append("pull") or "")
+    monkeypatch.setattr(
+        release.runner,
+        "run",
+        lambda command, **_: events.append(
+            f"inspect:{list(command)[-1]}"
+            if list(command)[-3:-1] == ["image", "inspect"]
+            else "pull"
+        )
+        or "",
+    )
     monkeypatch.setattr(release, "_rollback", lambda *_: events.append("rollback"))
     monkeypatch.setattr(release, "_preflight_rollback", lambda *_: events.append("rollback-preflight"))
     return release
@@ -273,7 +284,8 @@ def test_quickstart_orders_config_before_pull_and_up(
     release.run()
 
     assert events == [
-        "source", "compose:config --quiet", "pull", "pull", "source", "rollback-preflight",
+        "source", "compose:config --quiet", "pull", "pull", f"inspect:{BACKEND}", "source",
+        "rollback-preflight",
         "compose:up -d --no-build --pull never", "health",
     ]
 

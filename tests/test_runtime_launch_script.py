@@ -90,6 +90,17 @@ def test_worker_compose_forwards_memory_retention_cleanup_settings():
         assert f"{name}: ${{{name}:-{default}}}" in worker_section
 
 
+def test_skill_manifest_reference_transport_has_no_rollout_switch():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    api_section = compose_service_text(compose_text, "api")
+    worker_section = compose_service_text(compose_text, "worker")
+    env_values = env_example_values(ENV_EXAMPLE_FILE.read_text(encoding="utf-8"))
+
+    assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in api_section
+    assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in worker_section
+    assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in env_values
+
+
 def test_run_api_with_deploy_env_derives_database_and_s3_settings():
     script = Path("tools/run_api_with_deploy_env.sh")
 

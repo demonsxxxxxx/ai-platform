@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 from app.models import QueueRunPayload
 from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
+from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 
 
 DEFAULT_QUEUE_KEY_PREFIX = "ai-platform:runs"
@@ -1100,7 +1101,8 @@ async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMe
 
     try:
         validated = QueueRunPayload.model_validate(payload)
-    except ValidationError as exc:
+        validate_skill_manifest_refs(validated.skill_manifests)
+    except (ValidationError, SkillVersionMaterializationError) as exc:
         raise QueueAdmissionRejected("queue_payload_invalid") from exc
     keys = get_queue_keys()
     redis = await get_redis()
@@ -1185,7 +1187,8 @@ async def read_queue_admission(payload: dict[str, Any]) -> QueueAdmissionMetadat
 
     try:
         validated = QueueRunPayload.model_validate(payload)
-    except ValidationError as exc:
+        validate_skill_manifest_refs(validated.skill_manifests)
+    except (ValidationError, SkillVersionMaterializationError) as exc:
         raise QueueAdmissionRejected("queue_payload_invalid") from exc
     keys = get_queue_keys()
     raw = validated.model_dump_json()

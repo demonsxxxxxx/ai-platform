@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
+import re
 from typing import Any
 
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
@@ -21,6 +23,18 @@ SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2 = (
 SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
     SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2
 )
+SKILL_MATERIALIZATION_REF_SCHEMA_VERSION = "ai-platform.skill-materialization-ref.v1"
+_SKILL_MATERIALIZATION_REF_KEYS = frozenset(
+    {
+        "schema_version",
+        "skill_id",
+        "version",
+        "content_hash",
+        "materialization_sha256",
+    }
+)
+_SAFE_SKILL_REF_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SkillVersionMaterializationError(ValueError):
@@ -164,6 +178,86 @@ def attach_skill_snapshot_governance(
         )
         attached.append(item)
     return attached
+
+
+def skill_manifest_materialization_sha256(manifest: dict[str, Any]) -> str:
+    """Bind a private materialization to its complete canonical package."""
+
+    try:
+        canonical = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_skill_manifest_ref(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project a bounded execution reference without package file contents."""
+
+    files = manifest.get("files")
+    skill_id = str(manifest.get("skill_id") or "").strip()
+    version = str(manifest.get("version") or manifest.get("skill_version") or "").strip()
+    content_hash = str(manifest.get("content_hash") or "").strip()
+    if (
+        not skill_id
+        or not version
+        or version != content_hash
+        or not isinstance(files, list)
+        or not files
+    ):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    return {
+        "schema_version": SKILL_MATERIALIZATION_REF_SCHEMA_VERSION,
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": content_hash,
+        "materialization_sha256": skill_manifest_materialization_sha256(manifest),
+    }
+
+
+def build_skill_manifest_refs(
+    skill_manifests: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    refs = [build_skill_manifest_ref(manifest) for manifest in skill_manifests]
+    if len({item["skill_id"] for item in refs}) != len(refs):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    return refs
+
+
+def validate_skill_manifest_refs(value: object) -> list[dict[str, Any]]:
+    """Accept only bounded references at persisted and Redis transport boundaries."""
+
+    if not isinstance(value, list):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    refs: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict) or set(raw) != _SKILL_MATERIALIZATION_REF_KEYS:
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+        skill_id = raw.get("skill_id")
+        version = raw.get("version")
+        content_hash = raw.get("content_hash")
+        digest = raw.get("materialization_sha256")
+        if (
+            raw.get("schema_version") != SKILL_MATERIALIZATION_REF_SCHEMA_VERSION
+            or not isinstance(skill_id, str)
+            or _SAFE_SKILL_REF_ID.fullmatch(skill_id) is None
+            or not isinstance(version, str)
+            or _SAFE_SKILL_REF_ID.fullmatch(version) is None
+            or not isinstance(content_hash, str)
+            or content_hash != version
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+        ):
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+        refs.append(dict(raw))
+    if len({ref["skill_id"] for ref in refs}) != len(refs):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    return refs
 
 
 def build_skill_manifest_pins(

@@ -1472,6 +1472,21 @@ alter table run_skill_snapshots add column if not exists inferred_used boolean n
 
 create index if not exists idx_run_skill_snapshots_run on run_skill_snapshots(tenant_id, run_id);
 
+create table if not exists run_skill_materializations (
+  tenant_id text not null references tenants(id),
+  run_id text not null references runs(id),
+  skill_id text not null references skills(id),
+  materialization_sha256 text not null check (materialization_sha256 ~ '^[0-9a-f]{64}$'),
+  manifest_json jsonb not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, run_id, skill_id),
+  foreign key (tenant_id, run_id, skill_id)
+    references run_skill_snapshots(tenant_id, run_id, skill_id) on delete cascade
+);
+
+create index if not exists idx_run_skill_materializations_run
+  on run_skill_materializations(tenant_id, run_id);
+
 create table if not exists messages (
   id text primary key,
   tenant_id text not null references tenants(id),

@@ -857,6 +857,36 @@ class AgentProfileAuthority:
             )
         return admission
 
+    async def resolve_bound_for_worker_dispatch(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        agent_id: str,
+        revision: int,
+        content_hash: str,
+    ) -> AgentProfileAdmission | None:
+        """Reauthorize a pinned Profile for dispatch without leaking HTTP errors."""
+
+        try:
+            row = await repositories.get_bound_published_agent_profile(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+                revision=revision,
+                content_hash=content_hash,
+                for_update=True,
+            )
+            if row is None or _revision_hash(_draft_from_row(row)) != content_hash:
+                return None
+            return await self._admission_from_row(
+                conn,
+                principal=principal,
+                row=row,
+            )
+        except (HTTPException, KeyError, TypeError, ValueError):
+            return None
+
     async def _admission_from_row(
         self,
         conn,
@@ -941,6 +971,21 @@ class AgentProfileAuthority:
         )
         governed_mcp_tool_ids: tuple[str, ...] | None = None
         if governed_profile_snapshot:
+            try:
+                skill_manifests = await repositories.materialize_run_skill_manifests(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    skill_manifest_refs=(
+                        snapshot["skill_manifests"]
+                        if "skill_manifests" in snapshot
+                        else []
+                    ),
+                )
+            except repositories.RepositoryConflictError as exc:
+                raise repositories.RepositoryConflictError(
+                    "agent_profile_snapshot_invalid"
+                ) from exc
             expected_profile_snapshot.update(
                 {
                     "required_skill_id": authority_skill_id,
@@ -950,7 +995,7 @@ class AgentProfileAuthority:
             primary_manifest = next(
                 (
                     manifest
-                    for manifest in snapshot.get("skill_manifests", [])
+                    for manifest in skill_manifests
                     if isinstance(manifest, dict)
                     and str(manifest.get("skill_id") or "") == authority_skill_id
                 ),
@@ -972,11 +1017,7 @@ class AgentProfileAuthority:
                     pinned_version=snapshot_skill_version,
                     pinned_executor_type=str(snapshot.get("executor_type") or ""),
                     release_decision=release_decision if isinstance(release_decision, dict) else {},
-                    skill_manifests=[
-                        dict(item)
-                        for item in snapshot.get("skill_manifests", [])
-                        if isinstance(item, dict)
-                    ],
+                    skill_manifests=skill_manifests,
                 )
                 governed_mcp_tool_ids = tuple(
                     await repositories.validate_replay_skill_manifests(
@@ -984,11 +1025,7 @@ class AgentProfileAuthority:
                         skill_id=authority_skill_id,
                         pinned_version=snapshot_skill_version,
                         pinned_executor_type=str(snapshot.get("executor_type") or ""),
-                        skill_manifests=[
-                            dict(item)
-                            for item in snapshot.get("skill_manifests", [])
-                            if isinstance(item, dict)
-                        ],
+                        skill_manifests=skill_manifests,
                     )
                 )
             except (

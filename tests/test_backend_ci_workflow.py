@@ -8,6 +8,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -44,6 +45,40 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_chat_routes.py",
     "tests/test_skills_marketplace_routes.py",
 )
+BACKEND_TEST_SHARDS = {
+    "sandbox-runtime": (
+        "tests/test_sandbox_container_provider.py",
+        "tests/test_sandbox_runtime.py",
+        "tests/test_sandbox_runtime_cleanup.py",
+        "tests/test_sandbox_runtime_evidence_script.py",
+        "tests/test_b2_sandbox_readiness.py",
+        "tests/test_contract.py",
+    ),
+    "repository-worker-streaming": (
+        "tests/test_repositories.py",
+        "tests/test_worker_main.py",
+        "tests/test_sse_runtime_cutover.py",
+        "tests/test_streaming_redis.py",
+        "tests/test_streaming_control.py",
+        "tests/test_streaming_postgres.py",
+        "tests/test_streaming_repository.py",
+        "tests/test_runtime_callbacks.py",
+        "tests/test_worker.py",
+        "tests/test_lambchat_sse_v21.py",
+        "tests/test_runtime_launch_script.py",
+    ),
+    "release-governance": (
+        "tests/test_backend_ci_workflow.py",
+        "tests/test_s72_release_contract.py",
+        "tests/test_packaging_contract.py",
+        "tests/test_packaging_publish_workflow.py",
+        "tests/test_trivy_failure_evidence.py",
+        "tests/test_s72_atomic_recovery_authority.py",
+        "tests/test_release_image_manifest.py",
+        "tests/test_governance_readiness.py",
+        "tests/test_release_authority.py",
+    ),
+}
 
 
 def _workflow_job_block(workflow: str, job_id: str) -> str:
@@ -64,8 +99,13 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "branches:" in pull_request_block
     assert "- main" in pull_request_block
     assert "paths:" not in pull_request_block
+    assert "group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}" in workflow
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     assert "name: backend required" in workflow
-    assert "needs: [sandbox-provider, agent-skill-contracts, backend-image]" in workflow
+    assert (
+        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
+        in workflow
+    )
     assert "name: Agent and Skill contracts" in workflow
     assert "name: packaged backend image build" in workflow
     assert "if: ${{ always() }}" in workflow
@@ -80,42 +120,53 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_worker_main.py" in workflow
 
 
-def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_module():
+def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    sandbox_job = _workflow_job_block(workflow, "sandbox-provider")
-    pytest_step = sandbox_job.split("- name: Run sandbox provider targeted tests", 1)[1]
+    workflow_document = yaml.safe_load(workflow)
+    validation_job = _workflow_job_block(workflow, "backend-validation")
+    tests_job = _workflow_job_block(workflow, "backend-tests")
     required_job = _workflow_job_block(workflow, "required")
-    sse_selectors = (
-        "tests/test_sse_runtime_cutover.py",
-        "tests/test_streaming_redis.py",
-        "tests/test_streaming_control.py",
-        "tests/test_streaming_postgres.py",
-        "tests/test_streaming_repository.py",
-        "tests/test_runtime_callbacks.py",
-        "tests/test_worker.py",
-        "tests/test_lambchat_sse_v21.py",
-        "tests/test_runtime_launch_script.py",
-    )
 
-    assert "runs-on: ubuntu-latest" in sandbox_job
-    assert sandbox_job.count("- name: Enforce SSE v2.1 release-atomic cutover") == 1
-    assert sandbox_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
+    assert "runs-on: ubuntu-latest" in validation_job
+    assert "timeout-minutes: 10" in validation_job
+    assert validation_job.count("- name: Enforce SSE v2.1 release-atomic cutover") == 1
+    assert validation_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
+    assert "runs-on: ubuntu-latest" in tests_job
+    assert "needs: backend-validation" in tests_job
+    assert "timeout-minutes: 15" in tests_job
+    assert "fail-fast: false" in tests_job
+    assert "ref: ${{ env.BACKEND_TEST_SOURCE_COMMIT }}" in tests_job
+    assert "fetch-depth: 0" in tests_job
+    matrix_entries = workflow_document["jobs"]["backend-tests"]["strategy"]["matrix"][
+        "include"
+    ]
+    actual_shards = {
+        entry["shard"]: tuple(entry["test_files"].split()) for entry in matrix_entries
+    }
+    assert actual_shards == BACKEND_TEST_SHARDS
+    all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
+    assert len(all_selectors) == len(set(all_selectors)) == 26
+    pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
+    assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
+    assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step
     assert "uv run --locked --extra test python -m pytest" in pytest_step
-    assert "tests/test_trivy_failure_evidence.py \\" in pytest_step
-    assert pytest_step.index("tests/test_trivy_failure_evidence.py") < pytest_step.index("-q \\")
-    assert "tests/test_s72_atomic_recovery_authority.py \\" in pytest_step
-    assert pytest_step.index("tests/test_s72_atomic_recovery_authority.py") < pytest_step.index("-q \\")
-    for selector in sse_selectors:
-        assert pytest_step.count(selector) == 1
-        assert pytest_step.index(selector) < pytest_step.index("-q \\")
+    assert "${{ matrix.test_files }}" in pytest_step
+    assert "-vv" in pytest_step
+    assert "--tb=short" in pytest_step
+    assert "-o faulthandler_timeout=120" in pytest_step
+    assert '--basetemp ".pytest-tmp/${{ matrix.shard }}"' in pytest_step
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
     assert " -k " not in pytest_step
     assert "runs-on: ubuntu-latest" in required_job
     assert (
-        "needs: [sandbox-provider, agent-skill-contracts, backend-image]"
+        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
         in required_job
     )
+    assert "VALIDATION_RESULT: ${{ needs.backend-validation.result }}" in required_job
+    assert "BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}" in required_job
+    assert 'test "$VALIDATION_RESULT" = "success"' in required_job
+    assert 'test "$BACKEND_TESTS_RESULT" = "success"' in required_job
     assert "if: ${{ always() }}" in required_job
 
 
@@ -128,7 +179,8 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert len(pytest_step) == 2
     assert "name: Agent and Skill contracts" in agent_skill_job
     assert "runs-on: ubuntu-latest" in agent_skill_job
-    assert "needs: sandbox-provider" in agent_skill_job
+    assert "needs: backend-validation" in agent_skill_job
+    assert "timeout-minutes: 15" in agent_skill_job
     assert (
         "AGENT_SKILL_SOURCE_COMMIT: "
         "${{ github.event.pull_request.head.sha || github.sha }}"
@@ -145,9 +197,15 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
 
     run_script = pytest_step[1].split("run: |", 1)[1]
-    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", run_script)
+    assert run_script.index("mkdir -p .pytest-tmp") < run_script.index("timeout --signal")
+    timeout_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
+    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", timeout_script)
     tokens = shlex.split(normalized_run)
     expected_tokens = [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=30s",
+        "10m",
         "uv",
         "run",
         "--locked",
@@ -157,16 +215,19 @@ def test_agent_skill_contract_job_is_bounded_and_required():
         "-m",
         "pytest",
         *AGENT_SKILL_CONTRACT_TESTS,
-        "-q",
+        "-vv",
+        "--tb=short",
+        "-o",
+        "faulthandler_timeout=120",
         "--basetemp",
-        ".pytest-tmp",
+        ".pytest-tmp/agent-skill-contracts",
     ]
     assert tokens == expected_tokens
     assert not any(token.startswith("-k") for token in tokens)
     assert not any(token.startswith("--ignore") for token in tokens)
 
     assert (
-        "needs: [sandbox-provider, agent-skill-contracts, backend-image]"
+        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
         in required_job
     )
     assert (
@@ -696,7 +757,7 @@ def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_fai
 
     install_start = workflow.index("- name: Install trusted-base governance dependency")
     governance_start = workflow.index("- name: Run code governance")
-    governance_step = workflow[governance_start : workflow.index("- name: Run sandbox provider targeted tests")]
+    governance_step = workflow[governance_start : workflow.index("  backend-tests:")]
 
     assert install_start < governance_start
     assert "python -m pip install ruff==0.11.13" in workflow
@@ -721,7 +782,7 @@ def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
     locked_install_start = workflow.index(
         "- name: Install candidate dependencies from the lock authority"
     )
-    pytest_start = workflow.index("- name: Run sandbox provider targeted tests")
+    pytest_start = workflow.index("  backend-tests:")
     head_checkout = workflow[head_checkout_start:pytest_start]
 
     assert (
@@ -752,7 +813,8 @@ def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contrac
 
     assert "paths:" not in workflow
     assert "if:" not in image_job
-    assert "needs: sandbox-provider" in image_job
+    assert "needs: backend-validation" in image_job
+    assert "timeout-minutes: 30" in image_job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
     assert "persist-credentials: false" in image_job
     assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in image_job

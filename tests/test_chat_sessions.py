@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 
 from app.auth import AuthPrincipal
 from app.main import create_app
+from app import repositories
+from app import agent_conversation_repository
+from app.chat_session_projection import session_response
 from app.routes.chat_sessions import list_sessions
 from app.settings import Settings
 
@@ -68,6 +71,123 @@ async def test_list_sessions_returns_authorized_rows(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ordinary_session_repository_excludes_pinned_agent_conversations():
+    captured = {}
+
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        async def execute(self, query, params):
+            captured["query"] = query
+            captured["params"] = params
+            return Cursor()
+
+    assert await repositories.list_authorized_sessions(
+        Connection(), tenant_id="tenant-a", user_id="user-a"
+    ) == []
+    normalized = " ".join(captured["query"].split()).lower()
+    assert "sessions.admitted_agent_profile_revision is null" in normalized
+    assert captured["params"] == ("tenant-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_agent_conversation_repository_selects_complete_pinned_public_identity():
+    captured = []
+
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        async def execute(self, query, params):
+            captured.append((query, params))
+            return Cursor()
+
+    assert await agent_conversation_repository.list_authorized_agent_conversations(
+        Connection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        agent_id="agt_support",
+        revision=7,
+        cursor=None,
+        limit=21,
+    ) == []
+    assert await repositories.get_authorized_session_projection(
+        Connection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="ses_1",
+    ) is None
+    normalized = " ".join(captured[0][0].split()).lower()
+    detail_normalized = " ".join(captured[1][0].split()).lower()
+    for field in (
+        "welcome_message",
+        "starter_prompts",
+        "capability_summary",
+        "recommended_tasks",
+        "supported_input_types",
+        "supported_file_types",
+        "expected_outputs",
+        "permissions_and_data_access_notice",
+        "avatar_ref",
+        "category",
+        "published_at",
+    ):
+        assert f"profile.{field} as agent_profile_{field}" in normalized
+        assert f"profile.{field} as agent_profile_{field}" in detail_normalized
+    assert "profile.tenant_id = sessions.tenant_id" in normalized
+    assert "profile.agent_id = sessions.agent_id" in normalized
+    assert "profile.revision = sessions.admitted_agent_profile_revision" in normalized
+    assert "profile.content_hash = sessions.admitted_agent_profile_hash" in normalized
+    assert "sessions.purpose" in normalized
+    assert "sessions.purpose = 'conversation'" in normalized
+    assert captured[0][1] == ("tenant-a", "user-a", "agt_support", 7, 21)
+    assert captured[1][1] == ("tenant-a", "user-a", "ses_1")
+
+
+@pytest.mark.asyncio
+async def test_agent_conversation_repository_excludes_builder_test_sessions():
+    captured = {}
+
+    class Cursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "ses_conversation",
+                    "workspace_id": "default",
+                    "agent_id": "agt_support",
+                    "title": "Support",
+                    "purpose": "conversation",
+                }
+            ]
+
+    class Connection:
+        async def execute(self, query, params):
+            captured["query"] = " ".join(query.split()).lower()
+            captured["params"] = params
+            return Cursor()
+
+    rows = await agent_conversation_repository.list_authorized_agent_conversations(
+        Connection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        agent_id="agt_support",
+        revision=7,
+        cursor=None,
+        limit=20,
+    )
+
+    assert [row["id"] for row in rows] == ["ses_conversation"]
+    assert "sessions.purpose = 'conversation'" in captured["query"]
+    assert "sessions.purpose" in captured["query"].split(" from sessions", 1)[0]
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
     monkeypatch,
 ):
@@ -83,8 +203,17 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "admitted_agent_profile_hash": "a" * 64,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
+            "agent_profile_welcome_message": "Upload a policy for review.",
+            "agent_profile_starter_prompts": ["Review this policy"],
+            "agent_profile_capability_summary": "Reviews support policy files.",
+            "agent_profile_recommended_tasks": ["Policy review"],
+            "agent_profile_supported_input_types": ["text", "file"],
+            "agent_profile_supported_file_types": ["application/pdf", "image/*"],
+            "agent_profile_expected_outputs": ["Review memo"],
+            "agent_profile_permissions_and_data_access_notice": "Uses authorized files only.",
             "agent_profile_avatar_ref": "builtin:assistant",
             "agent_profile_category": "support",
+            "agent_profile_published_at": datetime(2026, 7, 31, tzinfo=timezone.utc),
             "created_at": datetime(2026, 8, index, tzinfo=timezone.utc),
             "updated_at": datetime(2026, 8, index, 1, tzinfo=timezone.utc),
         }
@@ -124,6 +253,56 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "updated_at": "2026-08-02T01:00:00+00:00",
         "v": 1,
     }
+    identity = response.sessions[0].agent_conversation
+    assert identity is not None
+    assert identity.model_dump(mode="json") == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "name": "Support assistant",
+        "description": "Approved support help.",
+        "avatar_ref": "builtin:assistant",
+        "category": "support",
+        "welcome_message": "Upload a policy for review.",
+        "starter_prompts": ["Review this policy"],
+        "capability_summary": "Reviews support policy files.",
+        "recommended_tasks": ["Policy review"],
+        "supported_input_types": ["text", "file"],
+        "supported_file_types": ["application/pdf", "image/*"],
+        "expected_outputs": ["Review memo"],
+        "permissions_and_data_access_notice": "Uses authorized files only.",
+        "published_at": "2026-07-31T00:00:00Z",
+    }
+
+
+def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_private_fields():
+    projection = session_response(
+        {
+            "id": "ses_legacy",
+            "workspace_id": "default",
+            "agent_id": "agt_support",
+            "title": "Legacy support",
+            "admitted_agent_profile_revision": 2,
+            "agent_profile_name": "Support assistant",
+            "agent_profile_description": "Approved support help.",
+            "created_at": None,
+            "updated_at": None,
+            "instructions": "private",
+            "model_id": "private-model",
+            "mcp_tool_ids": ["private-tool"],
+            "content_hash": "private-hash",
+        }
+    )
+
+    identity = projection.agent_conversation
+    assert identity is not None
+    assert identity.supported_input_types == ["text"]
+    assert identity.supported_file_types == []
+    assert not {
+        "instructions",
+        "model_id",
+        "mcp_tool_ids",
+        "content_hash",
+    }.intersection(identity.model_dump())
 
 
 @pytest.mark.asyncio

@@ -12,14 +12,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   BACKEND_PYTHON_VERSION: "3.13.14"
   UV_VERSION: "0.12.1"
 
 jobs:
-  sandbox-provider:
-    name: backend tests and governance
+  backend-validation:
+    name: backend validation and governance
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,33 +100,90 @@ jobs:
       - name: Enforce SSE v2.1 release-atomic cutover
         run: python tools/check_sse_runtime_cutover.py
 
-      - name: Run sandbox provider targeted tests
+  backend-tests:
+    name: backend tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    needs: backend-validation
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: sandbox-runtime
+            test_files: >-
+              tests/test_sandbox_container_provider.py
+              tests/test_sandbox_runtime.py
+              tests/test_sandbox_runtime_cleanup.py
+              tests/test_sandbox_runtime_evidence_script.py
+              tests/test_b2_sandbox_readiness.py
+              tests/test_contract.py
+          - shard: repository-worker-streaming
+            test_files: >-
+              tests/test_repositories.py
+              tests/test_worker_main.py
+              tests/test_sse_runtime_cutover.py
+              tests/test_streaming_redis.py
+              tests/test_streaming_control.py
+              tests/test_streaming_postgres.py
+              tests/test_streaming_repository.py
+              tests/test_runtime_callbacks.py
+              tests/test_worker.py
+              tests/test_lambchat_sse_v21.py
+              tests/test_runtime_launch_script.py
+          - shard: release-governance
+            test_files: >-
+              tests/test_backend_ci_workflow.py
+              tests/test_s72_release_contract.py
+              tests/test_packaging_contract.py
+              tests/test_packaging_publish_workflow.py
+              tests/test_trivy_failure_evidence.py
+              tests/test_s72_atomic_recovery_authority.py
+              tests/test_release_image_manifest.py
+              tests/test_governance_readiness.py
+              tests/test_release_authority.py
+    env:
+      BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact backend test source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BACKEND_TEST_SOURCE_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact backend test source
         run: |
-          uv run --locked --extra test python -m pytest \
-            tests/test_sandbox_container_provider.py \
-            tests/test_sandbox_runtime.py \
-            tests/test_sandbox_runtime_cleanup.py \
-            tests/test_sandbox_runtime_evidence_script.py \
-            tests/test_b2_sandbox_readiness.py \
-            tests/test_repositories.py \
-            tests/test_backend_ci_workflow.py \
-            tests/test_s72_release_contract.py \
-            tests/test_packaging_publish_workflow.py \
-            tests/test_trivy_failure_evidence.py \
-            tests/test_s72_atomic_recovery_authority.py \
-            tests/test_release_image_manifest.py \
-            tests/test_governance_readiness.py \
-            tests/test_release_authority.py \
-            tests/test_contract.py \
-            tests/test_worker_main.py \
-            tests/test_sse_runtime_cutover.py tests/test_streaming_redis.py tests/test_streaming_control.py tests/test_streaming_postgres.py tests/test_streaming_repository.py tests/test_runtime_callbacks.py tests/test_worker.py tests/test_lambchat_sse_v21.py tests/test_runtime_launch_script.py \
-            -q \
-            --basetemp .pytest-tmp
+          set -euo pipefail
+          [[ "$BACKEND_TEST_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$BACKEND_TEST_SOURCE_COMMIT"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.BACKEND_PYTHON_VERSION }}
+
+      - name: Install candidate dependencies from the lock authority
+        run: |
+          python -m pip install "uv==$UV_VERSION"
+          uv lock --check
+          uv sync --locked --extra test --no-install-project
+
+      - name: Run backend test shard
+        run: |
+          mkdir -p .pytest-tmp
+          timeout --signal=TERM --kill-after=30s 10m \
+            uv run --locked --extra test python -m pytest \
+              ${{ matrix.test_files }} \
+              -vv \
+              --tb=short \
+              -o faulthandler_timeout=120 \
+              --basetemp ".pytest-tmp/${{ matrix.shard }}"
 
   agent-skill-contracts:
     name: Agent and Skill contracts
     runs-on: ubuntu-latest
-    needs: sandbox-provider
+    needs: backend-validation
+    timeout-minutes: 15
     env:
       AGENT_SKILL_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -150,25 +212,30 @@ jobs:
 
       - name: Run Agent and Skill contract tests
         run: |
-          uv run --locked --extra test python -m pytest \
-            tests/test_agent_profile_authority.py \
-            tests/test_agent_profile_lifecycle.py \
-            tests/test_agent_profile_routes.py \
-            tests/test_authorized_skill_catalog.py \
-            tests/test_skill_dependencies.py \
-            tests/test_skill_lifecycle.py \
-            tests/test_skill_registry.py \
-            tests/test_skill_stager.py \
-            tests/test_skill_release_policy.py \
-            tests/test_chat_routes.py \
-            tests/test_skills_marketplace_routes.py \
-            -q \
-            --basetemp .pytest-tmp
+          mkdir -p .pytest-tmp
+          timeout --signal=TERM --kill-after=30s 10m \
+            uv run --locked --extra test python -m pytest \
+              tests/test_agent_profile_authority.py \
+              tests/test_agent_profile_lifecycle.py \
+              tests/test_agent_profile_routes.py \
+              tests/test_authorized_skill_catalog.py \
+              tests/test_skill_dependencies.py \
+              tests/test_skill_lifecycle.py \
+              tests/test_skill_registry.py \
+              tests/test_skill_stager.py \
+              tests/test_skill_release_policy.py \
+              tests/test_chat_routes.py \
+              tests/test_skills_marketplace_routes.py \
+              -vv \
+              --tb=short \
+              -o faulthandler_timeout=120 \
+              --basetemp .pytest-tmp/agent-skill-contracts
 
   backend-image:
     name: packaged backend image build
     runs-on: ubuntu-latest
-    needs: sandbox-provider
+    needs: backend-validation
+    timeout-minutes: 30
     env:
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
@@ -282,15 +349,18 @@ jobs:
   required:
     name: backend required
     runs-on: ubuntu-latest
-    needs: [sandbox-provider, agent-skill-contracts, backend-image]
+    needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]
     if: ${{ always() }}
+    timeout-minutes: 5
     steps:
       - name: Require backend, Agent/Skill, and packaged image acceptance
         env:
-          BACKEND_RESULT: ${{ needs.sandbox-provider.result }}
+          VALIDATION_RESULT: ${{ needs.backend-validation.result }}
+          BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}
           AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}
           IMAGE_RESULT: ${{ needs.backend-image.result }}
         run: |
-          test "$BACKEND_RESULT" = "success"
+          test "$VALIDATION_RESULT" = "success"
+          test "$BACKEND_TESTS_RESULT" = "success"
           test "$AGENT_SKILL_RESULT" = "success"
           test "$IMAGE_RESULT" = "success"

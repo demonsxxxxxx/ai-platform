@@ -101,6 +101,7 @@ from app.skills.pinning import (
     build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
+    validate_skill_manifest_refs,
 )
 from app.skills.registry import BuiltinSkillRegistry
 from app.skills.release_policy import (
@@ -110,6 +111,8 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+
+
 logger = logging.getLogger(__name__)
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
@@ -311,6 +314,31 @@ def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResp
             submission_id=str(row["submission_id"]),
         )
     raise HTTPException(status_code=409, detail="chat_submission_unresolved")
+
+
+def _existing_chat_submission_response(
+    row: dict[str, Any],
+    *,
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    query_agent_id: str | None,
+    request_fingerprint: str,
+) -> ChatStreamResponse:
+    """Resolve an existing claim identically for generic and Agent submissions."""
+
+    if _is_preledger_recovery_tombstone(row, principal=principal):
+        return _chat_stream_response_from_submission(row)
+    claimed_fingerprint = request_fingerprint
+    if row.get("state") == "rejected_before_persist":
+        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code=str(row.get("rejection_code") or "chat_submission_rejected"),
+        )
+    if row.get("request_fingerprint_sha256") != claimed_fingerprint:
+        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+    return _chat_stream_response_from_submission(row)
 
 
 def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
@@ -926,7 +954,9 @@ def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_i
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return QueueRunPayload.model_validate(payload).model_dump(mode="json")
+        validated = QueueRunPayload.model_validate(payload)
+        validate_skill_manifest_refs(validated.skill_manifests)
+        return validated.model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
 
@@ -1774,7 +1804,11 @@ async def chat_stream(
             if submission_id is not None:
                 request_fingerprint = resolved_request_fingerprint
 
-            if submission_id is not None and request_fingerprint is not None:
+            if (
+                admitted_agent_profile is None
+                and submission_id is not None
+                and request_fingerprint is not None
+            ):
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1784,25 +1818,13 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
-                    if _is_preledger_recovery_tombstone(
+                    return _existing_chat_submission_response(
                         claimed_submission,
+                        request=request,
                         principal=principal,
-                    ):
-                        return _chat_stream_response_from_submission(claimed_submission)
-                    claimed_fingerprint = request_fingerprint
-                    if claimed_submission.get("state") == "rejected_before_persist":
-                        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-                            request=request,
-                            principal=principal,
-                            query_agent_id=query_agent_id,
-                            code=str(
-                                claimed_submission.get("rejection_code")
-                                or "chat_submission_rejected"
-                            ),
-                        )
-                    if claimed_submission.get("request_fingerprint_sha256") != claimed_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
 
             if preserve_continuation_skill and admitted_agent_profile is None:
                 continuation_prior_runs = await repositories.list_authorized_session_runs(
@@ -1919,9 +1941,20 @@ async def chat_stream(
                 if resolved_skill_id is None
                 else RUN_EXECUTION_KIND_SKILL
             )
+            profile_skill_id = (
+                str(admitted_agent_profile.skill.get("skill_id") or "")
+                if admitted_agent_profile is not None
+                else None
+            )
             if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT and (
-                admitted_agent_profile is not None
-                or decision_payload.get("selected_capability") != "general_chat"
+                decision_payload.get("selected_capability") != "general_chat"
+                or (
+                    admitted_agent_profile is not None
+                    and (
+                        resolved_agent_id != admitted_agent_profile.agent_id
+                        or profile_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                    )
+                )
             ):
                 raise HTTPException(
                     status_code=409, detail="harness_chat_identity_mismatch"
@@ -2032,6 +2065,11 @@ async def chat_stream(
                 reusable_rows=[dict(row) for row in reusable_file_rows],
                 input_modes=input_modes,
             )
+            reusable_primary_file_ids = [
+                file_id
+                for file_id in primary_file_ids
+                if file_id in {str(row.get("id") or "") for row in reusable_file_rows}
+            ]
             if has_file_input_mode(input_modes) and not primary_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
@@ -2083,13 +2121,19 @@ async def chat_stream(
                 skill_version = None
                 release_decision_payload = {}
                 skill_manifests = []
+            skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
             agent_profile_execution_input = None
             if admitted_agent_profile is not None:
                 agent_profile_execution_input = {
                     **admitted_agent_profile.private_execution_input,
-                    "required_skill_id": resolved_skill_id,
-                    "required_skill_version": skill_version,
                 }
+                if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                    agent_profile_execution_input.update(
+                        {
+                            "required_skill_id": resolved_skill_id,
+                            "required_skill_version": skill_version,
+                        }
+                    )
             if (
                 required_tool_declaration is not None
                 and required_tool_declaration.capability_kind == "builtin"
@@ -2138,7 +2182,7 @@ async def chat_stream(
                     "executor_type": executor_type,
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
-                    "skill_manifests": skill_manifests,
+                    "skill_manifests": skill_manifest_transport,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                     **(
@@ -2165,16 +2209,29 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=requested_file_ids,
+                file_ids=primary_file_ids,
+                reusable_file_ids=reusable_primary_file_ids,
                 input_modes=input_modes,
+                agent_profile_supported_input_types=(
+                    list(admitted_agent_profile.public_identity.supported_input_types)
+                    if admitted_agent_profile is not None
+                    else None
+                ),
+                agent_profile_supported_file_types=(
+                    list(admitted_agent_profile.public_identity.supported_file_types)
+                    if admitted_agent_profile is not None
+                    else None
+                ),
             )
-            if admitted_agent_profile is not None and submission_id is None:
-                # Canonical clients claim their own key before routing. A
-                # legacy unkeyed Agent request gets the same durable recovery
-                # only after every capability and resource check has passed,
-                # immediately before the first session/run write.
-                submission_id = str(uuid4())
-                request_fingerprint = resolved_request_fingerprint
+            if admitted_agent_profile is not None:
+                # Canonical clients supply their own key; a legacy unkeyed
+                # Agent request gets one here. Both are claimed only after
+                # every capability and resource check has passed, immediately
+                # before the first session/run write.
+                if submission_id is None:
+                    submission_id = str(uuid4())
+                    request_fingerprint = resolved_request_fingerprint
+                assert request_fingerprint is not None
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -2184,9 +2241,13 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
-                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
+                    return _existing_chat_submission_response(
+                        claimed_submission,
+                        request=request,
+                        principal=principal,
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
             if request.session_id is None:
                 session_create_kwargs = {
                     "tenant_id": principal.tenant_id,
@@ -2250,7 +2311,7 @@ async def chat_stream(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
-                    skill_manifests=queue_payload["skill_manifests"],
+                    skill_manifests=skill_manifests,
                     release_decision=release_decision_payload,
                 )
             message_id = await repositories.append_message(

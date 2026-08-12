@@ -14,13 +14,14 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.12.3"
+TARGET_SCHEMA_VERSION = "2026.08.12.4"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
     "runs",
+    "run_skill_materializations",
     "run_events",
     "messages",
     "files",
@@ -34,6 +35,8 @@ CRITICAL_COLUMNS = (
     ("runs", "authz_policy_version", "int4", True),
     ("runs", "authority_source", "text", True),
     ("runs", "authority_checked_at", "timestamptz", False),
+    ("run_skill_materializations", "materialization_sha256", "text", True),
+    ("run_skill_materializations", "manifest_json", "jsonb", True),
     ("messages", "content", "text", True),
     ("messages", "metadata_json", "jsonb", True),
     ("files", "storage_key", "text", True),

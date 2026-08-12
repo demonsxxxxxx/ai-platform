@@ -483,12 +483,15 @@ def _close_inspection_workspace_root(root: _InspectionWorkspaceRoot) -> None:
 
 def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
     native_expected = profile == "sdk-native"
+    authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile, "")
     return {
         "selected": profile if profile in INSPECTION_PROFILES else "invalid",
         "catalog": "implicit",
-        "primary_skill": "general-chat",
-        "authorized_implicit_skill": INSPECTION_AUTHORIZED_SKILLS.get(profile, ""),
-        "primary_execution_strategy": "sdk_restricted",
+        "primary_skill": authorized_skill,
+        "authorized_implicit_skill": authorized_skill,
+        "primary_execution_strategy": (
+            "sdk_native" if profile == "sdk-native" else "platform_controlled"
+        ),
         "authorized_skill_count": 1,
         "native_sidecar_expected": native_expected,
         "authorization_basis": "deterministic_verifier_fixture",
@@ -705,17 +708,17 @@ def _inspection_pinned_manifest(skill_id: str, *, files: dict[str, str]) -> dict
 def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     from app.capability_distribution import CapabilityAccessDecision
     from app.models import QueueRunPayload
+    from app.skills.pinning import build_skill_manifest_ref
     from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
     from app.worker import _builtin_capability_subjects
 
     authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile)
     if not authorized_skill:
         raise ValueError("unsupported inspection profile")
-    primary_files = _inspection_skill_files("general-chat")
     authorized_files = _inspection_skill_files(authorized_skill)
-    primary_manifest = _inspection_pinned_manifest("general-chat", files=primary_files)
     authorized_manifest = _inspection_pinned_manifest(authorized_skill, files=authorized_files)
-    primary_version = str(primary_manifest["content_hash"])
+    primary_manifest = authorized_manifest
+    primary_version = str(authorized_manifest["content_hash"])
     payload = QueueRunPayload(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -723,7 +726,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         session_id="catalog-session",
         run_id="catalog-run",
         agent_id="sandbox-runtime-verifier",
-        skill_id="general-chat",
+        skill_id=authorized_skill,
         file_ids=[],
         input={},
         executor_type="embedded-poco",
@@ -734,7 +737,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
             "selected_version": primary_version,
             "selected_track": "manifest_pin",
         },
-        skill_manifests=[primary_manifest],
+        skill_manifests=[build_skill_manifest_ref(primary_manifest)],
     )
     decision = CapabilityAccessDecision(
         visible=True,
@@ -745,8 +748,8 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     )
     subjects = _builtin_capability_subjects(
         payload=payload,
-        run_identity={"skill_id": "general-chat"},
-        skill={"skill_id": "general-chat", "skill_status": "active"},
+        run_identity={"skill_id": authorized_skill},
+        skill={"skill_id": authorized_skill, "skill_status": "active"},
         skill_decision=decision,
         authorized_skill_manifests=[authorized_manifest],
         authorized_skill_names=[authorized_skill],
@@ -764,7 +767,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     skill_subject = by_identity.get("Skill", {})
     if (
         skill_subject.get("allowed_skill_names") != [authorized_skill]
-        or skill_subject.get("execution_strategy") != "sdk_restricted"
+        or skill_subject.get("execution_strategy") != authorized_profile["strategy"]
         or any(subject.get("declared_identities") != [identity] for identity, subject in by_identity.items())
         or any(
             subject.get(key) is not True
@@ -1402,7 +1405,7 @@ def _run_skill_mount_inspection(
             run_id=evidence["run_id"],
             attempt_id=f"a-{uuid.uuid4().hex[:8]}",
             agent_id="sandbox-runtime-verifier",
-            skill_ids=["general-chat", authorized_skill_name],
+            skill_ids=[authorized_skill_name],
             mcp_tool_ids=[],
             tool_policy_subjects=list(catalog["subjects"]),
             input_message="ai-platform staged Skill mount inspection",

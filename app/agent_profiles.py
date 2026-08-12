@@ -17,6 +17,7 @@ __all__ = [
     "list_public_profiles",
     "profile_public_projection",
     "publish_draft",
+    "reauthorize_bound_profile_for_worker_dispatch",
     "reauthorize_pinned_run_for_replay",
     "reject_profile_selector_conflicts",
     "resolve_bound_profile_for_submission",
@@ -110,4 +111,23 @@ async def reauthorize_pinned_run_for_replay(conn, *, principal, run_id) -> None:
         conn,
         principal=principal,
         run_id=run_id,
+    )
+
+
+async def reauthorize_bound_profile_for_worker_dispatch(
+    conn,
+    *,
+    principal,
+    agent_id,
+    revision,
+    content_hash,
+):
+    """Resolve current Profile authority and immutable execution input for a worker."""
+
+    return await _authority.resolve_bound_for_worker_dispatch(
+        conn,
+        principal=principal,
+        agent_id=agent_id,
+        revision=revision,
+        content_hash=content_hash,
     )
