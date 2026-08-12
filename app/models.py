@@ -13,6 +13,7 @@ from pydantic import (
 
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
@@ -987,14 +988,21 @@ class QueueRunPayload(BaseModel):
         revision = value.get("revision")
         content_hash = value.get("content_hash")
         instructions = value.get("instructions")
-        if info.data.get("execution_kind") != RUN_EXECUTION_KIND_SKILL:
+        execution_kind = info.data.get("execution_kind")
+        if execution_kind not in {
+            RUN_EXECUTION_KIND_HARNESS_CHAT,
+            RUN_EXECUTION_KIND_SKILL,
+        }:
             raise ValueError("agent_profile_execution_kind_invalid")
-        required_skill_id = str(
-            value.get("required_skill_id") or info.data.get("skill_id") or ""
-        ).strip()
-        required_skill_version = str(
-            value.get("required_skill_version") or info.data.get("skill_version") or ""
-        ).strip()
+        required_skill_id = str(value.get("required_skill_id") or "").strip()
+        required_skill_version = str(value.get("required_skill_version") or "").strip()
+        if execution_kind == RUN_EXECUTION_KIND_SKILL:
+            required_skill_id = required_skill_id or str(
+                info.data.get("skill_id") or ""
+            ).strip()
+            required_skill_version = required_skill_version or str(
+                info.data.get("skill_version") or ""
+            ).strip()
         if not isinstance(agent_id, str):
             raise ValueError("agent_profile_agent_id_invalid")
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
@@ -1007,9 +1015,18 @@ class QueueRunPayload(BaseModel):
             or len(instructions) > MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
         ):
             raise ValueError("agent_profile_instructions_invalid")
-        if not required_skill_id or required_skill_id != str(info.data.get("skill_id") or ""):
+        if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+            if (
+                agent_id != info.data.get("agent_id")
+                or required_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                or not required_skill_version
+            ):
+                raise ValueError("agent_profile_harness_identity_invalid")
+        elif not required_skill_id or required_skill_id != str(info.data.get("skill_id") or ""):
             raise ValueError("agent_profile_required_skill_invalid")
-        if required_skill_version != str(info.data.get("skill_version") or ""):
+        if execution_kind == RUN_EXECUTION_KIND_SKILL and required_skill_version != str(
+            info.data.get("skill_version") or ""
+        ):
             raise ValueError("agent_profile_required_skill_version_invalid")
         return {
             "agent_id": assert_safe_id(agent_id, "agent_profile.agent_id"),
@@ -1043,8 +1060,6 @@ class QueueRunPayload(BaseModel):
                 raise ValueError("harness_chat_release_decision_forbidden")
             if self.skill_manifests:
                 raise ValueError("harness_chat_skill_manifests_forbidden")
-            if self.agent_profile is not None:
-                raise ValueError("harness_chat_agent_profile_forbidden")
             if self.executor_type != HARNESS_CHAT_EXECUTOR_TYPE:
                 raise ValueError("harness_chat_executor_invalid")
             return self

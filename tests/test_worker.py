@@ -1306,6 +1306,38 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
         )
 
 
+def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    harness_payload = base_payload(
+        _leased=False,
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        executor_type="claude-agent-worker",
+        schema_version="ai-platform.run-payload.v2",
+        agent_profile=profile,
+    )
+
+    assert parse_queue_payload(harness_payload).agent_profile == profile
+    for hostile_profile in (
+        {**profile, "agent_id": "other-agent"},
+        {**profile, "required_skill_id": "other-skill"},
+        {**profile, "required_skill_version": ""},
+    ):
+        with pytest.raises(ValueError, match="agent_profile_harness_identity_invalid"):
+            parse_queue_payload({**harness_payload, "agent_profile": hostile_profile})
+
+
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
     captured = {}
 

@@ -1923,9 +1923,20 @@ async def chat_stream(
                 if resolved_skill_id is None
                 else RUN_EXECUTION_KIND_SKILL
             )
+            profile_skill_id = (
+                str(admitted_agent_profile.skill.get("skill_id") or "")
+                if admitted_agent_profile is not None
+                else None
+            )
             if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT and (
-                admitted_agent_profile is not None
-                or decision_payload.get("selected_capability") != "general_chat"
+                decision_payload.get("selected_capability") != "general_chat"
+                or (
+                    admitted_agent_profile is not None
+                    and (
+                        resolved_agent_id != admitted_agent_profile.agent_id
+                        or profile_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                    )
+                )
             ):
                 raise HTTPException(
                     status_code=409, detail="harness_chat_identity_mismatch"
@@ -2096,9 +2107,14 @@ async def chat_stream(
             if admitted_agent_profile is not None:
                 agent_profile_execution_input = {
                     **admitted_agent_profile.private_execution_input,
-                    "required_skill_id": resolved_skill_id,
-                    "required_skill_version": skill_version,
                 }
+                if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                    agent_profile_execution_input.update(
+                        {
+                            "required_skill_id": resolved_skill_id,
+                            "required_skill_version": skill_version,
+                        }
+                    )
             if (
                 required_tool_declaration is not None
                 and required_tool_declaration.capability_kind == "builtin"

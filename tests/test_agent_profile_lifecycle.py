@@ -994,6 +994,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
         yield object()
 
     bound_calls = []
+    harness_calls = []
     noop = AsyncMock(return_value=None)
 
     async def owned_session(*_args, **_kwargs):
@@ -1013,7 +1014,14 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             skill={"skill_id": "general-chat", "skill_version": "version-a"},
             model={"id": "model-a", "value": "model-a"},
             mcp_tool_ids=(),
-            private_execution_input={"agent_id": "agt_support", "revision": 7, "instructions": "private"},
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "private",
+                "required_skill_id": "general-chat",
+                "required_skill_version": "version-a",
+            },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
                 revision=7,
@@ -1045,12 +1053,20 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             False,
         )
 
+    async def harness_agent(*_args, **kwargs):
+        harness_calls.append(kwargs)
+        return {"id": "agt_support", "agent_type": "chat"}
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
     monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
     monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
     monkeypatch.setattr(repositories, "get_authorized_session", owned_session)
     monkeypatch.setattr(repositories, "acquire_user_active_run_admission_lock", noop)
     monkeypatch.setattr(repositories, "get_latest_authorized_session_run_input", noop)
+    monkeypatch.setattr(repositories, "get_agent", harness_agent)
+    monkeypatch.setattr(repositories, "enforce_user_active_run_admission_under_lock", noop)
+    monkeypatch.setattr(repositories, "ensure_workspace_belongs_to_tenant", noop)
+    monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
@@ -1068,6 +1084,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     )
 
     assert response.run_id == "run-profile"
+    assert harness_calls == [{"tenant_id": "tenant-a", "agent_id": "agt_support"}]
     assert bound_calls[0]["principal"] == _principal()
     assert (bound_calls[0]["agent_id"], bound_calls[0]["revision"], bound_calls[0]["content_hash"]) == (
         "agt_support", 7, "a" * 64
