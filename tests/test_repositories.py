@@ -13,7 +13,9 @@ import pytest
 
 from app import agent_conversation_repository, repositories
 from app import run_event_repository
+from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
+from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
@@ -59,6 +61,29 @@ from app.repositories import (
 
 async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
+
+
+def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
+    canonical_names = (
+        "acquire_agent_profile_lifecycle_lock",
+        "create_agent_profile_revision",
+        "ensure_agent_profile_identity",
+        "get_agent_profile_aggregate",
+        "get_agent_profile_revision",
+        "get_bound_published_agent_profile",
+        "get_current_published_agent_profile",
+        "list_agent_profile_revision_history",
+        "list_current_published_agent_profiles",
+        "list_latest_agent_profile_revisions",
+        "record_agent_profile_draft",
+        "record_agent_profile_publication",
+        "record_agent_profile_withdrawal",
+    )
+
+    for name in canonical_names:
+        assert getattr(repositories, name) is getattr(agent_profile_persistence, name)
+
+    assert RepositoryConflictError is PlatformRepositoryConflictError
 
 
 @pytest.fixture(autouse=True)
