@@ -97,7 +97,7 @@ export function useBrowserNotification() {
               ...(typeof options?.data === "object" && options.data !== null
                 ? options.data
                 : {}),
-              url: options?.url || "/chat",
+              url: options?.url || "/agent-market",
             },
           });
           return null;

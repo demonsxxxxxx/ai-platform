@@ -1267,6 +1267,8 @@ export function ChatAppContent({
       activeTab="chat"
       setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSessionWithReset}
+      allowNewSessionAction={agentWorkspace !== undefined}
+      newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
       availableModels={agentConversationControlsLocked ? null : filteredModels}
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
@@ -1301,6 +1303,7 @@ export function ChatAppContent({
                 }
               : undefined
           }
+          navigationOnly={agentWorkspace === undefined}
         />
       }
     >

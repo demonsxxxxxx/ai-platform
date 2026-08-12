@@ -55,6 +55,8 @@ interface SessionSidebarProps {
     name: string;
     description: string;
   };
+  /** Navigation-only shells expose Agent services without generic Chat history. */
+  navigationOnly?: boolean;
 }
 
 export interface SessionSidebarSessionSource {
@@ -93,6 +95,7 @@ export const SessionSidebar = forwardRef<
     sessionFilter,
     sessionSource,
     agentWorkspace,
+    navigationOnly = false,
   },
   ref,
 ) {
@@ -117,7 +120,7 @@ export const SessionSidebar = forwardRef<
     (item: WorkbenchNavItem) => {
       const destination = canAccessWorkbenchItem(user, item)
         ? getSafeWorkbenchNavPath(item, user)
-        : "/chat";
+        : "/agent-market";
       navigate(destination);
     },
     [navigate, user],
@@ -139,7 +142,10 @@ export const SessionSidebar = forwardRef<
 
   // ─── Hooks ──────────────────────────────────────────────────────
 
-  const defaultSessionList = useSessionList(scrollEl, sessionSource === undefined);
+  const defaultSessionList = useSessionList(
+    scrollEl,
+    sessionSource === undefined && !navigationOnly,
+  );
   const sessionList = sessionSource ?? defaultSessionList;
   const { ref: agentLoadMoreRef, inView: agentLoadMoreVisible } = useInView({
     threshold: 0.1,
@@ -250,22 +256,27 @@ export const SessionSidebar = forwardRef<
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
       const modifier = isMac ? e.metaKey : e.ctrlKey;
-      if (modifier && e.key === "k") {
+      if (!navigationOnly && modifier && e.key === "k") {
         e.preventDefault();
         setIsSearchOpen(true);
       }
-      if (modifier && e.key === "n") {
+      if (!navigationOnly && modifier && e.key === "n") {
         e.preventDefault();
         onNewSession();
       }
-      if (modifier && e.shiftKey && (e.key === "O" || e.key === "o")) {
+      if (
+        !navigationOnly &&
+        modifier &&
+        e.shiftKey &&
+        (e.key === "O" || e.key === "o")
+      ) {
         e.preventDefault();
         onNewSession();
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onNewSession]);
+  }, [navigationOnly, onNewSession]);
 
   useEffect(() => {
     if (!mobileOpen) return undefined;
@@ -346,6 +357,7 @@ export const SessionSidebar = forwardRef<
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
             agentWorkspace={agentWorkspace}
             hideSessionDiscovery={agentWorkspace !== undefined}
+            navigationOnly={navigationOnly}
           />
         ) : (
           <div className="flex-1" />
@@ -387,6 +399,7 @@ export const SessionSidebar = forwardRef<
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
               agentWorkspace={agentWorkspace}
               hideSessionDiscovery={agentWorkspace !== undefined}
+              navigationOnly={navigationOnly}
             />
           </div>
         ) : (
@@ -415,6 +428,8 @@ export const SessionSidebar = forwardRef<
               onOpenMcp={() => navigate("/mcp")}
               onOpenModels={() => navigateWorkbenchItem("models")}
               hideSessionDiscovery={agentWorkspace !== undefined}
+              navigationOnly={navigationOnly}
+              agentWorkspace={agentWorkspace !== undefined}
               recentChatsBtnRef={desktopRecentChatsBtnRef}
             />
           </div>
@@ -453,11 +468,13 @@ export const SessionSidebar = forwardRef<
           onOpenMcp={() => navigate("/mcp")}
           onOpenModels={() => navigateWorkbenchItem("models")}
           hideSessionDiscovery={agentWorkspace !== undefined}
+          navigationOnly={navigationOnly}
+          agentWorkspace={agentWorkspace !== undefined}
           recentChatsBtnRef={mobileRecentChatsBtnRef}
         />
       </div>
 
-      {isSearchOpen && !agentWorkspace && (
+      {isSearchOpen && !agentWorkspace && !navigationOnly && (
         <SearchDialog
           isOpen={isSearchOpen}
           onClose={() => setIsSearchOpen(false)}
@@ -479,7 +496,7 @@ export const SessionSidebar = forwardRef<
         variant="danger"
       />
 
-      {!agentWorkspace ? <RecentChatsDialog
+      {!agentWorkspace && !navigationOnly ? <RecentChatsDialog
         isOpen={isRecentChatsOpen}
         onClose={() => setIsRecentChatsOpen(false)}
         onSelectSession={(id) => selectAndClose(id)}

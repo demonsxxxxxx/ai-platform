@@ -71,6 +71,8 @@ export interface AppShellProps {
   // Outline
   showOutlineButton?: boolean;
   onToggleOutline?: () => void;
+  allowNewSessionAction?: boolean;
+  newSessionActionLabel?: string;
 }
 
 export function AppShell({
@@ -87,6 +89,8 @@ export function AppShell({
   onOpenRunPlayback,
   showOutlineButton,
   onToggleOutline,
+  allowNewSessionAction = true,
+  newSessionActionLabel,
 }: AppShellProps) {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -289,6 +293,8 @@ export function AppShell({
             onOpenRunPlayback={onOpenRunPlayback}
             showOutlineButton={showOutlineButton}
             onToggleOutline={onToggleOutline}
+            allowNewSessionAction={allowNewSessionAction}
+            newSessionActionLabel={newSessionActionLabel}
           />
 
           {children}

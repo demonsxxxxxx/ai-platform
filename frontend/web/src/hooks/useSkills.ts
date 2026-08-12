@@ -394,20 +394,40 @@ export function useSkills(options?: {
   const deleteSkill = useCallback(
     async (name: string): Promise<boolean> => {
       if (!enabled) return false;
+      const archivedSkill = skills.find((skill) => skill.name === name);
+      const archivedIndex = skills.findIndex((skill) => skill.name === name);
       setIsDeleting(true);
       setError(null);
+      if (archivedSkill) {
+        setSkills((current) =>
+          current.filter((skill) => skill.name !== name),
+        );
+        setTotal((current) => Math.max(0, current - 1));
+      }
       try {
         await skillApi.delete(name);
-        await fetchSkills();
         return true;
       } catch (err) {
+        if (archivedSkill) {
+          setSkills((current) => {
+            if (current.some((skill) => skill.name === name)) return current;
+            const restored = [...current];
+            restored.splice(
+              Math.min(Math.max(archivedIndex, 0), restored.length),
+              0,
+              archivedSkill,
+            );
+            return restored;
+          });
+          setTotal((current) => current + 1);
+        }
         setError(resolveSkillOperationError(err, "skills.deleteFailed"));
         return false;
       } finally {
         setIsDeleting(false);
       }
     },
-    [enabled, fetchSkills],
+    [enabled, skills],
   );
 
   // Toggle skill
@@ -465,19 +485,19 @@ export function useSkills(options?: {
           setSkills((prev) =>
             prev.filter((s) => !result.deleted.includes(s.name)),
           );
+          setTotal((current) =>
+            Math.max(0, current - result.deleted.length),
+          );
         }
-        // Full refresh for consistency
-        await fetchSkills();
         return result.deleted;
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to delete skills",
         );
-        await fetchSkills(); // rollback
         return [];
       }
     },
-    [enabled, fetchSkills],
+    [enabled],
   );
 
   // Batch toggle skills

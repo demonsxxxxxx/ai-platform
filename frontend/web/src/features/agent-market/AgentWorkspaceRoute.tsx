@@ -222,19 +222,20 @@ export function AgentWorkspaceRoute() {
     );
   }
 
-  const handleGenericSession = (sessionId: string) => {
+  const handleGenericSession = (_sessionId: string) => {
     setMobileSidebarOpen(false);
-    navigate(`/chat/${encodeURIComponent(sessionId)}`);
+    navigate("/agent-market");
   };
   const handleGenericNewSession = () => {
     setMobileSidebarOpen(false);
-    navigate("/chat");
+    navigate("/agent-market");
   };
 
   return (
     <AppShell
       activeTab="chat"
       onNewSession={handleGenericNewSession}
+      allowNewSessionAction={false}
       setMobileSidebarOpen={setMobileSidebarOpen}
       sidebar={
         <SessionSidebar
@@ -247,6 +248,7 @@ export function AgentWorkspaceRoute() {
           onSelectSession={handleGenericSession}
           onToggleCollapsed={handleSetSidebarCollapsed}
           sessionSource={EMPTY_WORKSPACE_SESSION_SOURCE}
+          navigationOnly
         />
       }
     >

@@ -56,5 +56,7 @@ export function getSafeWorkbenchNavPath(
   if (item === "agentBuilder") {
     return user?.is_admin === true ? "/agent-builder" : "/agent-market";
   }
-  return canAccessWorkbenchItem(user, item) ? navItemToPath[item] : "/chat";
+  return canAccessWorkbenchItem(user, item)
+    ? navItemToPath[item]
+    : "/agent-market";
 }

@@ -12,6 +12,9 @@ does not represent deployed runtime state.
   closure evidence.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
   single business authority and defines the Harness replacement seam.
+- `architecture/expert-agent-service-workbench.md` defines the Agent-first
+  authenticated product, Agent.md Builder language, progressive configuration,
+  task-oriented Market/Workspace UX, and truthful Skill archive semantics.
 - `architecture/single-enterprise-data-lifecycle.md` defines the fixed
   single-enterprise identity scope, datastore ownership, versioned schema
   lifecycle, bounded reads, retention workflow, and PostgreSQL payload limits.

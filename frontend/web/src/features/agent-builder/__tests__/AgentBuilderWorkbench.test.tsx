@@ -77,10 +77,15 @@ test("safe errors never render arbitrary Error.message", () => {
 });
 
 test("builder keeps execution fields primary and collapses optional market metadata", () => {
-  assert.match(enterpriseFieldsSource, /市场展示（可选）/);
-  assert.match(enterpriseFieldsSource, /编辑市场卡片与开场内容/);
+  assert.match(workbenchSource, /完成下面 4 项即可保存/);
+  assert.match(workbenchSource, /Agent\.md 初始指令/);
+  assert.match(workbenchSource, /data-agent-builder-agent-md/);
+  assert.match(enterpriseFieldsSource, /data-agent-builder-market-settings/);
+  assert.match(enterpriseFieldsSource, /市场展示与开场内容/);
   assert.match(enterpriseFieldsSource, /示例问题（可选）/);
   assert.match(enterpriseFieldsSource, /预期输出（可选）/);
+  assert.match(enterpriseFieldsSource, /data-agent-builder-input-settings/);
+  assert.match(enterpriseFieldsSource, /data-agent-builder-access-settings/);
   assert.match(enterpriseFieldsSource, /访问范围与数据说明（高级）/);
   assert.match(enterpriseFieldsSource, /<option value="tenant">全公司<\/option>/);
   assert.doesNotMatch(enterpriseFieldsSource, />全租户</);

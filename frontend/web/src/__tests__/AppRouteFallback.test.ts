@@ -23,7 +23,7 @@ test("admin routes redirect ordinary users before mounting management pages", ()
     assert.match(
       app,
       new RegExp(
-        `path="/${route}"[\\s\\S]{0,220}<ProtectedRoute[\\s\\S]{0,120}requireAdmin[\\s\\S]{0,120}redirectTo="/chat"`,
+        `path="/${route}"[\\s\\S]{0,220}<ProtectedRoute[\\s\\S]{0,120}requireAdmin[\\s\\S]{0,160}redirectTo=\\{APP_ROUTE_PATHS\\.agentMarket\\}`,
       ),
       route,
     );
@@ -75,4 +75,14 @@ test("product UI is fixed to Chinese regardless of historical language storage",
   assert.match(i18n, /export const PRODUCT_LANGUAGE = "zh"/);
   assert.match(i18n, /lng:\s*PRODUCT_LANGUAGE/);
   assert.match(i18n, /fallbackLng:\s*PRODUCT_LANGUAGE/);
+});
+
+test("generic Chat deep links remain readable without exposing generic creation or history", () => {
+  const chat = read("components/layout/AppContent/ChatAppContent.tsx");
+  const header = read("components/layout/AppContent/Header.tsx");
+
+  assert.match(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
+  assert.match(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
+  assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
+  assert.match(header, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
 });

@@ -25,15 +25,15 @@ export function NonChatAppContent({
   const navigate = useNavigate();
 
   const handleSelectSession = useCallback(
-    (id: string) => {
+    (_id: string) => {
       setMobileSidebarOpen(false);
-      navigate(`/chat/${id}`);
+      navigate("/agent-market");
     },
     [navigate, setMobileSidebarOpen],
   );
   const handleNewSession = useCallback(() => {
     setMobileSidebarOpen(false);
-    navigate("/chat");
+    navigate("/agent-market");
   }, [navigate, setMobileSidebarOpen]);
   const handleMobileClose = useCallback(
     () => setMobileSidebarOpen(false),
@@ -55,6 +55,7 @@ export function NonChatAppContent({
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
+          navigationOnly
         />
       }
     >

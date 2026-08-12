@@ -1,10 +1,10 @@
 import {
   Download,
+  Archive,
   FileArchive,
   Pencil,
   Power,
   Store,
-  Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -280,7 +280,7 @@ export function SkillManagementTable({
               {rowCanDelete ? (
                 <button
                   aria-label={t("skills.managementTable.deleteSkill", { name: entry.displayName })}
-                  className="btn-icon text-[var(--theme-danger)]"
+                  className="btn-icon skill-management-table__archive-action"
                   onClick={(event) => {
                     event.stopPropagation();
                     onDelete(actionName);
@@ -288,7 +288,7 @@ export function SkillManagementTable({
                   title={t("skills.managementTable.delete")}
                   type="button"
                 >
-                  <Trash2 aria-hidden="true" size={16} />
+                  <Archive aria-hidden="true" size={16} />
                 </button>
               ) : null}
               {!hasActions ? (

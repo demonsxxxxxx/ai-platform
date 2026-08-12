@@ -672,7 +672,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
 
     const primaryAction = container
       .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "进入 财务助手 专属工作区");
+      .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始任务");
     assert.ok(primaryAction, "filtered published card should open its dedicated workspace");
     assert.equal(primaryAction.nodeName, "BUTTON", "native button semantics preserve keyboard activation");
     assert.equal(primaryAction.getAttribute("type"), "button");
@@ -713,7 +713,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
     assert.match(container.textContent, /版本 2/);
-    assert.match(container.textContent, /推荐任务/);
+    assert.match(container.textContent, /适合处理/);
     assert.doesNotMatch(
       container.textContent,
       /PRIVATE_PROMPT|private-model|private-mcp|private-skill|private-version/,

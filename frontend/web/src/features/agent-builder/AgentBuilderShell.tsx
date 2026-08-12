@@ -21,15 +21,15 @@ export function AgentBuilderShell({ children }: { children: ReactNode }) {
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
   }, []);
   const handleSelectSession = useCallback(
-    (sessionId: string) => {
+    (_sessionId: string) => {
       setMobileSidebarOpen(false);
-      navigate(`/chat/${encodeURIComponent(sessionId)}`);
+      navigate("/agent-market");
     },
     [navigate],
   );
   const handleNewSession = useCallback(() => {
     setMobileSidebarOpen(false);
-    navigate("/chat");
+    navigate("/agent-market");
   }, [navigate]);
 
   return (
@@ -37,6 +37,7 @@ export function AgentBuilderShell({ children }: { children: ReactNode }) {
       activeTab="chat"
       setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSession}
+      allowNewSessionAction={false}
       sidebar={
         <SessionSidebar
           currentSessionId={null}
@@ -47,6 +48,7 @@ export function AgentBuilderShell({ children }: { children: ReactNode }) {
           onNewSession={handleNewSession}
           onSelectSession={handleSelectSession}
           onToggleCollapsed={handleSetSidebarCollapsed}
+          navigationOnly
         />
       }
     >

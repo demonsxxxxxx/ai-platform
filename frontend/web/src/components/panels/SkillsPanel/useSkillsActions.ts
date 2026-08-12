@@ -73,6 +73,7 @@ export function useSkillsActions(options?: {
     catalogReadResolved,
     total: catalogTotal,
     isLoading,
+    isDeleting,
     error,
     listError,
     getSkill,
@@ -270,30 +271,29 @@ export function useSkillsActions(options?: {
   const confirmDelete = async () => {
     if (!deleteConfirmData) return;
     const skillName = deleteConfirmData.name;
-    try {
-      const deleted = await deleteSkill(skillName);
-      if (deleted) {
-        const archivedEntries = resolveArchivedSkillCatalogEntries(
-          adminCatalogItems,
-          [skillName],
-        );
-        const archivedIds = new Set(archivedEntries.map((entry) => entry.id));
-        setAdminCatalogItems((current) =>
-          current.filter((item) => !archivedIds.has(item.skillId)),
-        );
-        setSelectedNames((current) =>
-          removeArchivedActionSelections(current, [skillName]),
-        );
-        options?.onSkillsArchived?.(archivedEntries);
-        if (options?.loadAdminCatalog) {
-          await refreshAdminSkillCatalog();
-        }
-        toast.success(t("skills.deleteSuccess"));
-      }
-    } finally {
-      setIsDeleteConfirmOpen(false);
-      setDeleteConfirmData(null);
+    const archived = await deleteSkill(skillName);
+    if (!archived) {
+      toast.error(t("skills.deleteFailed"));
+      return;
     }
+    const archivedEntries = resolveArchivedSkillCatalogEntries(
+      adminCatalogItems,
+      [skillName],
+    );
+    const archivedIds = new Set(archivedEntries.map((entry) => entry.id));
+    setAdminCatalogItems((current) =>
+      current.filter((item) => !archivedIds.has(item.skillId)),
+    );
+    setSelectedNames((current) =>
+      removeArchivedActionSelections(current, [skillName]),
+    );
+    options?.onSkillsArchived?.(archivedEntries);
+    if (options?.loadAdminCatalog) {
+      await refreshAdminSkillCatalog();
+    }
+    toast.success(t("skills.deleteSuccess"));
+    setIsDeleteConfirmOpen(false);
+    setDeleteConfirmData(null);
   };
 
   const cancelDelete = () => {
@@ -351,7 +351,9 @@ export function useSkillsActions(options?: {
           await refreshAdminSkillCatalog();
         }
       }
-      clearSelection();
+      setSelectedNames(
+        new Set(requestedNames.filter((name) => !deletedNames.includes(name))),
+      );
       if (deletedNames.length === requestedNames.length) {
         toast.success(
           t("skills.batchDeleteSuccess", { count: deletedNames.length }),
@@ -736,6 +738,7 @@ export function useSkillsActions(options?: {
     // Delete confirm
     isDeleteConfirmOpen,
     deleteConfirmData,
+    isDeleting,
     confirmDelete,
     cancelDelete,
 

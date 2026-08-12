@@ -149,7 +149,10 @@ test("roles route remains direct-addressable without loading legacy role managem
     app.match(
       /path="\/roles"[\s\S]*?<RolesPage \/>[\s\S]*?<\/ProtectedRoute>/,
     )?.[0] ?? "";
-  assert.match(rolesRoute, /<ProtectedRoute requireAdmin redirectTo="\/chat">/);
+  assert.match(
+    rolesRoute,
+    /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>/,
+  );
   assert.doesNotMatch(rolesRoute, /Permission\.ROLE_MANAGE/);
   assert.doesNotMatch(rolesRoute, /fallbackComponent=/);
   assert.doesNotMatch(rolesRoute, /<WorkbenchForbiddenPage/);
@@ -213,8 +216,9 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.match(
     sidebar,
-    /useSessionList\(scrollEl,\s*sessionSource === undefined\)/,
+    /useSessionList\([\s\S]{0,100}sessionSource === undefined && !navigationOnly/,
   );
+  assert.match(sidebar, /navigationOnly/);
   assert.doesNotMatch(sidebar, /ProjectItem|showProjectSection|sidebar\.projects/);
   assert.doesNotMatch(sidebar, /FolderPlus|sidebar\.newProject|onOpenNewProjectModal|NewProjectModal/);
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);

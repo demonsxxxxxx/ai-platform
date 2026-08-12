@@ -230,6 +230,18 @@ test("reports precise missing data and revision reasons", () => {
   assert.equal(validateAgentProfileEditor(withoutModel, catalog())?.code, "model_required");
   const withoutSkill = { ...withoutModel, modelId: model.id };
   assert.equal(validateAgentProfileEditor(withoutSkill, catalog())?.code, "skill_required");
+  const coreOnly = {
+    ...withoutSkill,
+    selectedSkill: {
+      skill_id: "document-review",
+      expected_version: "2026.07.28",
+    },
+  };
+  assert.equal(
+    validateAgentProfileEditor(coreOnly, catalog()),
+    null,
+    "name, Agent.md, model, and primary Skill are sufficient to save",
+  );
   const withoutRevision = {
     ...hydrateAgentProfileEditor(profile()),
     revision: null,

@@ -66,15 +66,15 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
   }, []);
   const handleSelectSession = useCallback(
-    (sessionId: string) => {
+    (_sessionId: string) => {
       setMobileSidebarOpen(false);
-      navigate(`/chat/${encodeURIComponent(sessionId)}`);
+      navigate("/agent-market");
     },
     [navigate],
   );
   const handleNewSession = useCallback(() => {
     setMobileSidebarOpen(false);
-    navigate("/chat");
+    navigate("/agent-market");
   }, [navigate]);
 
   return (
@@ -82,6 +82,7 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
       activeTab="chat"
       setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSession}
+      allowNewSessionAction={false}
       sidebar={
         <SessionSidebar
           currentSessionId={null}
@@ -92,6 +93,7 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
           onMobileClose={() => setMobileSidebarOpen(false)}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={handleSetSidebarCollapsed}
+          navigationOnly
         />
       }
     >
@@ -246,7 +248,7 @@ function AgentMarketCard({
     >
       <button
         data-agent-market-open-workspace
-        aria-label={`进入 ${profile.name} 专属工作区`}
+        aria-label={`使用 ${profile.name} 开始任务`}
         className="group flex w-full flex-1 gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
         onClick={() => onOpenWorkspace(profile)}
         type="button"
@@ -262,13 +264,20 @@ function AgentMarketCard({
           <span className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
             {profile.capability_summary || profile.description}
           </span>
-          {profile.recommended_tasks[0] ? (
-            <span className="mt-3 line-clamp-1 text-xs text-[var(--theme-text-secondary)]">
-              推荐：{profile.recommended_tasks[0]}
+          {profile.recommended_tasks.length > 0 ? (
+            <span className="mt-3 flex flex-wrap gap-1.5" aria-label="适合处理">
+              {profile.recommended_tasks.slice(0, 3).map((task) => (
+                <span
+                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
+                  key={task}
+                >
+                  {task}
+                </span>
+              ))}
             </span>
           ) : null}
           <span className="mt-auto inline-flex items-center gap-1.5 pt-4 text-sm font-medium text-[var(--theme-primary)]">
-            打开智能体工作区
+            开始任务
             <span aria-hidden="true">→</span>
           </span>
         </span>
@@ -341,6 +350,9 @@ function AgentMarketCatalog({
   const handleRefresh = useCallback(() => {
     refresh();
   }, [refresh]);
+  const handleClearFilters = useCallback(() => {
+    setSearchParams(new URLSearchParams(), { replace: true });
+  }, [setSearchParams]);
 
   return (
     <main data-agent-market className="min-h-0 flex-1 overflow-y-auto text-[var(--theme-text)]">
@@ -353,7 +365,7 @@ function AgentMarketCatalog({
             </div>
             <h1 className="mt-2 text-2xl font-semibold">智能体市场</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--theme-text-secondary)]">
-              浏览当前已发布的智能体，查看公开名称与用途。
+              选择一位企业专家，直接描述要完成的任务。模型、Skill 与工具已由管理员配置。
             </p>
           </div>
           <button
@@ -423,13 +435,22 @@ function AgentMarketCatalog({
             正在加载已发布的智能体…
           </p>
         ) : catalog.value.length === 0 && !hasActiveFilter ? (
-          <section className="border-t border-[var(--theme-border)] py-10 text-sm text-[var(--theme-text-secondary)]">
-            当前没有已发布的智能体，请稍后再试。
+          <section className="border-t border-[var(--theme-border)] py-10">
+            <h2 className="text-base font-semibold">当前没有可用的智能体</h2>
+            <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">
+              发布目录可能正在更新，你可以重新加载查看最新状态。
+            </p>
+            <button className="btn-secondary mt-4" onClick={handleRefresh} type="button">
+              重新加载目录
+            </button>
           </section>
         ) : visibleProfiles.length === 0 ? (
           <section aria-live="polite" className="border-t border-[var(--theme-border)] py-10">
             <h2 className="text-base font-semibold">没有匹配的智能体</h2>
             <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">请尝试其他名称或用途关键词。</p>
+            <button className="btn-secondary mt-4" onClick={handleClearFilters} type="button">
+              清除筛选
+            </button>
           </section>
         ) : (
           <>
@@ -524,6 +545,9 @@ function AgentMarketDetail({
                   企业发布时间 {profile.published_at.slice(0, 10)}
                 </p>
               ) : null}
+              <p className="mt-4 rounded-lg bg-[var(--theme-primary-light)] px-3 py-2 text-sm leading-6 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                无需选择模型或 Skill。进入后描述任务，专家会按已发布配置执行。
+              </p>
             </div>
           </div>
         </section>
@@ -531,7 +555,7 @@ function AgentMarketDetail({
         <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
           {profile.recommended_tasks.length ? (
             <div className="pb-6 sm:pb-7">
-              <h2 className="text-sm font-semibold">推荐任务</h2>
+              <h2 className="text-sm font-semibold">适合处理</h2>
               <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
                 {profile.recommended_tasks.map((task) => (
                   <li className="border-l-2 border-emerald-500 pl-3" key={task}>
@@ -543,7 +567,7 @@ function AgentMarketDetail({
           ) : null}
           {profile.starter_prompts.length ? (
             <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
-              <h2 className="text-sm font-semibold">示例问题</h2>
+              <h2 className="text-sm font-semibold">可以直接开始的任务</h2>
               <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
                 {profile.starter_prompts.map((prompt) => (
                   <li key={prompt}>{prompt}</li>
@@ -573,13 +597,13 @@ function AgentMarketDetail({
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
           <button
             data-agent-market-start-chat
-            aria-label={`进入 ${profile.name} 专属工作区`}
+            aria-label={`使用 ${profile.name} 开始任务`}
             className="btn-primary inline-flex min-h-10 shrink-0 items-center justify-center gap-2 px-4"
             onClick={() => navigate(buildAgentMarketWorkspacePath(profile))}
             type="button"
           >
             <MessageCircle size={17} aria-hidden="true" />
-            进入专属工作区
+            开始任务
           </button>
         </div>
       </div>

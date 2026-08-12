@@ -21,7 +21,7 @@ test("maps authenticated workbench routes to sidebar navigation items", () => {
 
 test("safe navigation redirects unauthorized management destinations before routing", () => {
   assert.equal(getSafeWorkbenchNavPath("agentMarket", null), "/agent-market");
-  assert.equal(getSafeWorkbenchNavPath("models", null), "/chat");
+  assert.equal(getSafeWorkbenchNavPath("models", null), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("agentBuilder", { is_admin: false }), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("agentBuilder", { is_admin: true }), "/agent-builder");
   assert.equal(getSafeWorkbenchNavPath("mcp", { is_admin: false }), "/mcp");

@@ -54,10 +54,6 @@ export interface AgentBuilderEditor {
 export type AgentBuilderBlockCode =
   | "no_selection"
   | "name_required"
-  | "capability_summary_required"
-  | "recommended_task_required"
-  | "expected_output_required"
-  | "permissions_notice_required"
   | "file_types_required"
   | "instructions_required"
   | "model_required"
@@ -292,16 +288,6 @@ export function validateAgentProfileEditor(
     return { code: "profile_revision_missing" };
   }
   if (!editor.name.trim()) return { code: "name_required" };
-  if (!editor.capabilitySummary.trim()) return { code: "capability_summary_required" };
-  if (!editor.recommendedTasks.some((item) => item.trim())) {
-    return { code: "recommended_task_required" };
-  }
-  if (!editor.expectedOutputs.some((item) => item.trim())) {
-    return { code: "expected_output_required" };
-  }
-  if (!editor.permissionsAndDataAccessNotice.trim()) {
-    return { code: "permissions_notice_required" };
-  }
   if (
     editor.supportedInputTypes.includes("file") &&
     !editor.supportedFileTypes.some((item) => item.trim())
@@ -407,18 +393,10 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "请先选择或新建一个智能体。";
     case "name_required":
       return "缺少名称，请填写后再保存。";
-    case "capability_summary_required":
-      return "缺少面向使用者的能力摘要。";
-    case "recommended_task_required":
-      return "至少填写一项推荐任务。";
-    case "expected_output_required":
-      return "至少填写一项预期输出。";
-    case "permissions_notice_required":
-      return "缺少权限与数据访问说明。";
     case "file_types_required":
       return "支持文件输入时必须明确文件类型。";
     case "instructions_required":
-      return "缺少系统说明，请填写后再保存。";
+      return "缺少 Agent.md 初始指令，请填写后再保存。";
     case "model_required":
       return "缺少模型，请选择当前可用模型。";
     case "skill_required":

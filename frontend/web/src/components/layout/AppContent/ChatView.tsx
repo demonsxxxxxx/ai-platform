@@ -846,6 +846,9 @@ export function ChatView({
           className="mx-auto mb-3 flex max-w-4xl flex-wrap gap-2 px-2"
           data-agent-starter-prompts
         >
+          <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
+            可以直接开始的任务
+          </p>
           {agentEmptyProfile.starter_prompts.map((prompt) => (
             <button
               className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
