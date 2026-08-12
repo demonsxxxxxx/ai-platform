@@ -400,7 +400,7 @@ def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
         and payload.get("gate") == STAGE_NAME
-        and payload.get("artifact_kind") == "211_runtime_smoke"
+        and payload.get("artifact_kind") == "controlled_host_runtime_smoke"
     )
 
 

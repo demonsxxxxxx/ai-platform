@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import app.g7_b3_completion_audit as g7_b3_completion_audit
 from tests.test_foundation_runtime_concurrency import complete_evidence
 
 from app.g7_b3_completion_audit import (
@@ -308,7 +309,7 @@ def _current_main_runtime_observation_with_reviewed_g7() -> dict[str, object]:
         },
         "reviewed_release_evidence": {
             "schema_version": "ai-platform.release-evidence-entry.v1",
-            "artifact_kind": "211_sandbox_runtime_smoke",
+            "artifact_kind": "controlled_host_sandbox_runtime_smoke",
             "gate": "G7 Sandbox / Resource Hardening",
             "commit_sha": CURRENT_SOURCE,
             "runtime_subject_commit_sha": CURRENT_SOURCE,
@@ -316,8 +317,8 @@ def _current_main_runtime_observation_with_reviewed_g7() -> dict[str, object]:
             "redaction_scan_status": "passed",
             "evidence_ref": {
                 "runtime_checks": {
-                    "g7_211_sandbox_runtime_hardening": {
-                        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                    "b2_controlled_host_real_sandbox_smoke": {
+                        "schema_version": "ai-platform.sandbox-runtime.v2",
                         "run_id": "g7-current-main-3071a02",
                         "runtime_mode": "platform",
                         "sandbox_provider": "docker",
@@ -326,6 +327,22 @@ def _current_main_runtime_observation_with_reviewed_g7() -> dict[str, object]:
             },
         },
     }
+
+
+def test_g7_current_runtime_evidence_accepts_only_controlled_host_b2_contract():
+    observation = _current_main_runtime_observation_with_reviewed_g7()
+    evidence = observation["reviewed_release_evidence"]
+
+    assert g7_b3_completion_audit._reviewed_g7_release_evidence_id(
+        evidence,
+        current_source_commit=CURRENT_SOURCE,
+    ) == "g7-current-main-3071a02"
+
+    evidence["artifact_kind"] = "211_sandbox_runtime_smoke"
+    assert g7_b3_completion_audit._reviewed_g7_release_evidence_id(
+        evidence,
+        current_source_commit=CURRENT_SOURCE,
+    ) == ""
 
 
 def _current_main_foundation_runtime_concurrency_evidence() -> dict[str, object]:

@@ -135,7 +135,7 @@ def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2
         "commit_sha": commit_sha,
         "runtime_subject_commit_sha": commit_sha,
         "gate": "Foundation Alpha POC",
-        "artifact_kind": "211_runtime_smoke",
+        "artifact_kind": "controlled_host_runtime_smoke",
         "captured_at": captured_at,
         "source_ref": {
             "branch": "main",
@@ -227,6 +227,16 @@ def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2
         "redaction_scan_status": "passed",
         "review_status": "reviewed",
     }
+
+
+def test_foundation_alpha_current_runtime_evidence_accepts_only_controlled_host_kind():
+    commit_sha = "a" * 40
+    payload = _minimal_smoke_payload(commit_sha, image=f"ai-platform:{commit_sha}")
+
+    assert foundation_alpha_readiness._release_evidence_entry_is_valid(payload, commit_sha) is True
+
+    payload["artifact_kind"] = "211_runtime_smoke"
+    assert foundation_alpha_readiness._release_evidence_entry_is_valid(payload, commit_sha) is False
 
 
 def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "2026-06-11T10:01:00+08:00") -> dict:

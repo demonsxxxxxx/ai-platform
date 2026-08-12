@@ -217,7 +217,7 @@ def _reviewed_g7_release_evidence_id(
     evidence = _dict(release_evidence)
     if evidence.get("schema_version") != "ai-platform.release-evidence-entry.v1":
         return ""
-    if evidence.get("artifact_kind") != "211_sandbox_runtime_smoke":
+    if evidence.get("artifact_kind") != "controlled_host_sandbox_runtime_smoke":
         return ""
     if _safe_text(evidence.get("review_status")) != "reviewed":
         return ""
@@ -229,10 +229,10 @@ def _reviewed_g7_release_evidence_id(
         return ""
     evidence_ref = _dict(evidence.get("evidence_ref"))
     runtime_checks = _dict(evidence_ref.get("runtime_checks"))
-    for key in ("g7_211_sandbox_runtime_hardening", "b2_211_real_sandbox_smoke"):
+    for key in ("b2_controlled_host_real_sandbox_smoke",):
         check = _dict(runtime_checks.get(key))
         if (
-            check.get("schema_version") == "ai-platform.sandbox-runtime-211.v1"
+            check.get("schema_version") == "ai-platform.sandbox-runtime.v2"
             and check.get("runtime_mode") == "platform"
             and check.get("sandbox_provider") == "docker"
         ):
@@ -285,9 +285,7 @@ def _reviewed_g7_source_override_allowed(
     if evidence.get("gate") != "G7 Sandbox / Resource Hardening":
         return False
     artifact_kind = evidence.get("artifact_kind")
-    if artifact_kind == "211_runtime_identity_label_repair":
-        return True
-    if artifact_kind != "211_sandbox_runtime_smoke":
+    if artifact_kind != "controlled_host_sandbox_runtime_smoke":
         return False
     source_ref = _dict(evidence.get("source_ref"))
     image_labels = _dict(source_ref.get("image_labels"))
