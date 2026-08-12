@@ -1,0 +1,167 @@
+name: ai-platform trusted governance
+
+on:
+  pull_request_target:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-platform-trusted-governance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  GOVERNANCE_PYTHON_VERSION: "3.13.14"
+
+jobs:
+  trusted-governance:
+    name: trusted architecture and code governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up trusted Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.GOVERNANCE_PYTHON_VERSION }}
+
+      - name: Install trusted governance dependencies
+        run: python -m pip install ruff==0.11.13 PyYAML==6.0.3
+
+      - name: Run immutable exact-range governance
+        env:
+          GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
+          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
+          PYTHONSAFEPATH: "1"
+        run: |
+          set -euo pipefail
+          [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
+          GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
+          echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
+          unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
+          test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
+          git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
+          test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
+          test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
+          GOVERNANCE_BASE_WORKTREE="$RUNNER_TEMP/trusted-governance-base"
+          GOVERNANCE_HEAD_WORKTREE="$RUNNER_TEMP/trusted-governance-head"
+          git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"
+          git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"
+          GOVERNANCE_BASE_WORKTREE="$GOVERNANCE_BASE_WORKTREE" GOVERNANCE_HEAD_WORKTREE="$GOVERNANCE_HEAD_WORKTREE" python -P - <<'PY'
+          import os
+          from pathlib import Path
+
+          import yaml
+
+
+          class UniqueKeyLoader(yaml.BaseLoader):
+              pass
+
+
+          def construct_mapping(loader, node, deep=False):
+              mapping = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in mapping:
+                      raise ValueError(f"duplicate workflow key: {key}")
+                  mapping[key] = loader.construct_object(value_node, deep=deep)
+              return mapping
+
+
+          UniqueKeyLoader.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+              construct_mapping,
+          )
+
+
+          def load_workflow(root):
+              path = Path(root) / ".github/workflows/ai-platform-trusted-governance.yml"
+              payload = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+              if not isinstance(payload, dict):
+                  raise ValueError("trusted governance workflow must be a mapping")
+              return payload
+
+
+          base = load_workflow(os.environ["GOVERNANCE_BASE_WORKTREE"])
+          head = load_workflow(os.environ["GOVERNANCE_HEAD_WORKTREE"])
+          for key in ("permissions", "concurrency", "env"):
+              if head.get(key) != base.get(key):
+                  raise ValueError(f"protected workflow root changed: {key}")
+          base_events = base.get("on")
+          head_events = head.get("on")
+          if not isinstance(base_events, dict) or not isinstance(head_events, dict):
+              raise ValueError("trusted workflow events must be mappings")
+          if head_events != base_events:
+              raise ValueError("protected workflow triggers changed")
+          base_jobs = base.get("jobs")
+          head_jobs = head.get("jobs")
+          if not isinstance(base_jobs, dict) or not isinstance(head_jobs, dict):
+              raise ValueError("trusted workflow jobs must be mappings")
+          if head_jobs != base_jobs:
+              raise ValueError("protected trusted-governance jobs changed")
+          base_backend = Path(os.environ["GOVERNANCE_BASE_WORKTREE"]) / ".github/workflows/ai-platform-backend.yml"
+          head_backend = Path(os.environ["GOVERNANCE_HEAD_WORKTREE"]) / ".github/workflows/ai-platform-backend.yml"
+          base_backend_payload = yaml.load(base_backend.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+          head_backend_payload = yaml.load(head_backend.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+          if not isinstance(base_backend_payload, dict) or not isinstance(head_backend_payload, dict):
+              raise ValueError("backend workflow must be a mapping")
+          base_backend_events = base_backend_payload.get("on")
+          head_backend_events = head_backend_payload.get("on")
+          if not isinstance(base_backend_events, dict) or not isinstance(head_backend_events, dict):
+              raise ValueError("backend workflow events must be mappings")
+          if head_backend_events.get("push") != base_backend_events.get("push"):
+              raise ValueError("protected backend push trigger changed")
+          base_validation = base_backend_payload.get("jobs", {}).get("backend-validation", {})
+          head_validation = head_backend_payload.get("jobs", {}).get("backend-validation", {})
+          if not isinstance(base_validation, dict) or not isinstance(head_validation, dict):
+              raise ValueError("backend validation job must be a mapping")
+          protected_step_name = "Run code and architecture governance"
+          base_steps = base_validation.get("steps")
+          head_steps = head_validation.get("steps")
+          if not isinstance(base_steps, list) or not isinstance(head_steps, list):
+              raise ValueError("backend validation steps must be lists")
+          base_validation_contract = {
+              key: value for key, value in base_validation.items() if key != "steps"
+          }
+          head_validation_contract = {
+              key: value for key, value in head_validation.items() if key != "steps"
+          }
+          if head_validation_contract != base_validation_contract:
+              raise ValueError("protected backend validation job contract changed")
+          base_protected = [step for step in base_steps if step.get("name") == protected_step_name]
+          head_protected = [step for step in head_steps if step.get("name") == protected_step_name]
+          if len(base_protected) != 1 or head_protected != base_protected:
+              raise ValueError("protected backend governance step changed")
+          base_required = base_backend_payload.get("jobs", {}).get("required")
+          head_required = head_backend_payload.get("jobs", {}).get("required")
+          if not isinstance(base_required, dict) or head_required != base_required:
+              raise ValueError("protected backend required job changed")
+          PY
+          (
+            cd "$GOVERNANCE_HEAD_WORKTREE"
+            python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check \
+              --base-ref "$GOVERNANCE_BASE_REF" \
+              --head-ref "$GOVERNANCE_HEAD_REF" \
+              --format text
+            python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check \
+              --authority-ref "$GOVERNANCE_BASE_REF" \
+              --base-ref "$GOVERNANCE_BASE_REF" \
+              --head-ref "$GOVERNANCE_HEAD_REF" \
+              --format text
+          )
