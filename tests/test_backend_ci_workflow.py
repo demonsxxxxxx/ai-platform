@@ -15,6 +15,7 @@ from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
+TRUSTED_GOVERNANCE_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-trusted-governance.yml"
 FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 AGENT_RULES = ROOT / "AGENTS.md"
@@ -616,14 +617,14 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert install_start < governance_start
     assert "github.event.pull_request.head" not in pre_governance
     assert "refs/pull/" not in pre_governance
-    assert "if: github.event_name == 'pull_request'" in governance_step
+    assert "if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}" in governance_step
     assert "GOVERNANCE_PR_NUMBER: ${{ github.event.number }}" in governance_step
     assert (
-        "GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}"
+        "GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}"
         in governance_step
     )
     assert (
-        "GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}"
+        "GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}"
         in governance_step
     )
     assert "GOVERNANCE_FETCH_TOKEN: ${{ github.token }}" in governance_step
@@ -724,6 +725,81 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert fetch_index < fetched_ref_check_index < ancestry_index < base_worktree_index
     assert base_worktree_index < governance_command_index
     assert governance_command_index < architecture_command_index
+
+
+def test_main_push_governance_uses_the_previous_exact_main_as_authority():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    governance_step = workflow.split("- name: Run code and architecture governance", 1)[1].split(
+        "- name: Checkout validated pull request head for existing checks", 1
+    )[0]
+
+    assert "github.event.pull_request.base.sha || github.event.before" in governance_step
+    assert "github.event.pull_request.head.sha || github.sha" in governance_step
+    assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in governance_step
+    assert 'test "$GITHUB_EVENT_NAME" = "push"' in governance_step
+    assert (
+        'test "$GOVERNANCE_BASE_REF" != "0000000000000000000000000000000000000000"'
+        in governance_step
+    )
+    assert 'unset GOVERNANCE_FETCH_TOKEN' in governance_step
+    assert (
+        'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"'
+        in governance_step
+    )
+    assert '--authority-ref "$GOVERNANCE_BASE_REF"' in governance_step
+
+
+def test_pull_request_target_governance_is_immutable_and_never_executes_candidate_code():
+    workflow = TRUSTED_GOVERNANCE_WORKFLOW.read_text(encoding="utf-8")
+    parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
+
+    assert parsed["on"] == {"pull_request_target": {"branches": ["main"]}}
+    assert parsed["permissions"] == {"contents": "read"}
+    assert set(parsed["jobs"]) == {"trusted-governance"}
+    trusted_job = parsed["jobs"]["trusted-governance"]
+    assert trusted_job["name"] == "trusted architecture and code governance"
+    assert trusted_job["timeout-minutes"] == "10"
+    assert "continue-on-error" not in trusted_job
+    assert all("continue-on-error" not in step for step in trusted_job["steps"])
+    assert "pull_request:\n" not in workflow
+    assert "push:\n" not in workflow
+    assert "workflow_dispatch:" not in workflow
+    assert "persist-credentials: false" in workflow
+    assert "persist-credentials: true" not in workflow
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in workflow
+    assert "python -m pip install ruff==0.11.13 PyYAML==6.0.3" in workflow
+    assert 'PYTHONSAFEPATH: "1"' in workflow
+    assert "uv sync" not in workflow
+    assert "pytest" not in workflow
+    assert "docker " not in workflow
+
+    immutable_step = workflow.split("- name: Run immutable exact-range governance", 1)[1]
+    assert '[[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]' in immutable_step
+    assert '[[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]' in immutable_step
+    assert (
+        'GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"'
+        in immutable_step
+    )
+    assert (
+        'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"'
+        in immutable_step
+    )
+    assert "class UniqueKeyLoader(yaml.BaseLoader):" in immutable_step
+    assert 'for key in ("permissions", "concurrency", "env"):' in immutable_step
+    assert 'head_events.get("pull_request_target") != base_events.get("pull_request_target")' in immutable_step
+    assert 'head_jobs.get("trusted-governance") != base_jobs.get("trusted-governance")' in immutable_step
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
+        in immutable_step
+    )
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check'
+        in immutable_step
+    )
+    assert '--authority-ref "$GOVERNANCE_BASE_REF"' in immutable_step
+    assert "python tools/code_governance.py" not in immutable_step
+    assert "python tools/architecture_governance.py" not in immutable_step
 
 
 def test_code_governance_rejects_credential_and_untrusted_ref_fallbacks():

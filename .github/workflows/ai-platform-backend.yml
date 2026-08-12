@@ -42,24 +42,30 @@ jobs:
         run: python -m pip install ruff==0.11.13
 
       - name: Run code and architecture governance
-        if: github.event_name == 'pull_request'
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
         env:
           GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
-          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
-          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
           GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
           PYTHONSAFEPATH: "1"
         run: |
           set -euo pipefail
-          [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
           [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
-          GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
-          GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
-          echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
-          unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
-          test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
+            GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
+            echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
+            unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
+            test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          else
+            test "$GITHUB_EVENT_NAME" = "push"
+            test "$GOVERNANCE_BASE_REF" != "0000000000000000000000000000000000000000"
+            unset GOVERNANCE_FETCH_TOKEN
+          fi
           git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
           git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
           test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
