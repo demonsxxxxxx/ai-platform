@@ -16,11 +16,12 @@ await new Promise<void>((resolve) => setImmediate(resolve));
 
 const {
   AgentConversationIdentityBanner,
-  AgentWorkspaceWelcome,
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
   getOrCreateAgentConversationOperationId,
+  ensureAgentConversationForFirstSend,
+  submitAgentFirstMessageSingleFlight,
   isExactAgentWorkspaceBinding,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
@@ -262,6 +263,345 @@ test("persists one Agent Conversation operation identity across a response-loss 
   assert.equal(first, replay);
 });
 
+test("first-send Agent creation is single-flight and binds before returning", async () => {
+  const coordinator = { current: null as Promise<string> | null };
+  let createCalls = 0;
+  let bindCalls = 0;
+  let releaseCreate!: () => void;
+  const createGate = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const createConversation = async () => {
+    createCalls += 1;
+    await createGate;
+    return {
+      session_id: "session-agent",
+      workspace_id: "default",
+      agent_id: safeIdentity.agent_id,
+      title: safeIdentity.name,
+      purpose: "conversation" as const,
+      agent_conversation: safeIdentity,
+    };
+  };
+  const bindConversation = async (sessionId: string) => {
+    bindCalls += 1;
+    assert.equal(sessionId, "session-agent");
+    return true;
+  };
+
+  const first = ensureAgentConversationForFirstSend({
+    coordinator,
+    profile: safeWorkspace,
+    createConversation,
+    bindConversation,
+  });
+  const duplicate = ensureAgentConversationForFirstSend({
+    coordinator,
+    profile: safeWorkspace,
+    createConversation,
+    bindConversation,
+  });
+  assert.equal(createCalls, 1);
+  releaseCreate();
+
+  assert.deepEqual(await Promise.all([first, duplicate]), [
+    "session-agent",
+    "session-agent",
+  ]);
+  assert.equal(createCalls, 1);
+  assert.equal(bindCalls, 1);
+});
+
+test("first-send creation rejects a mismatched pinned identity before binding", async () => {
+  let bindCalls = 0;
+  await assert.rejects(
+    ensureAgentConversationForFirstSend({
+      coordinator: { current: null },
+      profile: safeWorkspace,
+      createConversation: async () => ({
+        session_id: "session-other",
+        workspace_id: "default",
+        agent_id: "agt_other",
+        title: "Other",
+        purpose: "conversation",
+        agent_conversation: { ...safeIdentity, agent_id: "agt_other" },
+      }),
+      bindConversation: async () => {
+        bindCalls += 1;
+        return true;
+      },
+    }),
+    /agent_workspace_identity_mismatch/,
+  );
+  assert.equal(bindCalls, 0);
+});
+
+test("a recommendation double-click creates and submits one real first user turn", async () => {
+  const coordinator = {
+    current: null as {
+      submissionKey: string;
+      promise: Promise<{ status: "accepted" }>;
+    } | null,
+  };
+  let ensureCalls = 0;
+  let submitCalls = 0;
+  let releaseSubmit!: () => void;
+  const submitGate = new Promise<void>((resolve) => {
+    releaseSubmit = resolve;
+  });
+  const ensureConversation = async () => {
+    ensureCalls += 1;
+    return "session-agent";
+  };
+  const submitMessage = async (sessionId: string) => {
+    submitCalls += 1;
+    assert.equal(sessionId, "session-agent");
+    await submitGate;
+    return { status: "accepted" as const };
+  };
+
+  const first = submitAgentFirstMessageSingleFlight({
+    coordinator,
+    submissionKey: JSON.stringify({ content: "支持请求分流", fileIds: [] }),
+    ensureConversation,
+    submitMessage,
+  });
+  const duplicate = submitAgentFirstMessageSingleFlight({
+    coordinator,
+    submissionKey: JSON.stringify({ content: "支持请求分流", fileIds: [] }),
+    ensureConversation,
+    submitMessage,
+  });
+  await Promise.resolve();
+  assert.equal(ensureCalls, 1);
+  assert.equal(submitCalls, 1);
+  releaseSubmit();
+  assert.deepEqual(await Promise.all([first, duplicate]), [
+    { status: "accepted" },
+    { status: "accepted" },
+  ]);
+});
+
+test("an accepted first submission releases its flight while reusing the bound conversation", async () => {
+  const creationCoordinator = { current: null as Promise<string> | null };
+  const submissionCoordinator = {
+    current: null as {
+      submissionKey: string;
+      promise: Promise<{ status: "accepted" }>;
+    } | null,
+  };
+  let createCalls = 0;
+  let bindCalls = 0;
+  const submittedSessionIds: string[] = [];
+  const ensureConversation = () =>
+    ensureAgentConversationForFirstSend({
+      coordinator: creationCoordinator,
+      profile: safeWorkspace,
+      createConversation: async () => {
+        createCalls += 1;
+        return {
+          session_id: "session-agent",
+          workspace_id: "default",
+          agent_id: safeIdentity.agent_id,
+          title: safeIdentity.name,
+          purpose: "conversation" as const,
+          agent_conversation: safeIdentity,
+        };
+      },
+      bindConversation: async () => {
+        bindCalls += 1;
+        return true;
+      },
+    });
+  const submitMessage = async (sessionId: string) => {
+    submittedSessionIds.push(sessionId);
+    return { status: "accepted" as const };
+  };
+
+  assert.deepEqual(
+    await submitAgentFirstMessageSingleFlight({
+      coordinator: submissionCoordinator,
+      submissionKey: JSON.stringify({ content: "第一问", fileIds: [] }),
+      ensureConversation,
+      submitMessage,
+    }),
+    { status: "accepted" },
+  );
+  assert.deepEqual(
+    await submitAgentFirstMessageSingleFlight({
+      coordinator: submissionCoordinator,
+      submissionKey: JSON.stringify({ content: "第二问", fileIds: [] }),
+      ensureConversation,
+      submitMessage,
+    }),
+    { status: "accepted" },
+  );
+
+  assert.equal(createCalls, 1);
+  assert.equal(bindCalls, 1);
+  assert.deepEqual(submittedSessionIds, ["session-agent", "session-agent"]);
+});
+
+test("a failed first submission retries on the same bound Agent conversation", async () => {
+  const creationCoordinator = { current: null as Promise<string> | null };
+  const submissionCoordinator = {
+    current: null as {
+      submissionKey: string;
+      promise: Promise<{ status: "accepted" }>;
+    } | null,
+  };
+  let createCalls = 0;
+  let bindCalls = 0;
+  let submitCalls = 0;
+  const ensureConversation = () =>
+    ensureAgentConversationForFirstSend({
+      coordinator: creationCoordinator,
+      profile: safeWorkspace,
+      createConversation: async () => {
+        createCalls += 1;
+        return {
+          session_id: "session-agent",
+          workspace_id: "default",
+          agent_id: safeIdentity.agent_id,
+          title: safeIdentity.name,
+          purpose: "conversation" as const,
+          agent_conversation: safeIdentity,
+        };
+      },
+      bindConversation: async () => {
+        bindCalls += 1;
+        return true;
+      },
+    });
+  const submitMessage = async (sessionId: string) => {
+    assert.equal(sessionId, "session-agent");
+    submitCalls += 1;
+    if (submitCalls === 1) throw new Error("transient submit failure");
+    return { status: "accepted" as const };
+  };
+
+  await assert.rejects(
+    submitAgentFirstMessageSingleFlight({
+      coordinator: submissionCoordinator,
+      submissionKey: JSON.stringify({ content: "retry", fileIds: [] }),
+      ensureConversation,
+      submitMessage,
+    }),
+    /transient submit failure/,
+  );
+  assert.deepEqual(
+    await submitAgentFirstMessageSingleFlight({
+      coordinator: submissionCoordinator,
+      submissionKey: JSON.stringify({ content: "retry", fileIds: [] }),
+      ensureConversation,
+      submitMessage,
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(createCalls, 1);
+  assert.equal(bindCalls, 1);
+  assert.equal(submitCalls, 2);
+});
+
+test("a late first-submission completion cannot clear a newer flight", async () => {
+  const coordinator = {
+    current: null as {
+      submissionKey: string;
+      promise: Promise<{ status: "accepted" }>;
+    } | null,
+  };
+  let releaseOld!: () => void;
+  const oldGate = new Promise<void>((resolve) => {
+    releaseOld = resolve;
+  });
+  const oldSubmission = submitAgentFirstMessageSingleFlight({
+    coordinator,
+    submissionKey: JSON.stringify({ content: "旧问题", fileIds: [] }),
+    ensureConversation: async () => "session-agent",
+    submitMessage: async () => {
+      await oldGate;
+      return { status: "accepted" as const };
+    },
+  });
+  const newerFlight = Promise.resolve({ status: "accepted" as const });
+  coordinator.current = { submissionKey: "newer", promise: newerFlight };
+
+  releaseOld();
+  assert.deepEqual(await oldSubmission, { status: "accepted" });
+  assert.equal(coordinator.current?.promise, newerFlight);
+});
+
+test("a different composer payload is not accepted by an in-flight recommendation", async () => {
+  const coordinator = {
+    current: null as {
+      submissionKey: string;
+      promise: Promise<{ status: "accepted" }>;
+    } | null,
+  };
+  let ensureCalls = 0;
+  const submitted: Array<{ sessionId: string; content: string; fileIds: string[] }> = [];
+  let releaseRecommendation!: () => void;
+  const recommendationGate = new Promise<void>((resolve) => {
+    releaseRecommendation = resolve;
+  });
+  const ensureConversation = async () => {
+    ensureCalls += 1;
+    return "session-agent";
+  };
+
+  const recommendation = submitAgentFirstMessageSingleFlight({
+    coordinator,
+    submissionKey: JSON.stringify({ content: "支持请求分流", fileIds: [] }),
+    ensureConversation,
+    submitMessage: async (sessionId) => {
+      submitted.push({ sessionId, content: "支持请求分流", fileIds: [] });
+      await recommendationGate;
+      return { status: "accepted" as const };
+    },
+  });
+  const composerDraft = submitAgentFirstMessageSingleFlight({
+    coordinator,
+    submissionKey: JSON.stringify({ content: "分析附件", fileIds: ["file-report"] }),
+    ensureConversation,
+    submitMessage: async (sessionId) => {
+      submitted.push({ sessionId, content: "分析附件", fileIds: ["file-report"] });
+      return { status: "accepted" as const };
+    },
+  });
+
+  assert.deepEqual(
+    await composerDraft,
+    { status: "failed" },
+    "an unsent draft must not receive accepted and therefore must not be cleared by ChatInput",
+  );
+  assert.equal(
+    JSON.stringify(submitted),
+    JSON.stringify([
+      { sessionId: "session-agent", content: "支持请求分流", fileIds: [] },
+    ]),
+  );
+  releaseRecommendation();
+  assert.deepEqual(await recommendation, { status: "accepted" });
+
+  assert.deepEqual(
+    await submitAgentFirstMessageSingleFlight({
+      coordinator,
+      submissionKey: JSON.stringify({ content: "分析附件", fileIds: ["file-report"] }),
+      ensureConversation,
+      submitMessage: async (sessionId) => {
+        submitted.push({ sessionId, content: "分析附件", fileIds: ["file-report"] });
+        return { status: "accepted" as const };
+      },
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(ensureCalls, 2);
+  assert.deepEqual(submitted, [
+    { sessionId: "session-agent", content: "支持请求分流", fileIds: [] },
+    { sessionId: "session-agent", content: "分析附件", fileIds: ["file-report"] },
+  ]);
+});
+
 test("fails closed when stable Agent Conversation operation storage is unavailable", () => {
   const operationId = getOrCreateAgentConversationOperationId({
     agentId: safeIdentity.agent_id,
@@ -332,30 +672,20 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
 
-test("renders a productized Agent workspace welcome before creating a conversation", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(AgentWorkspaceWelcome, {
-      profile: {
-        ...safeIdentity,
-        expected_revision: safeIdentity.revision,
-      },
-      creating: false,
-      readOnly: false,
-      error: null,
-      historyError: null,
-      onStart: () => {},
-      onStarterPrompt: () => {},
-      onOpenDetail: () => {},
-    }),
+test("projects the Agent welcome and recommendations only in the empty Chat UI", () => {
+  const chatViewSource = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
+  const appContentSource = readFileSync(
+    new URL("../ChatAppContent.tsx", import.meta.url),
+    "utf8",
   );
 
-  assert.match(html, /data-agent-workspace-welcome/);
-  assert.match(html, /企业已发布/);
-  assert.match(html, /欢迎使用支持助手/);
-  assert.match(html, /权限与数据访问/);
-  assert.match(html, /帮我处理支持请求/);
-  assert.match(html, /开始新对话/);
-  assert.doesNotMatch(html, /model_id|instructions|mcp_tool_ids|selected_skill/);
+  assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
+  assert.match(chatViewSource, /data-agent-chat-opening/);
+  assert.match(chatViewSource, /agentEmptyProfile\.welcome_message/);
+  assert.match(chatViewSource, /data-agent-starter-prompts/);
+  assert.match(chatViewSource, /onClick=\{\(\) => void onSendMessage\(prompt\)\}/);
+  assert.doesNotMatch(appContentSource, /data-agent-workspace-welcome/);
+  assert.doesNotMatch(appContentSource, /data-agent-workspace-start/);
 });
 
 test("Agent workspace sidebar consumes the server-paginated session source", () => {
@@ -367,6 +697,17 @@ test("Agent workspace sidebar consumes the server-paginated session source", () 
   assert.match(source, /agentWorkspaceSessionSource\?: SessionSidebarSessionSource/);
   assert.match(source, /sessionSource=\{agentWorkspaceSessionSource\}/);
   assert.match(source, /agentWorkspace && !agentWorkspaceSessionSource[\s\S]*\? \(\) => false/);
-  assert.match(source, /onAgentWorkspaceSessionCreated\?\.\(session\.session_id\)/);
+  assert.match(source, /onAgentWorkspaceSessionCreated\?\.\(createdSessionId\)/);
   assert.match(source, /composerPlaceholder=\{[\s\S]*agentWorkspace\.name/);
+});
+
+test("legacy generic Agent sessions redirect to the canonical dedicated route", () => {
+  const source = readFileSync(
+    new URL("../ChatAppContent.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /if \(!agentWorkspace && identity\)/);
+  assert.match(source, /buildAgentMarketWorkspacePath\([\s\S]*identity\.agent_id/);
+  assert.match(source, /navigate\([\s\S]*\{ replace: true \}/);
 });

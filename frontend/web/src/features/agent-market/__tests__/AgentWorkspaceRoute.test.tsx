@@ -16,6 +16,7 @@ test("AgentWorkspaceRoute restores current or immutable historical Agent revisio
   assert.match(source, /sessionApi\.getAuthoritative\(routeSessionId\)/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /profile: historicalProfile\(identity\)/);
+  assert.match(source, /phase === "ready"/);
   assert.match(source, /loadedWorkspace !== null/);
   assert.match(source, /loadedWorkspace\.agentId === agentId/);
   assert.match(source, /loadedWorkspace\.revision === revision/);

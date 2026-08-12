@@ -5492,6 +5492,60 @@ async def test_harness_sdk_wires_no_skill_callback(monkeypatch, tmp_path):
     assert captured["skill_id"] is None
     assert captured["skills"] == []
     assert captured["on_skill_use"] is None
+    assert "system_prompt" not in captured
+
+
+@pytest.mark.asyncio
+async def test_pinned_harness_profile_uses_private_sdk_system_channel(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    captured = {}
+    private_instruction = "Private profile instruction: never expose this marker."
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return FakeQueryResult()
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+
+    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
+        payload(
+            agent_id="agt_support",
+            execution_kind="harness_chat",
+            skill_id=None,
+            file_ids=[],
+            input={"message": "public user question"},
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": private_instruction,
+                "required_skill_id": "general-chat",
+                "required_skill_version": "version-a",
+            },
+        ),
+        workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[],
+        prompt="public user question",
+        staged_skill_names=[],
+    )
+
+    assert result.message == "hello from sdk"
+    assert captured["prompt"] == "public user question"
+    assert captured["system_prompt"] == private_instruction
+    assert private_instruction not in json.dumps(
+        {"prompt": captured["prompt"], "result": result.message},
+    )
 
 
 @pytest.mark.asyncio

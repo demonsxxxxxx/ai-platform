@@ -19,6 +19,7 @@ export interface UseFileUploadOptions {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+  acceptedFileTypes?: readonly string[];
 }
 
 type UploadTranslation = (key: string) => unknown;
@@ -58,6 +59,36 @@ type UploadClient = {
     options: { onProgress?: (progress: number) => void },
   ) => ReturnType<typeof uploadApi.uploadFile>;
 };
+
+export function isAcceptedProfileFile(
+  file: Pick<File, "name" | "type">,
+  acceptedFileTypes: readonly string[] | undefined,
+): boolean {
+  if (acceptedFileTypes === undefined) return true;
+  const normalizedType = file.type.toLowerCase();
+  const normalizedName = file.name.toLowerCase();
+  return acceptedFileTypes.some((entry) => {
+    const candidate = entry.trim().toLowerCase();
+    if (!candidate) return false;
+    if (candidate.startsWith(".")) return normalizedName.endsWith(candidate);
+    if (candidate.endsWith("/*")) {
+      return normalizedType.startsWith(candidate.slice(0, -1));
+    }
+    return normalizedType === candidate;
+  });
+}
+
+export function partitionAcceptedProfileFiles(
+  files: readonly File[],
+  acceptedFileTypes: readonly string[] | undefined,
+): { accepted: File[]; rejected: File[] } {
+  const accepted: File[] = [];
+  const rejected: File[] = [];
+  for (const file of files) {
+    (isAcceptedProfileFile(file, acceptedFileTypes) ? accepted : rejected).push(file);
+  }
+  return { accepted, rejected };
+}
 
 interface FileUploadTaskOptions {
   file: File;
@@ -220,6 +251,7 @@ export function startFileUploadTask({
 export function useFileUpload({
   attachments,
   onAttachmentsChange,
+  acceptedFileTypes,
 }: UseFileUploadOptions) {
   const { t } = useTranslation();
   const [uploadPolicy, setUploadPolicy] =
@@ -331,15 +363,22 @@ export function useFileUpload({
       const fileArray = Array.from(files);
       if (fileArray.length === 0) return;
 
-      if (!validateCount(fileArray.length)) return;
+      const { accepted: acceptedFiles, rejected } = partitionAcceptedProfileFiles(
+        fileArray,
+        acceptedFileTypes,
+      );
+      if (rejected.length > 0) {
+        toast.error(String(t("fileUpload.serverUnsupportedFileType")));
+      }
+      if (acceptedFiles.length === 0 || !validateCount(acceptedFiles.length)) return;
 
-      for (const file of fileArray) {
+      for (const file of acceptedFiles) {
         const fileCategory = category || getFileCategory(file);
         if (!validateSize(file, fileCategory)) continue;
         uploadFile(file, fileCategory);
       }
     },
-    [validateCount, validateSize, uploadFile],
+    [acceptedFileTypes, t, validateCount, validateSize, uploadFile],
   );
 
   return {

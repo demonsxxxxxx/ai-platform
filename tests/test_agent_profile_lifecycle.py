@@ -980,6 +980,107 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
 
 
 @pytest.mark.asyncio
+async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    row = _profile_row()
+    row["content_hash"] = _revision_hash(_draft_from_row(row))
+    calls: list[tuple[str, object]] = []
+
+    async def get_bound(*_args, **kwargs):
+        calls.append(("bound", kwargs))
+        return row
+
+    async def validate(*_args, **kwargs):
+        calls.append(("validate", kwargs["definition"]))
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        get_bound,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    admission = await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(row["content_hash"]),
+    )
+
+    assert admission is not None
+    assert admission.private_execution_input == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": row["content_hash"],
+        "instructions": "private instruction",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    assert [name for name, _ in calls] == ["bound", "validate"]
+    assert calls[0][1]["for_update"] is True
+
+
+@pytest.mark.parametrize("denial", ["withdrawn", "hash_mismatch", "acl", "capability"])
+@pytest.mark.asyncio
+async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch, denial):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    row = _profile_row()
+    row["content_hash"] = _revision_hash(_draft_from_row(row))
+    expected_hash = str(row["content_hash"])
+    calls = {"bound": 0, "validate": 0}
+    if denial == "hash_mismatch":
+        row["instructions"] = "changed without a new immutable hash"
+    if denial == "acl":
+        row.update(
+            current_visibility="restricted",
+            current_allowed_department_ids=[],
+            current_allowed_roles=[],
+            current_allowed_user_ids=["other-user"],
+        )
+
+    async def get_bound(*_args, **_kwargs):
+        calls["bound"] += 1
+        return None if denial == "withdrawn" else row
+
+    async def validate(*_args, **_kwargs):
+        calls["validate"] += 1
+        if denial == "capability":
+            raise HTTPException(status_code=403, detail="agent_profile_capability_not_available")
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        get_bound,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    admission = await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=expected_hash,
+    )
+
+    assert admission is None
+    assert calls["bound"] == 1
+    assert calls["validate"] == (1 if denial == "capability" else 0)
+
+
+@pytest.mark.asyncio
 async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_override(monkeypatch):
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
@@ -994,6 +1095,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
         yield object()
 
     bound_calls = []
+    harness_calls = []
     noop = AsyncMock(return_value=None)
 
     async def owned_session(*_args, **_kwargs):
@@ -1013,7 +1115,14 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             skill={"skill_id": "general-chat", "skill_version": "version-a"},
             model={"id": "model-a", "value": "model-a"},
             mcp_tool_ids=(),
-            private_execution_input={"agent_id": "agt_support", "revision": 7, "instructions": "private"},
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "private",
+                "required_skill_id": "general-chat",
+                "required_skill_version": "version-a",
+            },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
                 revision=7,
@@ -1045,12 +1154,20 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             False,
         )
 
+    async def harness_agent(*_args, **kwargs):
+        harness_calls.append(kwargs)
+        return {"id": "agt_support", "agent_type": "chat"}
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
     monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
     monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
     monkeypatch.setattr(repositories, "get_authorized_session", owned_session)
     monkeypatch.setattr(repositories, "acquire_user_active_run_admission_lock", noop)
     monkeypatch.setattr(repositories, "get_latest_authorized_session_run_input", noop)
+    monkeypatch.setattr(repositories, "get_agent", harness_agent)
+    monkeypatch.setattr(repositories, "enforce_user_active_run_admission_under_lock", noop)
+    monkeypatch.setattr(repositories, "ensure_workspace_belongs_to_tenant", noop)
+    monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
@@ -1068,6 +1185,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     )
 
     assert response.run_id == "run-profile"
+    assert harness_calls == [{"tenant_id": "tenant-a", "agent_id": "agt_support"}]
     assert bound_calls[0]["principal"] == _principal()
     assert (bound_calls[0]["agent_id"], bound_calls[0]["revision"], bound_calls[0]["content_hash"]) == (
         "agt_support", 7, "a" * 64

@@ -10,6 +10,7 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
+from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.skills.release_policy import validate_release_decision_lock
 from app.validation import assert_safe_id
 
@@ -214,7 +215,17 @@ class RunPayload:
             if self.skill_version or self.release_decision or self.skill_manifests:
                 raise ValueError("harness_chat_skill_authority_forbidden")
             if self.agent_profile:
-                raise ValueError("harness_chat_agent_profile_forbidden")
+                object.__setattr__(
+                    self,
+                    "agent_profile",
+                    validate_agent_profile_execution_input(
+                        self.agent_profile,
+                        agent_id=self.agent_id,
+                        execution_kind=self.execution_kind,
+                        skill_id=self.skill_id,
+                        skill_version=self.skill_version,
+                    ),
+                )
             return
         if self.execution_kind != RUN_EXECUTION_KIND_SKILL or self.skill_id is None:
             raise ValueError("skill_execution_identity_invalid")
@@ -224,6 +235,18 @@ class RunPayload:
             skill_id=self.skill_id,
             skill_manifests=self.skill_manifests,
         )
+        if self.agent_profile:
+            object.__setattr__(
+                self,
+                "agent_profile",
+                validate_agent_profile_execution_input(
+                    self.agent_profile,
+                    agent_id=self.agent_id,
+                    execution_kind=self.execution_kind,
+                    skill_id=self.skill_id,
+                    skill_version=self.skill_version,
+                ),
+            )
 
 
 class ExecutorAdapter(Protocol):

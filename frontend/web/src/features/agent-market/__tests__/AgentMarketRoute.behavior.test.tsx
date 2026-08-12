@@ -742,7 +742,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   }
 });
 
-test("a bare Agent workspace creates the exact pinned conversation only after explicit start", async () => {
+test("a bare Agent workspace is the empty Chat experience and does not create until send", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
@@ -842,41 +842,13 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
-    assert.ok(container.querySelector("[data-agent-workspace-welcome]"));
-    assert.match(container.textContent, /企业已发布/);
-    assert.match(container.textContent, /权限与数据访问/);
-    assert.equal(container.querySelector("textarea"), null);
-
-    const start = container.querySelector("[data-agent-workspace-start]");
-    assert.ok(start);
-    dom.window.sessionStorage = null as unknown as Storage;
-    await React.act(async () => {
-      start.dispatchEvent({ type: "click", bubbles: true });
-      for (let index = 0; index < 8; index += 1) await Promise.resolve();
-    });
-
-    assert.deepEqual(
-      recordedSelections(),
-      [],
-      "unavailable durable operation storage must prevent POST",
-    );
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
-    assert.match(container.textContent, /浏览器无法安全保存本次创建标识/);
-
-    dom.window.sessionStorage = reliableSessionStorage;
-    await React.act(async () => {
-      start.dispatchEvent({ type: "click", bubbles: true });
-      for (let index = 0; index < 8; index += 1) await Promise.resolve();
-    });
-
-    const [created] = recordedSelections();
-    assert.ok(created);
-    assert.deepEqual(created.selection, { agent_id: "agt_support", expected_revision: 4 });
-    assert.match(
-      created.operationId,
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support");
+    assert.ok(container.querySelector("[data-agent-chat-opening]"));
+    assert.match(container.textContent, /欢迎使用企业专家/);
+    assert.ok(container.querySelector("[data-agent-starter-prompts]"));
+    assert.ok(container.querySelector("textarea"));
+    assert.equal(container.querySelector("[data-agent-workspace-welcome]"), null);
+    assert.equal(container.querySelector("[data-agent-workspace-start]"), null);
+    assert.deepEqual(recordedSelections(), []);
   } finally {
     dom.window.sessionStorage = reliableSessionStorage;
     agentProfileApi.getPublished = originalGetPublished;

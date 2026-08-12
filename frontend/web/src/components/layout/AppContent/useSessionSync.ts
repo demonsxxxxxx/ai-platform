@@ -177,16 +177,24 @@ export function shouldLoadSessionFromUrlChange({
 }
 
 /**
- * A generic chat's first accepted submission binds its Session before the URL
- * is canonicalized. That route-only transition must retain the live authority
- * and transcript; every other identity transition remains a real clear.
+ * A first accepted submission may bind its Session before the URL is
+ * canonicalized. That route-only transition must retain the live authority
+ * and transcript in both ordinary and Agent Chat; every other identity
+ * transition remains a real clear.
  */
 export function shouldClearConversationOnRouteIdentityChange({
   hasAgentWorkspace,
   routeSessionId,
   sessionId,
 }: ShouldClearConversationOnRouteIdentityChangeInput): boolean {
-  if (hasAgentWorkspace) return true;
+  if (
+    hasAgentWorkspace &&
+    sessionId !== null &&
+    (!routeSessionId || routeSessionId === sessionId)
+  ) {
+    return false;
+  }
+
   return !routeSessionId || routeSessionId !== sessionId;
 }
 

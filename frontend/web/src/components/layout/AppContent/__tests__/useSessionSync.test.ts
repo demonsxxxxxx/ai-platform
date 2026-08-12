@@ -110,6 +110,33 @@ test("clears and reloads when external navigation selects another session", () =
   );
 });
 
+test("Agent first-send canonicalization retains the already bound Session", () => {
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
+      routeSessionId: undefined,
+      sessionId: "session-agent",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
+      routeSessionId: "session-agent",
+      sessionId: "session-agent",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
+      routeSessionId: "session-other",
+      sessionId: "session-agent",
+    }),
+    true,
+  );
+});
+
 test("updates a published Agent workspace URL without falling back to generic chat", () => {
   assert.deepEqual(
     getSessionRouteSyncAction({

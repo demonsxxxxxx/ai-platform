@@ -857,6 +857,36 @@ class AgentProfileAuthority:
             )
         return admission
 
+    async def resolve_bound_for_worker_dispatch(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        agent_id: str,
+        revision: int,
+        content_hash: str,
+    ) -> AgentProfileAdmission | None:
+        """Reauthorize a pinned Profile for dispatch without leaking HTTP errors."""
+
+        try:
+            row = await repositories.get_bound_published_agent_profile(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+                revision=revision,
+                content_hash=content_hash,
+                for_update=True,
+            )
+            if row is None or _revision_hash(_draft_from_row(row)) != content_hash:
+                return None
+            return await self._admission_from_row(
+                conn,
+                principal=principal,
+                row=row,
+            )
+        except (HTTPException, KeyError, TypeError, ValueError):
+            return None
+
     async def _admission_from_row(
         self,
         conn,
