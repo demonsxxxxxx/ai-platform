@@ -21,7 +21,6 @@ from typing import Any
 
 
 REPORT_SCHEMA_VERSION = "ai-platform.architecture-governance-report.v1"
-MAX_SCHEMA_PATTERN_LENGTH = 512
 POLICY_SCHEMA_VERSION = "ai-platform.architecture-policy.v1"
 POLICY_SCHEMA_ID = (
     "https://github.com/demonsxxxxxx/ai-platform/"
@@ -35,6 +34,16 @@ SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 MODULE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 SYMBOL_NAME = re.compile(r"[A-Z][A-Z0-9_]+")
 SQL_TEXT = re.compile(r"^\s*(?:select|insert|update|delete)\b", re.IGNORECASE)
+SUPPORTED_SCHEMA_PATTERNS = frozenset(
+    {
+        r"^(?!/)(?!.*\\)(?!.*(?:^|/)\.\.(?:/|$)).+$",
+        r"^[A-Z][A-Z0-9_]+$",
+        r"^[A-Z][A-Za-z0-9]*$",
+        r"^[a-z][a-z0-9_]*$",
+        r"^_?[a-z][a-z0-9_]*$",
+        r"^app(?:\.[a-z][a-z0-9_]*)+$",
+    }
+)
 
 POLICY_KEYS = {
     "schema_version",
@@ -780,10 +789,10 @@ def _validate_json_schema_instance(instance: Any, schema: dict[str, Any]) -> Non
                 raise ArchitectureError("invalid_policy", f"{location} is shorter than the schema minimum")
             pattern = node.get("pattern")
             if pattern is not None:
-                if not isinstance(pattern, str) or len(pattern) > MAX_SCHEMA_PATTERN_LENGTH:
+                if not isinstance(pattern, str) or pattern not in SUPPORTED_SCHEMA_PATTERNS:
                     raise ArchitectureError(
                         "invalid_policy_schema",
-                        f"invalid pattern for {location}",
+                        f"unsupported pattern for {location}",
                     )
                 try:
                     matched = re.fullmatch(pattern, value)

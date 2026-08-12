@@ -262,7 +262,7 @@ def test_authority_schema_is_applied_to_policy_entries(tmp_path: Path) -> None:
     assert caught.value.code == "invalid_policy"
 
 
-def test_authority_schema_patterns_require_full_matches(tmp_path: Path) -> None:
+def test_authority_schema_rejects_unapproved_patterns(tmp_path: Path) -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     schema["$defs"]["nonEmptyString"]["pattern"] = "platform"
     repo, authority = _create_repo(tmp_path, schema_text=json.dumps(schema))
@@ -270,13 +270,30 @@ def test_authority_schema_patterns_require_full_matches(tmp_path: Path) -> None:
     with pytest.raises(architecture_governance.ArchitectureError) as caught:
         _evaluate(repo, authority, authority, authority)
 
-    assert caught.value.code == "invalid_policy"
+    assert caught.value.code == "invalid_policy_schema"
 
 
 def test_authority_schema_patterns_have_a_bounded_length(tmp_path: Path) -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     schema["$defs"]["nonEmptyString"]["pattern"] = "a" * 513
     repo, authority = _create_repo(tmp_path, schema_text=json.dumps(schema))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy_schema"
+
+
+def test_authority_schema_rejects_nested_quantified_patterns(tmp_path: Path) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema["$defs"]["nonEmptyString"]["pattern"] = "(a+)+$"
+    policy = _fixture_policy()
+    policy["owner"] = "a" * 30 + "!"
+    repo, authority = _create_repo(
+        tmp_path,
+        policy_text=json.dumps(policy),
+        schema_text=json.dumps(schema),
+    )
 
     with pytest.raises(architecture_governance.ArchitectureError) as caught:
         _evaluate(repo, authority, authority, authority)
@@ -439,7 +456,8 @@ def test_new_context_boundary_modules_are_layer_exempt(
 
     evaluation = _evaluate(repo, authority, authority, head)
 
-    assert "unlayered_domain_module" not in _codes(evaluation)
+    assert _codes(evaluation) == set()
+    assert evaluation.status == "pass"
 
 
 def test_domain_boundary_cannot_import_concrete_infrastructure(
@@ -493,7 +511,7 @@ def test_kernel_from_import_resolves_private_descendant_modules(
     policy = _fixture_policy()
     policy["public_kernel_modules"] = ["identity"]
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
-    _write(repo, "app/kernel/identity.py", "class Principal:\n    pass\n")
+    _write(repo, "app/kernel/identity/__init__.py", "class Principal:\n    pass\n")
     _write(repo, "app/kernel/identity/private.py", "SECRET = True\n")
     authority = _commit(repo, "authority with private kernel descendant")
     _write(
