@@ -69,7 +69,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_runtime_launch_script.py",
     ),
     "release-governance": (
+        "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
+        "tests/test_pre_push_readiness.py",
         "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
@@ -146,7 +148,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     }
     assert actual_shards == BACKEND_TEST_SHARDS
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 26
+    assert len(all_selectors) == len(set(all_selectors)) == 28
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step

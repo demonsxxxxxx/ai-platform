@@ -513,6 +513,21 @@ The existing `app.persistence` and Agent Profile facades demonstrate the desired
 intermediate shape only when they are logic-free and identity-bound to one
 canonical owner. Parallel SQL or policy in both old and new modules is a defect.
 
+An approved legacy migration bridge is narrower than a compatibility facade.
+It MAY let one frozen legacy source module import one exact bounded-context
+`infrastructure` module solely to preserve an existing Python symbol as a
+top-level identity alias while its implementation moves. Every source path,
+target module, module alias, and symbol MUST be listed by immutable architecture
+authority before the move. The legacy source MUST shrink in the activating
+change, the target MUST define every declared symbol, and the bridge MUST reject
+prefixes, wildcards, dynamic imports, rebinding, new executable source logic,
+renames, and exceptions. A bridge grants import compatibility only; it does not
+make the legacy module a persistence owner or a public cross-domain API.
+Each authority entry MUST also state its observable removal condition. Bridge
+retirement is two bounded changes: first remove the authority entry after its
+condition is proven while keeping the aliases stable; then remove the aliases
+under the next authority. Candidate policy edits never authorize either step.
+
 ## 11. Test architecture
 
 The target test tree mirrors ownership:
