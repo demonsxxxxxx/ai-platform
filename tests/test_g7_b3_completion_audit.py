@@ -60,6 +60,12 @@ CURRENT_MAIN_G7_LABEL_REPAIR_EVIDENCE_PATH = (
     / CURRENT_MAIN_G7_SOURCE
     / "2026-07-01-211-g7-runtime-identity-label-repair-ae6b7e5.json"
 )
+CURRENT_B2_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/b2-sandbox"
+    / "f8a0f3c1168c34663850345d8f30358d435a0134"
+    / "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
+)
 PR297_G7_LIVE_ENV_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/release-evidence/g7-sandbox"
@@ -291,6 +297,58 @@ def _stale_current_main_runtime_observation() -> dict[str, object]:
     }
 
 
+def _current_controlled_host_b2_evidence() -> dict[str, object]:
+    evidence = json.loads(CURRENT_B2_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    evidence.update(
+        {
+            "artifact_kind": "controlled_host_sandbox_runtime_smoke",
+            "commit_sha": CURRENT_SOURCE,
+            "gate": "B2 real sandbox usable",
+            "runtime_subject_commit_sha": CURRENT_SOURCE,
+        }
+    )
+    evidence_ref = evidence["evidence_ref"]
+    evidence_ref["verifier"] = "scripts/verify_sandbox_runtime.py"
+    smoke = evidence_ref["runtime_checks"].pop("b2_211_real_sandbox_smoke")
+    evidence_ref["runtime_checks"]["b2_controlled_host_real_sandbox_smoke"] = smoke
+    smoke.update(
+        {
+            "schema_version": "ai-platform.sandbox-runtime.v2",
+            "run_id": "g7-current-main-3071a02",
+            "executor": {"sdk_used": True, "executor_mode": "claude_agent_sdk"},
+        }
+    )
+    smoke["checks"]["check_opensandbox_provider_lifecycle_evidence"] = True
+    smoke["timings"].update(
+        {
+            "sandbox_queue_wait_latency_ms": 0,
+            "sandbox_container_start_latency_ms": smoke["timings"][
+                "sandbox_container_cold_start_latency_ms"
+            ],
+            "executor_first_token_latency_ms": smoke["timings"]["executor_model_latency_ms"],
+            "executor_tool_call_latency_ms": 0,
+            "artifact_upload_latency_ms": 0,
+        }
+    )
+    source_ref = evidence["source_ref"]
+    source_ref["image"] = f"ai-platform:{CURRENT_SOURCE}"
+    source_ref["runtime_source_marker"] = CURRENT_SOURCE
+    source_ref["image_labels"].update(
+        {
+            "ai-platform.source_revision": CURRENT_SOURCE,
+            "ai-platform.source_tree_commit": CURRENT_SOURCE,
+            "org.opencontainers.image.revision": CURRENT_SOURCE,
+        }
+    )
+    source_ref["source_snapshot"].update(
+        {
+            "runtime_subject_commit_sha": CURRENT_SOURCE,
+            "source_tree_commit_sha": CURRENT_SOURCE,
+        }
+    )
+    return evidence
+
+
 def _current_main_runtime_observation_with_reviewed_g7() -> dict[str, object]:
     return {
         "source_marker_commit": CURRENT_SOURCE,
@@ -307,25 +365,7 @@ def _current_main_runtime_observation_with_reviewed_g7() -> dict[str, object]:
             "SANDBOX_EXECUTOR_IMAGE": "ai-platform:local",
             "SANDBOX_EGRESS_POLICY_ENABLED": "false",
         },
-        "reviewed_release_evidence": {
-            "schema_version": "ai-platform.release-evidence-entry.v1",
-            "artifact_kind": "controlled_host_sandbox_runtime_smoke",
-            "gate": "G7 Sandbox / Resource Hardening",
-            "commit_sha": CURRENT_SOURCE,
-            "runtime_subject_commit_sha": CURRENT_SOURCE,
-            "review_status": "reviewed",
-            "redaction_scan_status": "passed",
-            "evidence_ref": {
-                "runtime_checks": {
-                    "b2_controlled_host_real_sandbox_smoke": {
-                        "schema_version": "ai-platform.sandbox-runtime.v2",
-                        "run_id": "g7-current-main-3071a02",
-                        "runtime_mode": "platform",
-                        "sandbox_provider": "docker",
-                    }
-                }
-            },
-        },
+        "reviewed_release_evidence": _current_controlled_host_b2_evidence(),
     }
 
 
@@ -341,6 +381,30 @@ def test_g7_current_runtime_evidence_accepts_only_controlled_host_b2_contract():
     evidence["artifact_kind"] = "211_sandbox_runtime_smoke"
     assert g7_b3_completion_audit._reviewed_g7_release_evidence_id(
         evidence,
+        current_source_commit=CURRENT_SOURCE,
+    ) == ""
+
+    skeletal_evidence = {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "artifact_kind": "controlled_host_sandbox_runtime_smoke",
+        "gate": "B2 real sandbox usable",
+        "commit_sha": CURRENT_SOURCE,
+        "runtime_subject_commit_sha": CURRENT_SOURCE,
+        "review_status": "reviewed",
+        "redaction_scan_status": "passed",
+        "evidence_ref": {
+            "runtime_checks": {
+                "b2_controlled_host_real_sandbox_smoke": {
+                    "schema_version": "ai-platform.sandbox-runtime.v2",
+                    "run_id": "skeletal-run",
+                    "runtime_mode": "platform",
+                    "sandbox_provider": "docker",
+                }
+            }
+        },
+    }
+    assert g7_b3_completion_audit._reviewed_g7_release_evidence_id(
+        skeletal_evidence,
         current_source_commit=CURRENT_SOURCE,
     ) == ""
 
@@ -2418,11 +2482,10 @@ def test_audit_accepts_reviewed_current_main_g7_evidence_without_overclosing():
     assert audit["g7"]["status"] == "blocked"
     assert "reviewed_local_release_evidence_entry_missing" not in audit["g7"]["blocking_reasons"]
     assert "current_main_source_runtime_label_mismatch" not in audit["g7"]["blocking_reasons"]
-    assert "stale_runtime_alias_label_mismatch" in audit["g7"]["blocking_reasons"]
+    assert "stale_runtime_alias_label_mismatch" not in audit["g7"]["blocking_reasons"]
     assert "live_api_uses_fake_sandbox_provider" in audit["g7"]["blocking_reasons"]
     assert audit["g7"]["reviewed_release_evidence_id"] == "g7-current-main-3071a02"
     assert audit["g7"]["required_next_steps"] == [
-        "clean stale runtime alias labels that still point at an older runtime subject",
         "move live API and worker default sandbox posture from fake provider to the reviewed Docker-provider path",
         "rerun Foundation Runtime concurrency evidence for the same current runtime subject",
     ]

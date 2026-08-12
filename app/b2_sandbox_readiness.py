@@ -716,6 +716,25 @@ def _b2_smoke_evidence_summary(
     return summary
 
 
+def reviewed_b2_runtime_evidence_summary(
+    payload: object,
+    *,
+    current_source_commit: str,
+) -> dict[str, Any] | None:
+    """Validate one reviewed B2 runtime record against the current source subject."""
+    if not current_source_commit or not isinstance(payload, dict):
+        return None
+    synthetic_path = Path(current_source_commit) / "controlled-host-sandbox-runtime-smoke.json"
+    summary = _b2_smoke_evidence_summary(
+        payload,
+        path=synthetic_path,
+        repo_root=Path("."),
+    )
+    if summary is None or summary.get("runtime_subject_commit_sha") != current_source_commit:
+        return None
+    return summary
+
+
 def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
     evidence_root = repo_root / _RUNTIME_EVIDENCE_ROOT
     if not evidence_root.exists():

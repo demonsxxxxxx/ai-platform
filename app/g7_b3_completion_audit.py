@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from app.capacity_baseline import LOAD_TEST_GATES
+from app.b2_sandbox_readiness import reviewed_b2_runtime_evidence_summary
 from app.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
 
 
@@ -215,40 +216,13 @@ def _reviewed_g7_release_evidence_id(
     current_source_commit: str,
 ) -> str:
     evidence = _dict(release_evidence)
-    if evidence.get("schema_version") != "ai-platform.release-evidence-entry.v1":
+    summary = reviewed_b2_runtime_evidence_summary(
+        evidence,
+        current_source_commit=current_source_commit,
+    )
+    if summary is None or summary.get("sandbox_provider") != "docker":
         return ""
-    if evidence.get("artifact_kind") != "controlled_host_sandbox_runtime_smoke":
-        return ""
-    if _safe_text(evidence.get("review_status")) != "reviewed":
-        return ""
-    if _safe_text(evidence.get("redaction_scan_status")) != "passed":
-        return ""
-    if _safe_text(evidence.get("runtime_subject_commit_sha")) != current_source_commit:
-        return ""
-    if _safe_text(evidence.get("commit_sha")) != current_source_commit:
-        return ""
-    evidence_ref = _dict(evidence.get("evidence_ref"))
-    runtime_checks = _dict(evidence_ref.get("runtime_checks"))
-    for key in ("b2_controlled_host_real_sandbox_smoke",):
-        check = _dict(runtime_checks.get(key))
-        if (
-            check.get("schema_version") == "ai-platform.sandbox-runtime.v2"
-            and check.get("runtime_mode") == "platform"
-            and check.get("sandbox_provider") == "docker"
-        ):
-            return _safe_text(check.get("run_id")) or _safe_text(evidence.get("evidence_id"))
-    generator_summary = _dict(evidence_ref.get("evidence_generator_summary"))
-    verifier_checks = _dict(evidence_ref.get("verifier_summary")).get("checks", [])
-    if (
-        evidence_ref.get("result") == "all_eight_checks_passed"
-        and generator_summary.get("runtime_mode") == "platform"
-        and generator_summary.get("sandbox_provider") == "docker"
-        and isinstance(verifier_checks, list)
-        and len(verifier_checks) >= 8
-        and all(_dict(item).get("passed") is True for item in verifier_checks)
-    ):
-        return _safe_text(evidence_ref.get("run_id")) or _safe_text(evidence.get("evidence_id"))
-    return ""
+    return _safe_text(summary.get("run_id")) or _safe_text(evidence.get("evidence_id"))
 
 
 def _reviewed_g7_release_evidence_selected_id(
@@ -272,24 +246,11 @@ def _reviewed_g7_source_override_allowed(
     *,
     current_source_commit: str,
 ) -> bool:
-    if evidence.get("schema_version") != "ai-platform.release-evidence-entry.v1":
-        return False
-    if _safe_text(evidence.get("review_status")) != "reviewed":
-        return False
-    if _safe_text(evidence.get("redaction_scan_status")) != "passed":
-        return False
-    if _safe_text(evidence.get("runtime_subject_commit_sha")) != current_source_commit:
-        return False
-    if _safe_text(evidence.get("commit_sha")) != current_source_commit:
-        return False
-    if evidence.get("gate") != "G7 Sandbox / Resource Hardening":
-        return False
-    artifact_kind = evidence.get("artifact_kind")
-    if artifact_kind != "controlled_host_sandbox_runtime_smoke":
-        return False
-    source_ref = _dict(evidence.get("source_ref"))
-    image_labels = _dict(source_ref.get("image_labels"))
-    return _legacy_runtime_label_commit(image_labels) == current_source_commit
+    summary = reviewed_b2_runtime_evidence_summary(
+        evidence,
+        current_source_commit=current_source_commit,
+    )
+    return summary is not None and summary.get("sandbox_provider") == "docker"
 
 
 def _safe_runtime_env_from_release_evidence(evidence: dict[str, Any]) -> dict[str, str]:
