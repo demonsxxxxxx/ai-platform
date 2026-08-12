@@ -88,10 +88,10 @@ def test_app_registers_platform_routes():
 def test_app_allows_browser_cors_for_frontend_cutover():
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/health", headers={"Origin": "http://10.56.0.211:8080"})
+    response = client.get("/api/ai/health", headers={"Origin": "http://127.0.0.1:9527"})
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://10.56.0.211:8080"
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:9527"
     assert response.headers["access-control-allow-credentials"] == "true"
 
 

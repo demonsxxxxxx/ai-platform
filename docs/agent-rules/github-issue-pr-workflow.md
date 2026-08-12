@@ -2,7 +2,7 @@
 
 This file is the single source for issue/PR records, status language, review
 evidence, and closure. Product and deployment invariants remain in the
-guardrails and 211 runbook.
+repository authority and the release runbook.
 
 ## Closure Loop
 
@@ -33,8 +33,8 @@ of expanding an unrelated product PR.
   merged or deployed.
 - `reviewed`: required independent review ran and every finding was fixed,
   rejected with evidence, or explicitly deferred.
-- `211 verified`: the exact deployed subject passed the required current runtime
-  checks on 211.
+- `runtime verified`: the exact deployed subject passed the required checks on
+  its operator-approved controlled host.
 - `gate closable`: implementation or decision, PR/merge when applicable, review,
   required docs, and required runtime evidence are complete.
 
@@ -133,7 +133,7 @@ failures require a new fixed SHA.
   durably. Do not call an empty GitHub `reviewDecision` formally approved.
 - Run the narrowest relevant verification first. Before PR, merge, deployment,
   or closure, run the tests and integration or smoke checks justified by risk.
-- Local/source verification, GitHub review and CI, deployment, and 211 runtime
+- Local/source verification, GitHub review and CI, deployment, and runtime
   evidence are distinct states. Admin evidence does not prove ordinary-user
   behavior, and source evidence does not prove the deployed runtime.
 - Runtime evidence identifies the exact commit/image/container, route and

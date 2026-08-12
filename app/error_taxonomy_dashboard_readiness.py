@@ -47,7 +47,7 @@ _DASHBOARD_CONTRACT = {
 _OPEN_GAPS = [
     "error_taxonomy_dashboard_runtime_acceptance",
     "error_taxonomy_dashboard_visual_acceptance",
-    "error_taxonomy_dashboard_211_acceptance",
+    "error_taxonomy_dashboard_controlled_host_acceptance",
 ]
 
 

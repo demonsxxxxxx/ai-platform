@@ -14,16 +14,16 @@ from app.foundation_alpha_readiness import (
 SCHEMA_VERSION = "ai-platform.b2-sandbox-readiness.v1"
 BACKEND_STAGE = "B2 real sandbox usable"
 ISSUE = "#130"
-RUNTIME_ACCEPTANCE_GAP = "b2_211_real_sandbox_smoke"
+RUNTIME_ACCEPTANCE_GAP = "b2_controlled_host_real_sandbox_smoke"
 REVIEWED_EVIDENCE_GAP = "b2_reviewed_release_evidence"
 ISSUE_CLOSURE_GAP = "b2_issue_review_and_closure_evidence"
 RUNTIME_SOURCE_REVIEW_GAP = "b2_runtime_evidence_review_against_merged_source"
-GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence_211.py"
-VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime_211.py"
-RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
+GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence.py"
+VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime.py"
+RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "controlled_host_sandbox_runtime_smoke"
 RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND = "b2_runtime_source_delta_review"
 RUNTIME_SOURCE_DELTA_REVIEW_SCHEMA = "ai-platform.b2-runtime-source-delta-review.v1"
-RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
+RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime.v2"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
 _RUNTIME_SOURCE_REVIEW_ROOT = "docs/release-evidence/b2-sandbox-source-review"
@@ -31,8 +31,8 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".github/workflows/ai-platform-backend.yml",
     "app/b2_sandbox_readiness.py",
     "app/foundation_alpha_readiness.py",
-    "scripts/generate_sandbox_runtime_evidence_211.py",
-    "scripts/verify_sandbox_runtime_211.py",
+    "scripts/generate_sandbox_runtime_evidence.py",
+    "scripts/verify_sandbox_runtime.py",
     "tools/b2_sandbox_readiness.py",
     "tests/test_b1_memory_context_readiness.py",
     "tests/test_b2_sandbox_readiness.py",
@@ -60,7 +60,7 @@ _CLOSED_SOURCE_CONTROLS = [
 _SOURCE_TESTS = [
     "tests/test_sandbox_container_provider.py",
     "tests/test_sandbox_runtime.py",
-    "tests/test_sandbox_runtime_211_script.py",
+    "tests/test_sandbox_runtime_evidence_script.py",
     "tests/test_sandbox_lease_routes.py",
     "tests/test_runtime_callbacks.py",
 ]
@@ -238,7 +238,7 @@ _HARDENING_POLICY_CONTRACTS = {
             "over_limit_cleanup_and_error_projection_defined",
         ],
         "runtime_evidence_required": [
-            "211 Docker/equivalent smoke records configured memory and CPU limits for the sandbox container",
+            "controlled-host Docker/equivalent smoke records configured memory and CPU limits for the sandbox container",
             "over-limit or timeout probe proves the container is stopped and the lease is released",
             "Admin Runtime projection reports bounded error metadata without host paths or raw Docker payloads",
         ],
@@ -252,7 +252,7 @@ _HARDENING_POLICY_CONTRACTS = {
             "egress_denial_logged_without_secret_or_url_leakage",
         ],
         "runtime_evidence_required": [
-            "211 Docker/equivalent smoke proves an unapproved outbound request is denied",
+            "controlled-host Docker/equivalent smoke proves an unapproved outbound request is denied",
             "callback path still works through the scoped run token",
             "release evidence redaction scan excludes callback tokens, host paths, and denied target secrets",
         ],
@@ -267,7 +267,7 @@ _HARDENING_POLICY_CONTRACTS = {
             "docker_socket_mount_forbidden_by_default",
         ],
         "runtime_evidence_required": [
-            "211 Docker/equivalent smoke captures security options from the launched sandbox container",
+            "controlled-host Docker/equivalent smoke captures security options from the launched sandbox container",
             "privileged and Docker-socket access probes fail closed",
             "cleanup proves no elevated container or mount remains after cancel or failure",
         ],
@@ -597,9 +597,9 @@ def _hardening_runtime_evidence_status(
     ):
         return {}
     return {
-        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
-        "egress_policy_evidence": "verified_211_runtime_acceptance",
-        "security_options_evidence": "verified_211_runtime_acceptance",
+        "resource_limits_policy_evidence": "verified_runtime_acceptance",
+        "egress_policy_evidence": "verified_runtime_acceptance",
+        "security_options_evidence": "verified_runtime_acceptance",
     }
 
 
@@ -684,9 +684,9 @@ def _b2_smoke_evidence_summary(
             return None
     summary = {
         "status": (
-            "verified_211_runtime_acceptance"
+            "verified_runtime_acceptance"
             if hardening_check_passed
-            else "recorded_211_runtime_smoke_hardening_open"
+            else "recorded_runtime_smoke_hardening_open"
         ),
         "artifact_kind": RUNTIME_ACCEPTANCE_ARTIFACT_KIND,
         "captured_at": payload.get("captured_at"),
@@ -912,7 +912,7 @@ def _merged_source_runtime_review(
             "runtime_subject_commit_sha": "",
             "current_source_commit_sha": current_source,
             "runtime_affecting_changes_since_runtime_subject": None,
-            "required_next_step": "record reviewed 211 B2 sandbox smoke evidence before reviewing merged-source drift",
+            "required_next_step": "record reviewed controlled-host B2 sandbox smoke evidence before reviewing merged-source drift",
             "does_not_close_broader_b2_g7_gate": True,
         }
     runtime_affecting_changes = _resolve_b2_runtime_affecting_changes_between(
@@ -942,17 +942,17 @@ def _merged_source_runtime_review(
             "runtime_subject_commit_sha": runtime_subject,
             "current_source_commit_sha": current_source,
             "runtime_affecting_changes_since_runtime_subject": None,
-            "required_next_step": "classify runtime-affecting source delta before accepting or rerunning B2 211 sandbox smoke evidence",
+            "required_next_step": "classify runtime-affecting source delta before accepting or rerunning B2 sandbox smoke evidence",
             "does_not_close_broader_b2_g7_gate": True,
         }
     if runtime_affecting_changes:
         return {
-            "status": "runtime_affecting_delta_requires_fresh_211_smoke",
+            "status": "runtime_affecting_delta_requires_fresh_controlled_host_smoke",
             "closed_gap": None,
             "runtime_subject_commit_sha": runtime_subject,
             "current_source_commit_sha": current_source,
             "runtime_affecting_changes_since_runtime_subject": runtime_affecting_changes,
-            "required_next_step": "deploy current main to 211 and rerun scripts/verify_sandbox_runtime_211.py before closing this gap",
+            "required_next_step": "deploy current main to a controlled Docker host and rerun scripts/verify_sandbox_runtime.py before closing this gap",
             "does_not_close_broader_b2_g7_gate": True,
         }
     return {
@@ -1026,7 +1026,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     closed_hardening_runtime_gaps = [
         gap
         for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
-        if hardening_runtime_evidence.get(gap) == "verified_211_runtime_acceptance"
+        if hardening_runtime_evidence.get(gap) == "verified_runtime_acceptance"
     ]
     open_hardening_runtime_gaps = [
         gap
@@ -1038,7 +1038,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         if b2_smoke_recorded
         else None
     )
-    opensandbox_provider_status = "local_partial_211_smoke_required"
+    opensandbox_provider_status = "local_partial_runtime_smoke_required"
     if runtime_acceptance_provider == "opensandbox":
         opensandbox_provider_status = (
             "runtime_hardening_acceptance_recorded"
@@ -1060,7 +1060,12 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     open_gaps = [
         RUNTIME_ACCEPTANCE_GAP,
         REVIEWED_EVIDENCE_GAP,
-        ISSUE_CLOSURE_GAP,
+        *(
+            []
+            if ISSUE_CLOSURE_GAP in closed_gate_boundary_gaps
+            else [ISSUE_CLOSURE_GAP]
+        ),
+        RUNTIME_SOURCE_REVIEW_GAP,
     ]
     if b2_smoke_recorded:
         open_gaps = [
@@ -1078,9 +1083,9 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     else:
         status = "local_contract_ready_runtime_smoke_required"
     runtime_status = (
-        "verified_211_runtime_acceptance"
+        "verified_runtime_acceptance"
         if b2_smoke_recorded
-        else "missing_211_real_sandbox_smoke"
+        else "missing_controlled_host_real_sandbox_smoke"
     )
     closed_runtime_gaps = (
         [RUNTIME_ACCEPTANCE_GAP, REVIEWED_EVIDENCE_GAP]
@@ -1132,10 +1137,10 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "required": True,
             "status": runtime_status,
             "acceptance_gap": RUNTIME_ACCEPTANCE_GAP,
-            "required_operator_target": "211_docker_capable_host",
+            "required_operator_target": "controlled_docker_host",
             "generator_script": GENERATOR_SCRIPT,
             "verifier_script": VERIFIER_SCRIPT,
-            "verifier_schema_version": "ai-platform.sandbox-runtime-211.v1",
+            "verifier_schema_version": "ai-platform.sandbox-runtime.v2",
             "docker_cmd": "sudo -n docker",
             "cancel_probe_image": "ai-platform:local",
             "runtime_probe_results_schema_version": RUNTIME_PROBE_RESULTS_SCHEMA_VERSION,
@@ -1151,7 +1156,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "status_label_after_smoke_before_review": "local partial",
             "smoke_without_reviewed_evidence_status": "runtime_smoke_recorded_review_required",
             "status_label_after_reviewed_evidence": "local partial",
-            "reviewed_evidence_required_for_211_verified": True,
+            "reviewed_evidence_required_for_deployed_runtime_acceptance": True,
             "does_not_close_b2_gate_by_itself": True,
             "verifier_required_checks": list(_VERIFIER_REQUIRED_CHECKS),
             "verifier_check_entrypoints": dict(_VERIFIER_CHECK_ENTRYPOINTS),
@@ -1342,7 +1347,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- smoke status before reviewed evidence: `{runtime['status_label_after_smoke_before_review']}`\n"
         f"- smoke-without-review status: `{runtime['smoke_without_reviewed_evidence_status']}`\n"
         f"- target status after reviewed evidence: `{runtime['status_label_after_reviewed_evidence']}`\n"
-        f"- reviewed evidence required before elevated status: `{str(runtime['reviewed_evidence_required_for_211_verified']).lower()}`\n"
+        f"- reviewed evidence required before elevated status: `{str(runtime['reviewed_evidence_required_for_deployed_runtime_acceptance']).lower()}`\n"
         f"- does not close B2 gate by itself: `{str(runtime['does_not_close_b2_gate_by_itself']).lower()}`\n\n"
         f"- runtime probe results schema: `{runtime.get('runtime_probe_results_schema_version')}`\n"
         f"- runtime probe results generate flag: `{runtime.get('runtime_probe_results_generate_cli_flag')}`\n"

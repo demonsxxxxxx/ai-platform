@@ -18,7 +18,7 @@ def _valid_entry(**overrides):
         "gate": "Foundation Alpha POC",
         "issue_refs": ["#15", "#16", "#17"],
         "pr_refs": [],
-        "artifact_kind": "211_runtime_smoke",
+        "artifact_kind": "controlled_host_runtime_smoke",
         "captured_at": "2026-06-12T15:30:00+08:00",
         "source_ref": {
             "branch": "main",

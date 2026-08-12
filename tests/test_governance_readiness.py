@@ -86,7 +86,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "admin_policy_bulk_review_and_dashboard_acceptance" not in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_runtime_acceptance" not in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_visual_acceptance" in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_211_acceptance" in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_controlled_host_acceptance" in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
     assert "allow_deny_policy_taxonomy_for_all_mcp_tools" not in domains["tool_permission"]["gaps"]
@@ -110,13 +110,13 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     bulk_review_evidence = domains["tool_permission"]["evidence"]["admin_policy_bulk_review_dashboard"]
     assert bulk_review_evidence["schema_version"] == "ai-platform.tool-policy-bulk-review-readiness.v1"
     assert bulk_review_evidence["runtime_acceptance"]["status"] == "source_route_tests_recorded"
-    assert bulk_review_evidence["runtime_acceptance"]["does_not_close_211_acceptance"] is True
+    assert bulk_review_evidence["runtime_acceptance"]["does_not_close_runtime_acceptance"] is True
     assert bulk_review_evidence["dashboard_contract"]["schema_version"] == (
         "ai-platform.tool-policy-bulk-review-dashboard-contract.v1"
     )
     assert bulk_review_evidence["open_gaps"] == [
         "admin_policy_bulk_review_visual_acceptance",
-        "admin_policy_bulk_review_211_acceptance",
+        "admin_policy_bulk_review_controlled_host_acceptance",
     ]
     assert "skill_release_promote_rollback_policy" in domains["skill_governance"]["implemented"]
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
@@ -135,7 +135,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "admin_skill_release_dashboard_acceptance" not in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_runtime_acceptance" not in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_visual_acceptance" in domains["skill_governance"]["gaps"]
-    assert "admin_skill_release_dashboard_211_acceptance" in domains["skill_governance"]["gaps"]
+    assert "admin_skill_release_dashboard_controlled_host_acceptance" in domains["skill_governance"]["gaps"]
     release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
     assert release_evidence["schema_version"] == "ai-platform.skill-release-readiness.v1"
     assert release_evidence["status"] == "partial_blocked"
@@ -172,7 +172,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert runtime_contract["runtime_payload_schema_version"] == (
         "ai-platform.skill-dependency-review-runtime-acceptance.v1"
     )
-    assert runtime_contract["target"] == "211_api_admin_runtime"
+    assert runtime_contract["target"] == "controlled_host_api_admin_runtime"
     assert runtime_contract["acceptance_gap"] == "skill_dependency_review_policy_runtime_acceptance"
     assert runtime_contract["runtime_acceptance_requires_real_admin_runtime_payload"] is True
     assert "check_admin_runtime_governance_projection" in runtime_contract["required_verifier_checks"]
@@ -198,10 +198,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "ai-platform.skill-release-dashboard-contract.v1"
     )
     assert dashboard_evidence["runtime_acceptance"]["status"] == "source_route_tests_recorded"
-    assert dashboard_evidence["runtime_acceptance"]["does_not_close_211_acceptance"] is True
+    assert dashboard_evidence["runtime_acceptance"]["does_not_close_runtime_acceptance"] is True
     assert dashboard_evidence["open_gaps"] == [
         "admin_skill_release_dashboard_visual_acceptance",
-        "admin_skill_release_dashboard_211_acceptance",
+        "admin_skill_release_dashboard_controlled_host_acceptance",
     ]
     assert dashboard_evidence["does_not_close_g6"] is True
     assert "memory_retention_cleanup_admin_and_worker" in domains["memory_governance"]["implemented"]
@@ -230,12 +230,12 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_context_provenance_acceptance" not in domains["memory_governance"]["gaps"]
     assert "executor_context_pack_injection" not in domains["memory_governance"]["gaps"]
     assert "document_centric_followup_state" not in domains["memory_governance"]["gaps"]
-    assert "executor_context_pack_211_acceptance" not in domains["memory_governance"]["gaps"]
+    assert "executor_context_pack_runtime_acceptance" in domains["memory_governance"]["gaps"]
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
-    assert "211_memory_enabled_document_workflow_smoke" in domains["memory_governance"]["gaps"]
-    assert "211_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" in domains["memory_governance"]["gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" in domains["memory_governance"]["gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
     assert "b1_memory_export_boundary" not in domains["memory_governance"]["gaps"]
     assert "b1_memory_export_boundary" not in readiness["open_gaps"]
     assert "b1_rollback_boundary" not in domains["memory_governance"]["gaps"]
@@ -247,17 +247,17 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         assert gap in readiness["open_gaps"]
     b1_evidence = domains["memory_governance"]["evidence"]["b1_memory_context_readiness"]
     assert b1_evidence["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
-    assert b1_evidence["status"] == "local_controls_ready_runtime_smoke_required"
+    assert b1_evidence["status"] == "blocked_missing_context_pack_evidence"
     assert b1_evidence["status_label"] == "local partial"
     assert b1_evidence["runtime_acceptance"]["acceptance_gap"] == (
-        "211_memory_enabled_document_workflow_smoke"
+        "controlled_host_memory_enabled_document_workflow_smoke"
     )
     assert b1_evidence["runtime_acceptance"]["verifier_script"] == (
         "tools/verify_b1_memory_context_workflow.py"
     )
     assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert set(B1_GATE_BOUNDARY_GAPS).issubset(set(b1_evidence["open_gaps"]))
-    assert "211_memory_enabled_document_workflow_smoke" in b1_evidence["open_gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" in b1_evidence["open_gaps"]
     assert "b1_issue_review_and_closure_evidence" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_memory_export_boundary" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_rollback_boundary" in b1_evidence["closed_gate_boundary_gaps"]
@@ -279,7 +279,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert runtime_review["status"] == "open_missing_runtime_subject_evidence"
     assert runtime_review["closed_gap"] is None
     assert runtime_review["required_next_step"] == (
-        "record reviewed 211 B1 smoke evidence before reviewing merged-source drift"
+        "record reviewed controlled-host B1 smoke evidence before reviewing merged-source drift"
     )
     assert b1_evidence["runtime_acceptance_evidence"] == {}
     assert b1_evidence["non_expansion_invariants"] == {
@@ -291,7 +291,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     }
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
-    assert context_evidence["status"] == "runtime_acceptance_recorded"
+    assert context_evidence["status"] == "partial_blocked"
     assert context_evidence["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert context_evidence["policy"]["ordinary_user_policy"] == "public_projection_only"
     assert context_evidence["policy"]["long_term_memory_policy"] == "fail_closed_until_policy_and_acceptance"
@@ -307,18 +307,18 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "sandbox_cached_lease_scope_revalidation_source_tests" in context_evidence["implemented_controls"]
     assert context_evidence["summary"]["allowed_sources"] >= 7
     assert context_evidence["summary"]["execution_tiers"] >= 3
-    assert context_evidence["summary"]["open_gaps"] == 0
-    assert context_evidence["summary"]["closed_runtime_gaps"] == 2
+    assert context_evidence["summary"]["open_gaps"] == 2
+    assert context_evidence["summary"]["closed_runtime_gaps"] == 0
     assert context_evidence["summary"]["sandbox_default_for_lightweight_office_tasks"] is False
     assert context_evidence["sandbox_latency_observability"]["status"] == (
         "source_contract_defined_runtime_acceptance_required"
     )
     assert context_evidence["sandbox_latency_observability"]["must_not_hide_cold_start_in_executor_latency"] is True
     assert context_evidence["sandbox_runtime_smoke_contract"]["generator_script"] == (
-        "scripts/generate_sandbox_runtime_evidence_211.py"
+        "scripts/generate_sandbox_runtime_evidence.py"
     )
     assert context_evidence["sandbox_runtime_smoke_contract"]["verifier_script"] == (
-        "scripts/verify_sandbox_runtime_211.py"
+        "scripts/verify_sandbox_runtime.py"
     )
     assert context_evidence["sandbox_runtime_smoke_contract"]["docker_cmd"] == "sudo -n docker"
     assert "check_platform_runtime_evidence" in context_evidence["sandbox_runtime_smoke_contract"]["required_checks"]
@@ -332,13 +332,13 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "ai-platform.executor-context-pack-runtime-acceptance.v1"
     )
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["target"] == (
-        "211_api_worker_runtime"
+        "controlled_runtime_source_probe"
     )
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["generator_script"] == (
-        "scripts/generate_executor_context_pack_evidence_211.py"
+        "scripts/generate_executor_context_pack_evidence.py"
     )
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["verifier_script"] == (
-        "scripts/verify_executor_context_pack_211.py"
+        "scripts/verify_executor_context_pack.py"
     )
     assert (
         context_evidence["executor_context_pack_runtime_acceptance_contract"]["source_probe_evidence_strength"]
@@ -350,7 +350,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     )
     assert "accepted_evidence_strength" not in context_evidence["executor_context_pack_runtime_acceptance_contract"]
     assert (
-        context_evidence["executor_context_pack_runtime_acceptance_contract"]["does_not_close_211_acceptance"]
+        context_evidence["executor_context_pack_runtime_acceptance_contract"]["does_not_close_runtime_acceptance"]
         is True
     )
     assert (
@@ -388,29 +388,18 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     ]["required_runtime_evidence"]
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
         "acceptance_gap"
-    ] == "executor_context_pack_211_acceptance"
+    ] == "executor_context_pack_runtime_acceptance"
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
         "does_not_close_g6_g9"
     ] is True
     assert "frontend_context_provenance_acceptance" not in context_evidence["open_gaps"]
     assert "document_centric_followup_state" not in context_evidence["open_gaps"]
-    assert "executor_context_pack_211_acceptance" not in context_evidence["open_gaps"]
+    assert "executor_context_pack_runtime_acceptance" in context_evidence["open_gaps"]
     assert "office_execution_tier_router" not in context_evidence["open_gaps"]
     assert "sandbox_cold_start_latency_split" not in context_evidence["open_gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" not in context_evidence["open_gaps"]
-    assert context_evidence["closed_runtime_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
-    ]
-    assert context_evidence["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"][
-        "run_id"
-    ] == "run_a618c52ee5c148a185254b68e1c81b9e"
-    assert context_evidence["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"][
-        "runtime_subject"
-    ] == "8e0389e-main-runtime-rebase"
-    assert context_evidence["runtime_acceptance_evidence"]["sandbox_cold_start_latency_split_211_acceptance"][
-        "timings"
-    ]["sandbox_container_cold_start_latency_ms"] > 0
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" in context_evidence["open_gaps"]
+    assert context_evidence["closed_runtime_gaps"] == []
+    assert context_evidence["runtime_acceptance_evidence"] == {}
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
@@ -426,7 +415,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "inactive_legacy_secret_like_frontend_sources_quarantined" not in domains["frontend_projection"]["implemented"]
     assert "frontend_profile_envvar_surface_fail_closed" in domains["frontend_projection"]["implemented"]
     assert "admin_runtime_capacity_governance_frontend_section" in domains["frontend_projection"]["implemented"]
-    assert "admin_runtime_211_frontend_acceptance" in domains["frontend_projection"]["implemented"]
+    assert "admin_runtime_controlled_host_frontend_acceptance" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_blocker_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_definition_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_ci_build_provenance_contract" in domains["frontend_projection"]["implemented"]
@@ -486,7 +475,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "tenant-secret" not in serialized
     assert "docker://token" not in serialized
     assert "211 verified" not in serialized
-    assert "211_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
     assert "b1_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
     assert "gate closable" not in serialized
     assert "sandbox_workspace_root" not in serialized
@@ -613,7 +602,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "memory_export_erasure_evidence_snapshot" in markdown
     assert "b1 memory/context readiness" in markdown.lower()
     assert "ai-platform.b1-memory-context-readiness.v1" in markdown
-    assert "211_memory_enabled_document_workflow_smoke" in markdown
+    assert "controlled_host_memory_enabled_document_workflow_smoke" in markdown
     assert "211 verified" not in markdown.lower()
     assert "b1_runtime_evidence_review_against_merged_source" in open_gaps
     assert "context_snapshot_public_provenance_projection_contract" in markdown
@@ -625,11 +614,11 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "executor_context_pack_prompt_injection_source_tests" in markdown
     assert "sandbox_cold_start_latency_split_source_contract" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]
-    assert "executor_context_pack_211_acceptance" not in open_gaps
-    assert "sandbox_cold_start_latency_split_211_acceptance" not in open_gaps
-    assert "closed runtime gaps" in markdown
-    assert "executor_context_pack_211_acceptance" in markdown
-    assert "sandbox_cold_start_latency_split_211_acceptance" in markdown
+    assert "executor_context_pack_runtime_acceptance" in open_gaps
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" in open_gaps
+    assert "closed runtime gaps" not in markdown
+    assert "executor_context_pack_runtime_acceptance" in markdown
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" in markdown
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown
     assert ".claude/skills" not in markdown
@@ -655,6 +644,6 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     assert "callback-secret" not in result.stdout
     assert "tenant-secret" not in result.stdout
     assert "211 verified" not in result.stdout.lower()
-    assert "211_memory_enabled_document_workflow_smoke" in payload["open_gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" in payload["open_gaps"]
     assert "b1_runtime_evidence_review_against_merged_source" in payload["open_gaps"]
     assert "gate closable" not in result.stdout.lower()

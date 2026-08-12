@@ -155,7 +155,7 @@ def build_b1_b5_context_runtime_readiness(
         "target": TARGET,
         "source": {
             "repo_root_name": root.name,
-            "does_not_touch_211": True,
+            "does_not_touch_remote_runtime": True,
             "runtime_subject": "local_source_only",
         },
         "checks": checks,
@@ -163,10 +163,10 @@ def build_b1_b5_context_runtime_readiness(
             "machine_readable": True,
             "verifier_script": "tools/verify_b1_b5_context_runtime.py",
             "does_not_close_b1_or_b5_gate": True,
-            "does_not_mark_211_verified": True,
+            "does_not_mark_remote_runtime_verified": True,
         },
         "non_expansion_invariants": {
-            "does_not_touch_211": True,
+            "does_not_touch_remote_runtime": True,
             "does_not_close_b1_or_b5_gate": True,
             "long_term_cross_session_memory_enabled": False,
             "public_projection_only_for_ordinary_users": True,
@@ -190,8 +190,8 @@ def render_b1_b5_context_runtime_readiness_markdown(readiness: dict[str, Any]) -
         "## Checks\n\n"
         f"{check_lines or '- none'}\n\n"
         "## Boundary\n\n"
-        "This verifier is local-source runtime evidence only. It does not touch 211, "
-        "does not close B1/B5 gates, and does not mark PR #307 as 211 verified.\n"
+        "This verifier is local-source evidence only. It does not touch a remote runtime, "
+        "does not close B1/B5 gates, and does not establish deployed-runtime acceptance.\n"
     )
 
 

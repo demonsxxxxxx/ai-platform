@@ -136,7 +136,7 @@ def build_skill_snapshot_governance(
             "ref": "skill_dependency_policy",
             "dependency_count": len(dependency_ids),
         },
-        "does_not_close_b4_or_211": True,
+        "does_not_close_b4_or_deployed_runtime_acceptance": True,
     }
 
 

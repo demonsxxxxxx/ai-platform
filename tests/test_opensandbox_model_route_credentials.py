@@ -245,9 +245,9 @@ def test_mailbox_model_route_denials_and_replay_never_add_upstream_dispatch(monk
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": ("https://models.internal.example", ("10.56.0.211",)),
-            "openai": ("https://models.internal.example/openai/v1", ("10.56.0.211",)),
-            "anthropic": ("https://models.internal.example/anthropic", ("10.56.0.211",)),
+            "callback": ("https://models.internal.example", ("10.42.0.12",)),
+            "openai": ("https://models.internal.example/openai/v1", ("10.42.0.12",)),
+            "anthropic": ("https://models.internal.example/anthropic", ("10.42.0.12",)),
         }
     )
     tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)

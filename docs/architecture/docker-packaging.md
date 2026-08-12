@@ -50,7 +50,7 @@ DNS subject. On failure, both image jobs report only a bounded log-tail line cou
 fixed non-secret startup signals, and container status/exit code; they never dump
 container environments or raw log content. The workflows have `contents: read`
 only and do not publish, deploy, read deployment configuration, or claim a registry
-or 211 runtime subject. Each locally built candidate image is also scanned for
+or any runtime subject. Each locally built candidate image is also scanned for
 `HIGH,CRITICAL` OS and library vulnerabilities whose Trivy record identifies an
 upstream fixed version. A fixable finding fails the stable required check before
 merge. Upstream-unfixed findings are not silently promoted into fixable source
@@ -213,4 +213,4 @@ Phase 3 may add a root local Compose facade and split the existing production
 Compose consumers to reviewed `image@sha256` inputs. Only after real layer and
 runtime measurements may a later decision split API, worker, or executor images.
 Neither phase may rename or duplicate `deploy/ai-platform/docker-compose.yml`, and
-both remain separate from 211 release authority and runtime acceptance.
+both remain separate from release authority and runtime acceptance.

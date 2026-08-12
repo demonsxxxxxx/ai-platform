@@ -9,7 +9,7 @@ run limit remains 3 and the database pool maximum remains 10.
 
 This is a source and container-configuration profile. It is not evidence that a
 deployed environment can sustain 10 simultaneous runs. Docker image validation
-and 211 capacity acceptance remain external gates.
+and controlled-host capacity acceptance remain external gates.
 
 ## Official Upgrade Evidence
 
@@ -71,7 +71,7 @@ the per-user admission ceiling.
 
 - Build the Docker image and repeat the installed-SDK import smoke in a
   Docker-capable environment.
-- On 211, verify the exact commit/image and exercise the 10-worker profile,
+- On the operator-approved Docker host, verify the exact commit/image and exercise the 10-worker profile,
   global 10-run ceiling, Redis pool bound, queue behavior, and ordinary-user
   per-user ceiling of 3.
 - Treat those runtime results independently from local source, review, and CI

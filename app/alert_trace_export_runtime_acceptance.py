@@ -85,7 +85,7 @@ def _alerts_and_exports_summary(
 
 
 def acceptance_is_valid(acceptance: dict[str, Any]) -> bool:
-    """Return whether a redacted 211 alert/trace acceptance summary satisfies S1."""
+    """Return whether a redacted controlled-host alert/trace summary satisfies S1."""
     checks = acceptance.get("checks")
     if not isinstance(checks, dict):
         return False

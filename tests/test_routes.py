@@ -4797,7 +4797,7 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
     assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
     assert governance["snapshot_source"] == "platform_release_lock"
     assert governance["release_lock"]["mode"] == "manifest_pin"
-    assert governance["does_not_close_b4_or_211"] is True
+    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
     serialized_governance = json.dumps(governance, ensure_ascii=False)
     assert "release_decision" not in serialized_governance
     assert "content_base64" not in serialized_governance

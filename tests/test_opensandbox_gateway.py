@@ -2322,9 +2322,9 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
+            "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
         }
     )
     broker = MailboxBroker(
@@ -2454,9 +2454,9 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
+            "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
         }
     )
     broker = MailboxBroker(

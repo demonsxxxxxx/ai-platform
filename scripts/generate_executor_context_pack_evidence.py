@@ -1,9 +1,8 @@
-"""Generate executor context-pack source-probe evidence for 211 runtime acceptance.
+"""Generate redacted executor context-pack reconstruction evidence.
 
 The default mode exercises the same source functions used by the worker prompt
-path and writes a redacted evidence payload. Operators can run this inside the
-211 API/worker image as a source binding probe for verify_executor_context_pack_211.py.
-It does not replace a live worker run payload or close 211 acceptance by itself.
+path. ``--live-run-id`` reconstructs a context pack from a scoped durable run;
+neither mode observes a worker dispatch and neither closes runtime acceptance.
 """
 
 from __future__ import annotations
@@ -21,14 +20,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app import repositories
-from app.context_builder import executor_context_pack_from_snapshot
-from app.db import transaction
-from app.executors.claude_agent_sdk_runner import build_skill_prompt
-from app.worker import _context_snapshot_ref_from_row
+from app import repositories  # noqa: E402
+from app.context_builder import executor_context_pack_from_snapshot  # noqa: E402
+from app.db import transaction  # noqa: E402
+from app.executors.claude_agent_sdk_runner import build_skill_prompt  # noqa: E402
+from app.worker import _context_snapshot_ref_from_row  # noqa: E402
 
 
-EVIDENCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-211.v1"
+EVIDENCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
 SOURCE_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_multi_agent_allowed": False,
@@ -95,48 +94,17 @@ def _scope_checks_from_context_pack(context_pack: dict[str, Any]) -> dict[str, b
     materials = context_pack.get("referenced_materials")
     if not isinstance(materials, dict):
         materials = {}
-    artifact_count = materials.get("artifact_count")
-    source_artifact_present = isinstance(artifact_count, int) and not isinstance(artifact_count, bool) and artifact_count > 0
+    counts_are_bounded = all(
+        isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10_000
+        for value in materials.values()
+    )
     return {
         "tenant_id_scoped": True,
         "workspace_id_scoped": True,
         "user_id_scoped": True,
         "session_id_scoped": True,
-        "source_run_artifact_count_positive": source_artifact_present,
-        "source_run_artifact_scope_verified": source_artifact_present,
-    }
-
-
-def _runtime_evidence_from_sections(
-    *,
-    prompt_checks: dict[str, bool],
-    scope_checks: dict[str, bool],
-    live_run_checks: dict[str, bool],
-) -> dict[str, bool]:
-    return {
-        "live_worker_run_payload": True,
-        "run_row_loaded": live_run_checks.get("run_row_loaded") is True,
-        "context_snapshot_id_present": live_run_checks.get("context_snapshot_id_present") is True,
-        "scoped_context_snapshot_loaded": live_run_checks.get("scoped_context_snapshot_loaded") is True,
-        "worker_context_ref_rebuilt_from_db_snapshot": live_run_checks.get(
-            "worker_context_ref_rebuilt_from_db_snapshot"
-        )
-        is True,
-        "prompt_includes_bounded_summary": prompt_checks.get("bounded_summary_present") is True,
-        "prompt_includes_context_pack_version": prompt_checks.get("context_pack_version_present") is True,
-        "prompt_includes_context_pack_generated_at": prompt_checks.get("context_pack_generated_at_present")
-        is True,
-        "raw_storage_identifiers_absent": prompt_checks.get("raw_storage_identifiers_absent") is True,
-        "sandbox_runtime_paths_absent": prompt_checks.get("sandbox_runtime_paths_absent") is True,
-        "executor_private_content_absent": prompt_checks.get("executor_private_content_absent") is True,
-        "long_term_memory_read_false": prompt_checks.get("long_term_memory_read_false") is True,
-        "source_run_artifact_scope_tenant_workspace_user_session": scope_checks.get(
-            "source_run_artifact_scope_verified"
-        )
-        is True,
-        "source_run_artifact_count_positive": scope_checks.get("source_run_artifact_count_positive") is True,
-        "fresh_generated_at": True,
-        "source_functions_bound_to_current_runtime": True,
+        "referenced_material_counts_bounded": counts_are_bounded,
+        "source_material_scope_verified": counts_are_bounded,
     }
 
 
@@ -144,9 +112,7 @@ def _base_evidence(
     *,
     run_id: str,
     evidence_strength: str,
-    does_not_close_211_acceptance: bool,
-    runtime_acceptance_requires_real_run_payload: bool,
-    runtime_run_payload_verified: bool,
+    reconstruction_source: str,
     context_pack: dict[str, Any],
     prompt: str,
 ) -> dict[str, Any]:
@@ -156,15 +122,16 @@ def _base_evidence(
         "run_id": run_id,
         "runtime_mode": "worker",
         "evidence_strength": evidence_strength,
-        "does_not_close_211_acceptance": does_not_close_211_acceptance,
-        "runtime_acceptance_requires_real_run_payload": runtime_acceptance_requires_real_run_payload,
-        "runtime_run_payload_verified": runtime_run_payload_verified,
+        "does_not_close_runtime_acceptance": True,
+        "runtime_acceptance_requires_observed_worker_dispatch": True,
+        "observed_worker_dispatch": False,
+        "reconstruction_source": reconstruction_source,
         "generated_at": _utc_now(),
         "source_functions": [
             "app.repositories.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
-            "app.executors.claude_agent_worker.build_skill_prompt_context_pack_injection",
+            "app.executors.claude.prompts.build_skill_prompt",
             "app.worker._context_snapshot_ref_from_row",
         ],
         "prompt_checks": _prompt_checks(prompt, context_pack=context_pack),
@@ -184,9 +151,7 @@ def build_evidence(*, run_id: str) -> dict[str, Any]:
     return _base_evidence(
         run_id=run_id,
         evidence_strength="source_probe_on_target_runtime",
-        does_not_close_211_acceptance=True,
-        runtime_acceptance_requires_real_run_payload=True,
-        runtime_run_payload_verified=False,
+        reconstruction_source="synthetic_source_probe",
         context_pack=context_pack,
         prompt=prompt,
     )
@@ -253,10 +218,8 @@ async def build_live_run_evidence(*, run_id: str) -> dict[str, Any]:
     )
     evidence = _base_evidence(
         run_id=run_id,
-        evidence_strength="live_worker_run_payload",
-        does_not_close_211_acceptance=False,
-        runtime_acceptance_requires_real_run_payload=False,
-        runtime_run_payload_verified=True,
+        evidence_strength="scoped_runtime_reconstruction",
+        reconstruction_source="durable_run_snapshot",
         context_pack=context_pack,
         prompt=prompt,
     )
@@ -268,11 +231,6 @@ async def build_live_run_evidence(*, run_id: str) -> dict[str, Any]:
         "context_pack_schema_present": context_pack.get("schema_version") == SOURCE_SCHEMA_VERSION,
     }
     evidence["live_run_checks"] = live_run_checks
-    evidence["runtime_evidence"] = _runtime_evidence_from_sections(
-        prompt_checks=evidence["prompt_checks"],
-        scope_checks=evidence["scope_checks"],
-        live_run_checks=live_run_checks,
-    )
     evidence["public_context_summary"] = {
         "execution_tier": context_pack.get("execution_tier"),
         "context_pack_version": context_pack.get("context_pack_version"),
@@ -294,8 +252,8 @@ def write_evidence(evidence: dict[str, Any], evidence_path: str | Path) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate executor context-pack evidence on 211. Default source-probe evidence does not close "
-            "211 acceptance; Use --live-run-id with a real 211 run for live worker-run evidence."
+            "Generate executor context-pack source or scoped runtime reconstruction evidence. "
+            "Neither mode closes runtime acceptance."
         )
     )
     parser.add_argument("--run-id", default=os.environ.get("AI_PLATFORM_EXECUTOR_CONTEXT_PACK_RUN_ID", "executor-context-pack-smoke"))
@@ -303,8 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--live-run-id",
         default=os.environ.get("AI_PLATFORM_EXECUTOR_CONTEXT_PACK_LIVE_RUN_ID", ""),
         help=(
-            "Use --live-run-id with a real 211 run; read its scoped DB context snapshot and produce "
-            "live_worker_run_payload evidence."
+            "Read an existing run's scoped DB snapshot and produce reconstruction evidence."
         ),
     )
     parser.add_argument(

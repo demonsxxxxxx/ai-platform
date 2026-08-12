@@ -8,7 +8,7 @@ Thin platform service for the enterprise AI Agent platform.
   run, file, artifact, and run-event facts. It is not a tenant-management product.
 - Stores uploaded files and generated artifacts in MinIO/S3.
 - Enqueues AI runs for worker execution.
-- Delegates execution to adapters such as the existing 211 review runtime.
+- Delegates execution through the configured sandbox and Engine adapters.
 
 ## Local compose
 
@@ -64,17 +64,12 @@ Run the worker loop in compose:
 docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-platform/.env --profile worker up -d --build
 ```
 
-The worker consumes the platform queue, updates run events/status, and calls executor adapters. The 211 runtime remains an executor adapter; it is not the platform source of truth.
+The worker consumes the platform queue, updates run events/status, and calls the configured executor adapter. The adapter is not the platform source of truth.
 
 ## Frontend Compatibility Contract
 
-The deployed frontend entry is:
-
-```text
-http://10.56.0.211:18001/
-```
-
-The frontend should use same-origin `/api/*` requests from that entry. The
+The deployed frontend entry is operator-configured. The frontend should use
+same-origin `/api/*` requests from that entry. The
 frontend reverse proxy routes those requests to the platform API. Do not point
 the frontend at a non-platform backend or a temporary API proxy.
 

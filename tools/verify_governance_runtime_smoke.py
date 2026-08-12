@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Admin Runtime governance projection behavior for the 211 POC loop."""
+"""Verify Admin Runtime governance projection behavior for a controlled-host POC loop."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.verify_auth_rbac_smoke import (
+from tools.verify_auth_rbac_smoke import (  # noqa: E402
     _contains_forbidden_projection_term,
     _detail,
     _principal_headers,
@@ -205,7 +205,7 @@ def _skill_governance_summary(domain: dict[str, Any]) -> dict[str, object]:
             and runtime_contract.get("verifier_schema_version") == SCHEMA_VERSION
             and runtime_contract.get("runtime_payload_schema_version")
             == SKILL_DEPENDENCY_RUNTIME_ACCEPTANCE_SCHEMA_VERSION
-            and runtime_contract.get("target") == "211_api_admin_runtime"
+            and runtime_contract.get("target") == "controlled_host_api_admin_runtime"
             and runtime_contract.get("acceptance_gap") == SKILL_DEPENDENCY_RUNTIME_GAP
             and runtime_contract.get("does_not_close_g6") is True
         ),
@@ -337,7 +337,7 @@ def _skill_dependency_review_runtime_acceptance(
     return {
         "schema_version": SKILL_DEPENDENCY_RUNTIME_ACCEPTANCE_SCHEMA_VERSION,
         "status": "verified_runtime_acceptance" if runtime_payload_verified else "blocked_runtime_acceptance",
-        "target": "211_api_admin_runtime",
+        "target": "controlled_host_api_admin_runtime",
         "runtime_acceptance_requires_real_admin_runtime_payload": False,
         "does_not_close_runtime_acceptance": False,
         "runtime_payload_verified": runtime_payload_verified,

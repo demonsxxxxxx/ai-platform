@@ -191,7 +191,7 @@ def build_quality_golden_set_readiness() -> dict[str, Any]:
     score_dimensions = deepcopy(_SCORE_DIMENSIONS)
     dimension_ids = [str(dimension["id"]) for dimension in score_dimensions]
     open_gaps = [
-        "golden_set_eval_runtime_and_211_acceptance",
+        "golden_set_eval_controlled_host_acceptance",
         "office_workflow_acceptance_dataset",
         "quality_threshold_calibration",
         "quality_dashboard_acceptance",
@@ -231,7 +231,7 @@ def build_quality_golden_set_readiness() -> dict[str, Any]:
         "open_gaps": open_gaps,
         "evidence_policy": (
             "This contract narrows the G9 golden-set definition gap only; runtime eval execution, "
-            "dataset approval, threshold calibration, dashboard acceptance, review, and 211 smoke "
+            "dataset approval, threshold calibration, dashboard acceptance, review, and controlled-host smoke "
             "remain required before gate closure."
         ),
     }

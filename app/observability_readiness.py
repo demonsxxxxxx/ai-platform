@@ -146,7 +146,7 @@ def build_observability_readiness(
                 "quality_score_schema_contract",
             ],
             gaps=[
-                "golden_set_eval_runtime_and_211_acceptance",
+                "golden_set_eval_controlled_host_acceptance",
                 "office_workflow_acceptance_dataset",
                 "quality_threshold_calibration",
                 "quality_dashboard_acceptance",
@@ -182,7 +182,7 @@ def build_observability_readiness(
                 *release_evidence_readiness["open_gaps"],
             ],
             next_checks=[
-                "wire alert/SLO templates into an Admin dashboard and 211 acceptance smoke before enabling alerts",
+                "wire alert/SLO templates into an Admin dashboard and controlled-host acceptance smoke before enabling alerts",
                 "calibrate thresholds from recorded runtime and capacity evidence instead of raising defaults",
                 "add trace and audit export without exposing raw storage keys or executor private payloads",
                 "keep release evidence separate from the product roadmap",
@@ -219,7 +219,7 @@ def build_observability_readiness(
         },
         "domains": domains,
         "open_gaps": gaps,
-        "evidence_policy": "admin_runtime_projection_plus_tests_docs_and_211_smoke_required_before_gate_closure",
+        "evidence_policy": "admin_runtime_projection_plus_tests_docs_and_controlled_host_smoke_required_before_gate_closure",
     }
 
 

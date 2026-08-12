@@ -28,7 +28,7 @@ def test_b1_b5_context_runtime_readiness_verifies_bounded_context_runtime_contra
     assert session_evidence["fork_isolation"] is True
     assert session_evidence["worker_process_memory_is_durable_authority"] is False
     assert readiness["non_expansion_invariants"] == {
-        "does_not_touch_211": True,
+        "does_not_touch_remote_runtime": True,
         "does_not_close_b1_or_b5_gate": True,
         "long_term_cross_session_memory_enabled": False,
         "public_projection_only_for_ordinary_users": True,

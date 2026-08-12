@@ -1,33 +1,37 @@
-# 211 Release Operations Runbook
+# Release Operations Runbook
 
 This runbook contains host commands, recovery paths, and terminal evidence for
-ai-platform releases on the Docker-capable 211 host. Product/source boundaries
-live in the guardrails; task ownership, readiness, leases, and break-glass
-authority live in `docs/agent-rules/multi-agent-context-workflow.md`.
+ai-platform releases on an operator-approved Docker-capable host. Product and
+security boundaries live in repository code, tests, architecture decisions, and
+`AGENTS.md`; task ownership, readiness, leases, and break-glass authority live in
+`docs/agent-rules/multi-agent-context-workflow.md`.
 
 ## Canonical Exact-Main Command
 
-The normal 211 release uses exactly this Git-native authority flow with the base
+The normal release uses exactly this Git-native authority flow with the base
 Compose file and Docker sandbox overlay. Run it only after read-only readiness
 has passed and exactly one project-bound release owner holds the single mutation
-lease. It does not grant a lease or replace the workflow gates. Resolve `SOURCE`
-and `ROOT` from the current 211 host mapping in
-`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source for those
-host subjects.
+lease. It does not grant a lease or replace the workflow gates. The operator must
+provide absolute `SOURCE` and `ROOT` paths for the current controlled host; the
+repository does not hard-code a server identity or host filesystem layout.
+
+Resolve `SOURCE` to the operator-approved clean coordination checkout and
+`ROOT` to the operator-approved managed release root before running either
+command below. The operator must verify both paths and the target main ref.
 
 ### Governed Debian mirror preflight and no-deploy probe
 
-The following is the explicit 211 operator example. The release authority accepts
+The following is the explicit controlled-host operator example. The release authority accepts
 only this complete pair of HTTPS endpoints; it records only their normalized
 hostnames in safe release evidence. The product and Docker daemon do not hard-code
 this vendor choice.
 
 ```sh
 set -eu
-: "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
+: "${SOURCE:?set SOURCE to the operator-approved coordination checkout}"
 export APT_MIRROR="https://mirrors.ustc.edu.cn/debian"
 export APT_SECURITY_MIRROR="https://mirrors.ustc.edu.cn/debian-security"
-: "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+: "${ROOT:?set ROOT to the operator-approved managed release root}"
 : "${TARGET:?set TARGET to the exact fetched main commit}"
 python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors \
   --apt-mirror "$APT_MIRROR" \
@@ -61,8 +65,8 @@ sudo -n docker image rm "$PROBE_IMAGE"
 
 ```bash
 set -eu
-: "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
-: "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+: "${SOURCE:?set SOURCE to the operator-approved coordination checkout}"
+: "${ROOT:?set ROOT to the operator-approved managed release root}"
 umask 077
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
@@ -298,9 +302,9 @@ AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE=<absolute-host-path-to-bridge-fullchain.pem
 AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE=<absolute-host-path-to-bridge-privkey.pem>
 ```
 
-Provision a dedicated internal-CA-signed 211 leaf whose DNS SAN is exactly
-`REQUIRED_FIXED_EGRESS_HOSTNAME`. Map and pin that hostname to `10.56.0.211` in
-the s72 egress policy; the s72 broker connects to the IP directly and uses the
+Provision a dedicated internal-CA-signed broker leaf whose DNS SAN is exactly
+`REQUIRED_FIXED_EGRESS_HOSTNAME`. Map and pin that hostname to the separately
+approved broker IP in the s72 egress policy; the s72 broker connects to the IP directly and uses the
 hostname only for SNI/hostname verification. Mount the full chain and private
 key read-only through the two Compose paths above. Do not place certificate or
 key bytes in the image, `.env`, Compose environment, logs, or Git. Provision
@@ -340,7 +344,7 @@ sudo -n docker compose --env-file "$ROOT/deploy/ai-platform/.env" \
   -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.opensandbox.yml" config >/dev/null
 sudo -n docker exec ai-platform-frontend nginx -t
 curl --fail --silent --show-error \
-  --resolve REQUIRED_FIXED_EGRESS_HOSTNAME:18443:10.56.0.211 \
+  --resolve REQUIRED_FIXED_EGRESS_HOSTNAME:18443:REQUIRED_FIXED_EGRESS_IP \
   --cacert /etc/opensandbox-gateway/tls/upstream-ca.pem \
   https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/healthz
 ```
@@ -501,7 +505,7 @@ URLs, endpoints, secrets, or environment data.
 Backend source-only/runtime-overlay stages are bounded at 90 seconds and frontend
 source-only stages at 180 seconds. Dependency-triggered canonical builds have a
 separate bounded per-stage timeout: `--canonical-build-timeout-seconds` accepts
-only 300 through 3600 seconds and defaults to 1800. The normal 211 invocation
+only 300 through 3600 seconds and defaults to 1800. The normal invocation
 sets 1800 explicitly. This does not widen either source-only SLO. The effective
 canonical timeout is recorded in the auto plan and every canonical-build stage.
 On timeout the authority terminates its owned process tree and uses a short
@@ -562,7 +566,7 @@ deadline or replace a timeout with an unlimited value. Retain the compact stage
 evidence and do not expose the environment file or raw command output. The
 existing external lease/fencing gate remains the only overlap guard.
 
-The local workstation does not provide Docker. The real-211 benchmark gate must
+The local workstation does not provide Docker. The controlled-host benchmark gate must
 observe backend-only auto release below 90 seconds, frontend-only below 180
 seconds, and deployment-only change with zero role builds before those timings
 are claimed as passed.

@@ -2,7 +2,7 @@
 """Verify a B1 memory/context workflow smoke against ai-platform.
 
 The script intentionally uses only the Python standard library so it can run on
-the 211 host without extra package installation.
+a controlled runtime host without extra package installation.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from urllib import error, parse, request
 
 
 SCHEMA_VERSION = "ai-platform.b1-memory-context-workflow-smoke.v1"
-ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
-TARGET = "211_api_memory_context_workflow"
+ACCEPTANCE_GAP = "controlled_host_memory_enabled_document_workflow_smoke"
+TARGET = "controlled_host_api_memory_context_workflow"
 CONTRACT_FIXTURE_TARGET = "source_contract_fixture"
 DEFAULT_BASE_URL = "http://127.0.0.1:8020"
 DEFAULT_RETENTION_DAYS = 30

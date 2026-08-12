@@ -38,12 +38,12 @@ def observability_payload(tenant_id="default", *, overrides=None):
                         "trace_audit_export_contract",
                     ],
                     "gaps": [
-                        "alert_rules_runtime_dashboard_and_211_acceptance",
+                        "alert_rules_runtime_dashboard_and_controlled_host_acceptance",
                         "alert_delivery_channel_runtime_acceptance",
                         "slo_threshold_runtime_calibration",
                         "trace_audit_export_runtime_acceptance",
                         "trace_audit_export_dashboard_acceptance",
-                        "trace_audit_export_211_acceptance",
+                        "trace_audit_export_controlled_host_acceptance",
                     ],
                     "evidence": {
                         "alert_slo_rules": {
@@ -54,7 +54,7 @@ def observability_payload(tenant_id="default", *, overrides=None):
                                 "schema_version": "ai-platform.alert-delivery-channel-policy.v1",
                                 "status": "contract_only_not_enabled",
                                 "does_not_enable_alert_delivery": True,
-                                "requires_211_smoke": True,
+                                "requires_controlled_host_smoke": True,
                             },
                             "summary": {
                                 "rule_count": 7,
@@ -69,7 +69,7 @@ def observability_payload(tenant_id="default", *, overrides=None):
                                 ],
                             },
                             "open_gaps": [
-                                "alert_rules_runtime_dashboard_and_211_acceptance",
+                                "alert_rules_runtime_dashboard_and_controlled_host_acceptance",
                                 "alert_delivery_channel_runtime_acceptance",
                                 "slo_threshold_runtime_calibration",
                             ],
@@ -90,7 +90,7 @@ def observability_payload(tenant_id="default", *, overrides=None):
                             "open_gaps": [
                                 "trace_audit_export_runtime_acceptance",
                                 "trace_audit_export_dashboard_acceptance",
-                                "trace_audit_export_211_acceptance",
+                                "trace_audit_export_controlled_host_acceptance",
                             ],
                         },
                     },
@@ -213,7 +213,7 @@ def test_alert_trace_export_runtime_acceptance_fails_closed_when_trace_contract_
     assert payload["status"] == "blocked_runtime_acceptance"
     admin = payload["checks"]["admin_runtime_alerts_and_exports"]
     assert admin["trace_export_contract_schema_version"] == ""
-    assert "trace_audit_export_211_acceptance" in payload["open_gaps"]
+    assert "trace_audit_export_controlled_host_acceptance" in payload["open_gaps"]
 
 
 def test_alert_trace_export_runtime_acceptance_fails_closed_on_private_payload_leak():

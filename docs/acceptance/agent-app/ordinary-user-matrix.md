@@ -4,12 +4,12 @@
 
 This matrix defines the source evidence delivered by the Agent App governance
 change and the runtime/browser evidence required after merge. It does not deploy,
-create runtime fixtures, mutate 211, or claim ordinary-user acceptance. Local
+create runtime fixtures, mutate a deployment host, or claim ordinary-user acceptance. Local
 tests, mocks, CI, and packet shape are source evidence only.
 
 The post-merge run is owned jointly by the project controller and the single
 authorized release owner under the lease and exact-main procedure in
-`docs/operations/211-release-operations-runbook.md`. No step in this document
+`docs/operations/release-operations-runbook.md`. No step in this document
 grants release or runtime mutation authority.
 
 ## Required Subject Binding
@@ -63,4 +63,4 @@ The acceptance owner records `passed` only when every row is observed against
 the bound deployed subject and cleanup succeeds. A missing binding, unavailable
 hook proof, incomplete artifact authority, failed cleanup, or uncertain side
 effect is `EVIDENCE_BLOCKED` or `UNKNOWN`, never inferred success. Only the fresh
-authorized procedure may call that exact deployed subject `211 verified`.
+authorized procedure may call that exact deployed subject `runtime verified`.

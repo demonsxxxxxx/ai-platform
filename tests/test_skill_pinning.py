@@ -143,7 +143,7 @@ def test_build_skill_snapshot_governance_summarizes_files_without_package_bytes(
     assert governance["selected_files"][0]["sha256"] == (
         "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df"
     )
-    assert governance["does_not_close_b4_or_211"] is True
+    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
     serialized = json.dumps(governance, ensure_ascii=False)
     assert "content_base64" not in serialized
     assert "storage_key" not in serialized

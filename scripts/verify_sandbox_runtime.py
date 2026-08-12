@@ -1,4 +1,4 @@
-"""211 sandbox runtime verification gate.
+"""Controlled-host sandbox runtime verification gate.
 
 This script is a verifier, not a deployer. It exits non-zero until the host has
 real Docker access, workspace writeability, executor health, callback evidence,
@@ -25,9 +25,6 @@ from urllib import request as urllib_request
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from app.sandbox_hardening_contract import bounded_error_projection_error
-
 
 SENSITIVE_PATTERNS = [
     re.compile(r"/var/run/docker\.sock", re.IGNORECASE),
@@ -81,7 +78,7 @@ SAFE_SECRET_FIELD_NAMES = {
     "total_tokens",
 }
 
-EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
+EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime.v2"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 REAL_SANDBOX_PROVIDERS = {"docker", "opensandbox"}
 REQUIRED_TIMING_FIELDS = [
@@ -962,7 +959,7 @@ def run_checks(checks: list[Callable[[], CheckResult]]) -> tuple[int, list[Check
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            'Verify ai-platform sandbox runtime on 211; use --docker-cmd "sudo -n docker" on 211.'
+            'Verify ai-platform sandbox runtime; use --docker-cmd "sudo -n docker" when required by the host.'
         )
     )
     parser.add_argument(
@@ -978,7 +975,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--docker-cmd",
         default=os.environ.get("DOCKER_CMD", "docker"),
-        help='Docker command; use --docker-cmd "sudo -n docker" on 211.',
+        help='Docker command; use --docker-cmd "sudo -n docker" when required by the host.',
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
     return parser

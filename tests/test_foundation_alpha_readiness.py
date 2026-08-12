@@ -36,11 +36,11 @@ VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
     "public_admin_projection_safe": True,
     "long_term_cross_session_memory_fail_closed": True,
 }
-REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS = {
-    "executor_context_pack_211_acceptance",
-    "sandbox_cold_start_latency_split_211_acceptance",
+REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS: set[str] = set()
+REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS = {
+    "executor_context_pack_runtime_acceptance",
+    "sandbox_cold_start_latency_split_runtime_acceptance",
 }
-REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS = set()
 ORIGINAL_RESOLVE_RUNTIME_AFFECTING_DIRTY_PATHS = (
     foundation_alpha_readiness._resolve_runtime_affecting_dirty_paths
 )
@@ -879,9 +879,9 @@ def test_foundation_alpha_readiness_accepts_release_evidence_runtime_acceptance_
     ] == foundation_alpha_readiness._path_for_output(runtime_acceptance_path)
     g9 = readiness["domains"]["g9_admin_runtime_observability"]
     assert "g9_runtime_export_and_retention_acceptance" not in g9["open_followups"]
-    assert "alert_delivery_and_trace_export_211_acceptance" in g9["open_followups"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" in g9["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
-    assert "alert_delivery_and_trace_export_211_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["operator_context"][
         "next_recommended_slices"
@@ -1338,10 +1338,10 @@ def test_foundation_alpha_readiness_accepts_alert_trace_export_runtime_acceptanc
         "alert_trace_export_runtime_acceptance"
     ] == foundation_alpha_readiness._path_for_output(alert_trace_path)
     g9 = readiness["domains"]["g9_admin_runtime_observability"]
-    assert "alert_delivery_and_trace_export_211_acceptance" not in g9["open_followups"]
-    assert "alert_delivery_and_trace_export_211_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
-    assert "alert_delivery_and_trace_export_211_acceptance" not in readiness["open_followups"]
-    assert "alert_delivery_and_trace_export_211_acceptance" not in readiness["operator_context"][
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in g9["open_followups"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in readiness["open_followups"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in readiness["operator_context"][
         "next_recommended_slices"
     ]
     assert (
@@ -1570,7 +1570,7 @@ def test_foundation_alpha_readiness_keeps_alert_trace_blocker_without_valid_runt
     invalid_acceptance["checks"]["admin_runtime_alerts_and_exports"][
         "forbidden_projection_terms_present"
     ] = True
-    invalid_acceptance["open_gaps"] = ["trace_audit_export_211_acceptance"]
+    invalid_acceptance["open_gaps"] = ["trace_audit_export_controlled_host_acceptance"]
     _write_alert_trace_export_runtime_acceptance(
         evidence_root,
         CURRENT_SOURCE_SHA,
@@ -1592,8 +1592,8 @@ def test_foundation_alpha_readiness_keeps_alert_trace_blocker_without_valid_runt
 
     assert "alert_trace_export_runtime_acceptance" not in readiness["evidence_entries"]
     g9 = readiness["domains"]["g9_admin_runtime_observability"]
-    assert "alert_delivery_and_trace_export_211_acceptance" in g9["open_followups"]
-    assert "alert_delivery_and_trace_export_211_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" in g9["open_followups"]
+    assert "alert_delivery_and_trace_export_controlled_host_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
     assert (
         g9["evidence"]["alert_trace_export_runtime_acceptance"]["status"]
         == "missing_alert_trace_export_runtime_acceptance"
@@ -1885,11 +1885,11 @@ def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_e
             "governance_readiness_status": "partial_blocked",
             "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
             "open_gap_count": 1,
-            "open_gaps": ["admin_skill_release_dashboard_211_acceptance"],
+            "open_gaps": ["admin_skill_release_dashboard_controlled_host_acceptance"],
             "memory_context_controls": {
                 **VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS,
                 "open_gaps": [
-                    "executor_context_pack_211_acceptance",
+                    "executor_context_pack_runtime_source_probe",
                     "sandbox_cold_start_latency_split",
                 ],
             },
@@ -2030,7 +2030,7 @@ def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
-    assert readiness["status"] == "211_verified_followups_open"
+    assert readiness["status"] == "deployed_runtime_verified_followups_open"
     assert readiness["source_tree_commit_sha"] == CURRENT_SOURCE_SHA
     assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
     assert "runtime_image" not in readiness
@@ -2996,7 +2996,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
 
     assert readiness["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
     assert readiness["stage"] == "Foundation Alpha POC"
-    assert readiness["status"] == "211_verified_followups_open"
+    assert readiness["status"] == "deployed_runtime_verified_followups_open"
     assert readiness["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert readiness["source_tree_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert readiness["runtime_source_relation"] == {
@@ -4556,7 +4556,7 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
 
     assert "# ai-platform Foundation Alpha POC Readiness" in markdown
     assert "Schema: `ai-platform.foundation-alpha-poc-readiness.v1`" in markdown
-    assert "Status: `211_verified_followups_open`" in markdown
+    assert "Status: `deployed_runtime_verified_followups_open`" in markdown
     assert f"Source tree: `{ACTIVE_RUNTIME_SUBJECT_SHA}`" in markdown
     assert "Verified Runtime Subject" in markdown
     assert "Evidence scope: `current_source_tree`" in markdown

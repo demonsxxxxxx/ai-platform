@@ -4784,7 +4784,7 @@ def test_build_sdk_env_maps_anthropic_gateway(monkeypatch):
         "S",
         (),
         {
-            "anthropic_base_url": "http://10.56.0.211:3002",
+            "anthropic_base_url": "https://models.example.internal/anthropic",
             "anthropic_auth_token": "token",
             "anthropic_model": "deepseek-v4-flash",
             "openai_api_key": "",
@@ -4794,7 +4794,7 @@ def test_build_sdk_env_maps_anthropic_gateway(monkeypatch):
 
     env = build_sdk_env()
 
-    assert env["ANTHROPIC_BASE_URL"] == "http://10.56.0.211:3002"
+    assert env["ANTHROPIC_BASE_URL"] == "https://models.example.internal/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "token"
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash"
 
@@ -4808,7 +4808,7 @@ def test_build_sdk_env_overrides_untrusted_inherited_environment(monkeypatch, tm
         "S",
         (),
         {
-            "anthropic_base_url": "http://10.56.0.211:3002",
+            "anthropic_base_url": "https://models.example.internal/anthropic",
             "anthropic_auth_token": "settings-token",
             "anthropic_model": "deepseek-v4-flash",
             "openai_api_key": "",

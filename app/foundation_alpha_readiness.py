@@ -79,7 +79,7 @@ _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [
     "foundation_runtime_concurrency_evidence",
     "runtime_admin_dashboard_acceptance_for_governance",
     "g9_runtime_export_and_retention_acceptance",
-    "alert_delivery_and_trace_export_211_acceptance",
+    "alert_delivery_and_trace_export_controlled_host_acceptance",
     "ordinary_user_acceptance_for_quarantined_legacy_routes",
 ]
 _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS = {
@@ -1701,7 +1701,7 @@ def _observability_dependency_unavailable_summary(exc: ModuleNotFoundError) -> d
 
 def _top_level_status(runtime_relation_status: str, runtime_matches_source_tree: bool) -> str:
     if runtime_matches_source_tree:
-        return "211_verified_followups_open"
+        return "deployed_runtime_verified_followups_open"
     return f"{runtime_relation_status}_followups_open"
 
 
@@ -1793,7 +1793,7 @@ def _operator_context(
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
         poc_loop_status = "context_snapshot_public_summary_followup_required"
     next_recommended_slices = [
-        "alert_delivery_and_trace_export_211_acceptance",
+        "alert_delivery_and_trace_export_controlled_host_acceptance",
         "g9_runtime_export_and_retention_acceptance",
         "packaged_frontend_image_release_acceptance",
         "broader_auth_session_rbac_tenant_redaction_regression",
@@ -1808,7 +1808,7 @@ def _operator_context(
         next_recommended_slices = [
             item
             for item in next_recommended_slices
-            if item != "alert_delivery_and_trace_export_211_acceptance"
+            if item != "alert_delivery_and_trace_export_controlled_host_acceptance"
         ]
     if frontend_packaged_runtime_smoke_verified:
         next_recommended_slices = [
@@ -2106,11 +2106,25 @@ def _frontend_packaged_runtime_smoke_summary(payload: dict[str, Any] | None) -> 
     readiness = build_frontend_packaged_runtime_smoke_readiness(evidence)
     closed_items = readiness.get("closed_evidence_items")
     closed_items = closed_items if isinstance(closed_items, list) else []
+    runtime_host = evidence.get("runtime_host")
+    host_specific_item = (
+        f"{runtime_host.strip().lower().replace('-', '_')}_packaged_frontend_runtime_smoke"
+        if isinstance(runtime_host, str) and runtime_host.strip()
+        else None
+    )
+    verified = (
+        "211_packaged_frontend_runtime_smoke" in closed_items
+        or (
+            runtime_host == "controlled-host"
+            and host_specific_item in closed_items
+            and "packaged_frontend_runtime_smoke" in closed_items
+        )
+    )
     return {
         "status": readiness.get("status"),
-        "runtime_host": evidence.get("runtime_host"),
+        "runtime_host": runtime_host,
         "closed_evidence_items": [item for item in closed_items if isinstance(item, str)],
-        "verified": "211_packaged_frontend_runtime_smoke" in closed_items,
+        "verified": verified,
     }
 
 
@@ -2275,12 +2289,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     g9_open_followups = [
         "g9_runtime_export_and_retention_acceptance",
-        "alert_delivery_and_trace_export_211_acceptance",
+        "alert_delivery_and_trace_export_controlled_host_acceptance",
     ]
     if release_evidence_runtime_acceptance_verified:
         g9_open_followups.remove("g9_runtime_export_and_retention_acceptance")
     if alert_trace_export_runtime_acceptance_verified:
-        g9_open_followups.remove("alert_delivery_and_trace_export_211_acceptance")
+        g9_open_followups.remove("alert_delivery_and_trace_export_controlled_host_acceptance")
 
     frontend_open_followups = []
     if (
@@ -2520,7 +2534,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 else set()
             ),
         ),
-        "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",
+        "evidence_policy": "source_docs_tests_controlled_host_smoke_and_release_evidence_required_before_stage_closure",
     }
 
 

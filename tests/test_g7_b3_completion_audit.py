@@ -499,7 +499,7 @@ def test_current_main_g7_release_evidence_is_reviewed_redacted_and_does_not_over
     assert "reviewed_local_release_evidence_entry_missing" not in audit["g7"]["blocking_reasons"]
     assert audit["g7"]["status"] == "blocked"
     assert audit["b3"]["status"] == "blocked"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
     acceptance = build_release_evidence_export_acceptance()
@@ -586,7 +586,7 @@ def test_current_main_g7_formal_hardening_evidence_is_reviewed_and_does_not_over
     assert "live_api_sandbox_executor_image_not_current_main_bound" in audit["g7"]["blocking_reasons"]
     assert "live_api_sandbox_egress_policy_disabled" in audit["g7"]["blocking_reasons"]
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
     serialized = json.dumps(evidence, ensure_ascii=False).lower()
@@ -648,13 +648,13 @@ def test_current_main_g7_live_env_hardening_evidence_clears_old_live_posture_blo
     assert audit["g7"]["reviewed_release_evidence_id"] == runtime_check["run_id"]
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -751,7 +751,7 @@ def test_pr297_g7_live_env_hardening_and_frc_evidence_require_operator_review():
     assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
@@ -761,7 +761,7 @@ def test_pr297_g7_live_env_hardening_and_frc_evidence_require_operator_review():
     ]
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
     serialized = json.dumps(evidence, ensure_ascii=False).lower()
@@ -846,7 +846,7 @@ def test_pr300_g7_live_env_hardening_evidence_remains_frc_and_b3_blocked():
     ]
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
     serialized = json.dumps(evidence, ensure_ascii=False).lower()
@@ -935,7 +935,7 @@ def test_pr304_branch_g7_and_frc_evidence_reach_candidate_review_without_overclo
     assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
@@ -945,7 +945,7 @@ def test_pr304_branch_g7_and_frc_evidence_reach_candidate_review_without_overclo
     ]
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -1048,7 +1048,7 @@ def test_pr306_g7_hardening_evidence_is_reviewed_but_keeps_live_executor_and_frc
     assert audit["b3"]["status"] == "blocked"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
     acceptance = build_release_evidence_export_acceptance()
@@ -1151,13 +1151,13 @@ def test_pr306_live_env_g7_and_frc_evidence_reaches_g7_operator_review_without_o
     assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -1339,13 +1339,13 @@ def test_pr308_label_clean_g7_and_frc_evidence_reaches_operator_review_without_o
     assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -1451,7 +1451,7 @@ def test_current_dirty_runtime_g7_and_frc_evidence_stays_local_partial():
     assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
@@ -1461,7 +1461,7 @@ def test_current_dirty_runtime_g7_and_frc_evidence_stays_local_partial():
     ]
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -1642,7 +1642,7 @@ def test_historical_a294727_g7_evidence_and_capacity_visibility_stays_local_part
     ]
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -1795,7 +1795,7 @@ def test_current_945db2b_g7_status_upgrade_approved_but_b3_stays_blocked():
     assert "g8_ordinary_user_multi_agent_exposure" not in audit["b3"]["blocking_reasons"]
     assert audit["status"] == "blocked_missing_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is False
     assert audit["does_not_close_b3"] is True
@@ -1939,7 +1939,7 @@ def test_clean_53887e2_b3_recorded_evidence_reaches_operator_review_only():
     assert audit["status_label"] == "local partial"
     assert audit["does_not_close_b3"] is True
     assert audit["does_not_claim_gate_closable"] is True
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
 
     serialized = json.dumps([capacity_evidence, frc_evidence, audit], ensure_ascii=False).lower()
     assert "g8_ordinary_user_multi_agent_exposure" not in serialized
@@ -2127,7 +2127,7 @@ def test_prior_clean_main_g7_b3_evidence_records_candidate_without_closure():
     ]
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -2312,13 +2312,13 @@ def test_audit_merges_latest_reviewed_g7_evidence_over_stale_runtime_observation
     assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
     assert audit["g7"]["blocking_reasons"] == []
     assert audit["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert audit["g7"]["status"] == "candidate_evidence_requires_review"
     assert audit["b3"]["status"] == "blocked"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
 
@@ -2332,7 +2332,7 @@ def test_audit_reports_current_g7_b3_blockers_without_status_overclaiming():
     assert audit["schema_version"] == "ai-platform.g7-b3-completion-audit.v1"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
     assert audit["does_not_close_g7"] is True
     assert audit["does_not_close_b3"] is True
@@ -2410,7 +2410,7 @@ def test_audit_accepts_reviewed_current_main_g7_evidence_without_overclosing():
         "rerun Foundation Runtime concurrency evidence for the same current runtime subject",
     ]
     assert audit["b3"]["status"] == "blocked"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
 
 
@@ -2539,7 +2539,7 @@ def test_audit_keeps_g7_blocked_when_same_subject_foundation_runtime_concurrency
     ]
     assert audit["g7"]["status"] == "blocked"
     assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
 
 
 def test_audit_does_not_treat_legacy_alias_labels_as_canonical_runtime_labels():
@@ -2955,7 +2955,7 @@ def test_cli_accepts_latest_reviewed_evidence_over_stale_runtime_observation(tmp
         "g7-live-env-hardening-ae6b7e5-20260702045743"
     )
     assert payload["g7"]["required_next_steps"] == [
-        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+        "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
     ]
     assert payload["b3"]["status"] == "blocked"
     assert payload["status_label"] == "local partial"
@@ -3011,7 +3011,7 @@ def test_cli_accepts_prior_clean_main_g7_frc_and_status_review_without_overclosi
         "b3_10x4_sdk_subagents_profile_evidence_missing",
     ]
     assert payload["status_label"] == "local partial"
-    assert payload["does_not_claim_211_verified"] is True
+    assert payload["does_not_claim_deployed_runtime_verified"] is True
     assert payload["does_not_claim_gate_closable"] is True
     assert payload["does_not_close_g7"] is True
     assert payload["does_not_close_b3"] is True
@@ -3091,7 +3091,7 @@ def test_g7_status_upgrade_review_approval_closes_only_g7_not_b3_or_gate_closabl
     assert audit["does_not_close_g7"] is False
     assert audit["does_not_close_b3"] is True
     assert audit["does_not_claim_gate_closable"] is True
-    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_deployed_runtime_verified"] is True
 
 
 def test_g7_status_upgrade_review_rejects_commit_mismatch_without_overclosing():

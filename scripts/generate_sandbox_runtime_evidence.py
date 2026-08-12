@@ -1,9 +1,9 @@
-"""Generate live sandbox runtime evidence for the 211 verifier.
+"""Generate live sandbox runtime evidence for a controlled Docker host.
 
 This script is a smoke tool. It creates a verifier-owned callback receiver,
 submits one task to a running sandbox executor, runs a verifier-owned Docker
 create/stop/remove probe, and writes sanitized evidence for
-verify_sandbox_runtime_211.py.
+``verify_sandbox_runtime.py``.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import errno
 import hashlib
 import hmac
 import inspect
@@ -41,9 +40,9 @@ if str(REPO_ROOT) not in sys.path:
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
-EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
-INSPECTION_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-skill-mount-inspection-211.v1"
-BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.bootstrap-error.v1"
+EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime.v2"
+INSPECTION_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-skill-mount-inspection.v2"
+BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime.bootstrap-error.v2"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 INSPECTION_PROFILES = ("platform-controlled", "sdk-native")
@@ -51,7 +50,7 @@ INSPECTION_AUTHORIZED_SKILLS = {
     "platform-controlled": "qa-file-reviewer",
     "sdk-native": "minimax-docx",
 }
-INSPECTION_WORKSPACE_BASE_NAME = "ai-sv211"
+INSPECTION_WORKSPACE_BASE_NAME = "sv"
 INSPECTION_ATTACKS = (
     "direct_write",
     "chmod",
@@ -648,7 +647,7 @@ def _inspection_skill_files(skill_name: str) -> dict[str, str]:
         "SKILL.md": (
             "---\n"
             f"name: {skill_name}\n"
-            "description: Deterministic verifier Skill for the 211 staged mount inspection.\n"
+            "description: Deterministic verifier Skill for staged mount inspection.\n"
             "---\n\n"
             "Return the fixed verifier result without loading external data.\n"
         ),
@@ -1153,7 +1152,7 @@ def _stage_inspection_skill(
         skills=[
             BuiltinSkill(
                 name=skill_name,
-                description="Deterministic verifier Skill for the 211 staged mount inspection.",
+                description="Deterministic verifier Skill for staged mount inspection.",
                 path=source,
                 version=version,
                 source={"kind": "verifier", "version": version},
@@ -1396,12 +1395,12 @@ def _run_skill_mount_inspection(
         settings.sandbox_executor_image = target_image
         settings.sandbox_workspace_root = str(workspace_root)
         request = SandboxRuntimeRequest(
-            tenant_id="tenant-a",
-            workspace_id="workspace-a",
-            user_id="user-a",
-            session_id=f"session-{evidence['run_id']}",
+            tenant_id="t",
+            workspace_id="w",
+            user_id="u",
+            session_id="s",
             run_id=evidence["run_id"],
-            attempt_id=f"attempt-{uuid.uuid4().hex}",
+            attempt_id=f"a-{uuid.uuid4().hex[:8]}",
             agent_id="sandbox-runtime-verifier",
             skill_ids=["general-chat", authorized_skill_name],
             mcp_tool_ids=[],
@@ -1852,7 +1851,7 @@ def submit_executor_task(
     payload = {
         "session_id": f"session-{run_id}",
         "run_id": run_id,
-        "prompt": "ai-platform sandbox runtime 211 smoke",
+        "prompt": "ai-platform sandbox runtime smoke",
         "callback_url": callback_url,
         "callback_token_id": _callback_token_id_for_url(callback_url, run_id),
         "callback_token": _callback_token_for_url(
@@ -2669,7 +2668,7 @@ def run_platform_runtime_probe(
                 agent_id="sandbox-runtime-verifier",
                 skill_ids=[],
                 mcp_tool_ids=[],
-                input_message="ai-platform platform sandbox runtime 211 smoke",
+                input_message="ai-platform platform sandbox runtime smoke",
                 file_ids=[],
                 sandbox_mode="ephemeral",
                 browser_enabled=False,
@@ -2925,7 +2924,7 @@ def run_cancel_probe(
         "--name",
         container_name,
         "--label",
-        "ai-platform.verifier=sandbox-runtime-211",
+        "ai-platform.verifier=sandbox-runtime",
         "--label",
         f"ai-platform.run_id={run_id}",
         cancel_image,
@@ -2959,8 +2958,8 @@ def _wait_for_callbacks(recorder: EvidenceRecorder, timeout_seconds: float) -> b
 def build_parser() -> argparse.ArgumentParser:
     parser = SandboxEvidenceArgumentParser(
         description=(
-            'Generate ai-platform sandbox runtime evidence on 211; use --docker-cmd "sudo -n docker" '
-            "on 211 and keep this as controlled admin/allowlist evidence."
+            "Generate ai-platform sandbox runtime evidence on a controlled Docker host; "
+            'use --docker-cmd "sudo -n docker" when required by that host.'
         )
     )
     parser.add_argument("--executor-url", default=os.environ.get("AI_PLATFORM_EXECUTOR_URL", ""))
@@ -2977,7 +2976,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--docker-cmd",
         default=os.environ.get("DOCKER_CMD", "docker"),
-        help='Docker command; use --docker-cmd "sudo -n docker" on 211.',
+        help='Docker command; use --docker-cmd "sudo -n docker" when required by the host.',
     )
     parser.add_argument(
         "--cancel-image",

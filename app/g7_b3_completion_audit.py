@@ -469,7 +469,7 @@ def _build_g7_audit(
         next_steps.append("rerun Foundation Runtime concurrency evidence for the same current runtime subject")
     if not blocking_reasons:
         next_steps.append(
-            "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+            "complete operator status-upgrade review before claiming G7 closure or deployed-runtime acceptance"
         )
 
     return {
@@ -794,7 +794,7 @@ def build_g7_b3_completion_audit(
         "current_source_commit": source_commit,
         "g7": g7,
         "b3": b3,
-        "does_not_claim_211_verified": True,
+        "does_not_claim_deployed_runtime_verified": True,
         "does_not_claim_gate_closable": True,
         "does_not_close_g7": g7["status"] != "status_upgrade_approved",
         "does_not_close_b3": True,

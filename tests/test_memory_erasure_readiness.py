@@ -66,20 +66,10 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert all(item["missing_markers"] == [] for item in markers.values())
 
     assert readiness["open_gaps"] == []
-    assert readiness["closed_runtime_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
-    ]
-    assert readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"][
-        "run_id"
-    ] == "run_a618c52ee5c148a185254b68e1c81b9e"
-    assert readiness["runtime_acceptance_evidence"]["sandbox_cold_start_latency_split_211_acceptance"][
-        "timings"
-    ]["sandbox_container_cold_start_latency_ms"] > 0
-    assert "office_context_readiness.sandbox_runtime_smoke_contract" in readiness["evidence_policy"]
+    assert readiness["closed_runtime_gaps"] == []
+    assert readiness["runtime_acceptance_evidence"] == {}
     assert "office_context_readiness.executor_context_pack_runtime_acceptance_contract" in readiness["evidence_policy"]
-    assert "211_sandbox_latency_split_smoke" in readiness["evidence_policy"]
-    assert "reviewed executor context-pack 211 acceptance follows" in readiness["evidence_policy"]
+    assert "without claiming observed worker execution" in readiness["evidence_policy"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     for marker in FORBIDDEN_PRIVATE_MARKERS:
@@ -106,13 +96,11 @@ def test_render_memory_erasure_readiness_markdown_is_gap_first_and_operator_read
     assert "sandbox_cold_start_latency_split_source_contract" in markdown
     assert "sandbox_runtime_hardening_source_verifier_contract" in markdown
     assert "sandbox_cached_lease_scope_revalidation_source_tests" in markdown
-    assert "office_context_readiness.sandbox_runtime_smoke_contract" in markdown
     assert "office_context_readiness.executor_context_pack_runtime_acceptance_contract" in markdown
     open_gaps_section = markdown.split("## Closed Runtime Gaps", 1)[0]
-    assert "executor_context_pack_211_acceptance" not in open_gaps_section
-    assert "sandbox_cold_start_latency_split_211_acceptance" not in open_gaps_section
-    assert "executor_context_pack_211_acceptance" in markdown
-    assert "sandbox_cold_start_latency_split_211_acceptance" in markdown
+    assert "executor_context_pack_runtime_source_probe" not in open_gaps_section
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" not in open_gaps_section
+    assert "without claiming observed worker execution" in markdown
     assert "c:\\users" not in markdown.lower()
 
 
@@ -135,8 +123,8 @@ def test_memory_erasure_readiness_cli_outputs_json_without_secret_markers():
     assert "frontend_context_provenance_acceptance" not in payload["open_gaps"]
     assert "office_context_pack_persistence_and_versioning" not in payload["open_gaps"]
     assert "document_centric_followup_state" not in payload["open_gaps"]
-    assert "executor_context_pack_211_acceptance" not in payload["open_gaps"]
-    assert "executor_context_pack_211_acceptance" in payload["closed_runtime_gaps"]
+    assert "executor_context_pack_runtime_source_probe" not in payload["open_gaps"]
+    assert payload["closed_runtime_gaps"] == []
     assert "office_execution_tier_router" not in payload["open_gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" in payload["implemented_controls"]
     assert "office_context_pack_architecture_readiness_snapshot" in payload["implemented_controls"]
@@ -148,11 +136,10 @@ def test_memory_erasure_readiness_cli_outputs_json_without_secret_markers():
     assert "sandbox_cold_start_latency_split_source_contract" in payload["implemented_controls"]
     assert "sandbox_runtime_hardening_source_verifier_contract" in payload["implemented_controls"]
     assert "sandbox_cached_lease_scope_revalidation_source_tests" in payload["implemented_controls"]
-    assert "office_context_readiness.sandbox_runtime_smoke_contract" in payload["evidence_policy"]
     assert "office_context_readiness.executor_context_pack_runtime_acceptance_contract" in payload["evidence_policy"]
     assert "ordinary_user_export_excludes_deleted_and_expired_records" in payload["implemented_controls"]
     assert "sandbox_cold_start_latency_split" not in payload["open_gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" not in payload["open_gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" in payload["closed_runtime_gaps"]
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" not in payload["open_gaps"]
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" not in payload["closed_runtime_gaps"]
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout

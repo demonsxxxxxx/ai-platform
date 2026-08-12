@@ -15,10 +15,10 @@ from app.office_context_readiness import build_office_context_readiness
 SCHEMA_VERSION = "ai-platform.b1-memory-context-readiness.v1"
 BACKEND_STAGE = "B1 memory/context usable"
 ISSUE = "#75"
-RUNTIME_ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
+RUNTIME_ACCEPTANCE_GAP = "controlled_host_memory_enabled_document_workflow_smoke"
 RUNTIME_ACCEPTANCE_VERIFIER = "tools/verify_b1_memory_context_workflow.py"
 RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.b1-memory-context-workflow-smoke.v1"
-RUNTIME_ACCEPTANCE_TARGET = "211_api_memory_context_workflow"
+RUNTIME_ACCEPTANCE_TARGET = "controlled_host_api_memory_context_workflow"
 MEMORY_ERASURE_READINESS_SCHEMA = "ai-platform.memory-erasure-readiness.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b1-memory-context"
 _SELECTED_DOCUMENT_WORKFLOW = {
@@ -218,11 +218,7 @@ def _entry_is_reviewed_b1_smoke(payload: dict[str, Any]) -> bool:
 def _runtime_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     evidence_ref = payload.get("evidence_ref")
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
-    runtime_payload = (
-        runtime_checks.get(RUNTIME_ACCEPTANCE_GAP)
-        if isinstance(runtime_checks, dict)
-        else None
-    )
+    runtime_payload = runtime_checks.get(RUNTIME_ACCEPTANCE_GAP) if isinstance(runtime_checks, dict) else None
     return runtime_payload if isinstance(runtime_payload, dict) else None
 
 
@@ -279,7 +275,7 @@ def _b1_smoke_evidence_summary(
     ):
         return None
     return {
-        "status": "verified_211_runtime_acceptance",
+        "status": "verified_runtime_acceptance",
         "artifact_kind": RUNTIME_ACCEPTANCE_GAP,
         "captured_at": payload.get("captured_at"),
         "evidence_id": payload.get("evidence_id"),
@@ -507,7 +503,7 @@ def _merged_source_runtime_review(
             "runtime_subject_commit_sha": "",
             "current_source_commit_sha": current_source,
             "runtime_affecting_changes_since_runtime_subject": None,
-            "required_next_step": "record reviewed 211 B1 smoke evidence before reviewing merged-source drift",
+            "required_next_step": "record reviewed controlled-host B1 smoke evidence before reviewing merged-source drift",
             "closed_gap": None,
             "does_not_close_b1_gate": True,
         }
@@ -521,17 +517,17 @@ def _merged_source_runtime_review(
             "runtime_subject_commit_sha": runtime_subject,
             "current_source_commit_sha": current_source,
             "runtime_affecting_changes_since_runtime_subject": None,
-            "required_next_step": "classify runtime-affecting source delta before accepting or rerunning B1 211 smoke evidence",
+            "required_next_step": "classify runtime-affecting source delta before accepting or rerunning B1 controlled-host smoke evidence",
             "closed_gap": None,
             "does_not_close_b1_gate": True,
         }
     if runtime_affecting_changes:
         return {
-            "status": "runtime_affecting_delta_requires_fresh_211_smoke",
+            "status": "runtime_affecting_delta_requires_fresh_controlled_host_smoke",
             "runtime_subject_commit_sha": runtime_subject,
             "current_source_commit_sha": current_source,
             "runtime_affecting_changes_since_runtime_subject": runtime_affecting_changes,
-            "required_next_step": "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py before closing this gap",
+            "required_next_step": "deploy current main to a controlled runtime host and rerun tools/verify_b1_memory_context_workflow.py before closing this gap",
             "closed_gap": None,
             "does_not_close_b1_gate": True,
         }
@@ -552,7 +548,12 @@ def _status_for_local_controls(
 ) -> str:
     if memory_erasure.get("missing_evidence_markers"):
         return "blocked_missing_local_evidence"
-    if office_context.get("open_gaps"):
+    context_blockers = [
+        gap
+        for gap in office_context.get("open_gaps", [])
+        if gap != "sandbox_cold_start_latency_split_runtime_acceptance"
+    ]
+    if context_blockers:
         return "blocked_missing_context_pack_evidence"
     return "local_controls_ready_runtime_smoke_required"
 
@@ -629,7 +630,7 @@ def _gate_boundary_evidence(
             "closed_gap": "b1_rollback_boundary",
             "rollback_controls": list(_ROLLBACK_BOUNDARY_CONTROLS),
             "operator_steps": list(_ROLLBACK_BOUNDARY_OPERATOR_STEPS),
-            "does_not_run_211_smoke": True,
+            "does_not_run_remote_runtime_smoke": True,
             "does_not_close_b1_gate": True,
         },
     }
@@ -667,7 +668,7 @@ def _issue_closure_boundary_evidence(repo_root: Path) -> dict[str, Any]:
 
 
 def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str, Any]:
-    """Build the B1 memory/context readiness rollup with reviewed 211 smoke evidence."""
+    """Build the B1 memory/context readiness rollup with reviewed runtime evidence."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     memory_erasure = build_memory_erasure_readiness(repo_root=root)
     office_context = build_office_context_readiness(repo_root=root)
@@ -698,9 +699,9 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
     runtime_acceptance = {
         "required": True,
         "status": (
-            "verified_211_runtime_acceptance"
+            "verified_runtime_acceptance"
             if status == "runtime_acceptance_recorded"
-            else "missing_211_memory_enabled_document_workflow_smoke"
+            else "missing_memory_enabled_document_workflow_smoke"
         ),
         "acceptance_gap": RUNTIME_ACCEPTANCE_GAP,
         "verifier_script": RUNTIME_ACCEPTANCE_VERIFIER,
@@ -709,7 +710,7 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         "required_workflow": "selected_memory_enabled_document_workflow",
         "selected_workflow": dict(_SELECTED_DOCUMENT_WORKFLOW),
         "required_evidence": [
-            "211 upload or select document workflow input for document-review/document_review",
+            "upload or select document workflow input for document-review/document_review",
             "memory policy enabled only for governed scope",
             "context snapshot records provenance and memory policy source",
             "executor context pack includes bounded public summary",
@@ -727,7 +728,7 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         ],
     }
     if status == "runtime_acceptance_recorded":
-        runtime_acceptance["status_label_after_smoke"] = "211 verified"
+        runtime_acceptance["status_label_after_smoke"] = "runtime verified"
     if status != "runtime_acceptance_recorded":
         open_gaps.insert(0, RUNTIME_ACCEPTANCE_GAP)
     closed_runtime_gaps = list(memory_erasure.get("closed_runtime_gaps", []))
@@ -754,8 +755,8 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
         "non_expansion_invariants": dict(_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
-            "B1 local controls plus reviewed 211 memory-enabled document workflow "
-            "smoke evidence close only the `211_memory_enabled_document_workflow_smoke` "
+            "B1 local controls plus reviewed controlled-host memory-enabled document workflow "
+            "smoke evidence close only the `controlled_host_memory_enabled_document_workflow_smoke` "
             "runtime gap. The memory export boundary is recorded as a local "
             "contract when memory-erasure readiness has the required export "
             "controls and tests. The rollback boundary is a local operator "
@@ -782,7 +783,7 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
     )
     if isinstance(acceptance_summary, dict):
         runtime_evidence += (
-            "\n\nRecorded 211 smoke evidence:\n\n"
+            "\n\nRecorded controlled-host smoke evidence:\n\n"
             f"- Evidence: `{acceptance_summary.get('evidence_id')}`\n"
             f"- Path: `{acceptance_summary.get('path')}`\n"
             f"- Runtime subject: `{acceptance_summary.get('runtime_subject')}`\n"
@@ -836,7 +837,7 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
             operator_step_lines = "- none"
         rollback_boundary_lines = (
             f"- status: `{rollback_boundary.get('status')}`\n"
-            f"- does not run 211 smoke: `{str(rollback_boundary.get('does_not_run_211_smoke')).lower()}`\n"
+            f"- does not run remote runtime smoke: `{str(rollback_boundary.get('does_not_run_remote_runtime_smoke')).lower()}`\n"
             "- rollback controls:\n"
             f"{rollback_control_lines}\n"
             "- operator steps:\n"

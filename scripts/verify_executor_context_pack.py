@@ -1,4 +1,4 @@
-"""Verify 211 executor context-pack source-probe evidence.
+"""Verify redacted executor context-pack reconstruction evidence.
 
 This verifier accepts only a redacted evidence payload that proves the worker
 prompt consumed the bounded executor context pack without exposing private
@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-EVIDENCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-211.v1"
+EVIDENCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
 SOURCE_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 
 REQUIRED_SOURCE_FUNCTIONS = [
     "app.repositories.get_context_snapshot_for_worker",
     "app.context_builder.executor_context_pack_from_snapshot",
     "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
-    "app.executors.claude_agent_worker.build_skill_prompt_context_pack_injection",
+    "app.executors.claude.prompts.build_skill_prompt",
     "app.worker._context_snapshot_ref_from_row",
 ]
 REQUIRED_PROMPT_CHECKS = [
@@ -42,8 +42,8 @@ REQUIRED_SCOPE_CHECKS = [
     "workspace_id_scoped",
     "user_id_scoped",
     "session_id_scoped",
-    "source_run_artifact_count_positive",
-    "source_run_artifact_scope_verified",
+    "referenced_material_counts_bounded",
+    "source_material_scope_verified",
 ]
 REQUIRED_NON_EXPANSION_INVARIANTS = {
     "ordinary_user_multi_agent_allowed": False,
@@ -58,24 +58,6 @@ REQUIRED_LIVE_RUN_CHECKS = [
     "scoped_context_snapshot_loaded",
     "worker_context_ref_rebuilt_from_db_snapshot",
     "context_pack_schema_present",
-]
-REQUIRED_RUNTIME_EVIDENCE = [
-    "live_worker_run_payload",
-    "run_row_loaded",
-    "context_snapshot_id_present",
-    "scoped_context_snapshot_loaded",
-    "worker_context_ref_rebuilt_from_db_snapshot",
-    "prompt_includes_bounded_summary",
-    "prompt_includes_context_pack_version",
-    "prompt_includes_context_pack_generated_at",
-    "raw_storage_identifiers_absent",
-    "sandbox_runtime_paths_absent",
-    "executor_private_content_absent",
-    "long_term_memory_read_false",
-    "source_run_artifact_scope_tenant_workspace_user_session",
-    "source_run_artifact_count_positive",
-    "fresh_generated_at",
-    "source_functions_bound_to_current_runtime",
 ]
 FORBIDDEN_PUBLIC_CONTEXT_INPUT_KEY_ALIASES = {
     "copiedfromrunid",
@@ -181,45 +163,33 @@ def _non_expansion_error(evidence: dict[str, Any]) -> str | None:
     return None
 
 
-def _live_run_error(evidence: dict[str, Any], *, require_live_run_payload: bool) -> str | None:
+def _reconstruction_error(evidence: dict[str, Any]) -> str | None:
     strength = evidence.get("evidence_strength")
     if strength == "source_probe_on_target_runtime":
-        if evidence.get("does_not_close_211_acceptance") is not True:
-            return "211 acceptance boundary missing"
-        if evidence.get("runtime_acceptance_requires_real_run_payload") is not True:
-            return "live run-payload requirement missing"
-        if evidence.get("runtime_run_payload_verified") is not False:
-            return "source-probe must not claim live run payload verification"
-        return "live worker run payload evidence required" if require_live_run_payload else None
-    if strength != "live_worker_run_payload":
+        if evidence.get("reconstruction_source") != "synthetic_source_probe":
+            return "source-probe reconstruction source mismatch"
+    elif strength == "scoped_runtime_reconstruction":
+        if evidence.get("reconstruction_source") != "durable_run_snapshot":
+            return "scoped reconstruction source mismatch"
+        live_checks = evidence.get("live_run_checks")
+        if not isinstance(live_checks, dict):
+            return "live_run_checks evidence missing"
+        missing = [field for field in REQUIRED_LIVE_RUN_CHECKS if live_checks.get(field) is not True]
+        if missing:
+            return f"live_run_checks missing or false: {', '.join(missing)}"
+    else:
         return "executor context evidence strength missing"
-    if evidence.get("does_not_close_211_acceptance") is not False:
-        return "live evidence must be allowed to close 211 acceptance"
-    if evidence.get("runtime_acceptance_requires_real_run_payload") is not False:
-        return "live evidence must satisfy run-payload requirement"
-    if evidence.get("runtime_run_payload_verified") is not True:
-        return "live run-payload verification missing"
-    live_checks = evidence.get("live_run_checks")
-    if not isinstance(live_checks, dict):
-        return "live_run_checks evidence missing"
-    missing = [field for field in REQUIRED_LIVE_RUN_CHECKS if live_checks.get(field) is not True]
-    if missing:
-        return f"live_run_checks missing or false: {', '.join(missing)}"
-    runtime_evidence = evidence.get("runtime_evidence")
-    if not isinstance(runtime_evidence, dict):
-        return "runtime_evidence evidence missing"
-    missing_runtime = [
-        field
-        for field in REQUIRED_RUNTIME_EVIDENCE
-        if runtime_evidence.get(field) is not True
-    ]
-    if missing_runtime:
-        return f"runtime_evidence missing or false: {', '.join(missing_runtime)}"
+    if evidence.get("does_not_close_runtime_acceptance") is not True:
+        return "runtime acceptance boundary missing"
+    if evidence.get("runtime_acceptance_requires_observed_worker_dispatch") is not True:
+        return "observed worker-dispatch requirement missing"
+    if evidence.get("observed_worker_dispatch") is not False:
+        return "reconstruction evidence must not claim an observed worker dispatch"
     return None
 
 
-def _source_run_artifact_scope_error(evidence: dict[str, Any]) -> str | None:
-    if evidence.get("evidence_strength") != "live_worker_run_payload":
+def _public_context_summary_error(evidence: dict[str, Any]) -> str | None:
+    if evidence.get("evidence_strength") != "scoped_runtime_reconstruction":
         return None
     public_summary = evidence.get("public_context_summary")
     if not isinstance(public_summary, dict):
@@ -227,9 +197,8 @@ def _source_run_artifact_scope_error(evidence: dict[str, Any]) -> str | None:
     counts = public_summary.get("referenced_material_counts")
     if not isinstance(counts, dict):
         return "referenced material counts evidence missing"
-    artifact_count = counts.get("artifact_count")
-    if not isinstance(artifact_count, int) or isinstance(artifact_count, bool) or artifact_count <= 0:
-        return "source-run artifact scope requires a positive artifact_count"
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts.values()):
+        return "referenced material counts evidence invalid"
     input_keys = public_summary.get("input_keys")
     if not isinstance(input_keys, list) or any(not isinstance(item, str) for item in input_keys):
         return "public context input_keys evidence missing or invalid"
@@ -263,9 +232,15 @@ def check_executor_context_pack_evidence(
         return CheckResult("check_executor_context_pack_evidence", False, "source schema mismatch")
     if evidence.get("runtime_mode") != "worker":
         return CheckResult("check_executor_context_pack_evidence", False, "worker runtime evidence missing")
-    live_run_error = _live_run_error(evidence, require_live_run_payload=require_live_run_payload)
-    if live_run_error:
-        return CheckResult("check_executor_context_pack_evidence", False, live_run_error)
+    if require_live_run_payload:
+        return CheckResult(
+            "check_executor_context_pack_evidence",
+            False,
+            "this verifier cannot establish observed worker-dispatch acceptance",
+        )
+    reconstruction_error = _reconstruction_error(evidence)
+    if reconstruction_error:
+        return CheckResult("check_executor_context_pack_evidence", False, reconstruction_error)
     freshness_error = _freshness_error(evidence)
     if freshness_error:
         return CheckResult("check_executor_context_pack_evidence", False, freshness_error)
@@ -284,15 +259,15 @@ def check_executor_context_pack_evidence(
     scope_error = _require_true(scope_checks, REQUIRED_SCOPE_CHECKS, section_name="scope_checks")
     if scope_error:
         return CheckResult("check_executor_context_pack_evidence", False, scope_error)
-    source_artifact_error = _source_run_artifact_scope_error(evidence)
-    if source_artifact_error:
-        return CheckResult("check_executor_context_pack_evidence", False, source_artifact_error)
+    public_context_error = _public_context_summary_error(evidence)
+    if public_context_error:
+        return CheckResult("check_executor_context_pack_evidence", False, public_context_error)
     invariants_error = _non_expansion_error(evidence)
     if invariants_error:
         return CheckResult("check_executor_context_pack_evidence", False, invariants_error)
     message = (
-        "executor context-pack live worker-run evidence present"
-        if evidence.get("evidence_strength") == "live_worker_run_payload"
+        "executor context-pack scoped runtime reconstruction present"
+        if evidence.get("evidence_strength") == "scoped_runtime_reconstruction"
         else "executor context-pack source-probe evidence present"
     )
     return CheckResult("check_executor_context_pack_evidence", True, message)
@@ -318,7 +293,7 @@ def run_checks(checks: list[Callable[[], CheckResult]]) -> tuple[int, list[Check
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Verify ai-platform executor context pack evidence on 211")
+    parser = argparse.ArgumentParser(description="Verify ai-platform executor context-pack reconstruction evidence")
     parser.add_argument(
         "--evidence-file",
         default=os.environ.get(
@@ -330,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-live-run-payload",
         action="store_true",
-        help="Fail source-probe evidence and require live_worker_run_payload evidence for 211 acceptance.",
+        help="Always fail: reconstruction evidence cannot establish an observed worker dispatch.",
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
     return parser

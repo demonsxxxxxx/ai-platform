@@ -4,10 +4,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "AGENTS.md"
 DOCS_INDEX = ROOT / "docs/README.md"
-GUARDRAILS = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
 MULTI_AGENT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
-RUNBOOK = ROOT / "docs/operations/211-release-operations-runbook.md"
+RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
 S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 
@@ -20,13 +19,12 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
     index = read(DOCS_INDEX)
 
     assert "not a project status report" in index
-    assert "sole executable 211" in index
+    assert "sole executable release" in index
     assert "Reviewed, redacted evidence" in index
     for relative_path in (
-        "agent-rules/ai-platform-guardrails.md",
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
-        "operations/211-release-operations-runbook.md",
+        "operations/release-operations-runbook.md",
         "operations/s72-opensandbox-gateway-runbook.md",
         "release-evidence/README.md",
     ):
@@ -35,18 +33,16 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
 
 def test_governance_rules_keep_status_and_release_authority_out_of_history_docs():
     agents = read(AGENTS)
-    guardrails = read(GUARDRAILS)
     github = read(GITHUB_WORKFLOW)
     workflow = read(MULTI_AGENT_WORKFLOW)
 
     assert "Historical runtime observations" in agents
-    assert "Current status" in guardrails
     assert "repository status pages" in github
     assert "controller checkpoint" in workflow
     assert "one mutation lease" in workflow
 
 
-def test_release_runbook_remains_the_only_211_executable_authority():
+def test_release_runbook_remains_the_only_executable_release_authority():
     runbook = read(RUNBOOK)
 
     assert "Canonical Exact-Main Command" in runbook
@@ -55,6 +51,44 @@ def test_release_runbook_remains_the_only_211_executable_authority():
     assert "final source/runtime parity" in runbook
     assert "same release authority" in runbook
     assert "s72 gateway runbook" not in runbook
+
+
+def test_decommissioned_runtime_is_not_an_active_source_authority():
+    retired_host = "10.56.0." + "211"
+    retired_connection = "s" + "211"
+    retired_runbook = ROOT / "docs/operations" / ("211" + "-release-operations-runbook.md")
+    retired_guardrails = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
+    retired_tools = (
+        ROOT / "scripts" / ("generate_executor_context_pack_evidence_" + "211.py"),
+        ROOT / "scripts" / ("verify_executor_context_pack_" + "211.py"),
+        ROOT / "scripts" / ("generate_sandbox_runtime_evidence_" + "211.py"),
+        ROOT / "scripts" / ("verify_sandbox_runtime_" + "211.py"),
+    )
+
+    assert not retired_runbook.exists()
+    assert not retired_guardrails.exists()
+    assert all(not path.exists() for path in retired_tools)
+
+    active_sources = (
+        AGENTS,
+        DOCS_INDEX,
+        RUNBOOK,
+        ROOT / "README.md",
+        ROOT / "frontend/web/README.md",
+        ROOT / "frontend/web/scripts/prd-closure-browser-smoke.mjs",
+        ROOT / "app/settings.py",
+        ROOT / "app/office_context_readiness.py",
+        ROOT / "app/b2_sandbox_readiness.py",
+        ROOT / "deploy/ai-platform/docker-compose.yml",
+        ROOT / "scripts/generate_executor_context_pack_evidence.py",
+        ROOT / "scripts/verify_executor_context_pack.py",
+        ROOT / "scripts/generate_sandbox_runtime_evidence.py",
+        ROOT / "scripts/verify_sandbox_runtime.py",
+    )
+    active_text = "\n".join(read(path) for path in active_sources)
+    assert retired_host not in active_text
+    assert retired_connection not in active_text
+    assert "211_api_worker_runtime" not in active_text
 
 
 def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
@@ -97,7 +131,7 @@ def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
     assert "exactly one `LISTEN` `127.0.0.1:8080`" in runbook
     assert "left untouched and recovery fails closed" in runbook
     assert "They do not prove a live systemd/Docker deployment" in runbook
-    assert "cannot establish a `211 verified` claim" in runbook
+    assert "cannot establish application runtime acceptance" in runbook
 
 
 def test_release_evidence_index_is_a_contract_not_a_status_snapshot():

@@ -11,7 +11,7 @@ from typing import Any
 ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
 GATE = "Foundation Alpha POC"
 B1_MEMORY_CONTEXT_VERIFIER = "tools/verify_b1_memory_context_workflow.py"
-B1_MEMORY_CONTEXT_ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
+B1_MEMORY_CONTEXT_ACCEPTANCE_GAP = "controlled_host_memory_enabled_document_workflow_smoke"
 B1_MEMORY_CONTEXT_SCHEMA = "ai-platform.b1-memory-context-workflow-smoke.v1"
 
 _VERIFIER_SCHEMA_DEFAULTS = {
@@ -374,7 +374,7 @@ def _source_ref(
         "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
         "compose_env_layout_status": "external_env_file_label_present",
         "compose_env_source": (
-            "existing external 211 runtime env file supplied through compose --env-file; "
+            "existing external runtime env file supplied through compose --env-file; "
             "values were not copied or printed"
         ),
         "gateway_secret_supplied": bool(gateway_secret_supplied),
@@ -464,11 +464,11 @@ def build_release_evidence_entry(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Wrap 211 Foundation Alpha verifier output as explicitly reviewed release evidence."
+        description="Wrap controlled-host Foundation Alpha verifier output as explicitly reviewed release evidence."
     )
     parser.add_argument("--verifier-output", required=True)
     parser.add_argument("--verifier", required=True)
-    parser.add_argument("--artifact-kind", default="211_runtime_smoke")
+    parser.add_argument("--artifact-kind", default="controlled_host_runtime_smoke")
     parser.add_argument("--evidence-id", required=True)
     parser.add_argument("--commit-sha", required=True)
     parser.add_argument("--runtime-subject-commit-sha", required=True)

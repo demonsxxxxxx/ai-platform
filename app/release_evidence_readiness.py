@@ -34,7 +34,7 @@ _REQUIRED_FIELDS = [
 _FIELD_SEMANTICS = {
     "commit_sha": "verified subject commit for the runtime, capacity, frontend, or governance artifact under review",
     "runtime_subject_commit_sha": (
-        "runtime source revision proven by 211 source marker and API/worker image labels "
+        "runtime source revision proven by a controlled-host source marker and API/worker image labels "
         "for runtime-bound smoke artifacts"
     ),
     "record_commit_sha": (
@@ -47,6 +47,9 @@ _FIELD_SEMANTICS = {
     ),
 }
 _CONDITIONAL_FIELDS = {
+    "controlled_host_runtime_smoke": [
+        "runtime_subject_commit_sha",
+    ],
     "211_runtime_smoke": [
         "runtime_subject_commit_sha",
     ],
@@ -54,6 +57,9 @@ _CONDITIONAL_FIELDS = {
         "runtime_subject_commit_sha",
     ],
     "211_sandbox_runtime_smoke": [
+        "runtime_subject_commit_sha",
+    ],
+    "controlled_host_sandbox_runtime_smoke": [
         "runtime_subject_commit_sha",
     ],
     "211_runtime_identity_label_repair": [
@@ -74,6 +80,7 @@ _FORBIDDEN_MARKER_CLASSES = [
     "Redis URL",
 ]
 _ACCEPTED_ARTIFACT_KINDS = [
+    "controlled_host_runtime_smoke",
     "211_runtime_smoke",
     "capacity_gate_readiness",
     "frontend_packaged_runtime_smoke",
@@ -83,6 +90,7 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "alert_trace_export_runtime_acceptance",
     "211_memory_enabled_document_workflow_smoke",
     "211_sandbox_runtime_smoke",
+    "controlled_host_sandbox_runtime_smoke",
     "211_runtime_identity_label_repair",
     "211_g7_operator_status_review",
     "211_deployment_image_cleanup",
@@ -206,7 +214,10 @@ def _reviewed_runtime_acceptance_entry_is_valid(
     commit_sha = payload.get("commit_sha")
     return (
         payload.get("schema_version") == ENTRY_SCHEMA_VERSION
-        and payload.get("artifact_kind") == "211_runtime_smoke"
+        and payload.get("artifact_kind") in {
+            "controlled_host_runtime_smoke",
+            "211_runtime_smoke",
+        }
         and isinstance(commit_sha, str)
         and commit_sha
         and payload.get("runtime_subject_commit_sha") == commit_sha

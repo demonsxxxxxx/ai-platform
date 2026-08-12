@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 SCHEMA_VERSION = "ai-platform.b1-memory-context-workflow-smoke.v1"
-ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
+ACCEPTANCE_GAP = "controlled_host_memory_enabled_document_workflow_smoke"
 REMAINING_GATE_BOUNDARIES = [
     "issue review and closure evidence",
     "runtime evidence review against merged source",
@@ -384,7 +384,7 @@ def test_b1_memory_context_workflow_smoke_verifies_policy_context_delete_and_pro
     assert payload["ok"] is True
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["acceptance_gap"] == ACCEPTANCE_GAP
-    assert payload["target"] == "211_api_memory_context_workflow"
+    assert payload["target"] == "controlled_host_api_memory_context_workflow"
     assert payload["redaction_scan_status"] == "passed"
     assert payload["source"]["commit_sha"] == "3e86786"
     assert payload["source"]["runtime_subject_commit_sha"] == "fadbb83"

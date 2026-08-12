@@ -51,10 +51,10 @@ def test_b6_operations_beta_readiness_exposes_workflow_package_boundaries():
 
     assert "workflow_owner_signoff_and_support_handoff" in readiness["open_gaps"]
     assert "linked_b1_b5_evidence_package_review" in readiness["open_gaps"]
-    assert "operations_beta_211_workflow_acceptance" in readiness["open_gaps"]
+    assert "operations_beta_controlled_host_workflow_acceptance" in readiness["open_gaps"]
 
     assert readiness["claim_boundary"]["does_not_create_product_beta"] is True
-    assert readiness["claim_boundary"]["does_not_create_211_verified"] is True
+    assert readiness["claim_boundary"]["does_not_claim_deployed_runtime_verified"] is True
     assert readiness["claim_boundary"]["does_not_close_b6_g9_g10"] is True
     assert readiness["claim_boundary"]["does_not_claim_owner_signoff"] is True
 

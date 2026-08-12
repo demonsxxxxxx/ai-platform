@@ -12,7 +12,7 @@ import pytest
 
 
 def load_verifier():
-    path = Path("scripts/verify_sandbox_runtime_211.py")
+    path = Path("scripts/verify_sandbox_runtime.py")
     spec = importlib.util.spec_from_file_location("verify_sandbox_runtime_211", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -21,7 +21,7 @@ def load_verifier():
 
 
 def load_generator():
-    path = Path("scripts/generate_sandbox_runtime_evidence_211.py")
+    path = Path("scripts/generate_sandbox_runtime_evidence.py")
     spec = importlib.util.spec_from_file_location("generate_sandbox_runtime_evidence_211", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -203,7 +203,7 @@ def test_executor_health_accepts_platform_runtime_evidence_when_ephemeral_execut
     evidence.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "schema_version": "ai-platform.sandbox-runtime.v2",
                 "run_id": "run-a",
                 "runtime_mode": "platform",
                 "sandbox_provider": "docker",
@@ -353,7 +353,7 @@ def test_platform_runtime_evidence_requires_latency_split_and_real_provider(tmp_
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
     base = {
-        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "schema_version": "ai-platform.sandbox-runtime.v2",
         "run_id": "run-a",
         "executor_url": "http://executor.test",
         "runtime_mode": "platform",
@@ -457,7 +457,7 @@ def test_platform_runtime_evidence_rejects_sdk_only_placeholder_lease_projection
     evidence.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "schema_version": "ai-platform.sandbox-runtime.v2",
                 "run_id": "run-a",
                 "executor_url": "http://executor.test",
                 "runtime_mode": "platform",
@@ -563,7 +563,7 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
     evidence.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "schema_version": "ai-platform.sandbox-runtime.v2",
                 "run_id": "run-a",
                 "runtime_mode": "platform",
                 "sandbox_provider": "opensandbox",
@@ -582,7 +582,7 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
     evidence.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "schema_version": "ai-platform.sandbox-runtime.v2",
                 "run_id": "run-a",
                 "runtime_mode": "platform",
                 "sandbox_provider": "opensandbox",
@@ -619,7 +619,7 @@ def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_p
     evidence.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "schema_version": "ai-platform.sandbox-runtime.v2",
                 "run_id": "run-a",
                 "runtime_mode": "platform",
                 "sandbox_provider": "docker",
@@ -638,7 +638,7 @@ def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_p
     evidence.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "schema_version": "ai-platform.sandbox-runtime.v2",
                 "run_id": "run-a",
                 "runtime_mode": "platform",
                 "sandbox_provider": "docker",
@@ -1090,22 +1090,22 @@ def test_main_json_reports_all_checks_as_structured_output(tmp_path, capsys):
 
 def test_script_help_bootstraps_current_repo_before_importing_app_modules():
     generator_result = subprocess.run(
-        [sys.executable, "scripts/generate_sandbox_runtime_evidence_211.py", "--help"],
+        [sys.executable, "scripts/generate_sandbox_runtime_evidence.py", "--help"],
         capture_output=True,
         text=True,
         check=False,
     )
     verifier_result = subprocess.run(
-        [sys.executable, "scripts/verify_sandbox_runtime_211.py", "--help"],
+        [sys.executable, "scripts/verify_sandbox_runtime.py", "--help"],
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert generator_result.returncode == 0
-    assert "Generate ai-platform sandbox runtime evidence on 211" in generator_result.stdout
+    assert "Generate ai-platform sandbox runtime evidence on a controlled Docker host" in generator_result.stdout
     assert verifier_result.returncode == 0
-    assert "Verify ai-platform sandbox runtime on 211" in verifier_result.stdout
+    assert "Verify ai-platform sandbox runtime" in verifier_result.stdout
 
 
 def test_generator_parser_accepts_opensandbox_provider():
@@ -1178,7 +1178,7 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
         "executor_mode": "claude_agent_sdk",
         "sdk_session_id": "sdk-session-a",
     }
-    assert data["schema_version"] == "ai-platform.sandbox-runtime-211.v1"
+    assert data["schema_version"] == "ai-platform.sandbox-runtime.v2"
     assert data["runtime_mode"] == "platform"
     assert data["sandbox_provider"] == "docker"
     assert data["timings"]["schema_version"] == "ai-platform.sandbox-latency-split.v1"
@@ -2194,7 +2194,7 @@ def test_cancel_probe_stops_only_verifier_owned_container():
     assert container_id == "container-123"
     assert calls[0][:2] == ("docker", "create")
     assert "--label" in calls[0]
-    assert "ai-platform.verifier=sandbox-runtime-211" in calls[0]
+    assert "ai-platform.verifier=sandbox-runtime" in calls[0]
     assert "ai-platform-sandbox-verifier-run-a" in calls[0]
     assert calls[1] == ("docker", "start", "container-123")
     assert calls[2] == ("docker", "stop", "container-123")
@@ -2228,7 +2228,7 @@ def test_cancel_probe_does_not_remove_by_name_when_create_fails():
             "--name",
             "ai-platform-sandbox-verifier-run-a",
             "--label",
-            "ai-platform.verifier=sandbox-runtime-211",
+            "ai-platform.verifier=sandbox-runtime",
             "--label",
             "ai-platform.run_id=run-a",
             "ai-platform:local",
@@ -2272,12 +2272,12 @@ def test_sandbox_runtime_211_help_names_211_docker_command_and_local_cancel_imag
     assert "--generate-runtime-probe-results-file" in generator_help
     assert "--denied-egress-target" in generator_help
     assert "sudo -n docker" in generator_help
-    assert "on 211" in generator_help
+    assert "controlled Docker host" in generator_help
     assert "ai-platform" in generator_help
     assert "local" in generator_help
     assert "--docker-cmd" in verifier_help
     assert "sudo -n docker" in verifier_help
-    assert "on 211" in verifier_help
+    assert "Verify ai-platform sandbox runtime" in verifier_help
 
 
 def test_platform_runtime_mode_defaults_executor_image_to_cancel_image(tmp_path, monkeypatch, capsys):
@@ -4148,7 +4148,7 @@ def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_pa
         raw = evidence_path.read_text(encoding="utf-8")
         evidence = json.loads(raw)
         assert exit_code == 0
-        assert evidence["schema_version"] == "ai-platform.sandbox-skill-mount-inspection-211.v1"
+        assert evidence["schema_version"] == "ai-platform.sandbox-skill-mount-inspection.v2"
         assert evidence["stage"] == "completed"
         assert evidence["profile"] == {
             "selected": profile,
@@ -4616,7 +4616,7 @@ def test_generator_entrypoint_writes_atomic_bootstrap_evidence_for_argument_erro
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert exit_code == 2
     assert evidence == {
-        "schema_version": "ai-platform.sandbox-runtime-211.bootstrap-error.v1",
+        "schema_version": "ai-platform.sandbox-runtime.bootstrap-error.v2",
         "stage": "bootstrap_error",
         "failure_category": "argument_error",
         "exit_code": 2,
@@ -4678,7 +4678,7 @@ def test_generator_default_parser_and_evidence_schema_remain_compatible(tmp_path
     assert len(computed_source_sha) == 64
     assert all(character in "0123456789abcdef" for character in computed_source_sha)
     assert exit_code == 0
-    assert evidence["schema_version"] == "ai-platform.sandbox-runtime-211.v1"
+    assert evidence["schema_version"] == "ai-platform.sandbox-runtime.v2"
     assert "profile" not in evidence
 
 

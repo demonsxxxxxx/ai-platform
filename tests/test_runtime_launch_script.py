@@ -9,8 +9,7 @@ OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
 OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
 S72_COLOCATION_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.s72-colocation.yml"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
-TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
-STALE_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
+REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
 
 def compose_service_text(compose_text: str, service_name: str) -> str:
@@ -45,19 +44,19 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
     assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
 
 
-def test_cors_defaults_include_current_211_frontend_origin():
+def test_cors_defaults_are_local_only_and_deployment_origins_are_explicit():
     settings_text = Path("app/settings.py").read_text(encoding="utf-8")
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     env_values = env_example_values(env_example_text)
-    current_origin = "http://10.56.0.211:18001"
+    retired_origin = "http://10.56.0.211:18001"
 
-    assert current_origin in settings_text
-    assert compose_text.count(current_origin) == 2
+    assert retired_origin not in settings_text
+    assert retired_origin not in compose_text
     assert env_values["CORS_ALLOW_ORIGINS"] == (
         "http://localhost:9527,http://127.0.0.1:9527"
     )
-    assert current_origin not in env_values["CORS_ALLOW_ORIGINS"]
+    assert retired_origin not in env_values["CORS_ALLOW_ORIGINS"]
 
 
 def test_worker_is_default_required_service_in_compose():
@@ -88,8 +87,8 @@ def test_run_api_with_deploy_env_derives_database_and_s3_settings():
 
     text = script.read_text(encoding="utf-8")
 
-    assert TARGET_211_DEPLOY_ENV in text
-    assert STALE_211_DEPLOY_ENV not in text
+    assert REPOSITORY_DEPLOY_ENV in text
+    assert "/home/" not in text
     assert 'PORT="${AI_PLATFORM_PORT:-8020}"' in text
     assert "Default: 8020" in text
     assert "18080" not in text
@@ -181,11 +180,11 @@ def test_worker_compose_forwards_maintenance_interval_setting():
     assert name not in api_section
 
 
-def test_poc_gate_default_env_path_matches_repo_local_211_deploy():
+def test_poc_gate_default_env_path_is_repository_relative():
     text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
 
-    assert f'DEFAULT_DEPLOY_ENV = "{TARGET_211_DEPLOY_ENV}"' in text
-    assert STALE_211_DEPLOY_ENV not in text
+    assert 'DEFAULT_DEPLOY_ENV = "deploy/ai-platform/.env"' in text
+    assert "/home/" not in text
 
 
 def test_poc_gate_validates_api_run_id_before_psql_interpolation():
@@ -246,7 +245,7 @@ def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabli
 
 
 def test_runbook_documents_ustc_pair_preflight_no_deploy_probe_and_upstream_rollback():
-    text = Path("docs/operations/211-release-operations-runbook.md").read_text(encoding="utf-8")
+    text = Path("docs/operations/release-operations-runbook.md").read_text(encoding="utf-8")
 
     assert 'https://mirrors.ustc.edu.cn/debian"' in text
     assert 'https://mirrors.ustc.edu.cn/debian-security"' in text
