@@ -105,6 +105,8 @@ def test_source_architecture_authority_has_required_sections_and_anchors():
     assert "The gate itself MUST be introduced in a later PR" in architecture_flat
     assert "status: accepted" in adr
     assert "decision_issue: 962" in adr
+    assert "API, worker, executor, and maintenance entrypoints" in adr
+    assert "sandbox entrypoints" not in adr
 
 
 def test_governance_rules_keep_status_and_release_authority_out_of_history_docs():

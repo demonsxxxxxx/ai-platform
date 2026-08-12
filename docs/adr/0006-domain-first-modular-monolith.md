@@ -90,8 +90,9 @@ and current-to-target mapping live in
 
 - New backend behavior has one obvious domain owner and one allowed dependency
   direction.
-- The API, worker, executor, and sandbox entrypoints remain separately
-  deployable processes while sharing one reviewed codebase and domain model.
+- The API, worker, executor, and maintenance entrypoints are explicit process
+  surfaces that share one reviewed codebase and domain model. Separating their
+  deployment requires the applicable runtime authority and acceptance evidence.
 - `app/routes`, `app/models.py`, and `app/repositories.py` become migration
   surfaces rather than locations for new unrelated behavior.
 - Some duplication remains temporarily while callers are migrated. Temporary
