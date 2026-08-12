@@ -791,7 +791,9 @@ def test_pull_request_target_governance_is_immutable_and_never_executes_candidat
     assert "if head_jobs != base_jobs:" in immutable_step
     assert 'head_backend_events.get("push") != base_backend_events.get("push")' in immutable_step
     assert 'protected_step_name = "Run code and architecture governance"' in immutable_step
+    assert "if head_validation_contract != base_validation_contract:" in immutable_step
     assert "if len(base_protected) != 1 or head_protected != base_protected:" in immutable_step
+    assert "if not isinstance(base_required, dict) or head_required != base_required:" in immutable_step
     assert (
         'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
         in immutable_step

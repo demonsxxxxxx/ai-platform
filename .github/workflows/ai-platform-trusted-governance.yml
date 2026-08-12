@@ -136,10 +136,22 @@ jobs:
           head_steps = head_validation.get("steps")
           if not isinstance(base_steps, list) or not isinstance(head_steps, list):
               raise ValueError("backend validation steps must be lists")
+          base_validation_contract = {
+              key: value for key, value in base_validation.items() if key != "steps"
+          }
+          head_validation_contract = {
+              key: value for key, value in head_validation.items() if key != "steps"
+          }
+          if head_validation_contract != base_validation_contract:
+              raise ValueError("protected backend validation job contract changed")
           base_protected = [step for step in base_steps if step.get("name") == protected_step_name]
           head_protected = [step for step in head_steps if step.get("name") == protected_step_name]
           if len(base_protected) != 1 or head_protected != base_protected:
               raise ValueError("protected backend governance step changed")
+          base_required = base_backend_payload.get("jobs", {}).get("required")
+          head_required = head_backend_payload.get("jobs", {}).get("required")
+          if not isinstance(base_required, dict) or head_required != base_required:
+              raise ValueError("protected backend required job changed")
           PY
           (
             cd "$GOVERNANCE_HEAD_WORKTREE"
