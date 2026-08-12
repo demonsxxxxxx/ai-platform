@@ -93,6 +93,7 @@
     "api",
     "events"
   ],
+  "public_kernel_modules": [],
   "approved_root_modules": [
     "app/__init__.py",
     "app/agent_conversation_repository.py",
@@ -254,6 +255,9 @@
       "allowed_keys": [
         "claude-agent-worker"
       ],
+      "allowed_adapter_constructors": [
+        "ClaudeAgentWorkerAdapter"
+      ],
       "selector_owners": [
         {
           "path": "app/repositories.py",
@@ -297,13 +301,20 @@
       "governed_symbol_missing",
       "governed_symbol_owner",
       "kernel_product_import",
+      "kernel_public_surface_forbidden",
       "layer_dependency_forbidden",
       "layer_external_dependency_forbidden",
       "platform_product_import",
+      "registry_adapter_mismatch",
+      "registry_duplicate_key",
       "registry_dynamic_selector",
+      "registry_factory_contract",
       "registry_missing",
+      "registry_missing_key",
+      "registry_nonliteral_key",
       "registry_selector_mismatch",
-      "registry_test_double"
+      "registry_test_double",
+      "registry_unknown_key"
     ],
     "owner": "platform-architecture",
     "reason": "Exceptions are candidate-bound migration evidence and cannot waive authority or security boundaries."

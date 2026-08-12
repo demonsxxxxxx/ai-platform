@@ -45,6 +45,7 @@ POLICY_KEYS = {
     "bounded_contexts",
     "layers",
     "public_cross_domain_modules",
+    "public_kernel_modules",
     "approved_root_modules",
     "forbidden_module_names",
     "forbidden_delivery_tokens",
@@ -62,13 +63,20 @@ BUILTIN_NON_EXEMPTIBLE_CODES = frozenset({
     "governed_symbol_missing",
     "governed_symbol_owner",
     "kernel_product_import",
+    "kernel_public_surface_forbidden",
     "layer_external_dependency_forbidden",
     "layer_dependency_forbidden",
     "platform_product_import",
+    "registry_adapter_mismatch",
+    "registry_duplicate_key",
     "registry_dynamic_selector",
+    "registry_factory_contract",
+    "registry_missing_key",
     "registry_missing",
+    "registry_nonliteral_key",
     "registry_selector_mismatch",
     "registry_test_double",
+    "registry_unknown_key",
 })
 
 
@@ -800,6 +808,13 @@ def _validate_policy(policy: dict[str, Any], git: _GitObjects, authority: str) -
     )
     if set(public_modules) != {"api", "events"}:
         raise ArchitectureError("invalid_policy", "public_cross_domain_modules must be api and events")
+    kernel_modules = policy["public_kernel_modules"]
+    if not isinstance(kernel_modules, list) or any(
+        not isinstance(item, str) or MODULE_NAME.fullmatch(item) is None for item in kernel_modules
+    ):
+        raise ArchitectureError("invalid_policy", "public_kernel_modules must contain lower-snake-case modules")
+    if kernel_modules != sorted(set(kernel_modules)):
+        raise ArchitectureError("invalid_policy", "public_kernel_modules must be sorted and unique")
     approved = _unique_path_list(policy["approved_root_modules"], "approved_root_modules")
     if any(len(PurePosixPath(path).parts) != 2 or not path.startswith("app/") for path in approved):
         raise ArchitectureError("invalid_policy", "approved_root_modules must contain exact app-root paths")
@@ -878,6 +893,7 @@ def _validate_policy(policy: dict[str, Any], git: _GitObjects, authority: str) -
             "path",
             "factory_function",
             "allowed_keys",
+            "allowed_adapter_constructors",
             "selector_owners",
             "test_double_terms",
             "owner",
@@ -964,6 +980,20 @@ def _validate_registry_entry(entry: dict[str, Any], label: str) -> None:
         raise ArchitectureError("invalid_policy", f"{label}.allowed_keys must be non-empty strings")
     if len(allowed) != len(set(allowed)) or allowed != sorted(allowed):
         raise ArchitectureError("invalid_policy", f"{label}.allowed_keys must be sorted and unique")
+    constructors = entry["allowed_adapter_constructors"]
+    if not isinstance(constructors, list) or not constructors or any(
+        not isinstance(item, str) or re.fullmatch(r"[A-Z][A-Za-z0-9]*", item) is None
+        for item in constructors
+    ):
+        raise ArchitectureError(
+            "invalid_policy",
+            f"{label}.allowed_adapter_constructors must contain class names",
+        )
+    if constructors != sorted(set(constructors)):
+        raise ArchitectureError(
+            "invalid_policy",
+            f"{label}.allowed_adapter_constructors must be sorted and unique",
+        )
     selector_owners = entry["selector_owners"]
     if not isinstance(selector_owners, list) or not selector_owners:
         raise ArchitectureError("invalid_policy", f"{label}.selector_owners must be a non-empty list")
@@ -1174,6 +1204,18 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
             edge.line,
             **non_exemptible,
         )
+    if (
+        target.package == "kernel"
+        and source.package != "kernel"
+        and not _kernel_import_allowed(edge.target, policy)
+    ):
+        return Finding(
+            "kernel_public_surface_forbidden",
+            "kernel imports must target an explicitly governed public kernel module",
+            source_path,
+            edge.line,
+            **non_exemptible,
+        )
     if source.package == "platform" and target.package in contexts | {"bootstrap", "compat"}:
         return Finding(
             "platform_product_import",
@@ -1205,6 +1247,26 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
                     return Finding(
                         "cross_domain_internal_import",
                         "cross-domain imports must target the owner's api.py or events.py boundary",
+                        source_path,
+                        edge.line,
+                        **non_exemptible,
+                    )
+                return None
+            if source.layer is None:
+                if source.boundary in public | {"registry"}:
+                    if target.layer not in {"application", "domain"}:
+                        return Finding(
+                            "layer_dependency_forbidden",
+                            "domain boundary modules may import only their application/domain internals",
+                            source_path,
+                            edge.line,
+                            **non_exemptible,
+                        )
+                    return None
+                if target.boundary not in public:
+                    return Finding(
+                        "layer_dependency_forbidden",
+                        "legacy domain modules may migrate only through their own api.py or events.py boundary",
                         source_path,
                         edge.line,
                         **non_exemptible,
@@ -1252,6 +1314,11 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
             **non_exemptible,
         )
     return None
+
+
+def _kernel_import_allowed(target: str, policy: dict[str, Any]) -> bool:
+    parts = target.split(".")
+    return len(parts) >= 3 and parts[2] in set(policy["public_kernel_modules"])
 
 
 def _assignment_names(tree: ast.Module) -> set[str]:
@@ -1326,6 +1393,8 @@ def _governed_symbol_findings(
 def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Finding]:
     tree = _parse_python(source, path, candidate=True)
     findings: list[Finding] = []
+    canonical_bindings: set[str] = set()
+    declared_exports: list[str] | None = None
     line_count = len(source.splitlines())
     if line_count > facade["max_lines"]:
         findings.append(
@@ -1382,6 +1451,18 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
                         getattr(node, "lineno", 0),
                     )
                 )
+            else:
+                exports = [element.value for element in value.elts]
+                if declared_exports is not None or len(exports) != len(set(exports)):
+                    findings.append(
+                        Finding(
+                            "facade_export_contract",
+                            "compatibility facade must define one duplicate-free static __all__",
+                            path,
+                            getattr(node, "lineno", 0),
+                        )
+                    )
+                declared_exports = exports
     for node in ast.walk(tree):
         if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match, ast.With, ast.AsyncWith)):
             findings.append(
@@ -1403,7 +1484,7 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
             )
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if not module.startswith(facade["canonical_prefix"]):
+            if not _module_has_prefix(module, facade["canonical_prefix"]):
                 findings.append(
                     Finding(
                         "facade_import_forbidden",
@@ -1413,9 +1494,11 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
                         details={"module": module},
                     )
                 )
+            else:
+                canonical_bindings.update(alias.asname or alias.name for alias in node.names)
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if not alias.name.startswith(facade["canonical_prefix"]):
+                if not _module_has_prefix(alias.name, facade["canonical_prefix"]):
                     findings.append(
                         Finding(
                             "facade_import_forbidden",
@@ -1425,6 +1508,8 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
                             details={"module": alias.name},
                         )
                     )
+                elif alias.asname is not None:
+                    canonical_bindings.add(alias.asname)
         if isinstance(node, ast.Call):
             findings.append(
                 Finding(
@@ -1434,7 +1519,23 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
                     node.lineno,
                 )
             )
+    if declared_exports is None or set(declared_exports) != canonical_bindings:
+        findings.append(
+            Finding(
+                "facade_export_contract",
+                "compatibility facade __all__ must exactly name its canonical imported bindings",
+                path,
+                details={
+                    "declared_exports": [] if declared_exports is None else sorted(declared_exports),
+                    "imported_bindings": sorted(canonical_bindings),
+                },
+            )
+        )
     return _sort_findings(_deduplicate_findings(findings))
+
+
+def _module_has_prefix(module: str, prefix: str) -> bool:
+    return module == prefix or module.startswith(prefix + ".")
 
 
 def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list[Finding]:
@@ -1448,6 +1549,7 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
         and node.name == registry["factory_function"]
     ]
     registry_dict: ast.Dict | None = None
+    registry_factory: ast.FunctionDef | ast.AsyncFunctionDef | None = None
     if len(factories) != 1:
         findings.append(
             Finding(
@@ -1457,8 +1559,13 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
             )
         )
     else:
+        registry_factory = factories[0]
         returns = [node for node in ast.walk(factories[0]) if isinstance(node, ast.Return)]
-        if len(returns) != 1 or not isinstance(returns[0].value, ast.Dict):
+        if (
+            len(factories[0].body) != 1
+            or len(returns) != 1
+            or not isinstance(returns[0].value, ast.Dict)
+        ):
             findings.append(
                 Finding(
                     "registry_factory_contract",
@@ -1472,6 +1579,7 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
 
     if registry_dict is not None:
         current: set[str] = set()
+        allowed_constructors = set(registry["allowed_adapter_constructors"])
         for key, value in zip(registry_dict.keys, registry_dict.values, strict=True):
             if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
                 findings.append(
@@ -1494,6 +1602,27 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
                     )
                 )
             current.add(key.value)
+            constructor = _call_name(value.func) if isinstance(value, ast.Call) else ""
+            if (
+                not isinstance(value, ast.Call)
+                or constructor not in allowed_constructors
+                or value.args
+                or value.keywords
+            ):
+                findings.append(
+                    Finding(
+                        "registry_adapter_mismatch",
+                        "production registry values must be zero-argument declared adapter constructors",
+                        path,
+                        getattr(value, "lineno", registry_dict.lineno),
+                        exemptible=False,
+                        details={
+                            "actual_constructor": constructor or None,
+                            "allowed_constructors": sorted(allowed_constructors),
+                            "key": key.value,
+                        },
+                    )
+                )
             for value_node in ast.walk(value):
                 if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
                     _append_test_double_findings(
@@ -1513,12 +1642,11 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
                         getattr(value_node, "lineno", registry_dict.lineno),
                     )
 
-    for node in ast.walk(tree):
+    for node in ast.walk(registry_factory) if registry_factory is not None else ():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.name for alias in node.names]
             if isinstance(node, ast.ImportFrom) and node.module:
                 names.append(node.module)
-            _append_test_double_findings(findings, registry, names, path, node.lineno)
             if any(
                 name in {"importlib", "os", "shlex", "subprocess"}
                 or name.startswith(("importlib.", "os.", "subprocess."))

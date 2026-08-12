@@ -98,7 +98,7 @@ def _create_repo(
         repo,
         "app/executors/registry.py",
         "def _default_adapters():\n"
-        "    return {\"claude-agent-worker\": object()}\n",
+        "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
     )
     _write(
         repo,
@@ -354,6 +354,44 @@ def test_domain_third_party_dependency_is_rejected(
     assert "layer_external_dependency_forbidden" in _codes(evaluation)
 
 
+def test_legacy_domain_file_cannot_add_same_context_infrastructure_import(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/legacy.py", "BASELINE = True\n")
+    base = _commit(repo, "legacy domain file")
+    _write(repo, "app/runs/legacy.py", "from app.runs.infrastructure import postgres\n")
+    head = _commit(repo, "legacy file imports infrastructure")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert "layer_dependency_forbidden" in _codes(evaluation)
+
+
+def test_domain_boundary_cannot_import_concrete_infrastructure(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/api.py", "from app.runs.infrastructure import postgres\n")
+    head = _commit(repo, "api imports infrastructure")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "layer_dependency_forbidden" in _codes(evaluation)
+
+
+def test_arbitrary_kernel_module_is_not_a_public_surface(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/domain/attempt.py", "from app.kernel import secret_policy\n")
+    head = _commit(repo, "arbitrary kernel import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "kernel_public_surface_forbidden" in _codes(evaluation)
+
+
 @pytest.mark.parametrize(
     ("source_path", "source", "expected"),
     [
@@ -462,17 +500,34 @@ def test_logic_free_facade_requires_static_all_and_docstring_only_expressions(
     assert "facade_local_state" in _codes(evaluation)
 
 
+def test_logic_free_facade_rejects_nonexistent_export_and_prefix_collision(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/artifact_lifecycle_repository.py",
+        "from app.persistence_evil.object_deletions import claim_object_deletions\n"
+        "__all__ = [\"nonexistent\"]\n",
+    )
+    head = _commit(repo, "invalid facade export")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert {"facade_export_contract", "facade_import_forbidden"} <= _codes(evaluation)
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
         (
             "def _default_adapters():\n"
-            "    return {\"claude-agent-worker\": object(), \"claude-agent-worker\": object()}\n",
+            "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter(), \"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
             "registry_duplicate_key",
         ),
         (
             "def _default_adapters():\n"
-            "    return {\"claude-agent-worker\": object(), \"unknown-worker\": object()}\n",
+            "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter(), \"unknown-worker\": ClaudeAgentWorkerAdapter()}\n",
             "registry_unknown_key",
         ),
         (
@@ -484,7 +539,7 @@ def test_logic_free_facade_requires_static_all_and_docstring_only_expressions(
         (
             "def _default_adapters(module_name):\n"
             "    adapter = getattr(__import__(module_name), \"Adapter\")\n"
-            "    return {\"claude-agent-worker\": adapter()}\n",
+            "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
             "registry_dynamic_selector",
         ),
     ],
@@ -527,10 +582,8 @@ def test_registry_rejects_arbitrary_os_command_selector(
     _write(
         repo,
         "app/executors/registry.py",
-        "from os import system\n"
         "def _default_adapters(command):\n"
-        "    system(command)\n"
-        "    return {\"claude-agent-worker\": object()}\n",
+        "    return {\"claude-agent-worker\": os.system(command)}\n",
     )
     head = _commit(repo, "arbitrary registry command")
 
