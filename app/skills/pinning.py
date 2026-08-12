@@ -12,9 +12,17 @@ from app.skills.registry import BuiltinSkill, iter_skill_files
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_SNAPSHOT_TOTAL_BYTES = 16 * 1024 * 1024
-SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1 = (
     "ai-platform.skill-pinned-snapshot-governance.v1"
 )
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2 = (
+    "ai-platform.skill-pinned-snapshot-governance.v2"
+)
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
+    SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2
+)
+
+
 class SkillVersionMaterializationError(ValueError):
     pass
 

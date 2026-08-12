@@ -120,6 +120,13 @@ mutation. The Python authority never reads or copies the file contents. Its
 bounded Docker Compose preflight receives the file only as `--env-file`, suppresses
 resolved output and raw parser errors, and never records the values in evidence.
 
+The managed environment must set `CORS_ALLOW_ORIGINS` to the exact
+browser-visible frontend origin, including scheme and any non-default host port
+(the base Compose frontend port defaults to `18001`). Container-internal port
+`8080`, localhost development origins, and retired host addresses are not valid
+production substitutes. The API and worker both require this value explicitly,
+so Compose preflight fails before mutation when it is absent.
+
 ### Secure provisioning and read-only Compose semantic preflight
 
 Before authorizing an expensive image build or deployment, the managed owner must

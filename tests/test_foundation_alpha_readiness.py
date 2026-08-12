@@ -3849,7 +3849,7 @@ def test_foundation_alpha_readiness_embeds_frontend_release_traceability_summary
     )
 
 
-def test_foundation_alpha_readiness_accepts_211_packaged_frontend_runtime_smoke(
+def test_foundation_alpha_readiness_retains_but_does_not_accept_211_packaged_frontend_smoke(
     monkeypatch,
     tmp_path,
 ):
@@ -3890,14 +3890,13 @@ def test_foundation_alpha_readiness_accepts_211_packaged_frontend_runtime_smoke(
     frontend = readiness["domains"]["frontend_poc"]
     packaged = frontend["evidence"]["frontend_packaged_runtime_smoke"]
     assert packaged["status"] == "ready_for_operator_review"
-    assert packaged["verified"] is True
+    assert packaged["verified"] is False
     assert "211_packaged_frontend_runtime_smoke" in packaged["closed_evidence_items"]
-    assert "packaged_frontend_image_release_acceptance" not in frontend["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" in frontend["open_followups"]
     assert "packaged_frontend_image_release_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
     assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
-    assert readiness["evidence_entries"]["frontend_packaged_runtime_smoke"] == (
-        foundation_alpha_readiness._path_for_output(packaged_path)
-    )
+    assert "frontend_packaged_runtime_smoke" not in readiness["evidence_entries"]
+    assert packaged_path.exists()
 
 
 def test_foundation_alpha_readiness_accepts_clean_ordinary_user_frontend_projection(

@@ -4794,7 +4794,7 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
     assert calls["queue"]["release_decision"]["selected_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
     governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v2"
     assert governance["snapshot_source"] == "platform_release_lock"
     assert governance["release_lock"]["mode"] == "manifest_pin"
     assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
@@ -4889,7 +4889,7 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
     assert calls["queue"]["release_decision"]["selected_track"] == "previous"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-old"
     governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v2"
     assert governance["release_lock"]["mode"] == "release_policy"
     serialized_governance = json.dumps(governance, ensure_ascii=False)
     assert "hash-old" not in serialized_governance

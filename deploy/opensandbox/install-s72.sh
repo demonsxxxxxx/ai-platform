@@ -213,6 +213,48 @@ gateway_service_uid_from_config_at() {
   printf '%s\n' "$gateway_uid"
 }
 
+require_resolved_egress_policy_at() {
+  policy_path=$1
+  python3 - "$policy_path" <<'PY'
+import ipaddress
+import json
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if not isinstance(payload, dict) or payload.get("version") != 1:
+    raise SystemExit(1)
+targets = payload.get("targets")
+if not isinstance(targets, dict):
+    raise SystemExit(1)
+for target_name in ("callback", "openai", "anthropic"):
+    target = targets.get(target_name)
+    if not isinstance(target, dict):
+        raise SystemExit(1)
+    base_url = target.get("base_url")
+    if not isinstance(base_url, str) or "REQUIRED_FIXED_EGRESS_" in base_url:
+        raise SystemExit(1)
+    parsed = urlsplit(base_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise SystemExit(1)
+    expected_ips = target.get("expected_ips")
+    if not isinstance(expected_ips, list) or not expected_ips:
+        raise SystemExit(1)
+    for value in expected_ips:
+        if not isinstance(value, str) or "REQUIRED_FIXED_EGRESS_" in value:
+            raise SystemExit(1)
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            raise SystemExit(1)
+PY
+}
+
 gateway_group_entry() {
   printf '%s\n' "$SERVICE_GROUP:x:$1:"
 }
@@ -741,6 +783,7 @@ require_gateway_config_contract_at() {
     ! -name fullchain.pem ! -name privkey.pem ! -name upstream-ca.pem -print -quit)" || return 1
   require_root_owned_regular "$contract_root/gateway.env" 640 || return 1
   require_root_owned_regular "$contract_root/egress-policy.v1.json" 640 || return 1
+  require_resolved_egress_policy_at "$contract_root/egress-policy.v1.json" || return 1
   require_root_owned_regular "$contract_root/tls/fullchain.pem" 640 || return 1
   require_root_owned_regular "$contract_root/tls/upstream-ca.pem" 640 || return 1
   require_root_owned_regular "$contract_root/tls/privkey.pem" 440 || return 1

@@ -94,6 +94,13 @@ def test_app_allows_browser_cors_for_frontend_cutover():
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:9527"
     assert response.headers["access-control-allow-credentials"] == "true"
 
+    retired = client.get(
+        "/api/ai/health",
+        headers={"Origin": "http://10.56.0.211:8080"},
+    )
+    assert retired.status_code == 200
+    assert "access-control-allow-origin" not in retired.headers
+
 
 def test_health_reports_dynamic_runtime_commit(monkeypatch):
     commit = "7" * 40

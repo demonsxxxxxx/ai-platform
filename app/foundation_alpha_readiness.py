@@ -2113,12 +2113,9 @@ def _frontend_packaged_runtime_smoke_summary(payload: dict[str, Any] | None) -> 
         else None
     )
     verified = (
-        "211_packaged_frontend_runtime_smoke" in closed_items
-        or (
-            runtime_host == "controlled-host"
-            and host_specific_item in closed_items
-            and "packaged_frontend_runtime_smoke" in closed_items
-        )
+        runtime_host == "controlled-host"
+        and host_specific_item in closed_items
+        and "packaged_frontend_runtime_smoke" in closed_items
     )
     return {
         "status": readiness.get("status"),

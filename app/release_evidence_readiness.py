@@ -34,7 +34,7 @@ _REQUIRED_FIELDS = [
 _FIELD_SEMANTICS = {
     "commit_sha": "verified subject commit for the runtime, capacity, frontend, or governance artifact under review",
     "runtime_subject_commit_sha": (
-        "runtime source revision proven by a controlled-host source marker and API/worker image labels "
+        "runtime source revision proven by the runtime subject's source marker and API/worker image labels "
         "for runtime-bound smoke artifacts"
     ),
     "record_commit_sha": (

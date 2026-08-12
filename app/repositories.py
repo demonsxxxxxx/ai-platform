@@ -81,6 +81,8 @@ from app.skills.execution_profiles import (
 )
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
+    SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1,
+    SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2,
     SkillVersionMaterializationError,
     build_skill_snapshot_governance,
 )
@@ -8173,6 +8175,15 @@ def _sanitize_skill_snapshot_source(source_json: object) -> dict[str, Any]:
     source.pop("version", None)
     governance = source.get("snapshot_governance")
     if isinstance(governance, dict):
+        governance_schema = governance.get("schema_version")
+        if governance_schema == SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1:
+            legacy_boundary = governance.pop("does_not_close_b4_or_211", None)
+            if isinstance(legacy_boundary, bool):
+                governance["does_not_close_b4_or_deployed_runtime_acceptance"] = (
+                    legacy_boundary
+                )
+        elif governance_schema == SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2:
+            governance.pop("does_not_close_b4_or_211", None)
         manifest = governance.get("manifest")
         if isinstance(manifest, dict):
             manifest.pop("digest", None)

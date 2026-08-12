@@ -44,7 +44,7 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
     assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
 
 
-def test_cors_defaults_are_local_only_and_deployment_origins_are_explicit():
+def test_production_cors_origin_is_operator_managed_and_browser_visible():
     settings_text = Path("app/settings.py").read_text(encoding="utf-8")
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
@@ -53,10 +53,18 @@ def test_cors_defaults_are_local_only_and_deployment_origins_are_explicit():
 
     assert retired_origin not in settings_text
     assert retired_origin not in compose_text
-    assert env_values["CORS_ALLOW_ORIGINS"] == (
-        "http://localhost:9527,http://127.0.0.1:9527"
-    )
+    for service_name in ("api", "worker"):
+        service = compose_service_text(compose_text, service_name)
+        assert (
+            "CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:?set CORS_ALLOW_ORIGINS "
+            "to the browser-visible frontend origin}"
+        ) in service
+    assert env_values["CORS_ALLOW_ORIGINS"] == "https://ai-platform.example.internal"
+    assert "localhost" not in env_values["CORS_ALLOW_ORIGINS"]
     assert retired_origin not in env_values["CORS_ALLOW_ORIGINS"]
+    runbook = Path("docs/operations/release-operations-runbook.md").read_text(encoding="utf-8")
+    assert "browser-visible frontend origin" in runbook
+    assert "defaults to `18001`" in runbook
 
 
 def test_worker_is_default_required_service_in_compose():
@@ -183,7 +191,8 @@ def test_worker_compose_forwards_maintenance_interval_setting():
 def test_poc_gate_default_env_path_is_repository_relative():
     text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
 
-    assert 'DEFAULT_DEPLOY_ENV = "deploy/ai-platform/.env"' in text
+    assert 'REPOSITORY_ROOT = Path(__file__).resolve().parents[1]' in text
+    assert 'DEFAULT_DEPLOY_ENV = str(REPOSITORY_ROOT / "deploy/ai-platform/.env")' in text
     assert "/home/" not in text
 
 

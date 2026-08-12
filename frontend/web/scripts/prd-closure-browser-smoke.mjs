@@ -47,7 +47,7 @@ const ROUTE_CONTENT_SELECTORS = new Map([
 
 function parseArgs(argv) {
   const args = {
-    baseUrl: process.env.AI_PLATFORM_FRONTEND_URL || "",
+    baseUrl: "",
     cdpUrl: process.env.AI_PLATFORM_CDP_URL || "",
     chromePath: process.env.AI_PLATFORM_CHROME_PATH || "",
     expectedCommit: process.env.AI_PLATFORM_EXPECTED_COMMIT || "",
@@ -92,9 +92,6 @@ function parseArgs(argv) {
     } else {
       throw new Error(`unknown_argument:${arg}`);
     }
-  }
-  if (!args.baseUrl) {
-    throw new Error("base_url_required");
   }
   return args;
 }
@@ -885,8 +882,13 @@ function summarizeStatus({
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const baseUrl = normalizeBaseUrl(args.baseUrl);
   const envFileValues = loadEnvValues(args.envFile);
+  const resolvedBaseUrl =
+    args.baseUrl || process.env.AI_PLATFORM_FRONTEND_URL || envFileValues.AI_PLATFORM_FRONTEND_URL;
+  if (!resolvedBaseUrl) {
+    throw new Error("base_url_required");
+  }
+  const baseUrl = normalizeBaseUrl(resolvedBaseUrl);
   const credentials = loadCredentials(envFileValues);
   const browser = args.cdpUrl
     ? { cdpUrl: args.cdpUrl, close: async () => {} }

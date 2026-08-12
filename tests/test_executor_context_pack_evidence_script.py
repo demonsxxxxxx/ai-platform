@@ -42,6 +42,44 @@ def test_source_probe_is_redacted_and_never_closes_runtime_acceptance(tmp_path):
     assert verifier.check_no_secret_leakage(evidence_path).passed is True
 
 
+def test_material_count_contract_requires_all_four_bounded_integer_fields():
+    generator = load_generator()
+    verifier = load_verifier()
+    valid_counts = {
+        "message_count": 1,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+
+    assert generator._scope_checks_from_context_pack(
+        {"referenced_materials": valid_counts}
+    )["referenced_material_counts_bounded"] is True
+    for invalid_counts in (
+        {key: value for key, value in valid_counts.items() if key != "memory_record_count"},
+        {**valid_counts, "file_count": True},
+        {**valid_counts, "artifact_count": 10_001},
+    ):
+        assert generator._scope_checks_from_context_pack(
+            {"referenced_materials": invalid_counts}
+        )["referenced_material_counts_bounded"] is False
+        error = verifier._public_context_summary_error(
+            {
+                "evidence_strength": (
+                    "observed_worker_dispatch_with_scoped_context_reconstruction"
+                ),
+                "public_context_summary": {
+                    "referenced_material_counts": invalid_counts,
+                    "input_keys": ["message"],
+                },
+            }
+        )
+        assert error in {
+            "referenced material counts evidence incomplete",
+            "referenced material counts evidence invalid",
+        }
+
+
 def test_verifier_rejects_any_claim_of_observed_worker_dispatch(tmp_path):
     generator = load_generator()
     verifier = load_verifier()
@@ -223,6 +261,36 @@ def test_live_run_rejects_missing_worker_dispatch_events(monkeypatch):
         assert str(exc) == "durable worker dispatch evidence missing"
     else:
         raise AssertionError("missing worker events must fail closed")
+
+
+def test_live_run_requires_every_worker_start_before_terminal_success():
+    generator = load_generator()
+
+    class EventCursor:
+        async def fetchall(self):
+            return [
+                {"event_type": "worker_started", "stage": "worker", "sequence": 3},
+                {"event_type": "run_succeeded", "stage": "worker", "sequence": 9},
+                {"event_type": "worker_started", "stage": "worker", "sequence": 12},
+            ]
+
+    class Conn:
+        async def execute(self, sql, params):
+            assert "from run_events" in sql
+            assert params == ("tenant-a", "run-live")
+            return EventCursor()
+
+    try:
+        generator.asyncio.run(
+            generator._load_worker_dispatch_proof(
+                Conn(),
+                run={"id": "run-live", "tenant_id": "tenant-a", "status": "succeeded"},
+            )
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "durable worker dispatch event order invalid"
+    else:
+        raise AssertionError("a start after terminal success must fail closed")
 
 
 def test_verifier_rejects_tampered_worker_dispatch_evidence(monkeypatch, tmp_path):

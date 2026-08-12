@@ -121,7 +121,7 @@ def test_build_skill_snapshot_governance_summarizes_files_without_package_bytes(
         },
     )
 
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v2"
     assert governance["snapshot_source"] == "platform_release_lock"
     assert governance["release_lock"] == {
         "schema_version": "ai-platform.skill-release-decision.v1",

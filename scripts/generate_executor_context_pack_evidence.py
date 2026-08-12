@@ -96,7 +96,13 @@ def _scope_checks_from_context_pack(context_pack: dict[str, Any]) -> dict[str, b
     materials = context_pack.get("referenced_materials")
     if not isinstance(materials, dict):
         materials = {}
-    counts_are_bounded = all(
+    required_counts = {
+        "message_count",
+        "file_count",
+        "artifact_count",
+        "memory_record_count",
+    }
+    counts_are_bounded = required_counts.issubset(materials) and all(
         isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10_000
         for value in materials.values()
     )
@@ -251,7 +257,7 @@ async def _load_worker_dispatch_proof(conn: Any, *, run: dict[str, Any]) -> dict
     if (
         any(not isinstance(value, int) or isinstance(value, bool) for value in started_sequences)
         or any(not isinstance(value, int) or isinstance(value, bool) for value in succeeded_sequences)
-        or min(started_sequences) >= max(succeeded_sequences)
+        or max(started_sequences) >= min(succeeded_sequences)
     ):
         raise RuntimeError("durable worker dispatch event order invalid")
     return {

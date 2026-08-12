@@ -12185,6 +12185,24 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
     assert "runtime_private_payload" not in serialized
 
 
+def test_skill_snapshot_reader_normalizes_legacy_governance_boundary_marker():
+    source = repositories._sanitize_skill_snapshot_source(
+        {
+            "kind": "builtin",
+            "snapshot_governance": {
+                "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                "snapshot_source": "platform_release_lock",
+                "does_not_close_b4_or_211": True,
+            },
+        }
+    )
+
+    governance = source["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
+    assert "does_not_close_b4_or_211" not in governance
+
+
 @pytest.mark.asyncio
 async def test_admin_run_detail_sanitizes_dirty_skill_snapshot_source_and_usage(monkeypatch):
     async def fake_get_run(conn, *, tenant_id, run_id):

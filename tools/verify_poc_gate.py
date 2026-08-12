@@ -27,8 +27,9 @@ from app.validation import assert_safe_id
 
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
 DEFAULT_API_URL = "http://127.0.0.1:8020"
-DEFAULT_FRONTEND_DIST = "frontend/web/dist"
-DEFAULT_DEPLOY_ENV = "deploy/ai-platform/.env"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FRONTEND_DIST = str(REPOSITORY_ROOT / "frontend/web/dist")
+DEFAULT_DEPLOY_ENV = str(REPOSITORY_ROOT / "deploy/ai-platform/.env")
 DEFAULT_API_CONTAINER = "ai-platform-api"
 DEFAULT_WORKER_CONTAINER = "ai-platform-worker"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"

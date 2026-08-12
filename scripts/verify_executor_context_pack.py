@@ -22,6 +22,12 @@ from typing import Any, Callable
 SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
 RUNTIME_ACCEPTANCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-runtime-acceptance.v2"
 SOURCE_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
+REQUIRED_MATERIAL_COUNT_FIELDS = {
+    "message_count",
+    "file_count",
+    "artifact_count",
+    "memory_record_count",
+}
 
 REQUIRED_SOURCE_FUNCTIONS = [
     "app.repositories.get_context_snapshot_for_worker",
@@ -254,7 +260,15 @@ def _public_context_summary_error(evidence: dict[str, Any]) -> str | None:
     counts = public_summary.get("referenced_material_counts")
     if not isinstance(counts, dict):
         return "referenced material counts evidence missing"
-    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts.values()):
+    if not REQUIRED_MATERIAL_COUNT_FIELDS.issubset(counts):
+        return "referenced material counts evidence incomplete"
+    if any(
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        or value > 10_000
+        for value in counts.values()
+    ):
         return "referenced material counts evidence invalid"
     input_keys = public_summary.get("input_keys")
     if not isinstance(input_keys, list) or any(not isinstance(item, str) for item in input_keys):
