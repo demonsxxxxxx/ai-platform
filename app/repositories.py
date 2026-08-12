@@ -10900,16 +10900,6 @@ async def _completed_steps_for_resume(
     return outputs, checkpoints
 
 
-async def _completed_step_outputs_for_resume(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-) -> dict[str, str]:
-    outputs, _checkpoints = await _completed_steps_for_resume(conn, tenant_id=tenant_id, run_id=run_id)
-    return outputs
-
-
 async def create_file(
     conn: AsyncConnection,
     *,
