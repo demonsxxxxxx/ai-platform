@@ -145,6 +145,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
     assert len(all_selectors) == len(set(all_selectors)) == 26
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
+    assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step
     assert "uv run --locked --extra test python -m pytest" in pytest_step
     assert "${{ matrix.test_files }}" in pytest_step
@@ -194,7 +195,9 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
 
     run_script = pytest_step[1].split("run: |", 1)[1]
-    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", run_script)
+    assert run_script.index("mkdir -p .pytest-tmp") < run_script.index("timeout --signal")
+    timeout_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
+    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", timeout_script)
     tokens = shlex.split(normalized_run)
     expected_tokens = [
         "timeout",

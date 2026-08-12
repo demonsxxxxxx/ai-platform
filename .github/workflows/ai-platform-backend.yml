@@ -169,6 +169,7 @@ jobs:
 
       - name: Run backend test shard
         run: |
+          mkdir -p .pytest-tmp
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
               ${{ matrix.test_files }} \
@@ -210,6 +211,7 @@ jobs:
 
       - name: Run Agent and Skill contract tests
         run: |
+          mkdir -p .pytest-tmp
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
               tests/test_agent_profile_authority.py \
