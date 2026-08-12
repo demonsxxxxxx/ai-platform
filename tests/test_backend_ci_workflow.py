@@ -603,11 +603,11 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert "persist-credentials: true" not in workflow
     assert "pull_request_target:" not in workflow
 
-    governance_step = workflow.split("- name: Run code governance", 1)[1].split(
+    governance_step = workflow.split("- name: Run code and architecture governance", 1)[1].split(
         "- name: Checkout validated pull request head for existing checks", 1
     )[0]
     install_start = workflow.index("- name: Install trusted-base governance dependency")
-    governance_start = workflow.index("- name: Run code governance")
+    governance_start = workflow.index("- name: Run code and architecture governance")
     pre_governance = workflow[:governance_start]
     assert (
         workflow.index("ref: ${{ github.event.pull_request.base.sha || github.sha }}")
@@ -670,10 +670,16 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
         'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
         in governance_step
     )
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check'
+        in governance_step
+    )
     assert "python tools/code_governance.py" not in governance_step
+    assert "python tools/architecture_governance.py" not in governance_step
     assert "git checkout" not in governance_step
     assert '--base-ref "$GOVERNANCE_BASE_REF"' in governance_step
     assert '--head-ref "$GOVERNANCE_HEAD_REF"' in governance_step
+    assert '--authority-ref "$GOVERNANCE_BASE_REF"' in governance_step
     assert "--format text" in governance_step
 
     governance_run = governance_step.split("run: |", 1)[1]
@@ -704,6 +710,12 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
         if 'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
         in line
     )
+    architecture_command_index = next(
+        index
+        for index, line in enumerate(governance_lines)
+        if 'python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check'
+        in line
+    )
     assert (
         governance_lines.index('echo "::add-mask::$GOVERNANCE_FETCH_BASIC"')
         < fetch_index
@@ -711,11 +723,12 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert unset_index == fetch_index + 1
     assert fetch_index < fetched_ref_check_index < ancestry_index < base_worktree_index
     assert base_worktree_index < governance_command_index
+    assert governance_command_index < architecture_command_index
 
 
 def test_code_governance_rejects_credential_and_untrusted_ref_fallbacks():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    governance_step = workflow.split("- name: Run code governance", 1)[1].split(
+    governance_step = workflow.split("- name: Run code and architecture governance", 1)[1].split(
         "- name: Checkout validated pull request head for existing checks", 1
     )[0]
     normalized = governance_step.lower()
@@ -756,7 +769,7 @@ def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_fai
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     install_start = workflow.index("- name: Install trusted-base governance dependency")
-    governance_start = workflow.index("- name: Run code governance")
+    governance_start = workflow.index("- name: Run code and architecture governance")
     governance_step = workflow[governance_start : workflow.index("  backend-tests:")]
 
     assert install_start < governance_start
@@ -774,7 +787,7 @@ def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_fai
 def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    governance_start = workflow.index("- name: Run code governance")
+    governance_start = workflow.index("- name: Run code and architecture governance")
     head_checkout_start = workflow.index(
         "- name: Checkout validated pull request head for existing checks"
     )

@@ -41,7 +41,7 @@ jobs:
       - name: Install trusted-base governance dependency
         run: python -m pip install ruff==0.11.13
 
-      - name: Run code governance
+      - name: Run code and architecture governance
         if: github.event_name == 'pull_request'
         env:
           GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
@@ -72,6 +72,11 @@ jobs:
           (
             cd "$GOVERNANCE_HEAD_WORKTREE"
             python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check \
+              --base-ref "$GOVERNANCE_BASE_REF" \
+              --head-ref "$GOVERNANCE_HEAD_REF" \
+              --format text
+            python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check \
+              --authority-ref "$GOVERNANCE_BASE_REF" \
               --base-ref "$GOVERNANCE_BASE_REF" \
               --head-ref "$GOVERNANCE_HEAD_REF" \
               --format text

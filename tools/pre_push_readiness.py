@@ -21,6 +21,9 @@ FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 MAX_RESPONSIBILITY_TESTS = 24
 AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
+AUTHORITY_ARCHITECTURE_PATH = "tools/architecture_governance.py"
+ARCHITECTURE_POLICY_PATH = "architecture-policy.json"
+ARCHITECTURE_POLICY_SCHEMA_PATH = "schemas/architecture-policy.v1.schema.json"
 CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
 CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
 # Frozen high-risk safety suites. Do not expand this map for ordinary product changes.
@@ -164,6 +167,7 @@ class PrePushReadiness:
             head_added = True
             self._run_diff_check(result, base, head)
             self._seal_trusted_governance(result, authority, base, head, temporary_root, head_worktree)
+            self._seal_trusted_architecture(result, authority, base, head, temporary_root, head_worktree)
             plan = self._plan_responsibilities(
                 base,
                 head,
@@ -283,6 +287,19 @@ class PrePushReadiness:
             code="authority_provenance_mismatch",
             message="the authority governance script does not match the authority_ref Git object",
         )
+        for relative_path, message in (
+            (AUTHORITY_ARCHITECTURE_PATH, "the authority architecture checker does not match the authority_ref Git object"),
+            (ARCHITECTURE_POLICY_PATH, "the authority architecture policy does not match the authority_ref Git object"),
+            (ARCHITECTURE_POLICY_SCHEMA_PATH, "the authority architecture schema does not match the authority_ref Git object"),
+        ):
+            self._assert_authority_path_matches_ref(
+                authority,
+                authority_root,
+                relative_path,
+                authority_root / relative_path,
+                code="authority_provenance_mismatch",
+                message=message,
+            )
         self._authority_root = authority_root
 
     def _assert_authority_path_matches_ref(
@@ -773,14 +790,86 @@ class PrePushReadiness:
         result["authority"]["governance"] = "sealed"
 
     def _materialize_authority_governance(self, authority: str, temporary_root: Path) -> Path:
-        source = self._run(("git", "show", f"{authority}:{AUTHORITY_GOVERNANCE_PATH}"), self._repo_root)
+        return self._materialize_authority_snapshot(
+            authority,
+            temporary_root,
+            AUTHORITY_GOVERNANCE_PATH,
+            "authority-governance.py",
+        )
+
+    def _seal_trusted_architecture(
+        self,
+        result: dict[str, Any],
+        authority: str,
+        base: str,
+        head: str,
+        temporary_root: Path,
+        head_worktree: Path,
+    ) -> None:
+        snapshot = self._materialize_authority_snapshot(
+            authority,
+            temporary_root,
+            AUTHORITY_ARCHITECTURE_PATH,
+            "authority-architecture.py",
+        )
+        command = (
+            sys.executable,
+            "-P",
+            str(snapshot),
+            "check",
+            "--authority-ref",
+            authority,
+            "--base-ref",
+            base,
+            "--head-ref",
+            head,
+            "--format",
+            "json",
+        )
+        governed = self._run(command, head_worktree, env=_governance_environment())
+        payload = _json_payload(governed)
+        metadata = {
+            key: payload.get(key)
+            for key in ("policy", "exception", "exempted_findings")
+            if key in payload
+        }
+        if governed.returncode != 0:
+            stage = _stage("architecture_governance", command, "failed", governed)
+            stage.update(metadata)
+            result["stages"].append(stage)
+            failure = _first_architecture_failure(payload)
+            category = (
+                "infrastructure_failure"
+                if governed.returncode == 3 and failure["code"] in {"git_failed", "not_git_repository"}
+                else "governance_violation"
+            )
+            raise ReadinessError(
+                category,
+                failure["code"],
+                failure["message"],
+                path=failure["path"],
+            )
+        stage = _stage("architecture_governance", command, "pass", governed)
+        stage.update(metadata)
+        result["stages"].append(stage)
+        result["authority"]["architecture_governance"] = "sealed"
+
+    def _materialize_authority_snapshot(
+        self,
+        authority: str,
+        temporary_root: Path,
+        relative_path: str,
+        snapshot_name: str,
+    ) -> Path:
+        source = self._run(("git", "show", f"{authority}:{relative_path}"), self._repo_root)
         if source.returncode != 0:
             raise ReadinessError(
                 "governance_violation",
                 "authority_provenance_mismatch",
-                "the authority governance Git object is unavailable", path=AUTHORITY_GOVERNANCE_PATH,
+                "the authority Git object is unavailable",
+                path=relative_path,
             )
-        snapshot = temporary_root / "authority-governance.py"
+        snapshot = temporary_root / snapshot_name
         try:
             snapshot.write_text(source.stdout, encoding="utf-8", newline="\n")
         except OSError as error:
@@ -807,6 +896,19 @@ class PrePushReadiness:
                 code="authority_post_candidate_integrity_mismatch",
                 message="candidate activity changed authority governance after governance was sealed",
             )
+            for relative_path, message in (
+                (AUTHORITY_ARCHITECTURE_PATH, "candidate activity changed the authority architecture checker after governance was sealed"),
+                (ARCHITECTURE_POLICY_PATH, "candidate activity changed the authority architecture policy after governance was sealed"),
+                (ARCHITECTURE_POLICY_SCHEMA_PATH, "candidate activity changed the authority architecture schema after governance was sealed"),
+            ):
+                self._assert_authority_path_matches_ref(
+                    authority,
+                    self._authority_root,
+                    relative_path,
+                    self._authority_root / relative_path,
+                    code="authority_post_candidate_integrity_mismatch",
+                    message=message,
+                )
         except ReadinessError:
             result["stages"].append({"name": "authority_integrity", "status": "failed"})
             raise
@@ -1270,6 +1372,29 @@ def _first_governance_failure(payload: dict[str, Any]) -> dict[str, str | None]:
             "path": None,
         }
     return {"code": "code_governance_failed", "message": "code governance failed", "path": None}
+
+
+def _first_architecture_failure(payload: dict[str, Any]) -> dict[str, str | None]:
+    findings = payload.get("findings")
+    if isinstance(findings, list) and findings and isinstance(findings[0], dict):
+        finding = findings[0]
+        return {
+            "code": str(finding.get("code", "architecture_governance_failed")),
+            "message": str(finding.get("message", "architecture governance failed")),
+            "path": finding.get("path") if isinstance(finding.get("path"), str) else None,
+        }
+    error = payload.get("error")
+    if isinstance(error, dict):
+        return {
+            "code": str(error.get("code", "architecture_governance_error")),
+            "message": str(error.get("message", "architecture governance failed")),
+            "path": None,
+        }
+    return {
+        "code": "architecture_governance_failed",
+        "message": "architecture governance failed",
+        "path": None,
+    }
 
 
 def _new_result(authority_ref: str | None, base_ref: str | None, head_ref: str | None) -> dict[str, Any]:
