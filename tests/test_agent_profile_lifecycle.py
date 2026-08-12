@@ -1,9 +1,42 @@
+import subprocess
+import sys
 from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
+
+
+def test_agent_apps_package_defers_authority_until_a_public_export_is_read():
+    program = """
+import sys
+
+import app.agent_apps as agent_apps
+
+assert "app.agent_apps.authority" not in sys.modules
+assert agent_apps.__all__ == [
+    "AgentProfileAdmission",
+    "AgentProfileAuthority",
+    "conversation_identity_projection",
+    "profile_acl_allows",
+    "profile_public_projection",
+]
+try:
+    agent_apps.unknown_export
+except AttributeError:
+    pass
+else:
+    raise AssertionError("unknown Agent Apps exports must fail closed")
+assert "app.agent_apps.authority" not in sys.modules
+exported_authority = agent_apps.AgentProfileAuthority
+authority = sys.modules["app.agent_apps.authority"]
+assert exported_authority is authority.AgentProfileAuthority
+for name in agent_apps.__all__:
+    assert getattr(agent_apps, name) is getattr(authority, name)
+"""
+
+    subprocess.run([sys.executable, "-c", program], check=True)
 
 
 def _principal(*, roles: list[str] | None = None, department_id: str = "") -> AuthPrincipal:
