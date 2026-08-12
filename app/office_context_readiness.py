@@ -9,9 +9,6 @@ from app.public_context_keys import public_context_input_key_findings
 
 SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
 GATE_NAME = "G6/G9/#22 Office Context Pack Architecture"
-_PR44_BRANCH = "codex/issue22-sandbox-latency-split"
-_PR44_RUNTIME_MARKER = "pr44-s2-verifier-20260616083334"
-
 _ALLOWED_CONTEXT_SOURCES = [
     "uploaded_source_documents",
     "previous_generated_artifacts",
@@ -88,8 +85,8 @@ _EXECUTION_TIERS = [
 ]
 
 _OPEN_GAPS = [
-    "executor_context_pack_211_acceptance",
-    "sandbox_cold_start_latency_split_211_acceptance",
+    "executor_context_pack_runtime_acceptance",
+    "sandbox_cold_start_latency_split_runtime_acceptance",
 ]
 
 _IMPLEMENTED_CONTROLS = [
@@ -127,14 +124,14 @@ _SANDBOX_LATENCY_OBSERVABILITY = {
         "sandbox_total_latency_ms",
     ],
     "must_not_hide_cold_start_in_executor_latency": True,
-    "runtime_acceptance_required": "211_sandbox_latency_split_smoke",
+    "runtime_acceptance_required": "controlled_host_sandbox_latency_split_smoke",
 }
 
 _SANDBOX_RUNTIME_SMOKE_CONTRACT = {
     "schema_version": "ai-platform.sandbox-runtime-smoke-contract.v1",
-    "target": "211_docker_capable_host",
-    "generator_script": "scripts/generate_sandbox_runtime_evidence_211.py",
-    "verifier_script": "scripts/verify_sandbox_runtime_211.py",
+    "target": "controlled_docker_host",
+    "generator_script": "scripts/generate_sandbox_runtime_evidence.py",
+    "verifier_script": "scripts/verify_sandbox_runtime.py",
     "runtime_mode": "platform",
     "sandbox_provider": "docker",
     "docker_cmd": "sudo -n docker",
@@ -162,7 +159,7 @@ _SANDBOX_RUNTIME_SMOKE_CONTRACT = {
         "docker_sandbox_production_hardening_claimed": False,
         "ordinary_user_multi_agent_allowed": False,
     },
-    "acceptance_gap": "sandbox_cold_start_latency_split_211_acceptance",
+    "acceptance_gap": "sandbox_cold_start_latency_split_runtime_acceptance",
 }
 
 _SANDBOX_HARDENING_EVIDENCE_CLASSES = {
@@ -191,16 +188,19 @@ _SANDBOX_REQUIRED_SOURCE_REGRESSION_TESTS = {
 
 _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
     "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v1",
-    "target": "211_api_worker_runtime",
-    "generator_script": "scripts/generate_executor_context_pack_evidence_211.py",
-    "verifier_script": "scripts/verify_executor_context_pack_211.py",
+    "target": "controlled_worker_runtime",
+    "generator_script": "scripts/generate_executor_context_pack_evidence.py",
+    "verifier_script": "scripts/verify_executor_context_pack.py",
+    "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v2",
+    "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
     "source_schema_version": "ai-platform.executor-context-pack.v1",
     "source_probe_evidence_strength": "source_probe_on_target_runtime",
-    "required_live_evidence_strength": "live_worker_run_payload",
-    "does_not_close_211_acceptance": True,
-    "runtime_acceptance_requires_real_run_payload": True,
+    "required_runtime_evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+    "does_not_close_runtime_acceptance": True,
+    "runtime_acceptance_requires_observed_worker_dispatch": True,
     "required_live_evidence_sections": [
         "live_run_checks",
+        "worker_dispatch_checks",
         "runtime_evidence",
         "prompt_checks",
         "scope_checks",
@@ -210,11 +210,11 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
         "app.repositories.get_context_snapshot_for_worker",
         "app.context_builder.executor_context_pack_from_snapshot",
         "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
-        "app.executors.claude_agent_worker.build_skill_prompt_context_pack_injection",
+        "app.executors.claude.prompts.build_skill_prompt",
         "app.worker._context_snapshot_ref_from_row",
     ],
     "required_runtime_evidence": [
-        "live_worker_run_payload",
+        "observed_worker_dispatch",
         "run_row_loaded",
         "context_snapshot_id_present",
         "scoped_context_snapshot_loaded",
@@ -226,8 +226,8 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
         "sandbox_runtime_paths_absent",
         "executor_private_content_absent",
         "long_term_memory_read_false",
-        "source_run_artifact_scope_tenant_workspace_user_session",
-        "source_run_artifact_count_positive",
+        "source_run_material_scope_tenant_workspace_user_session",
+        "source_run_material_count_positive",
         "fresh_generated_at",
         "source_functions_bound_to_current_runtime",
     ],
@@ -238,7 +238,7 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
         "long_term_cross_session_memory_enabled": False,
         "public_projection_only_for_ordinary_users": True,
     },
-    "acceptance_gap": "executor_context_pack_211_acceptance",
+    "acceptance_gap": "executor_context_pack_runtime_acceptance",
     "does_not_close_g6_g9": True,
 }
 
@@ -291,18 +291,6 @@ def _runtime_subject(payload: dict[str, Any]) -> str:
     return marker
 
 
-def _entry_is_pr44_runtime_evidence(payload: dict[str, Any]) -> bool:
-    source_ref = payload.get("source_ref")
-    pr_refs = payload.get("pr_refs")
-    return (
-        isinstance(source_ref, dict)
-        and source_ref.get("branch") == _PR44_BRANCH
-        and source_ref.get("runtime_source_marker") == _PR44_RUNTIME_MARKER
-        and isinstance(pr_refs, list)
-        and "#44" in pr_refs
-    )
-
-
 def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
     runtime_subject = payload.get("runtime_subject_commit_sha")
     if not isinstance(runtime_subject, str) or not runtime_subject:
@@ -334,9 +322,10 @@ def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
 
 
 def _entry_is_accepted_runtime_evidence(payload: dict[str, Any], artifact_kind: str) -> bool:
-    if artifact_kind == "executor_context_pack_211_acceptance":
-        return _entry_is_pr44_runtime_evidence(payload) or _entry_has_runtime_subject_binding(payload)
-    return _entry_is_pr44_runtime_evidence(payload)
+    return (
+        payload.get("artifact_kind") == artifact_kind
+        and _entry_has_runtime_subject_binding(payload)
+    )
 
 
 def _entry_is_reviewed(payload: dict[str, Any], artifact_kind: str, verifier: str) -> bool:
@@ -383,7 +372,7 @@ def _executor_context_evidence_summary(
     path: Path,
     repo_root: Path,
 ) -> dict[str, Any] | None:
-    artifact_kind = "executor_context_pack_211_acceptance"
+    artifact_kind = "executor_context_pack_runtime_acceptance"
     verifier = _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["verifier_script"]
     if not _entry_is_reviewed(payload, artifact_kind, verifier):
         return None
@@ -399,16 +388,16 @@ def _executor_context_evidence_summary(
     if evidence is None:
         return None
     if (
-        evidence.get("schema_version") != "ai-platform.executor-context-pack-211.v1"
+        evidence.get("schema_version") != "ai-platform.executor-context-pack-runtime-acceptance.v2"
         or evidence.get("source_schema_version") != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT[
             "source_schema_version"
         ]
         or evidence.get("runtime_mode") != "worker"
         or evidence.get("evidence_strength")
-        != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["required_live_evidence_strength"]
-        or evidence.get("runtime_run_payload_verified") is not True
-        or evidence.get("does_not_close_211_acceptance") is not False
-        or evidence.get("runtime_acceptance_requires_real_run_payload") is not False
+        != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["required_runtime_evidence_strength"]
+        or evidence.get("runtime_run_payload_verified") is not False
+        or evidence.get("does_not_close_runtime_acceptance") is not False
+        or evidence.get("observed_worker_dispatch") is not True
     ):
         return None
     prompt_checks = evidence.get("prompt_checks")
@@ -433,8 +422,8 @@ def _executor_context_evidence_summary(
             "workspace_id_scoped",
             "user_id_scoped",
             "session_id_scoped",
-            "source_run_artifact_count_positive",
-            "source_run_artifact_scope_verified",
+            "source_run_material_count_positive",
+            "source_run_material_scope_verified",
         ],
     ):
         return None
@@ -444,8 +433,14 @@ def _executor_context_evidence_summary(
     referenced_materials = public_context_summary.get("referenced_material_counts")
     if not isinstance(referenced_materials, dict):
         return None
-    artifact_count = referenced_materials.get("artifact_count")
-    if not isinstance(artifact_count, int) or isinstance(artifact_count, bool) or artifact_count <= 0:
+    material_counts = [
+        referenced_materials.get("message_count"),
+        referenced_materials.get("file_count"),
+        referenced_materials.get("artifact_count"),
+    ]
+    if any(not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in material_counts):
+        return None
+    if sum(material_counts) <= 0:
         return None
     input_keys = public_context_summary.get("input_keys")
     if not isinstance(input_keys, list) or any(not isinstance(item, str) for item in input_keys):
@@ -465,6 +460,17 @@ def _executor_context_evidence_summary(
         ],
     ):
         return None
+    worker_dispatch_checks = evidence.get("worker_dispatch_checks")
+    if not isinstance(worker_dispatch_checks, dict) or not _all_true(
+        worker_dispatch_checks,
+        [
+            "run_status_succeeded",
+            "worker_started_event_present",
+            "run_succeeded_event_present",
+            "worker_events_ordered",
+        ],
+    ):
+        return None
     runtime_evidence = evidence.get("runtime_evidence")
     if not isinstance(runtime_evidence, dict) or not _all_true(
         runtime_evidence,
@@ -475,11 +481,11 @@ def _executor_context_evidence_summary(
     if invariants != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["non_expansion_invariants"]:
         return None
     return {
-        "status": "verified_211_runtime_acceptance",
-        "artifact_kind": artifact_kind,
+        "status": "verified_runtime_acceptance",
+        "artifact_kind": "executor_context_pack_runtime_acceptance",
         "evidence_id": payload.get("evidence_id"),
         "path": _path_for_output(path, repo_root),
-        "verifier": verifier,
+        "verifier": _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["verifier_script"],
         "runtime_subject": _runtime_subject(payload),
         "run_id": evidence.get("run_id"),
         "runtime_mode": evidence.get("runtime_mode"),
@@ -495,7 +501,7 @@ def _sandbox_runtime_evidence_summary(
     path: Path,
     repo_root: Path,
 ) -> dict[str, Any] | None:
-    artifact_kind = "sandbox_cold_start_latency_split_211_acceptance"
+    artifact_kind = "sandbox_cold_start_latency_split_runtime_acceptance"
     verifier = _SANDBOX_RUNTIME_SMOKE_CONTRACT["verifier_script"]
     if not _entry_is_reviewed(payload, artifact_kind, verifier):
         return None
@@ -505,7 +511,7 @@ def _sandbox_runtime_evidence_summary(
     if evidence is None:
         return None
     if (
-        evidence.get("schema_version") != "ai-platform.sandbox-runtime-211.v1"
+        evidence.get("schema_version") != "ai-platform.sandbox-runtime.v2"
         or evidence.get("runtime_mode") != _SANDBOX_RUNTIME_SMOKE_CONTRACT["runtime_mode"]
         or evidence.get("sandbox_provider") != _SANDBOX_RUNTIME_SMOKE_CONTRACT["sandbox_provider"]
         or evidence.get("executed_task") is not True
@@ -536,11 +542,11 @@ def _sandbox_runtime_evidence_summary(
     if invariants != _SANDBOX_RUNTIME_SMOKE_CONTRACT["non_expansion_invariants"]:
         return None
     return {
-        "status": "verified_211_runtime_acceptance",
-        "artifact_kind": artifact_kind,
+        "status": "verified_runtime_acceptance",
+        "artifact_kind": "sandbox_cold_start_latency_split_runtime_acceptance",
         "evidence_id": payload.get("evidence_id"),
         "path": _path_for_output(path, repo_root),
-        "verifier": verifier,
+        "verifier": _SANDBOX_RUNTIME_SMOKE_CONTRACT["verifier_script"],
         "runtime_subject": _runtime_subject(payload),
         "run_id": evidence.get("run_id"),
         "runtime_mode": evidence.get("runtime_mode"),
@@ -570,43 +576,43 @@ def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
             repo_root=repo_root,
         )
         if executor_summary is not None:
-            summaries["executor_context_pack_211_acceptance"] = executor_summary
+            summaries["executor_context_pack_runtime_acceptance"] = executor_summary
         sandbox_summary = _sandbox_runtime_evidence_summary(
             payload,
             path=path,
             repo_root=repo_root,
         )
         if sandbox_summary is not None:
-            summaries["sandbox_cold_start_latency_split_211_acceptance"] = sandbox_summary
+            summaries["sandbox_cold_start_latency_split_runtime_acceptance"] = sandbox_summary
     return summaries
 
 
 def build_office_context_readiness(repo_root: Path | None = None) -> dict[str, Any]:
-    """Build the #22 context-pack baseline and reviewed 211 runtime evidence status."""
+    """Build the #22 context-pack baseline and reviewed runtime evidence status."""
     root = (repo_root or _ROOT).resolve()
     runtime_acceptance_evidence = _runtime_acceptance_evidence(root)
     open_gaps = [gap for gap in _OPEN_GAPS if gap not in runtime_acceptance_evidence]
     closed_runtime_gaps = [gap for gap in _OPEN_GAPS if gap in runtime_acceptance_evidence]
-    if "executor_context_pack_211_acceptance" in closed_runtime_gaps:
+    if "executor_context_pack_runtime_acceptance" in closed_runtime_gaps:
         executor_evidence_policy = (
-            "reviewed 211 executor context-pack runtime evidence closes only "
-            "`executor_context_pack_211_acceptance`"
+            "reviewed executor context-pack runtime evidence closes only "
+            "`executor_context_pack_runtime_acceptance`"
         )
     else:
         executor_evidence_policy = (
-            "superseded PR #44 211 executor context-pack evidence does not close "
-            "`executor_context_pack_211_acceptance`; fresh 211 live worker-run payload must prove "
+            "superseded historical executor context-pack evidence does not close "
+            "`executor_context_pack_runtime_acceptance`; fresh observed worker-dispatch evidence must prove "
             "positive source-run artifact scope and public input-key redaction"
         )
-    if "sandbox_cold_start_latency_split_211_acceptance" in closed_runtime_gaps:
+    if "sandbox_cold_start_latency_split_runtime_acceptance" in closed_runtime_gaps:
         sandbox_evidence_policy = (
-            "reviewed PR #44 211 sandbox latency split runtime evidence closes only "
-            "`sandbox_cold_start_latency_split_211_acceptance`"
+            "reviewed sandbox latency split runtime evidence closes only "
+            "`sandbox_cold_start_latency_split_runtime_acceptance`"
         )
     else:
         sandbox_evidence_policy = (
-            "211 sandbox latency split runtime evidence is still required for "
-            "`sandbox_cold_start_latency_split_211_acceptance`"
+            "controlled-host sandbox latency split runtime evidence is still required for "
+            "`sandbox_cold_start_latency_split_runtime_acceptance`"
         )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -758,7 +764,7 @@ def render_office_context_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"Verifier: `{executor_contract['verifier_script']}`\n\n"
         f"Source schema: `{executor_contract['source_schema_version']}`\n\n"
         f"Source probe evidence strength: `{executor_contract['source_probe_evidence_strength']}`\n\n"
-        f"Required live evidence strength: `{executor_contract['required_live_evidence_strength']}`\n\n"
+        f"Required runtime evidence strength: `{executor_contract['required_runtime_evidence_strength']}`\n\n"
         "Required live evidence sections:\n\n"
         f"{executor_section_lines}\n\n"
         "Source functions:\n\n"

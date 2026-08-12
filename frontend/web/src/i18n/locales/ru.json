@@ -1292,7 +1292,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "Срок действия access-токена в часах",
     "ADMIN_CONTACT_EMAIL": "Контактный email администратора, отображаемый в диалоге О программе",
     "ADMIN_CONTACT_URL": "URL контакта/поддержки администратора (например, служба помощи, форма обратной связи), отображаемый в диалоге О программе",
-    "APP_BASE_URL": "Публичный базовый URL для загрузки/выгрузки файлов (например, http://10.56.0.211:18001). Необходим при использовании обратного прокси, если request.base_url некорректен.",
+    "APP_BASE_URL": "Публичный базовый URL для загрузки/выгрузки файлов (например, https://ai-platform.example.internal). Необходим при использовании обратного прокси, если request.base_url некорректен.",
     "AUDIO_TRANSCRIPTION_API_KEY": "API-ключ провайдера распознавания аудио. Поддерживаются OpenAI-совместимые endpoint'ы, например OpenAI и SiliconFlow.",
     "AUDIO_TRANSCRIPTION_BASE_URL": "Base URL провайдера распознавания аудио, например https://api.openai.com/v1 или https://api.siliconflow.cn/v1. Оставьте пустым, чтобы использовать стандартный endpoint OpenAI.",
     "AUDIO_TRANSCRIPTION_MODEL": "Имя модели распознавания по умолчанию для инструмента audio_transcribe, например gpt-4o-mini-transcribe или FunAudioLLM/SenseVoiceSmall.",

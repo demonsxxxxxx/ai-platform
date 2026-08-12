@@ -106,7 +106,7 @@ def governance_payload(tenant_id="default", *, overrides=None):
                                 "runtime_payload_schema_version": (
                                     "ai-platform.skill-dependency-review-runtime-acceptance.v1"
                                 ),
-                                "target": "211_api_admin_runtime",
+                                "target": "controlled_host_api_admin_runtime",
                                 "acceptance_gap": "skill_dependency_review_policy_runtime_acceptance",
                                 "runtime_acceptance_requires_real_admin_runtime_payload": True,
                                 "required_verifier_checks": [
@@ -141,7 +141,7 @@ def governance_payload(tenant_id="default", *, overrides=None):
                         "admin_skill_release_dashboard": {
                             "schema_version": "ai-platform.skill-release-dashboard-readiness.v1",
                             "status": "contract_only",
-                            "open_gaps": ["admin_skill_release_dashboard_211_acceptance"],
+                            "open_gaps": ["admin_skill_release_dashboard_controlled_host_acceptance"],
                             "does_not_close_g6": True,
                         },
                     },
@@ -155,7 +155,7 @@ def governance_payload(tenant_id="default", *, overrides=None):
                     ],
                     "gaps": [
                         "office_context_pack_persistence_and_versioning",
-                        "executor_context_pack_211_acceptance",
+                        "executor_context_pack_runtime_source_probe",
                         "frontend_context_provenance_acceptance",
                     ],
                     "evidence": {
@@ -179,7 +179,7 @@ def governance_payload(tenant_id="default", *, overrides=None):
                 "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
                 "skill_dependency_review_policy_runtime_acceptance",
                 "office_context_pack_persistence_and_versioning",
-                "executor_context_pack_211_acceptance",
+                "executor_context_pack_runtime_source_probe",
             ],
             "evidence_policy": "code_tests_docs_and_211_smoke_required_before_gate_closure",
         },
@@ -384,7 +384,7 @@ def test_governance_runtime_smoke_checks_admin_only_governance_domains_and_redac
     assert acceptance == {
         "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
         "status": "verified_runtime_acceptance",
-        "target": "211_api_admin_runtime",
+        "target": "controlled_host_api_admin_runtime",
         "runtime_acceptance_requires_real_admin_runtime_payload": False,
         "does_not_close_runtime_acceptance": False,
         "runtime_payload_verified": True,

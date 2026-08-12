@@ -17,7 +17,7 @@ def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
     assert readiness["backend_stage"] == "B5 files/artifacts/tool permission governance"
     assert readiness["status"] == "partial_blocked"
     assert readiness["status_label"] == "local partial"
-    assert readiness["claim_boundary"]["does_not_create_211_verified"] is True
+    assert readiness["claim_boundary"]["does_not_claim_deployed_runtime_verified"] is True
     assert readiness["claim_boundary"]["does_not_close_b5_g6_g7_g9"] is True
     assert readiness["claim_boundary"]["does_not_enable_product_beta"] is True
 
@@ -27,7 +27,7 @@ def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
     assert "artifact_owner_tenant_acl_download" in file_authority["implemented_controls"]
     assert "artifact_preview_owner_acl_and_content_type_allowlist" in file_authority["implemented_controls"]
     assert "file_upload_namespace_retention_runtime_smoke" in file_authority["open_gaps"]
-    assert "211_file_to_artifact_unauthorized_denial_smoke" in file_authority["open_gaps"]
+    assert "controlled_host_file_to_artifact_unauthorized_denial_smoke" in file_authority["open_gaps"]
 
     tool_authority = readiness["domains"]["exact_tool_permission"]
     assert tool_authority["gate_slice"] == "B5b exact tool permission"
@@ -38,7 +38,7 @@ def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
 
     assert readiness["open_gaps"] == [
         "file_upload_namespace_retention_runtime_smoke",
-        "artifact_preview_download_unauthorized_denial_211_smoke",
+        "artifact_preview_download_unauthorized_denial_controlled_host_smoke",
         "exact_tool_policy_runtime_denial_smoke",
         "projection_redaction_runtime_acceptance",
         "b5_issue_review_and_closure_evidence",
@@ -55,13 +55,13 @@ def test_b5_file_tool_readiness_markdown_is_operator_readable():
     assert "## B5b Exact Tool Permission" in markdown
     assert "file_upload_namespace_retention_runtime_smoke" in markdown
     assert "exact_tool_policy_runtime_denial_smoke" in markdown
-    assert "does not create `211 verified`" in markdown
+    assert "does not claim deployed-runtime acceptance" in markdown
     assert "does not close B5/G6/G7/G9" in markdown
 
 
 def test_b5_file_tool_readiness_markdown_fails_closed_on_boundary_regression():
     readiness = build_b5_file_tool_readiness()
-    readiness["claim_boundary"]["does_not_create_211_verified"] = False
+    readiness["claim_boundary"]["does_not_claim_deployed_runtime_verified"] = False
 
     with pytest.raises(RuntimeError, match="b5_claim_boundary_regression"):
         render_b5_file_tool_readiness_markdown(readiness)

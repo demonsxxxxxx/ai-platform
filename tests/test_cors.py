@@ -27,13 +27,14 @@ def test_cors_preflight_allows_cookie_credentials(monkeypatch):
     assert response.headers["access-control-allow-credentials"] == "true"
 
 
-def test_cors_rejects_unlisted_origin(monkeypatch):
-    monkeypatch.setattr("app.main.get_settings", lambda: _settings("http://10.56.0.211:8080"))
+@pytest.mark.parametrize("origin", ["http://evil.example", "http://10.56.0.211:8080"])
+def test_cors_rejects_unlisted_origin(monkeypatch, origin):
+    monkeypatch.setattr("app.main.get_settings", lambda: _settings("https://ai-platform.example.internal"))
 
     response = TestClient(create_app()).options(
         "/api/ai/auth/me",
         headers={
-            "Origin": "http://evil.example",
+            "Origin": origin,
             "Access-Control-Request-Method": "GET",
         },
     )

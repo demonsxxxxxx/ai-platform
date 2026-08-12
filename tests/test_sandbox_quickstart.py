@@ -450,7 +450,7 @@ def test_rollback_preflight_checks_checkout_images_and_config(
 
 
 def test_runbook_exposes_the_zero_argument_quickstart() -> None:
-    runbook = (ROOT / "docs/operations/211-release-operations-runbook.md").read_text(
+    runbook = (ROOT / "docs/operations/release-operations-runbook.md").read_text(
         encoding="utf-8"
     )
     assert "./scripts/quickstart-s72.sh" in runbook

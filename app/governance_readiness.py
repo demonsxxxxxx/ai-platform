@@ -171,23 +171,23 @@ def build_governance_readiness(
         "use tools/office_context_readiness.py to keep the office context-pack source contract, prompt injection tests, and sandbox latency split contract current",
         "keep context snapshot public provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and generated time",
     ]
-    if "executor_context_pack_211_acceptance" in office_context_readiness["open_gaps"]:
-        office_context_next_checks.append("record 211 executor context-pack acceptance before closing #22")
+    if "executor_context_pack_runtime_acceptance" in office_context_readiness["open_gaps"]:
+        office_context_next_checks.append("record controlled-host executor context-pack acceptance before closing #22")
     else:
-        office_context_next_checks.append("keep reviewed 211 executor context-pack evidence under regression")
+        office_context_next_checks.append("keep reviewed controlled-host executor context-pack evidence under regression")
     office_context_next_checks.extend(
         [
             "keep run playback context provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and context pack metadata",
             "keep document-centric follow-up state source tests current for copy, retry, and resume runs",
         ]
     )
-    if "sandbox_cold_start_latency_split_211_acceptance" in office_context_readiness["open_gaps"]:
+    if "sandbox_cold_start_latency_split_runtime_acceptance" in office_context_readiness["open_gaps"]:
         office_context_next_checks.append(
-            "record 211 sandbox latency split acceptance before closing the cold-start UX gap"
+            "record controlled-host sandbox latency split acceptance before closing the cold-start UX gap"
         )
     else:
         office_context_next_checks.append(
-            "keep reviewed PR #44 211 sandbox latency split evidence under regression"
+            "keep reviewed controlled-host sandbox latency split evidence under regression"
         )
     office_context_next_checks.extend(
         [
@@ -405,7 +405,7 @@ def build_governance_readiness(
                 "frontend_quarantined_legacy_source_violations_clear",
                 "frontend_profile_envvar_surface_fail_closed",
                 "admin_runtime_capacity_governance_frontend_section",
-                "admin_runtime_211_frontend_acceptance",
+                "admin_runtime_controlled_host_frontend_acceptance",
                 "frontend_packaged_image_blocker_traceability",
                 "frontend_packaged_image_definition_traceability",
                 "frontend_packaged_image_ci_build_provenance_contract",
@@ -445,7 +445,7 @@ def build_governance_readiness(
         },
         "domains": domains,
         "open_gaps": warnings,
-        "evidence_policy": "code_tests_docs_and_211_smoke_required_before_gate_closure",
+        "evidence_policy": "code_tests_docs_and_controlled_host_smoke_required_before_gate_closure",
     }
 
 

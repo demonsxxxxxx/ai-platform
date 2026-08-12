@@ -8,7 +8,7 @@ DASHBOARD_CONTRACT_SCHEMA = "ai-platform.tool-policy-bulk-review-dashboard-contr
 
 _OPEN_GAPS = [
     "admin_policy_bulk_review_visual_acceptance",
-    "admin_policy_bulk_review_211_acceptance",
+    "admin_policy_bulk_review_controlled_host_acceptance",
 ]
 
 _SOURCE_ROUTES = [
@@ -59,7 +59,7 @@ def _runtime_acceptance() -> dict[str, Any]:
         "forbidden_payload_classes": list(_FORBIDDEN_PAYLOAD_CLASSES),
         "does_not_close_g6": True,
         "does_not_close_visual_acceptance": True,
-        "does_not_close_211_acceptance": True,
+        "does_not_close_runtime_acceptance": True,
     }
 
 
@@ -68,7 +68,7 @@ def build_tool_policy_bulk_review_readiness() -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "partial_blocked",
-        "policy": "source_runtime_acceptance_recorded_not_visual_or_211",
+        "policy": "source_contract_recorded_not_visual_or_deployed_runtime_acceptance",
         "does_not_close_g6": True,
         "dashboard_contract": {
             "schema_version": DASHBOARD_CONTRACT_SCHEMA,
@@ -148,7 +148,7 @@ def render_tool_policy_bulk_review_readiness_markdown(readiness: dict[str, Any])
         f"Schema: `{runtime_acceptance['schema_version']}`\n\n"
         f"Status: `{runtime_acceptance['status']}`\n\n"
         f"Evidence strength: `{runtime_acceptance['evidence_strength']}`\n\n"
-        f"Does not close 211 acceptance: `{runtime_acceptance['does_not_close_211_acceptance']}`\n\n"
+        f"Does not close deployed-runtime acceptance: `{runtime_acceptance['does_not_close_runtime_acceptance']}`\n\n"
         "Source tests:\n\n"
         f"{source_tests}\n\n"
         "## Required Inputs\n\n"

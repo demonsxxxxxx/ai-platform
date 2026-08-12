@@ -29,7 +29,7 @@ def _file_artifact_authority_domain() -> dict[str, Any]:
         ],
         "open_gaps": [
             "file_upload_namespace_retention_runtime_smoke",
-            "211_file_to_artifact_unauthorized_denial_smoke",
+            "controlled_host_file_to_artifact_unauthorized_denial_smoke",
             "artifact_expiry_and_deleted_state_runtime_smoke",
         ],
         "evidence_policy": (
@@ -86,7 +86,7 @@ def build_b5_file_tool_readiness() -> dict[str, Any]:
     }
     open_gaps = [
         "file_upload_namespace_retention_runtime_smoke",
-        "artifact_preview_download_unauthorized_denial_211_smoke",
+        "artifact_preview_download_unauthorized_denial_controlled_host_smoke",
         "exact_tool_policy_runtime_denial_smoke",
         "projection_redaction_runtime_acceptance",
         "b5_issue_review_and_closure_evidence",
@@ -100,7 +100,7 @@ def build_b5_file_tool_readiness() -> dict[str, Any]:
         "domains": domains,
         "open_gaps": open_gaps,
         "claim_boundary": {
-            "does_not_create_211_verified": True,
+            "does_not_claim_deployed_runtime_verified": True,
             "does_not_close_b5_g6_g7_g9": True,
             "does_not_enable_product_beta": True,
             "does_not_enable_ordinary_user_high_risk_tools": True,
@@ -115,7 +115,7 @@ def build_b5_file_tool_readiness() -> dict[str, Any]:
         },
         "evidence_policy": (
             "B5 local readiness records source contracts and focused tests only. "
-            "B5 cannot be 211 verified or gate closable until a reviewed runtime "
+            "B5 cannot claim deployed-runtime acceptance or close its gate until a reviewed runtime "
             "workflow proves upload, governed run, artifact access, unauthorized "
             "denial, exact tool policy denial, projection redaction, "
             "issue review, merge, and residual caveats."
@@ -134,11 +134,11 @@ def render_b5_file_tool_readiness_markdown(readiness: dict[str, Any]) -> str:
     tool_gaps = "\n".join(f"- {item}" for item in tool_domain["open_gaps"])
     boundary = readiness["claim_boundary"]
     boundary_lines = [
-        "- does not create `211 verified`",
+        "- does not claim deployed-runtime acceptance",
         "- does not close B5/G6/G7/G9",
         "- does not enable product beta",
     ]
-    if not boundary.get("does_not_create_211_verified"):
+    if not boundary.get("does_not_claim_deployed_runtime_verified"):
         raise RuntimeError("b5_claim_boundary_regression")
     return (
         "# ai-platform B5 File/Tool Readiness\n\n"

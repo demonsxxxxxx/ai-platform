@@ -9,8 +9,8 @@ Index: [Redis Streams SSE Event Channel](../architecture/redis-streams-sse-event
 
 This document exclusively owns implementation grouping, release-atomic cutover,
 negative source checks, SSE gateway configuration, focused local/CI gates, and
-External Acceptance. The 211 release procedure remains exclusively owned by
-`211-release-operations-runbook.md`.
+External Acceptance. The application release procedure remains exclusively owned by
+`release-operations-runbook.md`.
 
 ## Implementation and commit groups
 
@@ -197,7 +197,7 @@ the exact deployed subject and cannot be inferred from frontend tests.
 | `PR ready` | Draft candidate and named CI evidence are available for review; not merged/deployed |
 | `reviewed` | independent fixed-SHA findings are resolved or explicitly accepted under repository policy |
 | `External Acceptance pending` | real topology/proxy/browser/load evidence not yet observed |
-| `211 verified` | exact deployed subject passed the separately authorized current 211 procedure and required runtime checks |
+| `runtime verified` | exact deployed subject passed the separately authorized controlled-host procedure and required runtime checks |
 
 Never promote one state to another without observing the additional evidence.
 No issue auto-closes merely because the Draft PR exists or local tests pass.

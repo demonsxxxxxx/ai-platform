@@ -674,7 +674,7 @@ def snapshot_governance(digest: str = "hash-a") -> dict:
             "ref": "skill_dependency_policy",
             "dependency_count": 1,
         },
-        "does_not_close_b4_or_211": True,
+        "does_not_close_b4_or_deployed_runtime_acceptance": True,
     }
 
 

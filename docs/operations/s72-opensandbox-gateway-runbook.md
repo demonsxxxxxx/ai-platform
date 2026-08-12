@@ -2,8 +2,9 @@
 
 This is the durable operations authority for the independently installed s72
 OpenSandbox gateway. It covers only the root-owned gateway installation and
-rollback on s72. It is separate from the 211 release runbook, does not change
-the ai-platform provider by itself, and cannot establish a `211 verified` claim.
+rollback on s72. It is separate from the application release runbook, does not
+change the ai-platform provider by itself, and cannot establish application
+runtime acceptance.
 
 ## Authority And Exact Source
 
@@ -50,7 +51,7 @@ group without widening modes:
 | `tls/privkey.pem`, `secrets/lifecycle-api-key`, `secrets/capability-token`, `secrets/record-signing-key` | `0440` |
 
 The gateway bridge policy pins its callback, OpenAI, and Anthropic destinations
-to the approved 211 address and fixed hostname. `tls/upstream-ca.pem` is the
+to the approved broker address and fixed hostname. `tls/upstream-ca.pem` is the
 dedicated non-secret bridge CA certificate used only by the gateway trust
 context. Keep the CA private key offline; do not install this CA in a system
 trust store, substitute a leaf or system bundle, or put certificate/key bytes in
@@ -81,14 +82,14 @@ never production isolation evidence. Production acceptance continues to require
 Installation alone is not authority to select the OpenSandbox provider on
 ai-platform. Before an ai-platform provider switch, run the approved remote
 smoke from s72 using the configured CA and a disposable scope. It must prove the
-fixed 211 hostname/IP and TLS validation, denial for wrong hostname/CA/pinned IP
+fixed broker hostname/IP and TLS validation, denial for wrong hostname/CA/pinned IP
 or source, callback and both model prefixes with the expected rewritten paths,
 and the OpenSandbox runtime boundary: runsc, `network_mode=none`,
 no-new-privileges, scoped mounts, runtime validation, cancellation, and bounded
 orphan cleanup. Keep Docker selected when any check fails or is unavailable; do
 not add sandbox egress or bypass runtime validation to make a smoke pass.
 
-The separate 211 release authority owns any provider transition. Record only
+The separate application release authority owns any provider transition. Record only
 redacted, subject-bound remote evidence through that authorized procedure.
 
 ## Snapshot, Rollback, And Recovery
@@ -199,11 +200,11 @@ advancement; it never kills a process or emits process command data.
 Absent unit/config snapshots are accepted only with their
 sealed lifecycle authority; otherwise they fail closed. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces
-the separate 211 release/rollback authority. Suspected secret exposure requires
+the separate application release/rollback authority. Suspected secret exposure requires
 the designated security response and downstream secret rotation before further
 use.
 
 Repository tests and required Ubuntu CI prove source contracts, POSIX node and
 race handling, transaction replay, and complete module collection. They do not
 prove a live systemd/Docker deployment, a registry artifact, an s72 host rollback,
-or 211 runtime acceptance. Those remain separate authorized host gates.
+or application runtime acceptance. Those remain separate authorized host gates.

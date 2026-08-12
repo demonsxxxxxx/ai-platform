@@ -41,7 +41,7 @@ def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
         "snapshot_governance": {
             "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
             "snapshot_source": "platform_release_lock",
-            "does_not_close_b4_or_211": True,
+            "does_not_close_b4_or_deployed_runtime_acceptance": True,
         },
         "allowed": True,
         "staged": False,
@@ -714,7 +714,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     governance = queued_payload["skill_manifests"][0]["snapshot_governance"]
     assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
     assert governance["snapshot_source"] == "platform_release_lock"
-    assert governance["does_not_close_b4_or_211"] is True
+    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
     serialized_governance = json.dumps(governance, ensure_ascii=False)
     assert "release_decision" not in serialized_governance
     assert "content_base64" not in serialized_governance

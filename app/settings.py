@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")
     cors_allow_origins: str = Field(
-        default="http://localhost:9527,http://127.0.0.1:9527,http://10.56.0.211:8080,http://10.56.0.211:18001"
+        default="http://localhost:9527,http://127.0.0.1:9527"
     )
     trusted_principal_secret: str = Field(default="")
     frontend_poc_auth_enabled: bool = Field(default=False)

@@ -88,8 +88,10 @@ def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
     assert required in watcher_text
 
 
-def test_default_frontend_dist_matches_current_211_static_runtime():
-    assert verify_poc_gate.DEFAULT_FRONTEND_DIST == "/home/xinlin.jiang/frontend-pr111-smoke/dist"
+def test_default_runtime_paths_are_repository_relative():
+    repository_root = Path(verify_poc_gate.__file__).resolve().parents[1]
+    assert Path(verify_poc_gate.DEFAULT_FRONTEND_DIST) == repository_root / "frontend/web/dist"
+    assert Path(verify_poc_gate.DEFAULT_DEPLOY_ENV) == repository_root / "deploy/ai-platform/.env"
 
 
 def test_artifact_download_isolation_gate_accepts_owner_and_denies_cross_user(monkeypatch):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify basic auth/RBAC/redaction behavior for the 211 Foundation Alpha POC."""
+"""Verify basic auth/RBAC/redaction behavior for a controlled-host Foundation Alpha POC."""
 
 from __future__ import annotations
 

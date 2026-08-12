@@ -50,7 +50,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_container_provider.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
-        "tests/test_sandbox_runtime_211_script.py",
+        "tests/test_sandbox_runtime_evidence_script.py",
         "tests/test_b2_sandbox_readiness.py",
         "tests/test_contract.py",
     ),

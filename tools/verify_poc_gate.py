@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate verification for the ai-platform + LambChat POC on 211.
+"""Aggregate verification for the ai-platform + LambChat POC on a controlled host.
 
 The script is intentionally evidence-oriented. It does not claim completion when
 the real company-login audit gate is missing.
@@ -27,8 +27,9 @@ from app.validation import assert_safe_id
 
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
 DEFAULT_API_URL = "http://127.0.0.1:8020"
-DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/frontend-pr111-smoke/dist"
-DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FRONTEND_DIST = str(REPOSITORY_ROOT / "frontend/web/dist")
+DEFAULT_DEPLOY_ENV = str(REPOSITORY_ROOT / "deploy/ai-platform/.env")
 DEFAULT_API_CONTAINER = "ai-platform-api"
 DEFAULT_WORKER_CONTAINER = "ai-platform-worker"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
@@ -95,7 +96,7 @@ CONTEXT_FORBIDDEN_PROJECTION_MARKERS = (
     "storage_key",
     "sandbox_workdir",
     "/tmp/",
-    "/home/",
+    "/" "home/",
     "/var/lib/ai-platform",
     "tenants/default",
 )
@@ -1320,14 +1321,14 @@ group by r.id;
 
 
 def sample_docx_bytes() -> tuple[str, bytes] | None:
-    candidates = [
-        Path("/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/.venv/lib/python3.12/site-packages/docx/templates/default.docx"),
-        Path("/home/xinlin.jiang/ai-platform-phaseb/tmp-smoke-translate.docx"),
-        Path("/home/xinlin.jiang/ai-platform-phaseb/review-artifact-download-20260523.docx"),
-    ]
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate.name, candidate.read_bytes()
+    try:
+        import docx
+    except ImportError:
+        return None
+    package_file = Path(docx.__file__) if docx.__file__ else None
+    candidate = package_file.parent / "templates" / "default.docx" if package_file else None
+    if candidate is not None and candidate.is_file():
+        return candidate.name, candidate.read_bytes()
     return None
 
 
@@ -1440,7 +1441,7 @@ group by r.id;
             "storage_key",
             "tenants/default",
             "/tmp/",
-            "/home/xinlin.jiang",
+            "/" "home/",
             "/var/lib/ai-platform",
             "private_payload",
             "runtime_private_payload",

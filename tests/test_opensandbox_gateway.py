@@ -2322,9 +2322,9 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
+            "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
         }
     )
     broker = MailboxBroker(
@@ -2454,9 +2454,9 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
+            "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
         }
     )
     broker = MailboxBroker(
@@ -2917,6 +2917,7 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
             "s72_atomic_verify_snapshot_seal",
             "recover_active_transaction",
             "require_gateway_config_contract",
+            "require_resolved_egress_policy_at",
             "require_root_owned_regular",
             "upstream-ca.pem",
         )
@@ -3013,6 +3014,26 @@ def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes
         ''',
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_installer_rejects_unresolved_or_malformed_egress_policy(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$1; ROOT=$2
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        cp "${SCRIPT%/*}/egress-policy.v1.example.json" "$ROOT/policy.json"
+        ! require_resolved_egress_policy_at "$ROOT/policy.json"
+        printf '%s\n' '{"version":1,"targets":{}}' > "$ROOT/policy.json"
+        ! require_resolved_egress_policy_at "$ROOT/policy.json"
+        printf '%s\n' '{"version":1,"targets":{"callback":{"base_url":"https://gateway.example.internal:18443","expected_ips":["10.0.0.10"]},"openai":{"base_url":"https://gateway.example.internal:18443/openai/v1","expected_ips":["10.0.0.10"]},"anthropic":{"base_url":"https://gateway.example.internal:18443/anthropic","expected_ips":["10.0.0.10"]}}}' > "$ROOT/policy.json"
+        require_resolved_egress_policy_at "$ROOT/policy.json"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_installer_config_metadata_survives_recoverable_ctime_change(tmp_path) -> None:

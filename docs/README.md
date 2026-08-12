@@ -6,7 +6,6 @@ does not represent deployed runtime state.
 ## Governance
 
 - `../AGENTS.md` defines repository-local operating constraints.
-- `agent-rules/ai-platform-guardrails.md` defines product and source boundaries.
 - `agent-rules/multi-agent-context-workflow.md` defines ownership, leases, and
   handoff.
 - `agent-rules/github-issue-pr-workflow.md` defines issue, PR, review, and
@@ -43,14 +42,14 @@ language used by source, product, and acceptance contracts.
 
 ## Operations
 
-`operations/211-release-operations-runbook.md` is the sole executable 211
-release procedure. It requires a read-only readiness packet and one release
+`operations/release-operations-runbook.md` is the sole executable release
+procedure for a controlled Docker host. It requires a read-only readiness packet and one release
 owner with one mutation lease. No document here authorizes a manual deployment
 or substitutes for current host evidence.
 
 `operations/s72-opensandbox-gateway-runbook.md` is the separate root-owned s72
-gateway install and rollback authority. It does not replace the 211 procedure or
-make a 211 verification claim.
+gateway install and rollback authority. It does not replace the application
+release procedure or establish application runtime acceptance.
 
 `acceptance/agent-app/ordinary-user-matrix.md` defines the source/runtime
 evidence boundary and post-merge ordinary-user matrix for Agent Apps. It grants

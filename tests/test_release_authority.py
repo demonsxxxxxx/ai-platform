@@ -32,7 +32,7 @@ COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
 S72_COLOCATION_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.s72-colocation.yml"
-RUNBOOK = ROOT / "docs" / "operations" / "211-release-operations-runbook.md"
+RUNBOOK = ROOT / "docs" / "operations" / "release-operations-runbook.md"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
 SANDBOX_IMAGE_ID = "sha256:" + "e" * 64
@@ -153,10 +153,10 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert text.count("umask 077") == 1
     assert text.index("umask 077") < text.index(canonical_invocation)
     assert "Resolve `SOURCE`" in text
-    assert "and `ROOT` from the current 211 host mapping" in text
-    assert "`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source" in text
-    assert ': "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"' in text
-    assert ': "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"' in text
+    assert "operator must" in text
+    assert "repository does not hard-code a server identity" in text
+    assert ': "${SOURCE:?set SOURCE to the operator-approved coordination checkout}"' in text
+    assert ': "${ROOT:?set ROOT to the operator-approved managed release root}"' in text
     assert '--release-root "$ROOT/releases"' in text
     assert '--canonical-build-timeout-seconds 1800' in text
     command_bound = re.search(

@@ -161,7 +161,7 @@ _DEPENDENCY_REVIEW_POLICY = {
 }
 _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT = {
     "schema_version": DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_SCHEMA_VERSION,
-    "target": "211_api_admin_runtime",
+    "target": "controlled_host_api_admin_runtime",
     "artifact_kind": DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP,
     "verifier_script": "tools/verify_governance_runtime_smoke.py",
     "verifier_schema_version": "ai-platform.governance-runtime-smoke.v1",
@@ -1202,7 +1202,7 @@ def _runtime_acceptance_summary(
     if not runtime_subject:
         return None
     return {
-        "status": "verified_211_runtime_acceptance",
+        "status": "verified_runtime_acceptance",
         "artifact_kind": DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP,
         "evidence_id": payload.get("evidence_id"),
         "path": _runtime_path_for_output(path, runtime_root=runtime_root),
@@ -1376,7 +1376,7 @@ def build_skill_release_readiness(
             "inventory_present": inventory_present,
             "external_evidence": {
                 "mode": "optional_external_release_evidence",
-                "root": f"docs/release-evidence/skill-release",
+                "root": "docs/release-evidence/skill-release",
                 "present": bool(evidence_root is not None and evidence_root.is_dir()),
             },
         },
@@ -1644,7 +1644,7 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
                 runtime_acceptance_lines = (
                     f"\n- Runtime acceptance: `{runtime_acceptance.get('status')}`"
                     f"\n- Runtime acceptance evidence strength: `{runtime_acceptance.get('evidence_strength')}`"
-                    f"\n- Runtime acceptance does not close 211: `{runtime_acceptance.get('does_not_close_211_acceptance')}`"
+                    f"\n- Runtime acceptance does not close deployed-runtime acceptance: `{runtime_acceptance.get('does_not_close_runtime_acceptance')}`"
                 )
             dashboard_lines = (
                 f"- Readiness schema: `{dashboard.get('schema_version')}`\n"

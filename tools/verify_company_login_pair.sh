@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="${AI_PLATFORM_BASE_URL:-http://127.0.0.1:8020}"
-FRONTEND_URL="${AI_PLATFORM_FRONTEND_URL:-http://10.56.0.211:18001}"
+FRONTEND_URL="${AI_PLATFORM_FRONTEND_URL:-}"
 PYTHON_BIN="${AI_PLATFORM_PYTHON:-.venv/bin/python}"
 ORDINARY_USERNAME="${AI_PLATFORM_ORDINARY_LOGIN_USERNAME:-}"
 ADMIN_USERNAME="${AI_PLATFORM_ADMIN_LOGIN_USERNAME:-}"
@@ -16,7 +16,7 @@ Usage:
 
 Options:
   --base-url URL                 ai-platform API URL. Default: http://127.0.0.1:8020
-  --frontend-url URL             ai-platform frontend URL for the final gate. Default: http://10.56.0.211:18001
+  --frontend-url URL             ai-platform frontend URL for the final gate. Required unless AI_PLATFORM_FRONTEND_URL is set.
   --python PATH                  Python executable. Default: .venv/bin/python
   --ordinary-username WORK_ID    Ordinary user work-id. Can also use AI_PLATFORM_ORDINARY_LOGIN_USERNAME.
   --admin-username WORK_ID       Admin/developer work-id. Can also use AI_PLATFORM_ADMIN_LOGIN_USERNAME.
@@ -65,6 +65,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$FRONTEND_URL" ]]; then
+  echo "Missing frontend URL: set AI_PLATFORM_FRONTEND_URL or pass --frontend-url." >&2
+  exit 2
+fi
 
 read_required() {
   local prompt="$1"

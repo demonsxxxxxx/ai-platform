@@ -1290,7 +1290,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "アクセストークン有効期限（時間）",
     "ADMIN_CONTACT_EMAIL": "Aboutダイアログに表示される管理者の連絡先メール",
     "ADMIN_CONTACT_URL": "管理者の連絡先/サポートURL（ヘルプデスク、フィードバックフォーム等）、Aboutダイアログに表示",
-    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL（例：http://10.56.0.211:18001）。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。",
+    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL（例：https://ai-platform.example.internal）。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。",
     "AUDIO_TRANSCRIPTION_API_KEY": "音声文字起こしプロバイダーの API キー。OpenAI や SiliconFlow などの OpenAI 互換エンドポイントに対応します。",
     "AUDIO_TRANSCRIPTION_BASE_URL": "音声文字起こしプロバイダーの Base URL（例: https://api.openai.com/v1 または https://api.siliconflow.cn/v1）。空欄の場合は既定の OpenAI エンドポイントを使います。",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe ツールで使う既定の文字起こしモデル名。例: gpt-4o-mini-transcribe や FunAudioLLM/SenseVoiceSmall。",

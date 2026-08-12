@@ -57,7 +57,7 @@ def _admin_runtime_domain(observability: dict[str, Any]) -> dict[str, Any]:
             "release_evidence_operator_projection_contract",
         ],
         open_gaps=[
-            "named_workflow_admin_runtime_211_acceptance",
+            "named_workflow_admin_controlled_host_acceptance",
             "operator_dashboard_without_chat_transcript_acceptance",
         ],
         evidence={
@@ -120,7 +120,7 @@ def _quality_gate_domain(quality: dict[str, Any]) -> dict[str, Any]:
         open_gaps=[
             "workflow_quality_dataset_approval",
             "quality_threshold_calibration",
-            "golden_set_eval_runtime_and_211_acceptance",
+            "golden_set_eval_controlled_host_acceptance",
         ],
         evidence={
             "schema_version": quality["schema_version"],
@@ -162,7 +162,7 @@ def build_b6_operations_beta_readiness() -> dict[str, Any]:
         "named_workflow_package_missing",
         "workflow_owner_signoff_and_support_handoff",
         "linked_b1_b5_evidence_package_review",
-        "operations_beta_211_workflow_acceptance",
+        "operations_beta_controlled_host_workflow_acceptance",
         "rollback_drill_runtime_evidence",
         "product_beta_issue_review_and_closure_evidence",
     ]
@@ -186,7 +186,7 @@ def build_b6_operations_beta_readiness() -> dict[str, Any]:
         "claim_boundary": {
             "does_not_create_product_beta": True,
             "does_not_create_department_rollout": True,
-            "does_not_create_211_verified": True,
+            "does_not_claim_deployed_runtime_verified": True,
             "does_not_close_b6_g9_g10": True,
             "does_not_claim_owner_signoff": True,
             "does_not_claim_support_handoff": True,
@@ -201,7 +201,7 @@ def build_b6_operations_beta_readiness() -> dict[str, Any]:
         },
         "evidence_policy": (
             "B6 local readiness records the Operations Beta package contract only. "
-            "B6 cannot be 211 verified, gate closable, or product beta until a named "
+            "B6 cannot claim deployed-runtime acceptance, close its gate, or become product beta until a named "
             "workflow package proves Admin Runtime, trace/export, alert/support, "
             "quality, rollback, linked B1-B5 evidence, review, owner signoff, and "
             "residual caveats on the selected runtime subject."
@@ -234,7 +234,7 @@ def render_b6_operations_beta_readiness_markdown(readiness: dict[str, Any]) -> s
     boundary_lines = [
         "- does not create product beta",
         "- does not create department rollout",
-        "- does not create `211 verified`",
+        "- does not claim deployed-runtime acceptance",
         "- does not close B6/G9/G10",
         "- does not claim owner signoff",
         "- does not claim support handoff",

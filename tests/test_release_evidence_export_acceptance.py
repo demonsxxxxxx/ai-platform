@@ -18,7 +18,7 @@ def _valid_entry(**overrides):
         "gate": "Foundation Alpha POC",
         "issue_refs": ["#15"],
         "pr_refs": ["#30"],
-        "artifact_kind": "211_runtime_smoke",
+        "artifact_kind": "controlled_host_runtime_smoke",
         "captured_at": "2026-06-12T05:24:02+08:00",
         "source_ref": {
             "branch": "main",
@@ -291,6 +291,22 @@ def test_release_evidence_export_acceptance_requires_runtime_subject_for_b1_smok
     entry = _valid_entry(
         evidence_id="b1-memory-context-smoke",
         artifact_kind="211_memory_enabled_document_workflow_smoke",
+    )
+    entry.pop("runtime_subject_commit_sha")
+    _write_entry(tmp_path, entry)
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "blocked_invalid_evidence"
+    assert acceptance["safe_entry_count"] == 0
+    assert acceptance["blocked_entry_count"] == 1
+    assert acceptance["blocked_entries"][0]["reasons"] == ["missing_runtime_subject_commit_sha"]
+
+
+def test_release_evidence_export_acceptance_requires_runtime_subject_for_controlled_host_b1_smoke(tmp_path):
+    entry = _valid_entry(
+        evidence_id="controlled-host-b1-memory-context-smoke",
+        artifact_kind="controlled_host_memory_enabled_document_workflow_smoke",
     )
     entry.pop("runtime_subject_commit_sha")
     _write_entry(tmp_path, entry)

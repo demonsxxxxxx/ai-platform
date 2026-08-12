@@ -14,8 +14,14 @@ from app.skills.registry import BuiltinSkill, iter_skill_files
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_SNAPSHOT_TOTAL_BYTES = 16 * 1024 * 1024
-SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1 = (
     "ai-platform.skill-pinned-snapshot-governance.v1"
+)
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2 = (
+    "ai-platform.skill-pinned-snapshot-governance.v2"
+)
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
+    SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2
 )
 SKILL_MATERIALIZATION_REF_SCHEMA_VERSION = "ai-platform.skill-materialization-ref.v1"
 _SKILL_MATERIALIZATION_REF_KEYS = frozenset(
@@ -152,7 +158,7 @@ def build_skill_snapshot_governance(
             "ref": "skill_dependency_policy",
             "dependency_count": len(dependency_ids),
         },
-        "does_not_close_b4_or_211": True,
+        "does_not_close_b4_or_deployed_runtime_acceptance": True,
     }
 
 

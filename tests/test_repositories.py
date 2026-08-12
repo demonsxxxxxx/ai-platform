@@ -10916,7 +10916,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
                                 "ref": "skill_dependency_policy",
                                 "dependency_count": 1,
                             },
-                            "does_not_close_b4_or_211": True,
+                            "does_not_close_b4_or_deployed_runtime_acceptance": True,
                             "storage_key": "tenants/default/private/package.zip",
                         },
                     },
@@ -10970,7 +10970,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
                         "ref": "skill_dependency_policy",
                         "dependency_count": 1,
                     },
-                    "does_not_close_b4_or_211": True,
+                    "does_not_close_b4_or_deployed_runtime_acceptance": True,
                 },
             },
             "dependency_ids": ["minimax-docx"],
@@ -11828,7 +11828,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                                         "ref": "skill_dependency_policy",
                                         "dependency_count": 1,
                                     },
-                                    "does_not_close_b4_or_211": True,
+                                    "does_not_close_b4_or_deployed_runtime_acceptance": True,
                                     "storage_key": "tenants/default/private/package.zip",
                                 },
                             },
@@ -11878,7 +11878,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                 "ref": "skill_dependency_policy",
                 "dependency_count": 1,
             },
-            "does_not_close_b4_or_211": True,
+            "does_not_close_b4_or_deployed_runtime_acceptance": True,
         },
     }
     serialized_snapshots = json.dumps(detail["recent_snapshots"], ensure_ascii=False)
@@ -12619,6 +12619,24 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
     assert "admin-audit-secret" not in serialized
     assert "/var/lib/ai-platform" not in serialized
     assert "runtime_private_payload" not in serialized
+
+
+def test_skill_snapshot_reader_normalizes_legacy_governance_boundary_marker():
+    source = repositories._sanitize_skill_snapshot_source(
+        {
+            "kind": "builtin",
+            "snapshot_governance": {
+                "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                "snapshot_source": "platform_release_lock",
+                "does_not_close_b4_or_211": True,
+            },
+        }
+    )
+
+    governance = source["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
+    assert "does_not_close_b4_or_211" not in governance
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,6 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const SCHEMA_VERSION = "ai-platform.frontend-prd-closure-browser-smoke.v1";
-const DEFAULT_BASE_URL = "http://10.56.0.211:18001";
 const DEFAULT_ROUTES = [
   "/chat",
   "/apps",
@@ -48,7 +47,7 @@ const ROUTE_CONTENT_SELECTORS = new Map([
 
 function parseArgs(argv) {
   const args = {
-    baseUrl: process.env.AI_PLATFORM_FRONTEND_URL || DEFAULT_BASE_URL,
+    baseUrl: "",
     cdpUrl: process.env.AI_PLATFORM_CDP_URL || "",
     chromePath: process.env.AI_PLATFORM_CHROME_PATH || "",
     expectedCommit: process.env.AI_PLATFORM_EXPECTED_COMMIT || "",
@@ -101,7 +100,7 @@ function printHelpAndExit() {
   console.log(`Usage: node scripts/prd-closure-browser-smoke.mjs [options]
 
 Options:
-  --base-url <url>          Frontend entry. Defaults to ${DEFAULT_BASE_URL}
+  --base-url <url>          Required frontend entry (or AI_PLATFORM_FRONTEND_URL)
   --cdp-url <url>           Existing Chrome DevTools endpoint, e.g. http://127.0.0.1:9222
   --chrome-path <path>      Chrome/Chromium executable path when not using --cdp-url
   --expected-commit <sha>   Expected ai-platform-build-provenance git commit
@@ -883,8 +882,13 @@ function summarizeStatus({
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const baseUrl = normalizeBaseUrl(args.baseUrl);
   const envFileValues = loadEnvValues(args.envFile);
+  const resolvedBaseUrl =
+    args.baseUrl || process.env.AI_PLATFORM_FRONTEND_URL || envFileValues.AI_PLATFORM_FRONTEND_URL;
+  if (!resolvedBaseUrl) {
+    throw new Error("base_url_required");
+  }
+  const baseUrl = normalizeBaseUrl(resolvedBaseUrl);
   const credentials = loadCredentials(envFileValues);
   const browser = args.cdpUrl
     ? { cdpUrl: args.cdpUrl, close: async () => {} }

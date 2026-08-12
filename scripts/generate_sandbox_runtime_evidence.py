@@ -1,9 +1,9 @@
-"""Generate live sandbox runtime evidence for the 211 verifier.
+"""Generate live sandbox runtime evidence for a controlled Docker host.
 
 This script is a smoke tool. It creates a verifier-owned callback receiver,
 submits one task to a running sandbox executor, runs a verifier-owned Docker
 create/stop/remove probe, and writes sanitized evidence for
-verify_sandbox_runtime_211.py.
+``verify_sandbox_runtime.py``.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import errno
 import hashlib
 import hmac
 import inspect
@@ -41,9 +40,9 @@ if str(REPO_ROOT) not in sys.path:
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
-EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
-INSPECTION_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-skill-mount-inspection-211.v1"
-BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.bootstrap-error.v1"
+EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime.v2"
+INSPECTION_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-skill-mount-inspection.v2"
+BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime.bootstrap-error.v2"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 INSPECTION_PROFILES = ("platform-controlled", "sdk-native")
@@ -51,7 +50,7 @@ INSPECTION_AUTHORIZED_SKILLS = {
     "platform-controlled": "qa-file-reviewer",
     "sdk-native": "minimax-docx",
 }
-INSPECTION_WORKSPACE_BASE_NAME = "ai-sv211"
+INSPECTION_WORKSPACE_BASE_NAME = "sv"
 INSPECTION_ATTACKS = (
     "direct_write",
     "chmod",
@@ -484,12 +483,15 @@ def _close_inspection_workspace_root(root: _InspectionWorkspaceRoot) -> None:
 
 def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
     native_expected = profile == "sdk-native"
+    authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile, "")
     return {
         "selected": profile if profile in INSPECTION_PROFILES else "invalid",
         "catalog": "implicit",
-        "primary_skill": "general-chat",
-        "authorized_implicit_skill": INSPECTION_AUTHORIZED_SKILLS.get(profile, ""),
-        "primary_execution_strategy": "sdk_restricted",
+        "primary_skill": authorized_skill,
+        "authorized_implicit_skill": authorized_skill,
+        "primary_execution_strategy": (
+            "sdk_native" if profile == "sdk-native" else "platform_controlled"
+        ),
         "authorized_skill_count": 1,
         "native_sidecar_expected": native_expected,
         "authorization_basis": "deterministic_verifier_fixture",
@@ -648,7 +650,7 @@ def _inspection_skill_files(skill_name: str) -> dict[str, str]:
         "SKILL.md": (
             "---\n"
             f"name: {skill_name}\n"
-            "description: Deterministic verifier Skill for the 211 staged mount inspection.\n"
+            "description: Deterministic verifier Skill for staged mount inspection.\n"
             "---\n\n"
             "Return the fixed verifier result without loading external data.\n"
         ),
@@ -706,17 +708,17 @@ def _inspection_pinned_manifest(skill_id: str, *, files: dict[str, str]) -> dict
 def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     from app.capability_distribution import CapabilityAccessDecision
     from app.models import QueueRunPayload
+    from app.skills.pinning import build_skill_manifest_ref
     from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
     from app.worker import _builtin_capability_subjects
 
     authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile)
     if not authorized_skill:
         raise ValueError("unsupported inspection profile")
-    primary_files = _inspection_skill_files("general-chat")
     authorized_files = _inspection_skill_files(authorized_skill)
-    primary_manifest = _inspection_pinned_manifest("general-chat", files=primary_files)
     authorized_manifest = _inspection_pinned_manifest(authorized_skill, files=authorized_files)
-    primary_version = str(primary_manifest["content_hash"])
+    primary_manifest = authorized_manifest
+    primary_version = str(authorized_manifest["content_hash"])
     payload = QueueRunPayload(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -724,7 +726,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         session_id="catalog-session",
         run_id="catalog-run",
         agent_id="sandbox-runtime-verifier",
-        skill_id="general-chat",
+        skill_id=authorized_skill,
         file_ids=[],
         input={},
         executor_type="embedded-poco",
@@ -735,7 +737,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
             "selected_version": primary_version,
             "selected_track": "manifest_pin",
         },
-        skill_manifests=[primary_manifest],
+        skill_manifests=[build_skill_manifest_ref(primary_manifest)],
     )
     decision = CapabilityAccessDecision(
         visible=True,
@@ -746,8 +748,8 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     )
     subjects = _builtin_capability_subjects(
         payload=payload,
-        run_identity={"skill_id": "general-chat"},
-        skill={"skill_id": "general-chat", "skill_status": "active"},
+        run_identity={"skill_id": authorized_skill},
+        skill={"skill_id": authorized_skill, "skill_status": "active"},
         skill_decision=decision,
         authorized_skill_manifests=[authorized_manifest],
         authorized_skill_names=[authorized_skill],
@@ -765,7 +767,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     skill_subject = by_identity.get("Skill", {})
     if (
         skill_subject.get("allowed_skill_names") != [authorized_skill]
-        or skill_subject.get("execution_strategy") != "sdk_restricted"
+        or skill_subject.get("execution_strategy") != authorized_profile["strategy"]
         or any(subject.get("declared_identities") != [identity] for identity, subject in by_identity.items())
         or any(
             subject.get(key) is not True
@@ -1153,7 +1155,7 @@ def _stage_inspection_skill(
         skills=[
             BuiltinSkill(
                 name=skill_name,
-                description="Deterministic verifier Skill for the 211 staged mount inspection.",
+                description="Deterministic verifier Skill for staged mount inspection.",
                 path=source,
                 version=version,
                 source={"kind": "verifier", "version": version},
@@ -1396,14 +1398,14 @@ def _run_skill_mount_inspection(
         settings.sandbox_executor_image = target_image
         settings.sandbox_workspace_root = str(workspace_root)
         request = SandboxRuntimeRequest(
-            tenant_id="tenant-a",
-            workspace_id="workspace-a",
-            user_id="user-a",
-            session_id=f"session-{evidence['run_id']}",
+            tenant_id="t",
+            workspace_id="w",
+            user_id="u",
+            session_id="s",
             run_id=evidence["run_id"],
-            attempt_id=f"attempt-{uuid.uuid4().hex}",
+            attempt_id=f"a-{uuid.uuid4().hex[:8]}",
             agent_id="sandbox-runtime-verifier",
-            skill_ids=["general-chat", authorized_skill_name],
+            skill_ids=[authorized_skill_name],
             mcp_tool_ids=[],
             tool_policy_subjects=list(catalog["subjects"]),
             input_message="ai-platform staged Skill mount inspection",
@@ -1852,7 +1854,7 @@ def submit_executor_task(
     payload = {
         "session_id": f"session-{run_id}",
         "run_id": run_id,
-        "prompt": "ai-platform sandbox runtime 211 smoke",
+        "prompt": "ai-platform sandbox runtime smoke",
         "callback_url": callback_url,
         "callback_token_id": _callback_token_id_for_url(callback_url, run_id),
         "callback_token": _callback_token_for_url(
@@ -2669,7 +2671,7 @@ def run_platform_runtime_probe(
                 agent_id="sandbox-runtime-verifier",
                 skill_ids=[],
                 mcp_tool_ids=[],
-                input_message="ai-platform platform sandbox runtime 211 smoke",
+                input_message="ai-platform platform sandbox runtime smoke",
                 file_ids=[],
                 sandbox_mode="ephemeral",
                 browser_enabled=False,
@@ -2925,7 +2927,7 @@ def run_cancel_probe(
         "--name",
         container_name,
         "--label",
-        "ai-platform.verifier=sandbox-runtime-211",
+        "ai-platform.verifier=sandbox-runtime",
         "--label",
         f"ai-platform.run_id={run_id}",
         cancel_image,
@@ -2959,8 +2961,8 @@ def _wait_for_callbacks(recorder: EvidenceRecorder, timeout_seconds: float) -> b
 def build_parser() -> argparse.ArgumentParser:
     parser = SandboxEvidenceArgumentParser(
         description=(
-            'Generate ai-platform sandbox runtime evidence on 211; use --docker-cmd "sudo -n docker" '
-            "on 211 and keep this as controlled admin/allowlist evidence."
+            "Generate ai-platform sandbox runtime evidence on a controlled Docker host; "
+            'use --docker-cmd "sudo -n docker" when required by that host.'
         )
     )
     parser.add_argument("--executor-url", default=os.environ.get("AI_PLATFORM_EXECUTOR_URL", ""))
@@ -2977,7 +2979,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--docker-cmd",
         default=os.environ.get("DOCKER_CMD", "docker"),
-        help='Docker command; use --docker-cmd "sudo -n docker" on 211.',
+        help='Docker command; use --docker-cmd "sudo -n docker" when required by the host.',
     )
     parser.add_argument(
         "--cancel-image",

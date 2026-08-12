@@ -1290,7 +1290,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "액세스 토큰 만료 시간(시간)",
     "ADMIN_CONTACT_EMAIL": "정보 대화상자에 표시되는 관리자 연락처 이메일",
     "ADMIN_CONTACT_URL": "관리자 연락처/지원 URL(헬프데스크, 피드백 양식 등), 정보 대화상자에 표시",
-    "APP_BASE_URL": "파일 다운로드/업로드용 공개 기본 URL(예: http://10.56.0.211:18001). 리버스 프록시 환경에서 request.base_url이 올바르지 않은 경우 필요.",
+    "APP_BASE_URL": "파일 다운로드/업로드용 공개 기본 URL(예: https://ai-platform.example.internal). 리버스 프록시 환경에서 request.base_url이 올바르지 않은 경우 필요.",
     "AUDIO_TRANSCRIPTION_API_KEY": "오디오 전사 제공자의 API 키입니다. OpenAI, SiliconFlow 같은 OpenAI 호환 엔드포인트를 지원합니다.",
     "AUDIO_TRANSCRIPTION_BASE_URL": "오디오 전사 제공자의 Base URL입니다(예: https://api.openai.com/v1 또는 https://api.siliconflow.cn/v1). 비워두면 기본 OpenAI 엔드포인트를 사용합니다.",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe 도구에서 사용할 기본 전사 모델 이름입니다. 예: gpt-4o-mini-transcribe 또는 FunAudioLLM/SenseVoiceSmall.",

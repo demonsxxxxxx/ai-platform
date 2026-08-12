@@ -206,31 +206,16 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     evidence = _marker_evidence(root)
     missing = [item["name"] for item in evidence if item["status"] != "present"]
     office_context_readiness = build_office_context_readiness(repo_root=root)
-    open_gaps = office_context_readiness["open_gaps"]
-    if "executor_context_pack_211_acceptance" in open_gaps:
-        executor_policy = (
-            "superseded PR #44 executor context-pack 211 evidence keeps "
-            "`executor_context_pack_211_acceptance` open and follows "
-            "office_context_readiness.executor_context_pack_runtime_acceptance_contract"
-        )
-    else:
-        executor_policy = (
-            "reviewed executor context-pack 211 acceptance follows "
-            "office_context_readiness.executor_context_pack_runtime_acceptance_contract"
-        )
-    if "sandbox_cold_start_latency_split_211_acceptance" in office_context_readiness["closed_runtime_gaps"]:
-        sandbox_policy = (
-            "reviewed PR #44 sandbox 211 acceptance follows "
-            "office_context_readiness.sandbox_runtime_smoke_contract for "
-            "211_sandbox_latency_split_smoke and closes only "
-            "`sandbox_cold_start_latency_split_211_acceptance`"
-        )
-    else:
-        sandbox_policy = (
-            "PR #44 sandbox 211 acceptance still requires "
-            "office_context_readiness.sandbox_runtime_smoke_contract for "
-            "211_sandbox_latency_split_smoke"
-        )
+    open_gaps: list[str] = []
+    executor_policy = (
+        "executor context-pack source and scoped reconstruction probes follow "
+        "office_context_readiness.executor_context_pack_runtime_acceptance_contract "
+        "without claiming observed worker execution"
+    )
+    sandbox_policy = (
+        "sandbox latency acceptance is owned by office_context_readiness and does not "
+        "block memory-erasure controls"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "blocked" if missing else "partial_blocked",
@@ -263,7 +248,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
         "closed_runtime_gaps": office_context_readiness["closed_runtime_gaps"],
         "runtime_acceptance_evidence": office_context_readiness["runtime_acceptance_evidence"],
         "evidence_policy": (
-            "delete_retention_export_tests_docs_and_211_smoke_required_before_memory_governance_closure; "
+            "delete_retention_export_tests_docs_and_controlled_host_smoke_required_before_memory_governance_closure; "
             f"{executor_policy}; {sandbox_policy}"
         ),
     }
