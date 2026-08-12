@@ -9,6 +9,8 @@ GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
 RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
 S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+SOURCE_ARCHITECTURE = ROOT / "docs/architecture/source-code-architecture.md"
+SOURCE_ARCHITECTURE_ADR = ROOT / "docs/adr/0006-domain-first-modular-monolith.md"
 
 
 def read(path: Path) -> str:
@@ -24,11 +26,85 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
     for relative_path in (
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
+        "architecture/source-code-architecture.md",
+        "adr/0006-domain-first-modular-monolith.md",
         "operations/release-operations-runbook.md",
         "operations/s72-opensandbox-gateway-runbook.md",
         "release-evidence/README.md",
     ):
         assert relative_path in index
+
+
+def test_source_architecture_authority_has_required_sections_and_anchors():
+    architecture = read(SOURCE_ARCHITECTURE)
+    architecture_flat = " ".join(architecture.split())
+    adr = read(SOURCE_ARCHITECTURE_ADR)
+    headings = {
+        line.strip()
+        for line in architecture.splitlines()
+        if line.startswith("## ")
+    }
+
+    assert "not a project status report" in architecture_flat
+    assert {
+        "## 2. Target package tree",
+        "## 3. Dependency direction",
+        "## 7. Compatibility contract",
+        "## 8. Deletion proof",
+        "## 9. Migration and behavior replay",
+        "## 10. Current-to-target mapping",
+        "## 12. Executable governance",
+    } <= headings
+    for package in (
+        "bootstrap",
+        "kernel",
+        "platform",
+        "identity",
+        "agent_apps",
+        "skills",
+        "conversations",
+        "runs",
+        "context",
+        "files",
+        "artifacts",
+        "object_lifecycle",
+        "streaming",
+        "mcp",
+        "execution",
+        "sandbox",
+        "compat",
+    ):
+        assert f"  {package}/" in architecture
+    for deletion_surface in (
+        "| Private function/class |",
+        "| Python module/package |",
+        "| CLI/script/entrypoint |",
+        "| Provider/executor/parser/plugin |",
+        "| Public HTTP/SSE/callback route |",
+        "| Environment/configuration key |",
+        "| Database column/table/state/event |",
+        "| Import compatibility facade |",
+    ):
+        assert deletion_surface in architecture
+    assert "Cross-domain Python calls use the owning domain's `api.py`" in adr
+    assert "Compatibility is exceptional and evidence-based" in architecture
+    assert "app/repositories.py" in architecture
+    assert "app/models.py" in architecture
+    for authority_anchor in (
+        "callback-batch receipt remains part of the Sandbox Runtime",
+        "only `object_lifecycle` claims, receipts, fails, dead-letters, or requeues",
+        "one database Unit of Work",
+        "At most one outbox row exists for the typed target identity",
+        "The baseline still runs maintenance in the shared worker loop",
+        "telemetry or inventory source and reproducible query",
+        "Manual return-value comparison alone is insufficient",
+        "architecture-policy.json",
+        "schemas/architecture-policy.v1.schema.json",
+    ):
+        assert authority_anchor in architecture_flat
+    assert "The gate itself MUST be introduced in a later PR" in architecture_flat
+    assert "status: accepted" in adr
+    assert "decision_issue: 962" in adr
 
 
 def test_governance_rules_keep_status_and_release_authority_out_of_history_docs():
