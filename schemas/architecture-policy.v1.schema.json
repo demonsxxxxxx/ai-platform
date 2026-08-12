@@ -148,18 +148,6 @@
         "$ref": "#/$defs/repositoryPath"
       }
     },
-    "ownedEntry": {
-      "type": "object",
-      "required": ["owner", "reason"],
-      "properties": {
-        "owner": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "reason": {
-          "$ref": "#/$defs/nonEmptyString"
-        }
-      }
-    },
     "layerPolicy": {
       "type": "object",
       "additionalProperties": false,

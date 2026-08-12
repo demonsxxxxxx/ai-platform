@@ -245,7 +245,7 @@
       "max_lines": 80,
       "shape": "imports_only",
       "owner": "object_lifecycle",
-      "reason": "The retired artifact-named import surface may only re-export canonical persistence operations."
+      "reason": "The retired artifact-named import surface may only re-export the current transitional persistence owner; app.persistence remains frozen to new modules until object_lifecycle owns the implementation."
     }
   ],
   "production_registries": [

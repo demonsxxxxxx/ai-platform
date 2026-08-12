@@ -262,6 +262,28 @@ def test_authority_schema_is_applied_to_policy_entries(tmp_path: Path) -> None:
     assert caught.value.code == "invalid_policy"
 
 
+def test_authority_schema_patterns_require_full_matches(tmp_path: Path) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema["$defs"]["nonEmptyString"]["pattern"] = "platform"
+    repo, authority = _create_repo(tmp_path, schema_text=json.dumps(schema))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
+def test_authority_schema_patterns_have_a_bounded_length(tmp_path: Path) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema["$defs"]["nonEmptyString"]["pattern"] = "a" * 513
+    repo, authority = _create_repo(tmp_path, schema_text=json.dumps(schema))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy_schema"
+
+
 def test_candidate_policy_self_relaxation_does_not_change_authority(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -395,6 +417,31 @@ def test_legacy_app_root_file_cannot_add_third_party_dependency(
     assert "layer_external_dependency_forbidden" in _codes(evaluation)
 
 
+def test_transitional_persistence_package_is_frozen_to_new_modules(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/persistence/postgres_adapter.py", "VALUE = True\n")
+    head = _commit(repo, "extend transitional persistence package")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "unapproved_app_package" in _codes(evaluation)
+
+
+@pytest.mark.parametrize("boundary", ["api", "events"])
+def test_new_context_boundary_modules_are_layer_exempt(
+    governance_repo: tuple[Path, str], boundary: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, f"app/runs/{boundary}.py", "VALUE = True\n")
+    head = _commit(repo, f"add runs {boundary} boundary")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "unlayered_domain_module" not in _codes(evaluation)
+
+
 def test_domain_boundary_cannot_import_concrete_infrastructure(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -437,6 +484,49 @@ def test_kernel_allowlist_does_not_authorize_private_descendants(
     evaluation = _evaluate(repo, policy_head, policy_head, head)
 
     assert "kernel_public_surface_forbidden" in _codes(evaluation)
+
+
+def test_kernel_from_import_resolves_private_descendant_modules(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    policy = _fixture_policy()
+    policy["public_kernel_modules"] = ["identity"]
+    _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
+    _write(repo, "app/kernel/identity.py", "class Principal:\n    pass\n")
+    _write(repo, "app/kernel/identity/private.py", "SECRET = True\n")
+    authority = _commit(repo, "authority with private kernel descendant")
+    _write(
+        repo,
+        "app/runs/domain/attempt.py",
+        "from app.kernel.identity import Principal, private\n",
+    )
+    head = _commit(repo, "import private kernel descendant by alias")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "kernel_public_surface_forbidden" in _codes(evaluation)
+
+
+def test_kernel_from_import_allows_symbols_from_a_public_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    policy = _fixture_policy()
+    policy["public_kernel_modules"] = ["identity"]
+    _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
+    _write(repo, "app/kernel/identity.py", "class Principal:\n    pass\n")
+    authority = _commit(repo, "authority with public kernel module")
+    _write(
+        repo,
+        "app/runs/domain/attempt.py",
+        "from app.kernel.identity import Principal\n",
+    )
+    head = _commit(repo, "import public kernel symbol")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "kernel_public_surface_forbidden" not in _codes(evaluation)
 
 
 @pytest.mark.parametrize(
@@ -544,7 +634,24 @@ def test_logic_free_facade_requires_static_all_and_docstring_only_expressions(
 
     evaluation = _evaluate(repo, authority, authority, head)
 
-    assert "facade_local_state" in _codes(evaluation)
+    assert {"facade_export_contract", "facade_local_state"} <= _codes(evaluation)
+
+
+def test_non_all_assignment_cannot_satisfy_facade_export_contract(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/artifact_lifecycle_repository.py",
+        "from app.persistence.object_deletions import claim_object_deletions\n"
+        "exported_names = [\"claim_object_deletions\"]\n",
+    )
+    head = _commit(repo, "omit facade dunder all")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert {"facade_export_contract", "facade_local_state"} <= _codes(evaluation)
 
 
 def test_logic_free_facade_rejects_nonexistent_export_and_prefix_collision(
@@ -994,8 +1101,7 @@ def test_cli_exit_codes_are_zero_two_and_three(
                 passing_head,
                 "--head-ref",
                 violating_head,
-                "--format",
-                "json",
+                "--format=json",
             ]
         ) == 3
     assert json.loads(stdout.getvalue())["error"]["code"] == "invalid_ref"

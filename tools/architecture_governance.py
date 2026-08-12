@@ -21,6 +21,7 @@ from typing import Any
 
 
 REPORT_SCHEMA_VERSION = "ai-platform.architecture-governance-report.v1"
+MAX_SCHEMA_PATTERN_LENGTH = 512
 POLICY_SCHEMA_VERSION = "ai-platform.architecture-policy.v1"
 POLICY_SCHEMA_ID = (
     "https://github.com/demonsxxxxxx/ai-platform/"
@@ -401,12 +402,14 @@ class ArchitectureEvaluator:
         approved_roots = set(policy["approved_root_modules"])
         forbidden_names = set(policy["forbidden_module_names"])
         forbidden_tokens = set(policy["forbidden_delivery_tokens"])
+        base_modules = _python_modules(self._git.paths(base, "app"))
+        head_modules = _python_modules(self._git.paths(head, "app"))
 
         for change in changes:
             path = change.new_path
             if path is None or not _is_python_path(path) or not path.startswith("app/"):
                 continue
-            old_path = change.old_path if change.old_path != path else path
+            old_path = change.old_path
             is_new_location = old_path is None or old_path != path
             parts = PurePosixPath(path).parts
             if is_new_location and len(parts) == 2 and path not in approved_roots:
@@ -425,11 +428,14 @@ class ArchitectureEvaluator:
                         path,
                     )
                 )
+            boundary_files = {
+                f"{name}.py" for name in policy["public_cross_domain_modules"]
+            } | {"registry.py", "__init__.py"}
             if (
                 is_new_location
                 and len(parts) >= 3
                 and parts[1] in set(policy["bounded_contexts"])
-                and parts[2] not in set(policy["layers"]) | set(policy["public_cross_domain_modules"]) | {"registry.py", "__init__.py"}
+                and parts[2] not in set(policy["layers"]) | boundary_files
             ):
                 findings.append(
                     Finding(
@@ -467,8 +473,15 @@ class ArchitectureEvaluator:
                 if base_text is not None:
                     base_tree = _parse_python(base_text, old_path, candidate=False)
                     if old_path == path:
-                        base_targets = {edge.target for edge in _import_edges(base_tree, old_path)}
-            for edge in _import_edges(head_tree, path):
+                        base_targets = {
+                            edge.target
+                            for edge in _import_edges(
+                                base_tree,
+                                old_path,
+                                known_modules=base_modules,
+                            )
+                        }
+            for edge in _import_edges(head_tree, path, known_modules=head_modules):
                 if edge.target in base_targets:
                     continue
                 finding = _new_edge_finding(policy, path, edge)
@@ -767,9 +780,14 @@ def _validate_json_schema_instance(instance: Any, schema: dict[str, Any]) -> Non
                 raise ArchitectureError("invalid_policy", f"{location} is shorter than the schema minimum")
             pattern = node.get("pattern")
             if pattern is not None:
+                if not isinstance(pattern, str) or len(pattern) > MAX_SCHEMA_PATTERN_LENGTH:
+                    raise ArchitectureError(
+                        "invalid_policy_schema",
+                        f"invalid pattern for {location}",
+                    )
                 try:
-                    matched = re.search(pattern, value)
-                except (TypeError, re.error) as exc:
+                    matched = re.fullmatch(pattern, value)
+                except re.error as exc:
                     raise ArchitectureError("invalid_policy_schema", f"invalid pattern for {location}") from exc
                 if matched is None:
                     raise ArchitectureError("invalid_policy", f"{location} does not match the schema pattern")
@@ -1133,7 +1151,20 @@ def _parse_python(source: str, path: str, *, candidate: bool) -> ast.Module:
         raise ArchitectureError(code, f"cannot parse {path}:{exc.lineno}: {exc.msg}") from exc
 
 
-def _import_edges(tree: ast.Module, path: str) -> tuple[_ImportEdge, ...]:
+def _python_modules(paths: Sequence[str]) -> set[str]:
+    return {
+        _path_module(path)
+        for path in paths
+        if _is_python_path(path)
+    }
+
+
+def _import_edges(
+    tree: ast.Module,
+    path: str,
+    *,
+    known_modules: set[str] | None = None,
+) -> tuple[_ImportEdge, ...]:
     package_parts = list(PurePosixPath(path).with_suffix("").parts[:-1])
     edges: list[_ImportEdge] = []
     for node in ast.walk(tree):
@@ -1157,7 +1188,17 @@ def _import_edges(tree: ast.Module, path: str) -> tuple[_ImportEdge, ...]:
                     for alias in node.names
                 )
             elif target:
-                edges.append(_ImportEdge(target, node.lineno))
+                if target.startswith("app.kernel.") and known_modules is not None:
+                    edges.extend(
+                        _ImportEdge(
+                            candidate if candidate in known_modules else target,
+                            node.lineno,
+                        )
+                        for alias in node.names
+                        for candidate in (f"{target}.{alias.name}",)
+                    )
+                else:
+                    edges.append(_ImportEdge(target, node.lineno))
     unique = {(edge.target, edge.line): edge for edge in edges}
     return tuple(sorted(unique.values(), key=lambda item: (item.target, item.line)))
 
@@ -1469,7 +1510,10 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
             )
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(not isinstance(target, ast.Name) or target.id != "__all__" for target in targets):
+            is_dunder_all = all(
+                isinstance(target, ast.Name) and target.id == "__all__" for target in targets
+            )
+            if not is_dunder_all:
                 findings.append(
                     Finding(
                         "facade_local_state",
@@ -1478,6 +1522,7 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
                         getattr(node, "lineno", 0),
                     )
                 )
+                continue
             value = node.value
             if not isinstance(value, (ast.List, ast.Tuple)) or any(
                 not isinstance(element, ast.Constant) or not isinstance(element.value, str)
@@ -2064,6 +2109,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _argument_value(arguments: Sequence[str], name: str) -> str | None:
+    prefix = f"{name}="
+    for argument in arguments:
+        if argument.startswith(prefix):
+            return argument[len(prefix) :]
     try:
         index = arguments.index(name)
     except ValueError:
