@@ -107,14 +107,39 @@ jobs:
           head_events = head.get("on")
           if not isinstance(base_events, dict) or not isinstance(head_events, dict):
               raise ValueError("trusted workflow events must be mappings")
-          if head_events.get("pull_request_target") != base_events.get("pull_request_target"):
-              raise ValueError("protected pull_request_target trigger changed")
+          if head_events != base_events:
+              raise ValueError("protected workflow triggers changed")
           base_jobs = base.get("jobs")
           head_jobs = head.get("jobs")
           if not isinstance(base_jobs, dict) or not isinstance(head_jobs, dict):
               raise ValueError("trusted workflow jobs must be mappings")
-          if head_jobs.get("trusted-governance") != base_jobs.get("trusted-governance"):
-              raise ValueError("protected trusted-governance job changed")
+          if head_jobs != base_jobs:
+              raise ValueError("protected trusted-governance jobs changed")
+          base_backend = Path(os.environ["GOVERNANCE_BASE_WORKTREE"]) / ".github/workflows/ai-platform-backend.yml"
+          head_backend = Path(os.environ["GOVERNANCE_HEAD_WORKTREE"]) / ".github/workflows/ai-platform-backend.yml"
+          base_backend_payload = yaml.load(base_backend.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+          head_backend_payload = yaml.load(head_backend.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+          if not isinstance(base_backend_payload, dict) or not isinstance(head_backend_payload, dict):
+              raise ValueError("backend workflow must be a mapping")
+          base_backend_events = base_backend_payload.get("on")
+          head_backend_events = head_backend_payload.get("on")
+          if not isinstance(base_backend_events, dict) or not isinstance(head_backend_events, dict):
+              raise ValueError("backend workflow events must be mappings")
+          if head_backend_events.get("push") != base_backend_events.get("push"):
+              raise ValueError("protected backend push trigger changed")
+          base_validation = base_backend_payload.get("jobs", {}).get("backend-validation", {})
+          head_validation = head_backend_payload.get("jobs", {}).get("backend-validation", {})
+          if not isinstance(base_validation, dict) or not isinstance(head_validation, dict):
+              raise ValueError("backend validation job must be a mapping")
+          protected_step_name = "Run code and architecture governance"
+          base_steps = base_validation.get("steps")
+          head_steps = head_validation.get("steps")
+          if not isinstance(base_steps, list) or not isinstance(head_steps, list):
+              raise ValueError("backend validation steps must be lists")
+          base_protected = [step for step in base_steps if step.get("name") == protected_step_name]
+          head_protected = [step for step in head_steps if step.get("name") == protected_step_name]
+          if len(base_protected) != 1 or head_protected != base_protected:
+              raise ValueError("protected backend governance step changed")
           PY
           (
             cd "$GOVERNANCE_HEAD_WORKTREE"

@@ -56,6 +56,19 @@ FAILURE_TAXONOMY = {
     "infrastructure_failure": "A required local command or temporary worktree could not run.",
     "external_check": "A remote provider check needs fresh external evidence; do not rerun without positive infrastructure evidence.",
 }
+GOVERNANCE_INFRASTRUCTURE_ERROR_CODES = frozenset(
+    {"git_failed", "git_output_invalid", "not_git_repository"}
+)
+ARCHITECTURE_INFRASTRUCTURE_ERROR_CODES = frozenset(
+    {
+        "authority_source_unavailable",
+        "git_failed",
+        "git_object_missing",
+        "git_output_invalid",
+        "missing_ref",
+        "not_git_repository",
+    }
+)
 
 class ReadinessError(RuntimeError):
     """Describe one stable, user-actionable readiness failure."""
@@ -781,7 +794,11 @@ class PrePushReadiness:
             result["stages"].append(_stage("governance", command, "failed", governed, ruff=ruff))
             violation = _first_governance_failure(payload)
             raise ReadinessError(
-                "governance_violation",
+                _governance_failure_category(
+                    governed.returncode,
+                    violation["code"],
+                    infrastructure_codes=GOVERNANCE_INFRASTRUCTURE_ERROR_CODES,
+                ),
                 violation["code"],
                 violation["message"],
                 path=violation["path"],
@@ -838,10 +855,10 @@ class PrePushReadiness:
             stage.update(metadata)
             result["stages"].append(stage)
             failure = _first_architecture_failure(payload)
-            category = (
-                "infrastructure_failure"
-                if governed.returncode == 3 and failure["code"] in {"git_failed", "not_git_repository"}
-                else "governance_violation"
+            category = _governance_failure_category(
+                governed.returncode,
+                failure["code"],
+                infrastructure_codes=ARCHITECTURE_INFRASTRUCTURE_ERROR_CODES,
             )
             raise ReadinessError(
                 category,
@@ -1395,6 +1412,17 @@ def _first_architecture_failure(payload: dict[str, Any]) -> dict[str, str | None
         "message": "architecture governance failed",
         "path": None,
     }
+
+
+def _governance_failure_category(
+    returncode: int,
+    code: str | None,
+    *,
+    infrastructure_codes: frozenset[str],
+) -> str:
+    if returncode == 3 and code in infrastructure_codes:
+        return "infrastructure_failure"
+    return "governance_violation"
 
 
 def _new_result(authority_ref: str | None, base_ref: str | None, head_ref: str | None) -> dict[str, Any]:

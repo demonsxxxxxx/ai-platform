@@ -787,8 +787,11 @@ def test_pull_request_target_governance_is_immutable_and_never_executes_candidat
     )
     assert "class UniqueKeyLoader(yaml.BaseLoader):" in immutable_step
     assert 'for key in ("permissions", "concurrency", "env"):' in immutable_step
-    assert 'head_events.get("pull_request_target") != base_events.get("pull_request_target")' in immutable_step
-    assert 'head_jobs.get("trusted-governance") != base_jobs.get("trusted-governance")' in immutable_step
+    assert "if head_events != base_events:" in immutable_step
+    assert "if head_jobs != base_jobs:" in immutable_step
+    assert 'head_backend_events.get("push") != base_backend_events.get("push")' in immutable_step
+    assert 'protected_step_name = "Run code and architecture governance"' in immutable_step
+    assert "if len(base_protected) != 1 or head_protected != base_protected:" in immutable_step
     assert (
         'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
         in immutable_step

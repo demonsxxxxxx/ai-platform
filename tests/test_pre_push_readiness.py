@@ -417,6 +417,33 @@ def _readiness_module() -> ModuleType:
     return module
 
 
+@pytest.mark.parametrize(
+    ("returncode", "code", "infrastructure_codes", "expected"),
+    (
+        (3, "git_failed", frozenset({"git_failed"}), "infrastructure_failure"),
+        (3, "git_output_invalid", frozenset({"git_output_invalid"}), "infrastructure_failure"),
+        (3, "invalid_exception", frozenset({"git_failed"}), "governance_violation"),
+        (2, "git_failed", frozenset({"git_failed"}), "governance_violation"),
+    ),
+)
+def test_governance_failure_taxonomy_preserves_infrastructure_errors(
+    returncode: int,
+    code: str,
+    infrastructure_codes: frozenset[str],
+    expected: str,
+) -> None:
+    module = _readiness_module()
+
+    assert (
+        module._governance_failure_category(
+            returncode,
+            code,
+            infrastructure_codes=infrastructure_codes,
+        )
+        == expected
+    )
+
+
 class _CleanupRunner:
     def __init__(self, module: ModuleType, *, remove_returncode: int = 0) -> None:
         self.module = module
