@@ -863,7 +863,9 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         return ["profile-tool"]
 
     async def materialize_run_skill_manifests(*_args, **kwargs):
-        assert kwargs["skill_manifest_refs"] == manifest_refs
+        refs = kwargs["skill_manifest_refs"]
+        if refs != manifest_refs:
+            raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
         return [full_manifest]
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
@@ -890,6 +892,21 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
     assert len(replay_validation_calls) == 2
     assert replay_validation_calls[0]["source_identity"]["pinned_version"] == locked_version
     assert replay_validation_calls[1]["manifest_validation"]["pinned_version"] == locked_version
+
+    for invalid_refs in (
+        [manifest_refs[0], "unexpected"],
+        [manifest_refs[0], None],
+        "not-a-list",
+        None,
+    ):
+        source["input_json"]["skill_manifests"] = invalid_refs
+        with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+            await authority.reauthorize_pinned_run_for_replay(
+                object(),
+                principal=principal,
+                run_id="run-profile",
+            )
+    source["input_json"]["skill_manifests"] = manifest_refs
 
     async def reject_malformed_manifest(*_args, **_kwargs):
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")

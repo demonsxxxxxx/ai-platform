@@ -10341,7 +10341,11 @@ async def copy_run_as_new_task(
     )
     copied_skill_id = None if upgrade_legacy_chat_to_harness else source.get("skill_id")
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
-    skill_refs = source_execution_snapshot.get("skill_manifests") or []
+    skill_refs = (
+        source_execution_snapshot["skill_manifests"]
+        if "skill_manifests" in source_execution_snapshot
+        else []
+    )
     skill_manifests = await materialize_run_skill_manifests(
         conn,
         tenant_id=tenant_id,
@@ -10707,9 +10711,14 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
         ),
         "skill_version": skill_version if isinstance(skill_version, str) else None,
         "release_decision": dict(release_decision) if isinstance(release_decision, dict) else {},
-        "skill_manifests": [dict(item) for item in skill_manifests if isinstance(item, dict)]
-        if isinstance(skill_manifests, list)
-        else [],
+        "skill_manifests": (
+            [dict(item) for item in skill_manifests]
+            if isinstance(skill_manifests, list)
+            and all(isinstance(item, dict) for item in skill_manifests)
+            else skill_manifests
+            if "skill_manifests" in source
+            else []
+        ),
         "context_snapshot_id": context_snapshot_id if isinstance(context_snapshot_id, str) else None,
         "context_snapshot": dict(context_snapshot) if isinstance(context_snapshot, dict) else {},
         "model_id": model_id if isinstance(model_id, str) else None,

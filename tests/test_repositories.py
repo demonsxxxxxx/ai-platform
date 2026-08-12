@@ -1641,6 +1641,66 @@ def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_refs",
+    [
+        pytest.param("mixed-string", id="mixed-string"),
+        pytest.param("mixed-null", id="mixed-null"),
+        pytest.param("not-a-list", id="not-a-list"),
+        pytest.param(None, id="null"),
+    ],
+)
+async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_before_writes(
+    monkeypatch,
+    malformed_refs,
+):
+    source_manifest = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": [],
+    }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+    transported_refs = {
+        "mixed-string": [source_ref, "unexpected"],
+        "mixed-null": [source_ref, None],
+        "not-a-list": "unexpected",
+        None: None,
+    }[malformed_refs]
+
+    async def source_run(conn, **kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "default",
+            "session_id": "ses-source",
+            "agent_id": "general-agent",
+            "skill_id": "department-review",
+            "principal_roles": ["reviewer"],
+            "principal_department_id": "qa",
+            "input_json": {
+                "input": {"message": "review"},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-v1",
+                "release_decision": {"selected_version": "hash-v1", "selected_track": "current"},
+                "skill_manifests": transported_refs,
+            },
+        }
+
+    monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+
+    with pytest.raises(RepositoryConflictError, match="run_skill_materialization_identity_mismatch"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
+        )
+
+
+@pytest.mark.asyncio
 async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writes(monkeypatch):
     source_manifest = {
         "skill_id": "department-review",
@@ -10467,7 +10527,14 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
             run_id="run-a",
             skill_manifest_refs=[{**refs[0], "materialization_sha256": "0" * 64}, refs[1]],
         )
-    for invalid in ([manifests[0]], [refs[0], manifests[1]]):
+    for invalid in (
+        [manifests[0]],
+        [refs[0], manifests[1]],
+        [refs[0], "unexpected"],
+        [refs[0], None],
+        "not-a-list",
+        None,
+    ):
         with pytest.raises(
             RepositoryConflictError,
             match="run_skill_materialization_identity_mismatch",
@@ -10830,6 +10897,20 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
         "schema_version": "ai-platform.run-payload.v1",
         "execution_kind": "skill",
     }
+
+
+@pytest.mark.parametrize(
+    "invalid_manifests",
+    ([{"skill_id": "general-chat"}, "unexpected"], [{"skill_id": "general-chat"}, None], "not-a-list", None),
+)
+def test_copied_run_execution_snapshot_preserves_invalid_manifest_transport_for_strict_validation(
+    invalid_manifests,
+):
+    snapshot = repositories.copied_run_execution_snapshot(
+        {"skill_manifests": invalid_manifests}
+    )
+
+    assert snapshot["skill_manifests"] == invalid_manifests
 
 
 @pytest.mark.asyncio

@@ -946,11 +946,11 @@ class AgentProfileAuthority:
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
-                    skill_manifest_refs=[
-                        dict(item)
-                        for item in snapshot.get("skill_manifests", [])
-                        if isinstance(item, dict)
-                    ],
+                    skill_manifest_refs=(
+                        snapshot["skill_manifests"]
+                        if "skill_manifests" in snapshot
+                        else []
+                    ),
                 )
             except repositories.RepositoryConflictError as exc:
                 raise repositories.RepositoryConflictError(
