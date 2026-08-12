@@ -121,16 +121,16 @@ def test_required_backend_job_collects_linux_special_node_contract() -> None:
             encoding="utf-8"
         )
     )
-    sandbox_job = workflow["jobs"]["sandbox-provider"]
-    targeted_step = next(
-        step
-        for step in sandbox_job["steps"]
-        if step.get("name") == "Run sandbox provider targeted tests"
+    backend_tests = workflow["jobs"]["backend-tests"]
+    release_shard = next(
+        shard
+        for shard in backend_tests["strategy"]["matrix"]["include"]
+        if shard["shard"] == "release-governance"
     )
 
-    assert sandbox_job["runs-on"] == "ubuntu-latest"
-    assert targeted_step["run"].count("tests/test_s72_release_contract.py") == 1
-    assert "sandbox-provider" in workflow["jobs"]["required"]["needs"]
+    assert backend_tests["runs-on"] == "ubuntu-latest"
+    assert release_shard["test_files"].split().count("tests/test_s72_release_contract.py") == 1
+    assert "backend-tests" in workflow["jobs"]["required"]["needs"]
 
 
 def test_invalid_commit_fails_before_source_or_env_access(tmp_path: Path) -> None:

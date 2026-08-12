@@ -31,7 +31,7 @@ from app.skills.catalog import (
     load_runtime_authorized_skill_catalog,
     resolve_authorized_skill_catalog,
 )
-from app.skills.pinning import build_skill_version_manifest_pin
+from app.skills.pinning import build_skill_manifest_ref, build_skill_version_manifest_pin
 from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
 from app.worker import (
     _builtin_capability_subjects,
@@ -585,6 +585,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
 
 def _worker_dispatch_fixture(execution_input: dict[str, Any]):
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
+    primary_manifest_ref = build_skill_manifest_ref(primary_manifest)
     primary_version = str(primary_manifest["version"])
     payload = QueueRunPayload(
         tenant_id="tenant-a",
@@ -602,7 +603,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
             "selected_version": primary_version,
             "selected_track": "manifest_pin",
         },
-        skill_manifests=[primary_manifest],
+        skill_manifests=[primary_manifest_ref],
         input=execution_input,
     )
     stored = payload.model_dump(mode="python")
@@ -637,10 +638,10 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
     }
     raw = payload.model_dump(mode="python")
     raw[QUEUE_ATTEMPT_ID_FIELD] = "attempt-a"
-    return raw, locked_run
+    return raw, locked_run, primary_manifest
 
 
-def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
+def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls):
     @asynccontextmanager
     async def transaction():
         yield object()
@@ -665,6 +666,14 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
         calls.append(("audit", kwargs))
         return "audit-a"
 
+    async def materialize_run_skill_manifests(_conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "skill_manifest_refs": [build_skill_manifest_ref(primary_manifest)],
+        }
+        return [primary_manifest]
+
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs))
         return None
@@ -675,6 +684,10 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.worker.repositories.materialize_run_skill_manifests",
+        materialize_run_skill_manifests,
+    )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
 
@@ -704,9 +717,9 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch,
     execution_input,
 ):
-    raw, locked_run = _worker_dispatch_fixture(execution_input)
+    raw, locked_run, primary_manifest = _worker_dispatch_fixture(execution_input)
     calls: list[tuple[str, Any]] = []
-    _install_dispatch_failure_fakes(monkeypatch, locked_run, calls)
+    _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls)
 
     async def unavailable_current_principal(**_kwargs):
         calls.append(("current_principal", None))
@@ -759,9 +772,11 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
     distribution,
     expected_reason,
 ):
-    raw, locked_run = _worker_dispatch_fixture({"copied_from_run_id": "source-run"})
+    raw, locked_run, primary_manifest = _worker_dispatch_fixture(
+        {"copied_from_run_id": "source-run"}
+    )
     calls: list[tuple[str, Any]] = []
-    _install_dispatch_failure_fakes(monkeypatch, locked_run, calls)
+    _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls)
 
     async def current_principal(**_kwargs):
         return AuthPrincipal(

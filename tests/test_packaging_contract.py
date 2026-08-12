@@ -108,10 +108,25 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]
 
     backend_image = backend.split("  backend-image:", 1)[1].split("  required:", 1)[0]
+    backend_validation = backend.split("  backend-validation:", 1)[1].split(
+        "  backend-tests:", 1
+    )[0]
+    backend_tests = backend.split("  backend-tests:", 1)[1].split(
+        "  agent-skill-contracts:", 1
+    )[0]
+    agent_skill_contracts = backend.split("  agent-skill-contracts:", 1)[1].split(
+        "  backend-image:", 1
+    )[0]
     frontend_image = frontend.split("  frontend-image:", 1)[1].split("  required:", 1)[
         0
     ]
-    assert backend.count("persist-credentials: false") == 2
+    for backend_job in (
+        backend_validation,
+        backend_tests,
+        agent_skill_contracts,
+        backend_image,
+    ):
+        assert backend_job.count("persist-credentials: false") == 1
     assert frontend.count("persist-credentials: false") == 2
     assert (
         frontend.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}")

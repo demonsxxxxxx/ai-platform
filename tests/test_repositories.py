@@ -1641,7 +1641,19 @@ def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
 
 
 @pytest.mark.asyncio
-async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writes(monkeypatch):
+@pytest.mark.parametrize(
+    "malformed_refs",
+    [
+        pytest.param("mixed-string", id="mixed-string"),
+        pytest.param("mixed-null", id="mixed-null"),
+        pytest.param("not-a-list", id="not-a-list"),
+        pytest.param(None, id="null"),
+    ],
+)
+async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_before_writes(
+    monkeypatch,
+    malformed_refs,
+):
     source_manifest = {
         "skill_id": "department-review",
         "version": "hash-v1",
@@ -1651,6 +1663,13 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
         "dependency_ids": [],
         "mcp_tool_ids": [],
     }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+    transported_refs = {
+        "mixed-string": [source_ref, "unexpected"],
+        "mixed-null": [source_ref, None],
+        "not-a-list": "unexpected",
+        None: None,
+    }[malformed_refs]
 
     async def source_run(conn, **kwargs):
         return {
@@ -1666,9 +1685,54 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
                 "executor_type": "claude-agent-worker",
                 "skill_version": "hash-v1",
                 "release_decision": {"selected_version": "hash-v1", "selected_track": "current"},
-                "skill_manifests": [source_manifest],
+                "skill_manifests": transported_refs,
             },
         }
+
+    monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+
+    with pytest.raises(RepositoryConflictError, match="run_skill_materialization_identity_mismatch"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
+        )
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writes(monkeypatch):
+    source_manifest = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": [],
+    }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+
+    async def source_run(conn, **kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "default",
+            "session_id": "ses-source",
+            "agent_id": "general-agent",
+            "skill_id": "department-review",
+            "principal_roles": ["reviewer"],
+            "principal_department_id": "qa",
+            "input_json": {
+                "input": {"message": "review"},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-v1",
+                "release_decision": {"selected_version": "hash-v1", "selected_track": "current"},
+                "skill_manifests": [source_ref],
+            },
+        }
+
+    async def materialize(*args, **kwargs):
+        return [source_manifest]
 
     async def mismatch(*args, **kwargs):
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
@@ -1677,6 +1741,7 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
         raise AssertionError("source snapshot mismatch must deny before replay authorization or writes")
 
     monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+    monkeypatch.setattr(repositories, "materialize_run_skill_manifests", materialize)
     monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", mismatch)
     monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbidden_replay)
 
@@ -1709,6 +1774,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "selected_version": "hash-v1",
         "selected_track": "current",
     }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
     source = {
         "id": "run-source",
         "tenant_id": "tenant-a",
@@ -1726,7 +1792,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-v1",
             "release_decision": source_release,
-            "skill_manifests": [source_manifest],
+            "skill_manifests": [source_ref],
         },
     }
     calls = {}
@@ -1758,7 +1824,28 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     monkeypatch.setattr(repositories, "append_message", no_write)
     monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", insert_snapshots)
 
-    conn = RecordingConnection()
+    class MaterializationCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": source_manifest["skill_id"],
+                    "materialization_sha256": source_ref[
+                        "materialization_sha256"
+                    ],
+                    "manifest_json": source_manifest,
+                }
+            ]
+
+    class MaterializationConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "from run_skill_materializations" in normalized:
+                self.calls.append((normalized, params))
+                assert params == ("tenant-a", "run-source")
+                return MaterializationCursor()
+            return await super().execute(sql, params)
+
+    conn = MaterializationConnection()
     copied = await repositories.copy_run_as_new_task(
         conn,
         tenant_id="tenant-a",
@@ -1774,7 +1861,9 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert calls["snapshots"]["skill_manifests"] == [source_manifest]
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
-    assert copied["skill_manifests"] == [source_manifest]
+    assert copied["skill_manifests"] == repositories.skill_manifest_refs([source_manifest])
+    assert "files" not in copied["skill_manifests"][0]
+    assert "content_base64" not in json.dumps(copied["skill_manifests"])
     assert copied["file_ids"] == ["file-prior"]
     assert not any(sql.startswith("update files") for sql, _params in conn.calls)
 
@@ -10318,6 +10407,11 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
     assert "snapshot_governance" in serialized_params
     assert "content_base64" not in serialized_params
     assert "storage_key" not in serialized_params
+    materialization_sql, materialization_params = conn.calls[1]
+    assert "insert into run_skill_materializations" in materialization_sql
+    assert materialization_params[:3] == ("tenant-a", "run-a", "department-review")
+    assert len(materialization_params[3]) == 64
+    assert "content_base64" in materialization_params[4]
 
 
 @pytest.mark.asyncio
@@ -10349,8 +10443,8 @@ async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_exe
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
 
-    assert len(conn.calls) == 2
-    dependency_source = json.loads(conn.calls[1][1][6])
+    assert len(conn.calls) == 4
+    dependency_source = json.loads(conn.calls[2][1][6])
     assert dependency_source["mcp_tool_ids"] == []
 
 
@@ -10374,6 +10468,106 @@ async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable
             ],
             release_decision={"selected_version": "hash-v1", "selected_track": "current"},
         )
+
+
+@pytest.mark.asyncio
+async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift():
+    manifests = [
+        {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "source": {"kind": "builtin"},
+            "files": [
+                {"relative_path": "SKILL.md", "content_base64": encoded, "size_bytes": 5}
+            ],
+            "dependency_ids": [],
+        }
+        for skill_id, version, encoded in (
+            ("primary", "hash-primary", "c2tpbGw="),
+            ("dependency", "hash-dependency", "aGVscGU="),
+        )
+    ]
+    refs = repositories.skill_manifest_refs(manifests)
+
+    class Cursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": item["skill_id"],
+                    "materialization_sha256": repositories.skill_manifest_materialization_sha256(
+                        item
+                    ),
+                    "manifest_json": item,
+                }
+                for item in reversed(manifests)
+            ]
+
+    class Connection:
+        async def execute(self, sql, params):
+            assert "from run_skill_materializations" in sql
+            assert params == ("tenant-a", "run-a")
+            return Cursor()
+
+    loaded = await repositories.materialize_run_skill_manifests(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_manifest_refs=refs,
+    )
+
+    assert [item["skill_id"] for item in loaded] == ["primary", "dependency"]
+    with pytest.raises(
+        RepositoryConflictError,
+        match="run_skill_materialization_identity_mismatch",
+    ):
+        await repositories.materialize_run_skill_manifests(
+            Connection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            skill_manifest_refs=[{**refs[0], "materialization_sha256": "0" * 64}, refs[1]],
+        )
+    for invalid in (
+        [manifests[0]],
+        [refs[0], manifests[1]],
+        [refs[0], "unexpected"],
+        [refs[0], None],
+        "not-a-list",
+        None,
+    ):
+        with pytest.raises(
+            RepositoryConflictError,
+            match="run_skill_materialization_identity_mismatch",
+        ):
+            await repositories.materialize_run_skill_manifests(
+                Connection(),
+                tenant_id="tenant-a",
+                run_id="run-a",
+                skill_manifest_refs=invalid,
+            )
+
+
+def test_skill_manifest_transport_is_always_reference_only():
+    manifest = {
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-primary",
+        "content_hash": "hash-primary",
+        "source": {"kind": "builtin"},
+        "files": [
+            {
+                "relative_path": "SKILL.md",
+                "content_base64": "c2tpbGw=",
+                "size_bytes": 5,
+            }
+        ],
+        "dependency_ids": [],
+    }
+
+    references = repositories.skill_manifest_refs([manifest])
+
+    assert references == repositories.skill_manifest_refs([manifest])
+    assert "files" not in references[0]
+    assert "content_base64" not in json.dumps(references)
 
 
 @pytest.mark.asyncio
@@ -10703,6 +10897,20 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
         "schema_version": "ai-platform.run-payload.v1",
         "execution_kind": "skill",
     }
+
+
+@pytest.mark.parametrize(
+    "invalid_manifests",
+    ([{"skill_id": "general-chat"}, "unexpected"], [{"skill_id": "general-chat"}, None], "not-a-list", None),
+)
+def test_copied_run_execution_snapshot_preserves_invalid_manifest_transport_for_strict_validation(
+    invalid_manifests,
+):
+    snapshot = repositories.copied_run_execution_snapshot(
+        {"skill_manifests": invalid_manifests}
+    )
+
+    assert snapshot["skill_manifests"] == invalid_manifests
 
 
 @pytest.mark.asyncio

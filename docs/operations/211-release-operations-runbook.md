@@ -257,6 +257,19 @@ and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
 it performs one `--no-build --pull never` up of the saved previous subject;
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
 
+The backend artifact also contains the OpenSandbox executor application. The
+quickstart binds `OPENSANDBOX_EXECUTOR_IMAGE` and its digest to that exact
+immutable backend subject, pulls it on the s72 Docker host before startup, and
+requires a successful local image inspection. This is a host-side cache warmup,
+not an OpenSandbox fork or server modification. A multi-node OpenSandbox runtime
+must perform the same digest-bound pull on every node that may create a sandbox.
+
+Skill packages are stored only in the private `run_skill_materializations`
+table. Run input and Redis carry bounded digest-bound references; create, copy,
+retry, and resume reject full or mixed manifest payloads. This is a hard
+cutover: unfinished legacy Skill runs without private materializations cannot be
+resumed after deployment and must be submitted again.
+
 `ci_success` is the controller's admission result; the quickstart does not
 replace the controller's exact-run CI and packaging verification. Keep the
 selected managed env path stable across successive releases. The small image

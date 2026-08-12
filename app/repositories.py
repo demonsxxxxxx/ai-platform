@@ -82,7 +82,10 @@ from app.skills.execution_profiles import (
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
     SkillVersionMaterializationError,
+    build_skill_manifest_refs,
     build_skill_snapshot_governance,
+    skill_manifest_materialization_sha256,
+    validate_skill_manifest_refs,
 )
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import evaluate_tool_policy, max_risk
@@ -8047,6 +8050,110 @@ async def insert_run_skill_snapshots_at_creation(
         )
         if await cursor.fetchone() is None:
             raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+        materialization_sha256 = skill_manifest_materialization_sha256(manifest)
+        materialized = await conn.execute(
+            """
+            insert into run_skill_materializations(
+              tenant_id, run_id, skill_id, materialization_sha256, manifest_json
+            )
+            values (%s, %s, %s, %s, %s::jsonb)
+            on conflict (tenant_id, run_id, skill_id) do nothing
+            returning skill_id
+            """,
+            (
+                tenant_id,
+                run_id,
+                skill_id,
+                materialization_sha256,
+                dumps_json(manifest),
+            ),
+        )
+        if await materialized.fetchone() is None:
+            raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+
+
+def skill_manifest_refs(skill_manifests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the only Skill package form permitted in run input and Redis."""
+
+    try:
+        return build_skill_manifest_refs(skill_manifests)
+    except SkillVersionMaterializationError as exc:
+        raise RepositoryConflictError("run_skill_materialization_identity_mismatch") from exc
+
+
+def _materialization_refs_match(
+    refs: list[dict[str, Any]],
+    manifests: list[dict[str, Any]],
+) -> bool:
+    try:
+        return build_skill_manifest_refs(manifests) == refs
+    except SkillVersionMaterializationError:
+        return False
+
+
+async def materialize_run_skill_manifests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    skill_manifest_refs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Load exact private packages for bounded, digest-bound references."""
+
+    try:
+        exact_refs = validate_skill_manifest_refs(skill_manifest_refs)
+    except SkillVersionMaterializationError:
+        raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+    if not exact_refs:
+        return []
+    cursor = await conn.execute(
+        """
+        select skill_id, materialization_sha256, manifest_json
+        from run_skill_materializations
+        where tenant_id = %s and run_id = %s
+        order by skill_id asc
+        """,
+        (tenant_id, run_id),
+    )
+    manifests_by_id: dict[str, dict[str, Any]] = {}
+    for row in await cursor.fetchall():
+        manifest = row.get("manifest_json")
+        if isinstance(manifest, str):
+            try:
+                manifest = json.loads(manifest)
+            except json.JSONDecodeError as exc:
+                raise RepositoryConflictError(
+                    "run_skill_materialization_identity_mismatch"
+                ) from exc
+        row_skill_id = str(row.get("skill_id") or "")
+        try:
+            materialization_sha256 = (
+                skill_manifest_materialization_sha256(manifest)
+                if isinstance(manifest, dict)
+                else ""
+            )
+        except SkillVersionMaterializationError as exc:
+            raise RepositoryConflictError(
+                "run_skill_materialization_identity_mismatch"
+            ) from exc
+        if (
+            not isinstance(manifest, dict)
+            or str(manifest.get("skill_id") or "") != row_skill_id
+            or materialization_sha256 != str(row.get("materialization_sha256") or "")
+            or row_skill_id in manifests_by_id
+        ):
+            raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+        manifests_by_id[row_skill_id] = dict(manifest)
+    manifests = [
+        manifests_by_id.get(str(ref.get("skill_id") or ""))
+        for ref in exact_refs
+    ]
+    if any(manifest is None for manifest in manifests):
+        raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+    exact_manifests = [manifest for manifest in manifests if manifest is not None]
+    if not _materialization_refs_match(exact_refs, exact_manifests):
+        raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+    return exact_manifests
 
 
 async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
@@ -10176,7 +10283,13 @@ async def classify_success_commit_block(conn: AsyncConnection, *, tenant_id: str
     return "stale_terminal_state"
 
 
-async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
+async def copy_run_as_new_task(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
     if source is None:
         return None
@@ -10228,11 +10341,23 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     )
     copied_skill_id = None if upgrade_legacy_chat_to_harness else source.get("skill_id")
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
-    skill_manifests = source_execution_snapshot.get("skill_manifests") or []
+    skill_refs = (
+        source_execution_snapshot["skill_manifests"]
+        if "skill_manifests" in source_execution_snapshot
+        else []
+    )
+    skill_manifests = await materialize_run_skill_manifests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        skill_manifest_refs=skill_refs,
+    )
+    skill_transport = skill_manifest_refs(skill_manifests)
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
     executor_type = str(source_execution_snapshot.get("executor_type") or "")
     if upgrade_legacy_chat_to_harness:
         skill_version = None
+        skill_transport = []
         skill_manifests = []
         release_decision_payload = {}
         executor_type = HARNESS_CHAT_EXECUTOR_TYPE
@@ -10314,7 +10439,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         executor_type=executor_type,
         skill_version=skill_version,
         release_decision=release_decision_payload,
-        skill_manifests=skill_manifests,
+        skill_manifests=skill_transport,
         context_snapshot_id=None,
         context_snapshot={},
         schema_version=(
@@ -10421,7 +10546,13 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     }
 
 
-async def retry_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
+async def retry_run_as_new_task(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
         return None
@@ -10436,7 +10567,12 @@ async def retry_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_i
     )
     if active_retry is not None:
         raise RepositoryConflictError("retry_already_active")
-    copied = await copy_run_as_new_task(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+    copied = await copy_run_as_new_task(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+    )
     if copied is None:
         return None
     await append_event(
@@ -10475,7 +10611,13 @@ async def retry_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_i
     return copied
 
 
-async def resume_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
+async def resume_run_as_new_task(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
     """Create a queued resume child run from a non-active source with reusable output."""
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
@@ -10498,7 +10640,12 @@ async def resume_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_
     )
     if active_resume is not None:
         raise RepositoryConflictError("resume_already_active")
-    copied = await copy_run_as_new_task(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+    copied = await copy_run_as_new_task(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+    )
     if copied is None:
         return None
     await append_event(
@@ -10564,9 +10711,14 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
         ),
         "skill_version": skill_version if isinstance(skill_version, str) else None,
         "release_decision": dict(release_decision) if isinstance(release_decision, dict) else {},
-        "skill_manifests": [dict(item) for item in skill_manifests if isinstance(item, dict)]
-        if isinstance(skill_manifests, list)
-        else [],
+        "skill_manifests": (
+            [dict(item) for item in skill_manifests]
+            if isinstance(skill_manifests, list)
+            and all(isinstance(item, dict) for item in skill_manifests)
+            else skill_manifests
+            if "skill_manifests" in source
+            else []
+        ),
         "context_snapshot_id": context_snapshot_id if isinstance(context_snapshot_id, str) else None,
         "context_snapshot": dict(context_snapshot) if isinstance(context_snapshot, dict) else {},
         "model_id": model_id if isinstance(model_id, str) else None,

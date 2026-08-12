@@ -92,6 +92,7 @@ from app.skills.pinning import (
     build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
+    validate_skill_manifest_refs,
 )
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
@@ -193,7 +194,9 @@ def _available_builtin_skill_ids_for_policy() -> set[str]:
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return QueueRunPayload.model_validate(payload).model_dump(mode="json")
+        validated = QueueRunPayload.model_validate(payload)
+        validate_skill_manifest_refs(validated.skill_manifests)
+        return validated.model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
 
@@ -630,7 +633,13 @@ async def prepare_copied_run_for_queue(
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
-    skill_manifests = copied_snapshot["skill_manifests"]
+    skill_manifest_refs = copied_snapshot["skill_manifests"]
+    skill_manifests = await repositories.materialize_run_skill_manifests(
+        conn,
+        tenant_id=effective_principal.tenant_id,
+        run_id=str(copied["run_id"]),
+        skill_manifest_refs=skill_manifest_refs,
+    )
     copied_skill_id = copied.get("skill_id")
     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         if copied_skill_id is not None:
@@ -736,7 +745,7 @@ async def prepare_copied_run_for_queue(
             **copied_snapshot,
             "skill_version": copied_skill_version,
             "release_decision": copied["release_decision"],
-            "skill_manifests": skill_manifests,
+            "skill_manifests": skill_manifest_refs,
             "context_snapshot_id": context_ref["context_snapshot_id"],
             "context_snapshot": context_ref,
         }
@@ -920,6 +929,7 @@ async def create_run(
                 skill_version = None
                 release_decision_payload = {}
                 skill_manifests = []
+            skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             base_queue_payload = {
@@ -936,7 +946,7 @@ async def create_run(
                 "executor_type": executor_type,
                 "skill_version": skill_version,
                 "release_decision": release_decision_payload,
-                "skill_manifests": skill_manifests,
+                "skill_manifests": skill_manifest_transport,
                 **(
                     {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -1006,7 +1016,7 @@ async def create_run(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
-                    skill_manifests=queue_payload["skill_manifests"],
+                    skill_manifests=skill_manifests,
                     release_decision=release_decision_payload,
                 )
             await repositories.bind_files_to_run(
