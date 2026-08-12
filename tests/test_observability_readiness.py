@@ -406,6 +406,9 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "controlled_host_runtime_smoke": [
             "runtime_subject_commit_sha",
         ],
+        "controlled_host_memory_enabled_document_workflow_smoke": [
+            "runtime_subject_commit_sha",
+        ],
         "211_runtime_smoke": [
             "runtime_subject_commit_sha",
         ],
@@ -427,6 +430,7 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
     }
     assert readiness["evidence_contract"]["accepted_artifact_kinds"] == [
         "controlled_host_runtime_smoke",
+        "controlled_host_memory_enabled_document_workflow_smoke",
         "211_runtime_smoke",
         "capacity_gate_readiness",
         "frontend_packaged_runtime_smoke",

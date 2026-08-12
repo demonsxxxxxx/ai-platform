@@ -50,6 +50,9 @@ _CONDITIONAL_FIELDS = {
     "controlled_host_runtime_smoke": [
         "runtime_subject_commit_sha",
     ],
+    "controlled_host_memory_enabled_document_workflow_smoke": [
+        "runtime_subject_commit_sha",
+    ],
     "211_runtime_smoke": [
         "runtime_subject_commit_sha",
     ],
@@ -81,6 +84,7 @@ _FORBIDDEN_MARKER_CLASSES = [
 ]
 _ACCEPTED_ARTIFACT_KINDS = [
     "controlled_host_runtime_smoke",
+    "controlled_host_memory_enabled_document_workflow_smoke",
     "211_runtime_smoke",
     "capacity_gate_readiness",
     "frontend_packaged_runtime_smoke",

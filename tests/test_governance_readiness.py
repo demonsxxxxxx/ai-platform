@@ -231,6 +231,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "executor_context_pack_injection" not in domains["memory_governance"]["gaps"]
     assert "document_centric_followup_state" not in domains["memory_governance"]["gaps"]
     assert "executor_context_pack_runtime_acceptance" in domains["memory_governance"]["gaps"]
+    assert (
+        "record controlled-host executor context-pack acceptance before closing #22"
+        in domains["memory_governance"]["next_checks"]
+    )
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split_runtime_acceptance" in domains["memory_governance"]["gaps"]
@@ -332,8 +336,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "ai-platform.executor-context-pack-runtime-acceptance.v1"
     )
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["target"] == (
-        "controlled_runtime_source_probe"
+        "controlled_worker_runtime"
     )
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
+        "source_probe_schema_version"
+    ] == "ai-platform.executor-context-pack-probe.v2"
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
+        "runtime_acceptance_schema_version"
+    ] == "ai-platform.executor-context-pack-runtime-acceptance.v2"
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["generator_script"] == (
         "scripts/generate_executor_context_pack_evidence.py"
     )
@@ -345,8 +355,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         == "source_probe_on_target_runtime"
     )
     assert (
-        context_evidence["executor_context_pack_runtime_acceptance_contract"]["required_live_evidence_strength"]
-        == "live_worker_run_payload"
+        context_evidence["executor_context_pack_runtime_acceptance_contract"]["required_runtime_evidence_strength"]
+        == "observed_worker_dispatch_with_scoped_context_reconstruction"
     )
     assert "accepted_evidence_strength" not in context_evidence["executor_context_pack_runtime_acceptance_contract"]
     assert (
@@ -355,7 +365,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     )
     assert (
         context_evidence["executor_context_pack_runtime_acceptance_contract"][
-            "runtime_acceptance_requires_real_run_payload"
+            "runtime_acceptance_requires_observed_worker_dispatch"
         ]
         is True
     )
@@ -371,7 +381,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "app.worker._context_snapshot_ref_from_row" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["source_functions"]
-    assert "live_worker_run_payload" in context_evidence[
+    assert "observed_worker_dispatch" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
     assert "scoped_context_snapshot_loaded" in context_evidence[

@@ -171,7 +171,7 @@ def build_governance_readiness(
         "use tools/office_context_readiness.py to keep the office context-pack source contract, prompt injection tests, and sandbox latency split contract current",
         "keep context snapshot public provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and generated time",
     ]
-    if "executor_context_pack_runtime_source_probe" in office_context_readiness["open_gaps"]:
+    if "executor_context_pack_runtime_acceptance" in office_context_readiness["open_gaps"]:
         office_context_next_checks.append("record controlled-host executor context-pack acceptance before closing #22")
     else:
         office_context_next_checks.append("keep reviewed controlled-host executor context-pack evidence under regression")

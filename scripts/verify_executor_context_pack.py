@@ -1,9 +1,10 @@
-"""Verify redacted executor context-pack reconstruction evidence.
+"""Verify redacted executor context-pack source or worker-run evidence.
 
 This verifier accepts only a redacted evidence payload that proves the worker
-prompt consumed the bounded executor context pack without exposing private
-storage identifiers, sandbox runtime paths, or executor-private content. It is
-not a live worker-run acceptance verifier by itself.
+prompt reconstruction consumed the bounded executor context pack without exposing private
+storage identifiers, sandbox runtime paths, or executor-private content. Live
+acceptance additionally requires a succeeded run and ordered durable worker
+start/success events. It never claims capture of the private dispatch payload.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-EVIDENCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
+SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
+RUNTIME_ACCEPTANCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-runtime-acceptance.v2"
 SOURCE_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 
 REQUIRED_SOURCE_FUNCTIONS = [
@@ -58,6 +60,30 @@ REQUIRED_LIVE_RUN_CHECKS = [
     "scoped_context_snapshot_loaded",
     "worker_context_ref_rebuilt_from_db_snapshot",
     "context_pack_schema_present",
+]
+REQUIRED_WORKER_DISPATCH_CHECKS = [
+    "run_status_succeeded",
+    "worker_started_event_present",
+    "run_succeeded_event_present",
+    "worker_events_ordered",
+]
+REQUIRED_RUNTIME_EVIDENCE = [
+    "observed_worker_dispatch",
+    "run_row_loaded",
+    "context_snapshot_id_present",
+    "scoped_context_snapshot_loaded",
+    "worker_context_ref_rebuilt_from_db_snapshot",
+    "prompt_includes_bounded_summary",
+    "prompt_includes_context_pack_version",
+    "prompt_includes_context_pack_generated_at",
+    "raw_storage_identifiers_absent",
+    "sandbox_runtime_paths_absent",
+    "executor_private_content_absent",
+    "long_term_memory_read_false",
+    "source_run_material_scope_tenant_workspace_user_session",
+    "source_run_material_count_positive",
+    "fresh_generated_at",
+    "source_functions_bound_to_current_runtime",
 ]
 FORBIDDEN_PUBLIC_CONTEXT_INPUT_KEY_ALIASES = {
     "copiedfromrunid",
@@ -163,33 +189,64 @@ def _non_expansion_error(evidence: dict[str, Any]) -> str | None:
     return None
 
 
-def _reconstruction_error(evidence: dict[str, Any]) -> str | None:
+def _evidence_boundary_error(
+    evidence: dict[str, Any],
+    *,
+    require_observed_worker_dispatch: bool,
+) -> str | None:
     strength = evidence.get("evidence_strength")
     if strength == "source_probe_on_target_runtime":
         if evidence.get("reconstruction_source") != "synthetic_source_probe":
             return "source-probe reconstruction source mismatch"
-    elif strength == "scoped_runtime_reconstruction":
-        if evidence.get("reconstruction_source") != "durable_run_snapshot":
-            return "scoped reconstruction source mismatch"
+        if require_observed_worker_dispatch:
+            return "observed worker-dispatch evidence required"
+        if evidence.get("does_not_close_runtime_acceptance") is not True:
+            return "runtime acceptance boundary missing"
+        if evidence.get("runtime_acceptance_requires_observed_worker_dispatch") is not True:
+            return "observed worker-dispatch requirement missing"
+        if evidence.get("observed_worker_dispatch") is not False:
+            return "source evidence must not claim an observed worker dispatch"
+        return None
+    if strength == "observed_worker_dispatch_with_scoped_context_reconstruction":
+        if evidence.get("reconstruction_source") != "persisted_worker_event_ledger":
+            return "worker dispatch evidence source mismatch"
+        if evidence.get("does_not_close_runtime_acceptance") is not False:
+            return "live evidence must be allowed to close runtime acceptance"
+        if evidence.get("runtime_run_payload_verified") is not False:
+            return "worker-dispatch reconstruction must not claim captured run payload"
+        if evidence.get("observed_worker_dispatch") is not True:
+            return "observed worker dispatch missing"
         live_checks = evidence.get("live_run_checks")
         if not isinstance(live_checks, dict):
             return "live_run_checks evidence missing"
         missing = [field for field in REQUIRED_LIVE_RUN_CHECKS if live_checks.get(field) is not True]
         if missing:
             return f"live_run_checks missing or false: {', '.join(missing)}"
+        dispatch_checks = evidence.get("worker_dispatch_checks")
+        if not isinstance(dispatch_checks, dict):
+            return "worker_dispatch_checks evidence missing"
+        missing_dispatch = [
+            field for field in REQUIRED_WORKER_DISPATCH_CHECKS if dispatch_checks.get(field) is not True
+        ]
+        if missing_dispatch:
+            return f"worker_dispatch_checks missing or false: {', '.join(missing_dispatch)}"
+        runtime_evidence = evidence.get("runtime_evidence")
+        if not isinstance(runtime_evidence, dict):
+            return "runtime_evidence evidence missing"
+        missing_runtime = [
+            field for field in REQUIRED_RUNTIME_EVIDENCE if runtime_evidence.get(field) is not True
+        ]
+        if missing_runtime:
+            return f"runtime_evidence missing or false: {', '.join(missing_runtime)}"
+        return None
+    if strength == "scoped_runtime_reconstruction":
+        return "scoped runtime reconstruction is not an accepted evidence class"
     else:
         return "executor context evidence strength missing"
-    if evidence.get("does_not_close_runtime_acceptance") is not True:
-        return "runtime acceptance boundary missing"
-    if evidence.get("runtime_acceptance_requires_observed_worker_dispatch") is not True:
-        return "observed worker-dispatch requirement missing"
-    if evidence.get("observed_worker_dispatch") is not False:
-        return "reconstruction evidence must not claim an observed worker dispatch"
-    return None
 
 
 def _public_context_summary_error(evidence: dict[str, Any]) -> str | None:
-    if evidence.get("evidence_strength") != "scoped_runtime_reconstruction":
+    if evidence.get("evidence_strength") != "observed_worker_dispatch_with_scoped_context_reconstruction":
         return None
     public_summary = evidence.get("public_context_summary")
     if not isinstance(public_summary, dict):
@@ -217,7 +274,7 @@ def check_executor_context_pack_evidence(
     evidence_path: str | Path,
     *,
     run_id: str = "",
-    require_live_run_payload: bool = False,
+    require_observed_worker_dispatch: bool = False,
 ) -> CheckResult:
     evidence, error = _read_evidence(evidence_path)
     if error:
@@ -226,21 +283,24 @@ def check_executor_context_pack_evidence(
         return CheckResult("check_executor_context_pack_evidence", False, "run_id argument required")
     if evidence.get("run_id") != run_id:
         return CheckResult("check_executor_context_pack_evidence", False, "run_id evidence mismatch")
-    if evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+    expected_schema = (
+        RUNTIME_ACCEPTANCE_SCHEMA_VERSION
+        if evidence.get("evidence_strength")
+        == "observed_worker_dispatch_with_scoped_context_reconstruction"
+        else SOURCE_PROBE_SCHEMA_VERSION
+    )
+    if evidence.get("schema_version") != expected_schema:
         return CheckResult("check_executor_context_pack_evidence", False, "executor context evidence schema mismatch")
     if evidence.get("source_schema_version") != SOURCE_SCHEMA_VERSION:
         return CheckResult("check_executor_context_pack_evidence", False, "source schema mismatch")
     if evidence.get("runtime_mode") != "worker":
         return CheckResult("check_executor_context_pack_evidence", False, "worker runtime evidence missing")
-    if require_live_run_payload:
-        return CheckResult(
-            "check_executor_context_pack_evidence",
-            False,
-            "this verifier cannot establish observed worker-dispatch acceptance",
-        )
-    reconstruction_error = _reconstruction_error(evidence)
-    if reconstruction_error:
-        return CheckResult("check_executor_context_pack_evidence", False, reconstruction_error)
+    boundary_error = _evidence_boundary_error(
+        evidence,
+        require_observed_worker_dispatch=require_observed_worker_dispatch,
+    )
+    if boundary_error:
+        return CheckResult("check_executor_context_pack_evidence", False, boundary_error)
     freshness_error = _freshness_error(evidence)
     if freshness_error:
         return CheckResult("check_executor_context_pack_evidence", False, freshness_error)
@@ -266,8 +326,9 @@ def check_executor_context_pack_evidence(
     if invariants_error:
         return CheckResult("check_executor_context_pack_evidence", False, invariants_error)
     message = (
-        "executor context-pack scoped runtime reconstruction present"
-        if evidence.get("evidence_strength") == "scoped_runtime_reconstruction"
+        "executor context-pack observed worker-run evidence present"
+        if evidence.get("evidence_strength")
+        == "observed_worker_dispatch_with_scoped_context_reconstruction"
         else "executor context-pack source-probe evidence present"
     )
     return CheckResult("check_executor_context_pack_evidence", True, message)
@@ -293,7 +354,7 @@ def run_checks(checks: list[Callable[[], CheckResult]]) -> tuple[int, list[Check
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Verify ai-platform executor context-pack reconstruction evidence")
+    parser = argparse.ArgumentParser(description="Verify ai-platform executor context-pack source or worker-run evidence")
     parser.add_argument(
         "--evidence-file",
         default=os.environ.get(
@@ -303,9 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--run-id", default=os.environ.get("AI_PLATFORM_EXECUTOR_CONTEXT_PACK_RUN_ID", ""))
     parser.add_argument(
-        "--require-live-run-payload",
+        "--require-observed-worker-dispatch",
         action="store_true",
-        help="Always fail: reconstruction evidence cannot establish an observed worker dispatch.",
+        help="Require a succeeded run with ordered durable worker dispatch events.",
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
     return parser
@@ -318,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             lambda: check_executor_context_pack_evidence(
                 args.evidence_file,
                 run_id=args.run_id,
-                require_live_run_payload=args.require_live_run_payload,
+                require_observed_worker_dispatch=args.require_observed_worker_dispatch,
             ),
             lambda: check_no_secret_leakage(args.evidence_file),
         ]
@@ -328,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         failed = [result.name for result in results if not result.passed]
         print(
-            "PASSED: executor context-pack source-probe verifier checks passed"
+            "PASSED: executor context-pack evidence verifier checks passed"
             if not failed
             else "FAILED: " + ", ".join(failed)
         )

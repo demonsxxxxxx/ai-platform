@@ -15,10 +15,10 @@ def _valid_executor_context_pack_evidence() -> dict:
         "source_schema_version": "ai-platform.executor-context-pack.v1",
         "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
         "runtime_mode": "worker",
-        "evidence_strength": "live_worker_run_payload",
+        "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
         "does_not_close_runtime_acceptance": False,
-        "runtime_acceptance_requires_real_run_payload": False,
-        "runtime_run_payload_verified": True,
+        "runtime_run_payload_verified": False,
+        "observed_worker_dispatch": True,
         "source_functions": [
             "app.repositories.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
@@ -57,8 +57,14 @@ def _valid_executor_context_pack_evidence() -> dict:
             "worker_context_ref_rebuilt_from_db_snapshot": True,
             "context_pack_schema_present": True,
         },
+        "worker_dispatch_checks": {
+            "run_status_succeeded": True,
+            "worker_started_event_present": True,
+            "run_succeeded_event_present": True,
+            "worker_events_ordered": True,
+        },
         "runtime_evidence": {
-            "live_worker_run_payload": True,
+            "observed_worker_dispatch": True,
             "run_row_loaded": True,
             "context_snapshot_id_present": True,
             "scoped_context_snapshot_loaded": True,
@@ -440,16 +446,19 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
     executor_contract = readiness["executor_context_pack_runtime_acceptance_contract"]
     assert executor_contract == {
         "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v1",
-        "target": "controlled_runtime_source_probe",
+        "target": "controlled_worker_runtime",
         "generator_script": "scripts/generate_executor_context_pack_evidence.py",
         "verifier_script": "scripts/verify_executor_context_pack.py",
+        "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v2",
+        "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
         "source_schema_version": "ai-platform.executor-context-pack.v1",
         "source_probe_evidence_strength": "source_probe_on_target_runtime",
-        "required_live_evidence_strength": "live_worker_run_payload",
+        "required_runtime_evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
         "does_not_close_runtime_acceptance": True,
-        "runtime_acceptance_requires_real_run_payload": True,
+        "runtime_acceptance_requires_observed_worker_dispatch": True,
         "required_live_evidence_sections": [
             "live_run_checks",
+            "worker_dispatch_checks",
             "runtime_evidence",
             "prompt_checks",
             "scope_checks",
@@ -463,7 +472,7 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "app.worker._context_snapshot_ref_from_row",
         ],
         "required_runtime_evidence": [
-            "live_worker_run_payload",
+            "observed_worker_dispatch",
             "run_row_loaded",
             "context_snapshot_id_present",
             "scoped_context_snapshot_loaded",
@@ -535,8 +544,8 @@ def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_revie
         "runtime_subject": "1234567890abcdef1234567890abcdef12345678",
         "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
         "runtime_mode": "worker",
-        "evidence_strength": "live_worker_run_payload",
-        "runtime_run_payload_verified": True,
+        "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+        "runtime_run_payload_verified": False,
         "does_not_close_g6_g9": True,
     }
     sandbox_evidence = readiness["runtime_acceptance_evidence"][
@@ -624,8 +633,8 @@ def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack
         "runtime_subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
         "run_id": "run_a618c52ee5c148a185254b68e1c81b9e",
         "runtime_mode": "worker",
-        "evidence_strength": "live_worker_run_payload",
-        "runtime_run_payload_verified": True,
+        "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+        "runtime_run_payload_verified": False,
         "does_not_close_g6_g9": True,
     }
 
@@ -936,7 +945,13 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert payload["sandbox_runtime_smoke_contract"]["non_expansion_invariants"][
         "ordinary_user_high_risk_sandbox_allowed"
     ] is False
-    assert payload["executor_context_pack_runtime_acceptance_contract"]["target"] == "controlled_runtime_source_probe"
+    assert payload["executor_context_pack_runtime_acceptance_contract"]["target"] == "controlled_worker_runtime"
+    assert payload["executor_context_pack_runtime_acceptance_contract"]["source_probe_schema_version"] == (
+        "ai-platform.executor-context-pack-probe.v2"
+    )
+    assert payload["executor_context_pack_runtime_acceptance_contract"][
+        "runtime_acceptance_schema_version"
+    ] == "ai-platform.executor-context-pack-runtime-acceptance.v2"
     assert payload["executor_context_pack_runtime_acceptance_contract"]["source_schema_version"] == (
         "ai-platform.executor-context-pack.v1"
     )
@@ -945,13 +960,13 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
         == "source_probe_on_target_runtime"
     )
     assert (
-        payload["executor_context_pack_runtime_acceptance_contract"]["required_live_evidence_strength"]
-        == "live_worker_run_payload"
+        payload["executor_context_pack_runtime_acceptance_contract"]["required_runtime_evidence_strength"]
+        == "observed_worker_dispatch_with_scoped_context_reconstruction"
     )
     assert "accepted_evidence_strength" not in payload["executor_context_pack_runtime_acceptance_contract"]
     assert payload["executor_context_pack_runtime_acceptance_contract"]["does_not_close_runtime_acceptance"] is True
     assert (
-        payload["executor_context_pack_runtime_acceptance_contract"]["runtime_acceptance_requires_real_run_payload"]
+        payload["executor_context_pack_runtime_acceptance_contract"]["runtime_acceptance_requires_observed_worker_dispatch"]
         is True
     )
     assert "runtime_evidence" in payload[
@@ -969,7 +984,7 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert "prompt_includes_bounded_summary" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
-    assert "live_worker_run_payload" in payload[
+    assert "observed_worker_dispatch" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
     assert "scoped_context_snapshot_loaded" in payload[

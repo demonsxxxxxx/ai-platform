@@ -57,7 +57,7 @@ def test_verifier_rejects_any_claim_of_observed_worker_dispatch(tmp_path):
     assert "boundary" in result.message or "must not claim" in result.message
 
 
-def test_live_payload_requirement_cannot_be_satisfied_by_reconstruction(tmp_path):
+def test_observed_dispatch_requirement_cannot_be_satisfied_by_source_probe(tmp_path):
     generator = load_generator()
     verifier = load_verifier()
     evidence_path = tmp_path / "executor-context-pack-evidence.json"
@@ -66,18 +66,18 @@ def test_live_payload_requirement_cannot_be_satisfied_by_reconstruction(tmp_path
     result = verifier.check_executor_context_pack_evidence(
         evidence_path,
         run_id="run-source",
-        require_live_run_payload=True,
+        require_observed_worker_dispatch=True,
     )
 
     assert result.passed is False
-    assert "cannot establish observed worker-dispatch acceptance" in result.message
+    assert "observed worker-dispatch evidence required" in result.message
 
 
-def test_scoped_runtime_reconstruction_accepts_zero_artifacts(monkeypatch, tmp_path):
+def test_observed_worker_run_accepts_zero_artifacts_when_message_context_is_present(monkeypatch, tmp_path):
     generator = load_generator()
     verifier = load_verifier()
 
-    class Cursor:
+    class RunCursor:
         async def fetchone(self):
             return {
                 "id": "run-live",
@@ -87,14 +87,25 @@ def test_scoped_runtime_reconstruction_accepts_zero_artifacts(monkeypatch, tmp_p
                 "session_id": "session-a",
                 "agent_id": "general-agent",
                 "skill_id": "general-chat",
+                "status": "succeeded",
                 "input_json": {"context_snapshot_id": "ctx-live"},
             }
 
+    class EventCursor:
+        async def fetchall(self):
+            return [
+                {"event_type": "worker_started", "stage": "worker", "sequence": 3},
+                {"event_type": "run_succeeded", "stage": "worker", "sequence": 9},
+            ]
+
     class Conn:
         async def execute(self, sql, params):
-            assert "from runs" in sql
-            assert params == ("run-live",)
-            return Cursor()
+            if "from runs" in sql:
+                assert params == ("run-live",)
+                return RunCursor()
+            assert "from run_events" in sql
+            assert params == ("tenant-a", "run-live")
+            return EventCursor()
 
     @asynccontextmanager
     async def fake_transaction():
@@ -144,7 +155,7 @@ def test_scoped_runtime_reconstruction_accepts_zero_artifacts(monkeypatch, tmp_p
     monkeypatch.setattr(generator.repositories, "get_context_snapshot_for_worker", fake_snapshot_loader)
 
     evidence = generator.asyncio.run(generator.build_live_run_evidence(run_id="run-live"))
-    evidence_path = tmp_path / "executor-context-pack-reconstruction.json"
+    evidence_path = tmp_path / "executor-context-pack-runtime.json"
     generator.write_evidence(evidence, evidence_path)
 
     assert calls == [
@@ -157,17 +168,111 @@ def test_scoped_runtime_reconstruction_accepts_zero_artifacts(monkeypatch, tmp_p
             "context_snapshot_id": "ctx-live",
         }
     ]
-    assert evidence["evidence_strength"] == "scoped_runtime_reconstruction"
-    assert evidence["reconstruction_source"] == "durable_run_snapshot"
+    assert evidence["schema_version"] == "ai-platform.executor-context-pack-runtime-acceptance.v2"
+    assert evidence["evidence_strength"] == "observed_worker_dispatch_with_scoped_context_reconstruction"
+    assert evidence["reconstruction_source"] == "persisted_worker_event_ledger"
     assert evidence["public_context_summary"]["referenced_material_counts"]["artifact_count"] == 0
-    assert evidence["does_not_close_runtime_acceptance"] is True
-    assert verifier.check_executor_context_pack_evidence(evidence_path, run_id="run-live").passed is True
+    assert evidence["does_not_close_runtime_acceptance"] is False
+    assert evidence["runtime_run_payload_verified"] is False
+    assert evidence["observed_worker_dispatch"] is True
+    assert verifier.check_executor_context_pack_evidence(
+        evidence_path,
+        run_id="run-live",
+        require_observed_worker_dispatch=True,
+    ).passed is True
+
+
+def test_live_run_rejects_missing_worker_dispatch_events(monkeypatch):
+    generator = load_generator()
+
+    class RunCursor:
+        async def fetchone(self):
+            return {
+                "id": "run-live",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "succeeded",
+                "input_json": {"context_snapshot_id": "ctx-live"},
+            }
+
+    class EventCursor:
+        async def fetchall(self):
+            return []
+
+    class Conn:
+        async def execute(self, sql, params):
+            return RunCursor() if "from runs" in sql else EventCursor()
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield Conn()
+
+    async def fake_snapshot_loader(conn, **kwargs):
+        return {"id": "ctx-live", "payload_json": {}}
+
+    monkeypatch.setattr(generator, "transaction", fake_transaction)
+    monkeypatch.setattr(generator.repositories, "get_context_snapshot_for_worker", fake_snapshot_loader)
+
+    try:
+        generator.asyncio.run(generator.build_live_run_evidence(run_id="run-live"))
+    except RuntimeError as exc:
+        assert str(exc) == "durable worker dispatch evidence missing"
+    else:
+        raise AssertionError("missing worker events must fail closed")
+
+
+def test_verifier_rejects_tampered_worker_dispatch_evidence(monkeypatch, tmp_path):
+    generator = load_generator()
+    verifier = load_verifier()
+
+    evidence = generator.build_evidence(run_id="run-live")
+    evidence.update(
+        {
+            "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
+            "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+            "reconstruction_source": "persisted_worker_event_ledger",
+            "does_not_close_runtime_acceptance": False,
+            "runtime_run_payload_verified": False,
+            "observed_worker_dispatch": True,
+            "live_run_checks": {field: True for field in verifier.REQUIRED_LIVE_RUN_CHECKS},
+            "worker_dispatch_checks": {
+                field: field != "worker_events_ordered"
+                for field in verifier.REQUIRED_WORKER_DISPATCH_CHECKS
+            },
+            "runtime_evidence": {field: True for field in verifier.REQUIRED_RUNTIME_EVIDENCE},
+            "public_context_summary": {
+                "referenced_material_counts": {
+                    "message_count": 1,
+                    "file_count": 0,
+                    "artifact_count": 0,
+                },
+                "input_keys": ["message"],
+            },
+        }
+    )
+    evidence_path = tmp_path / "tampered-runtime-evidence.json"
+    generator.write_evidence(evidence, evidence_path)
+
+    result = verifier.check_executor_context_pack_evidence(
+        evidence_path,
+        run_id="run-live",
+        require_observed_worker_dispatch=True,
+    )
+
+    assert result.passed is False
+    assert "worker_events_ordered" in result.message
 
 
 def test_cli_help_states_evidence_ceiling():
     generator_help = load_generator().build_parser().format_help()
     verifier_help = load_verifier().build_parser().format_help()
 
-    assert "Neither mode closes runtime acceptance" in generator_help
-    assert "cannot establish" in verifier_help
-    assert "observed worker dispatch" in verifier_help
+    assert "observed worker-run" in generator_help
+    assert "acceptance evidence" in generator_help
+    assert "succeeded run with ordered worker events" in generator_help
+    assert "ordered durable worker" in verifier_help
+    assert "dispatch events" in verifier_help

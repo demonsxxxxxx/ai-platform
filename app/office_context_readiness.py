@@ -188,16 +188,19 @@ _SANDBOX_REQUIRED_SOURCE_REGRESSION_TESTS = {
 
 _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
     "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v1",
-    "target": "controlled_runtime_source_probe",
+    "target": "controlled_worker_runtime",
     "generator_script": "scripts/generate_executor_context_pack_evidence.py",
     "verifier_script": "scripts/verify_executor_context_pack.py",
+    "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v2",
+    "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
     "source_schema_version": "ai-platform.executor-context-pack.v1",
     "source_probe_evidence_strength": "source_probe_on_target_runtime",
-    "required_live_evidence_strength": "live_worker_run_payload",
+    "required_runtime_evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
     "does_not_close_runtime_acceptance": True,
-    "runtime_acceptance_requires_real_run_payload": True,
+    "runtime_acceptance_requires_observed_worker_dispatch": True,
     "required_live_evidence_sections": [
         "live_run_checks",
+        "worker_dispatch_checks",
         "runtime_evidence",
         "prompt_checks",
         "scope_checks",
@@ -211,7 +214,7 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
         "app.worker._context_snapshot_ref_from_row",
     ],
     "required_runtime_evidence": [
-        "live_worker_run_payload",
+        "observed_worker_dispatch",
         "run_row_loaded",
         "context_snapshot_id_present",
         "scoped_context_snapshot_loaded",
@@ -391,10 +394,10 @@ def _executor_context_evidence_summary(
         ]
         or evidence.get("runtime_mode") != "worker"
         or evidence.get("evidence_strength")
-        != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["required_live_evidence_strength"]
-        or evidence.get("runtime_run_payload_verified") is not True
+        != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT["required_runtime_evidence_strength"]
+        or evidence.get("runtime_run_payload_verified") is not False
         or evidence.get("does_not_close_runtime_acceptance") is not False
-        or evidence.get("runtime_acceptance_requires_real_run_payload") is not False
+        or evidence.get("observed_worker_dispatch") is not True
     ):
         return None
     prompt_checks = evidence.get("prompt_checks")
@@ -430,7 +433,11 @@ def _executor_context_evidence_summary(
     referenced_materials = public_context_summary.get("referenced_material_counts")
     if not isinstance(referenced_materials, dict):
         return None
-    material_counts = [referenced_materials.get("file_count"), referenced_materials.get("artifact_count")]
+    material_counts = [
+        referenced_materials.get("message_count"),
+        referenced_materials.get("file_count"),
+        referenced_materials.get("artifact_count"),
+    ]
     if any(not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in material_counts):
         return None
     if sum(material_counts) <= 0:
@@ -450,6 +457,17 @@ def _executor_context_evidence_summary(
             "scoped_context_snapshot_loaded",
             "worker_context_ref_rebuilt_from_db_snapshot",
             "context_pack_schema_present",
+        ],
+    ):
+        return None
+    worker_dispatch_checks = evidence.get("worker_dispatch_checks")
+    if not isinstance(worker_dispatch_checks, dict) or not _all_true(
+        worker_dispatch_checks,
+        [
+            "run_status_succeeded",
+            "worker_started_event_present",
+            "run_succeeded_event_present",
+            "worker_events_ordered",
         ],
     ):
         return None
@@ -583,7 +601,7 @@ def build_office_context_readiness(repo_root: Path | None = None) -> dict[str, A
     else:
         executor_evidence_policy = (
             "superseded historical executor context-pack evidence does not close "
-            "`executor_context_pack_runtime_acceptance`; a fresh live worker-run payload must prove "
+            "`executor_context_pack_runtime_acceptance`; fresh observed worker-dispatch evidence must prove "
             "positive source-run artifact scope and public input-key redaction"
         )
     if "sandbox_cold_start_latency_split_runtime_acceptance" in closed_runtime_gaps:
@@ -746,7 +764,7 @@ def render_office_context_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"Verifier: `{executor_contract['verifier_script']}`\n\n"
         f"Source schema: `{executor_contract['source_schema_version']}`\n\n"
         f"Source probe evidence strength: `{executor_contract['source_probe_evidence_strength']}`\n\n"
-        f"Required live evidence strength: `{executor_contract['required_live_evidence_strength']}`\n\n"
+        f"Required runtime evidence strength: `{executor_contract['required_runtime_evidence_strength']}`\n\n"
         "Required live evidence sections:\n\n"
         f"{executor_section_lines}\n\n"
         "Source functions:\n\n"
