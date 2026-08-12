@@ -1791,20 +1791,47 @@ def _imported_symbol_bindings(tree: ast.Module) -> dict[str, tuple[str, str]]:
                     continue
                 bindings[alias.asname or alias.name] = (node.module, alias.name)
             continue
-        rebound: set[str] = set()
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            rebound.add(node.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                rebound.update(_assignment_target_names(target))
-        elif isinstance(node, ast.AugAssign):
-            rebound.update(_assignment_target_names(node.target))
-        elif isinstance(node, ast.Import):
-            rebound.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
-        for name in rebound:
+        for name in _module_scope_rebindings(node):
             bindings.pop(name, None)
     return bindings
+
+
+def _module_scope_rebindings(node: ast.stmt) -> set[str]:
+    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        return {node.name}
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names: set[str] = set()
+        for target in targets:
+            names.update(_assignment_target_names(target))
+        return names
+    if isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor)):
+        names = _assignment_target_names(node.target)
+    elif isinstance(node, ast.Delete):
+        names = set()
+        for target in node.targets:
+            names.update(_assignment_target_names(target))
+    elif isinstance(node, (ast.Import, ast.ImportFrom)):
+        names = {
+            alias.asname or alias.name.split(".", 1)[0]
+            for alias in node.names
+        }
+    else:
+        names = set()
+
+    nested_bodies: list[list[ast.stmt]] = []
+    for attribute in ("body", "orelse", "finalbody"):
+        body = getattr(node, attribute, None)
+        if isinstance(body, list):
+            nested_bodies.append(body)
+    if isinstance(node, ast.Try):
+        nested_bodies.extend(handler.body for handler in node.handlers)
+    if isinstance(node, ast.Match):
+        nested_bodies.extend(case.body for case in node.cases)
+    for body in nested_bodies:
+        for statement in body:
+            names.update(_module_scope_rebindings(statement))
+    return names
 
 
 def _registry_selector_findings(

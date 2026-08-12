@@ -677,6 +677,40 @@ def test_registry_rejects_import_then_local_constructor_rebinding(
     assert "registry_adapter_mismatch" in _codes(evaluation)
 
 
+def test_registry_rejects_control_flow_or_factory_local_constructor_rebinding(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/executors/registry.py",
+        "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n"
+        "if True:\n"
+        "    ClaudeAgentWorkerAdapter = LocalAdapter\n"
+        "def _default_adapters():\n"
+        "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
+    )
+    control_flow_head = _commit(repo, "control flow rebinds adapter")
+
+    control_flow = _evaluate(repo, authority, authority, control_flow_head)
+
+    assert "registry_adapter_mismatch" in _codes(control_flow)
+
+    _write(
+        repo,
+        "app/executors/registry.py",
+        "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n"
+        "def _default_adapters():\n"
+        "    ClaudeAgentWorkerAdapter = LocalAdapter\n"
+        "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
+    )
+    factory_head = _commit(repo, "factory rebinds adapter")
+
+    factory = _evaluate(repo, authority, control_flow_head, factory_head)
+
+    assert "registry_factory_contract" in _codes(factory)
+
+
 def test_registry_rejects_arbitrary_os_command_selector(
     governance_repo: tuple[Path, str],
 ) -> None:
