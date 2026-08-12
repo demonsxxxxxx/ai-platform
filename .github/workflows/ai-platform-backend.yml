@@ -197,8 +197,23 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-validation
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ai_platform
+          POSTGRES_USER: ai_platform
+          POSTGRES_PASSWORD: ai_platform_ci_password
+        ports:
+          - "54329:5432"
+        options: >-
+          --health-cmd "pg_isready -U ai_platform -d ai_platform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     env:
       AGENT_SKILL_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      AI_PLATFORM_AGENT_PROFILE_TEST_DSN: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
     steps:
       - name: Checkout exact Agent and Skill contract source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -231,6 +246,7 @@ jobs:
               tests/test_agent_profile_authority.py \
               tests/test_agent_profile_lifecycle.py \
               tests/test_agent_profile_routes.py \
+              tests/test_agent_profiles_postgres.py \
               tests/test_authorized_skill_catalog.py \
               tests/test_skill_dependencies.py \
               tests/test_skill_lifecycle.py \
