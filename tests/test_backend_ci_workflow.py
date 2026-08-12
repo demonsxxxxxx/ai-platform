@@ -37,6 +37,7 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
+    "tests/test_agent_profiles_postgres.py",
     "tests/test_authorized_skill_catalog.py",
     "tests/test_skill_dependencies.py",
     "tests/test_skill_lifecycle.py",
@@ -175,7 +176,9 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
 
 def test_agent_skill_contract_job_is_bounded_and_required():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    workflow_document = yaml.safe_load(workflow)
     agent_skill_job = _workflow_job_block(workflow, "agent-skill-contracts")
+    agent_skill_job_document = workflow_document["jobs"]["agent-skill-contracts"]
     required_job = _workflow_job_block(workflow, "required")
     pytest_step = agent_skill_job.split("- name: Run Agent and Skill contract tests", 1)
 
@@ -198,6 +201,27 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert "uv lock --check" in agent_skill_job
     assert "uv sync --locked --extra test --no-install-project" in agent_skill_job
     assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
+    assert agent_skill_job_document["services"] == {
+        "postgres": {
+            "image": "postgres:16-alpine",
+            "env": {
+                "POSTGRES_DB": "ai_platform",
+                "POSTGRES_USER": "ai_platform",
+                "POSTGRES_PASSWORD": "ai_platform_ci_password",
+            },
+            "ports": ["54329:5432"],
+            "options": (
+                '--health-cmd "pg_isready -U ai_platform -d ai_platform" '
+                "--health-interval 10s --health-timeout 5s --health-retries 10"
+            ),
+        }
+    }
+    assert agent_skill_job_document["env"] == {
+        "AGENT_SKILL_SOURCE_COMMIT": "${{ github.event.pull_request.head.sha || github.sha }}",
+        "AI_PLATFORM_AGENT_PROFILE_TEST_DSN": (
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform"
+        ),
+    }
 
     run_script = pytest_step[1].split("run: |", 1)[1]
     assert run_script.index("mkdir -p .pytest-tmp") < run_script.index("timeout --signal")
