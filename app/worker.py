@@ -14,6 +14,7 @@ from app import repositories
 from app.agent_apps.capability_state import (
     bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
+from app.agent_profiles import reauthorize_bound_profile_for_worker_dispatch
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
@@ -1170,6 +1171,48 @@ def _locked_agent_profile_identity_valid(
     )
 
 
+def _agent_profile_snapshot_matches_authority(
+    payload: QueueRunPayload,
+    admission: object,
+) -> bool:
+    private_execution_input = getattr(admission, "private_execution_input", None)
+    authority_model = getattr(admission, "model", None)
+    authority_mcp_tool_ids = getattr(admission, "mcp_tool_ids", None)
+    if (
+        not isinstance(private_execution_input, dict)
+        or not isinstance(authority_model, dict)
+        or not isinstance(authority_mcp_tool_ids, tuple)
+        or payload.model_id != authority_model.get("id")
+        or payload.model_value != authority_model.get("value")
+    ):
+        return False
+    try:
+        queued_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(payload.input))
+    except (
+        repositories.RepositoryAuthorizationError,
+        repositories.RepositoryConflictError,
+    ):
+        return False
+    if queued_mcp_tool_ids != authority_mcp_tool_ids:
+        return False
+    expected = dict(private_execution_input)
+    if payload.execution_kind != RUN_EXECUTION_KIND_HARNESS_CHAT:
+        authority_skill = getattr(admission, "skill", None)
+        if (
+            not isinstance(authority_skill, dict)
+            or str(authority_skill.get("skill_id") or "") != str(payload.skill_id or "")
+            or not payload.skill_version
+        ):
+            return False
+        expected.update(
+            {
+                "required_skill_id": payload.skill_id,
+                "required_skill_version": payload.skill_version,
+            }
+        )
+    return payload.agent_profile == expected
+
+
 def _locked_run_trace_id(payload: QueueRunPayload, locked_run: object) -> str:
     if isinstance(locked_run, dict) and locked_run.get("trace_id"):
         return str(locked_run["trace_id"])
@@ -1975,6 +2018,7 @@ async def _fail_worker_capability_authorization(
     authorization: _WorkerCapabilityAuthorization,
     run_identity: dict[str, str],
     trace_id: str,
+    policy: str = "capability_distribution",
 ) -> _WorkerTerminalAfterTransaction:
     denial = authorization.denial
     if denial is None:
@@ -2007,7 +2051,7 @@ async def _fail_worker_capability_authorization(
         principal=authorization.principal,
         run_identity=run_identity,
         trace_id=trace_id,
-        policy="capability_distribution",
+        policy=policy,
         error_message=error_message,
     )
     return _WorkerTerminalAfterTransaction(
@@ -2373,6 +2417,44 @@ async def process_run_payload(
                     trace_id=trace_id,
                 )
                 return terminal_after_transaction.outcome
+            if locked_payload.agent_profile and current_principal is not None:
+                pinned_revision = int(locked_payload.agent_profile["revision"])
+                pinned_hash = str(locked_payload.agent_profile["content_hash"])
+                profile_admission = await reauthorize_bound_profile_for_worker_dispatch(
+                    conn,
+                    principal=current_principal,
+                    agent_id=run_identity["agent_id"],
+                    revision=pinned_revision,
+                    content_hash=pinned_hash,
+                )
+                profile_denial_reason = None
+                if profile_admission is None:
+                    profile_denial_reason = "profile_not_authorized"
+                elif not _agent_profile_snapshot_matches_authority(
+                    locked_payload,
+                    profile_admission,
+                ):
+                    profile_denial_reason = "profile_snapshot_invalid"
+                if profile_denial_reason is not None:
+                    profile_denial = _worker_capability_record(
+                        "agent_profile",
+                        run_identity["agent_id"],
+                        _denied_capability_decision(profile_denial_reason),
+                    )
+                    terminal_after_transaction = await _fail_worker_capability_authorization(
+                        conn,
+                        payload=locked_payload,
+                        authorization=_WorkerCapabilityAuthorization(
+                            locked_payload,
+                            current_principal,
+                            (),
+                            profile_denial,
+                        ),
+                        run_identity=run_identity,
+                        trace_id=trace_id,
+                        policy="agent_profile_authority",
+                    )
+                    return terminal_after_transaction.outcome
             payload = locked_payload
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,

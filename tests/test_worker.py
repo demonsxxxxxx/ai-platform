@@ -19,6 +19,7 @@ from app.executors.base import (
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -745,11 +746,37 @@ def default_cancel_not_requested(monkeypatch):
             locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
         return original_locked_agent_profile_identity_valid(agent_profile, locked_run)
 
+    async def reauthorize_test_profile(
+        _conn,
+        *,
+        principal,
+        agent_id,
+        revision,
+        content_hash,
+    ):
+        queue_payload = _CURRENT_QUEUE_PAYLOAD or {}
+        profile = dict(queue_payload.get("agent_profile") or {})
+        return types.SimpleNamespace(
+            private_execution_input=profile,
+            skill={"skill_id": profile.get("required_skill_id")},
+            model={
+                "id": queue_payload.get("model_id"),
+                "value": queue_payload.get("model_value"),
+            },
+            mcp_tool_ids=tuple(
+                repository_module.extract_run_mcp_tool_ids(queue_payload.get("input") or {})
+            ),
+        )
+
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
         "app.worker._locked_agent_profile_identity_valid",
         validate_materialized_locked_agent_profile,
+    )
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize_test_profile,
     )
 
     async def resolve_test_current_principal(*, user_id, tenant_id):
@@ -1773,6 +1800,129 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         assert outcome.status == "failed"
         assert outcome.error_code in {"queue_payload_identity_mismatch", "capability_not_authorized"}
         assert not any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("authority_change", "expected_reason", "expected_kind", "expected_policy"),
+    [
+        ("revoked", "profile_not_authorized", "agent_profile", "agent_profile_authority"),
+        ("instructions", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        ("required_skill", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        ("model", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        ("mcp", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        (
+            "principal",
+            CURRENT_PRINCIPAL_DENIAL_REASON,
+            "principal_authority",
+            "capability_distribution",
+        ),
+    ],
+)
+async def test_worker_reauthorizes_pinned_profile_before_adapter(
+    monkeypatch,
+    authority_change,
+    expected_reason,
+    expected_kind,
+    expected_policy,
+):
+    calls = []
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Private profile instruction.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    raw = base_payload(
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "hello", "mcp_tool_ids": ["tool-a"]},
+        executor_type="claude-agent-worker",
+        model_id="model-a",
+        model_value="model-a",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version="ai-platform.run-payload.v2",
+        agent_profile=profile,
+    )
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("Profile denial must happen before adapter dispatch")
+
+    async def mark_run_running(_conn, **_kwargs):
+        return locked_run_from_payload(raw)
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fail_run(_conn, **kwargs):
+        calls.append(("fail", kwargs))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    async def reauthorize(_conn, **kwargs):
+        calls.append(("reauthorize", kwargs))
+        assert authority_change != "principal"
+        if authority_change == "revoked":
+            return None
+        authorized = dict(profile)
+        model = {"id": "model-a", "value": "model-a"}
+        mcp_tool_ids = ("tool-a",)
+        if authority_change == "instructions":
+            authorized["instructions"] = "Current immutable instruction."
+        elif authority_change == "required_skill":
+            authorized["required_skill_version"] = "version-b"
+        elif authority_change == "model":
+            model = {"id": "model-b", "value": "model-b"}
+        elif authority_change == "mcp":
+            mcp_tool_ids = ("tool-b",)
+        return types.SimpleNamespace(
+            private_execution_input=authorized,
+            skill={"skill_id": "general-chat"},
+            model=model,
+            mcp_tool_ids=mcp_tool_ids,
+        )
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize,
+    )
+    if authority_change == "principal":
+        async def deny_current_principal(**_kwargs):
+            raise PrincipalAuthorityDenied()
+
+        monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
+
+    outcome = await process_run_payload(
+        raw,
+        AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    if authority_change == "principal":
+        assert not any(item[0] == "reauthorize" for item in calls)
+    else:
+        assert calls[0][0] == "reauthorize"
+    event = next(item[1] for item in calls if item[0] == "event")
+    assert event["payload"]["capability_kind"] == expected_kind
+    assert event["payload"]["policy"] == expected_policy
+    assert event["payload"]["reason"] == expected_reason
 
 
 @pytest.mark.asyncio
