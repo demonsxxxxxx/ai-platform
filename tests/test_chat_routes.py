@@ -376,6 +376,10 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
         return None
 
     monkeypatch.setattr(repository_module, "get_chat_submission", no_submission)
+    monkeypatch.setattr(
+        "app.routes.chat._skill_manifest_pins",
+        lambda skill_id, input_payload: [snapshot_manifest(skill_id)],
+    )
 
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
         return await repository_module.resolve_agent_skill(
@@ -2437,16 +2441,11 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     assert queue_payload["skill_version"] == queue_payload["skill_manifests"][0]["content_hash"]
     assert queue_payload["release_decision"]["selected_version"] == queue_payload["skill_version"]
     assert queue_payload["release_decision"]["selected_track"] == "manifest_pin"
-    governance = queue_payload["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
-    assert governance["snapshot_source"] == "platform_release_lock"
-    assert governance["does_not_close_b4_or_211"] is True
-    serialized_governance = json.dumps(governance, ensure_ascii=False)
-    assert "release_decision" not in serialized_governance
-    assert "content_base64" not in serialized_governance
-    assert queue_payload["skill_version"] not in serialized_governance
-    assert "track" not in serialized_governance
-    assert "rollout" not in serialized_governance
+    ref = queue_payload["skill_manifests"][0]
+    assert ref["schema_version"] == "ai-platform.skill-materialization-ref.v1"
+    assert len(ref["materialization_sha256"]) == 64
+    assert "files" not in ref
+    assert "content_base64" not in json.dumps(ref, ensure_ascii=False)
     assert ("message", "user", "review this document", "run_3") in calls
     message_metadata = next(item[1] for item in calls if item[0] == "message_metadata")
     assert message_metadata["locked_skill"] == {"label": "internal-comms"}
@@ -3213,8 +3212,10 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
     assert calls["queue"]["skill_version"] == "hash-uploaded"
     assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["schema_version"] == (
+        "ai-platform.skill-materialization-ref.v1"
+    )
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == dependency_manifest["content_hash"]
     assert any(event["payload"].get("skill_version") == "hash-uploaded" for event in calls["events"])
     persisted_non_identity_snapshot = {
@@ -3311,7 +3312,10 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
     assert calls["create_run"]["input_json"]["release_decision"]["selected_track"] == "previous"
     assert calls["queue"]["skill_version"] == "hash-old"
     assert calls["queue"]["release_decision"]["selected_track"] == "previous"
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
+    assert calls["queue"]["skill_manifests"][0]["schema_version"] == (
+        "ai-platform.skill-materialization-ref.v1"
+    )
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert any(event["payload"].get("skill_version") == "hash-old" for event in calls["events"])
     assert any(
         event["event_type"] == "skill_release_decision"

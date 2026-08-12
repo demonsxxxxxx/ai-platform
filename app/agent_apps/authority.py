@@ -941,6 +941,21 @@ class AgentProfileAuthority:
         )
         governed_mcp_tool_ids: tuple[str, ...] | None = None
         if governed_profile_snapshot:
+            try:
+                skill_manifests = await repositories.materialize_run_skill_manifests(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    skill_manifest_refs=[
+                        dict(item)
+                        for item in snapshot.get("skill_manifests", [])
+                        if isinstance(item, dict)
+                    ],
+                )
+            except repositories.RepositoryConflictError as exc:
+                raise repositories.RepositoryConflictError(
+                    "agent_profile_snapshot_invalid"
+                ) from exc
             expected_profile_snapshot.update(
                 {
                     "required_skill_id": authority_skill_id,
@@ -950,7 +965,7 @@ class AgentProfileAuthority:
             primary_manifest = next(
                 (
                     manifest
-                    for manifest in snapshot.get("skill_manifests", [])
+                    for manifest in skill_manifests
                     if isinstance(manifest, dict)
                     and str(manifest.get("skill_id") or "") == authority_skill_id
                 ),
@@ -972,11 +987,7 @@ class AgentProfileAuthority:
                     pinned_version=snapshot_skill_version,
                     pinned_executor_type=str(snapshot.get("executor_type") or ""),
                     release_decision=release_decision if isinstance(release_decision, dict) else {},
-                    skill_manifests=[
-                        dict(item)
-                        for item in snapshot.get("skill_manifests", [])
-                        if isinstance(item, dict)
-                    ],
+                    skill_manifests=skill_manifests,
                 )
                 governed_mcp_tool_ids = tuple(
                     await repositories.validate_replay_skill_manifests(
@@ -984,11 +995,7 @@ class AgentProfileAuthority:
                         skill_id=authority_skill_id,
                         pinned_version=snapshot_skill_version,
                         pinned_executor_type=str(snapshot.get("executor_type") or ""),
-                        skill_manifests=[
-                            dict(item)
-                            for item in snapshot.get("skill_manifests", [])
-                            if isinstance(item, dict)
-                        ],
+                        skill_manifests=skill_manifests,
                     )
                 )
             except (

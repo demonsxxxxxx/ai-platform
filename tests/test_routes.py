@@ -263,6 +263,12 @@ def replay_manifest(skill_id: str, version: str, *, source_kind: str = "builtin"
     return manifest
 
 
+def replay_manifest_refs(skill_id: str, version: str, *, source_kind: str = "builtin") -> list[dict]:
+    return repository_module.skill_manifest_refs(
+        [replay_manifest(skill_id, version, source_kind=source_kind)]
+    )
+
+
 @pytest.fixture(autouse=True)
 def default_active_run_count(monkeypatch):
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
@@ -396,6 +402,34 @@ class PolicyBuiltinRegistry:
             type("SkillRef", (), {"name": "qa-file-reviewer"})(),
             type("SkillRef", (), {"name": "minimax-docx"})(),
         ]
+
+
+@pytest.fixture(autouse=True)
+def default_route_skill_materialization(monkeypatch):
+    monkeypatch.setattr(runs_module, "BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr(
+        runs_module,
+        "_skill_manifest_pins",
+        lambda skill_id, input_payload: [snapshot_manifest(skill_id)],
+    )
+
+    async def materialize_run_skill_manifests(
+        conn,
+        *,
+        tenant_id,
+        run_id,
+        skill_manifest_refs,
+    ):
+        return [
+            replay_manifest(ref["skill_id"], ref["version"])
+            for ref in skill_manifest_refs
+        ]
+
+    monkeypatch.setattr(
+        repository_module,
+        "materialize_run_skill_manifests",
+        materialize_run_skill_manifests,
+    )
 
 
 @pytest.mark.asyncio
@@ -4343,7 +4377,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
                 "selected_version": "hash-v1",
                 "selected_track": "manifest_pin",
             },
-            "skill_manifests": [replay_manifest("qa-file-reviewer", "hash-v1")],
+            "skill_manifests": replay_manifest_refs("qa-file-reviewer", "hash-v1"),
         },
         "principal_roles": ["user"],
         "principal_department_id": "qa",
@@ -4758,7 +4792,9 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
                 "version": "hash-pin",
                 "content_hash": "hash-pin",
                 "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
-                "files": [],
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
                 "dependency_ids": [],
                 "allowed": True,
                 "staged": False,
@@ -4793,17 +4829,11 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["release_decision"]["selected_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
-    governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
-    assert governance["snapshot_source"] == "platform_release_lock"
-    assert governance["release_lock"]["mode"] == "manifest_pin"
-    assert governance["does_not_close_b4_or_211"] is True
-    serialized_governance = json.dumps(governance, ensure_ascii=False)
-    assert "release_decision" not in serialized_governance
-    assert "content_base64" not in serialized_governance
-    assert "hash-pin" not in serialized_governance
-    assert "track" not in serialized_governance
-    assert "rollout" not in serialized_governance
+    ref = calls["queue"]["skill_manifests"][0]
+    assert ref["schema_version"] == "ai-platform.skill-materialization-ref.v1"
+    assert len(ref["materialization_sha256"]) == 64
+    assert "files" not in ref
+    assert "content_base64" not in json.dumps(ref, ensure_ascii=False)
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
 
 
@@ -4844,7 +4874,9 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
                 "version": "hash-new",
                 "content_hash": "hash-new",
                 "source": {"kind": "builtin", "asset_dir": skill_id},
-                "files": [],
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
                 "dependency_ids": [],
                 "allowed": True,
                 "staged": False,
@@ -4888,13 +4920,9 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
     assert calls["queue"]["skill_version"] == "hash-old"
     assert calls["queue"]["release_decision"]["selected_track"] == "previous"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-old"
-    governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
-    assert governance["release_lock"]["mode"] == "release_policy"
-    serialized_governance = json.dumps(governance, ensure_ascii=False)
-    assert "hash-old" not in serialized_governance
-    assert "track" not in serialized_governance
-    assert "rollout" not in serialized_governance
+    ref = calls["queue"]["skill_manifests"][0]
+    assert ref["schema_version"] == "ai-platform.skill-materialization-ref.v1"
+    assert "files" not in ref
     assert any(event["payload"]["skill_version"] == "hash-old" for event in calls["events"])
     assert any(
         event["event_type"] == "skill_release_decision"
@@ -5097,10 +5125,12 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
     assert calls["queue"]["skill_version"] == "hash-uploaded"
     assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["schema_version"] == (
+        "ai-platform.skill-materialization-ref.v1"
+    )
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == pinned_dependency_manifest["content_hash"]
-    assert calls["queue"]["skill_manifests"][1]["files"][0]["relative_path"] == "SKILL.md"
+    assert "files" not in calls["queue"]["skill_manifests"][1]
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
     persisted_non_identity_snapshot = {
         **calls["create_run"]["input_json"],
@@ -5146,7 +5176,9 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
                 "version": "hash-new",
                 "content_hash": "hash-new",
                 "source": {"kind": "builtin", "asset_dir": skill_id, "version": "hash-new"},
-                "files": [],
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
                 "dependency_ids": [],
                 "allowed": True,
                 "staged": False,
@@ -5208,8 +5240,10 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
     assert calls["create_run"]["input_json"]["skill_version"] == "hash-old-builtin"
     assert calls["queue"]["skill_version"] == "hash-old-builtin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-old-builtin"
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "builtin"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["schema_version"] == (
+        "ai-platform.skill-materialization-ref.v1"
+    )
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert any(event["payload"]["skill_version"] == "hash-old-builtin" for event in calls["events"])
 
 
@@ -5219,7 +5253,18 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
         return skill(executor_type="claude-agent-worker", skill_version="hash-primary")
 
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
-        return [{"skill_id": skill_id, "content_hash": "hash-primary"}]
+        return [
+            {
+                "skill_id": skill_id,
+                "version": "hash-primary",
+                "content_hash": "hash-primary",
+                "source": {"kind": "builtin"},
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
+                "dependency_ids": [],
+            }
+        ]
 
     async def noop(*args, **kwargs):
         return None
@@ -5464,7 +5509,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
         "executor_type": "claude-agent-worker",
         "skill_version": "db-version",
         "release_decision": dict(source_release_decision),
-        "skill_manifests": list(source_skill_manifests),
+        "skill_manifests": repository_module.skill_manifest_refs(source_skill_manifests),
         "model_id": "model-catalog-copy",
         "model_value": "provider-model-copy",
     }
@@ -5481,7 +5526,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
             "release_decision": dict(source_release_decision),
-            "skill_manifests": list(source_skill_manifests),
+            "skill_manifests": repository_module.skill_manifest_refs(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
         }
@@ -5547,7 +5592,9 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert response.run_id == "run_copy"
     assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
     assert calls["update"]["execution_snapshot"]["release_decision"] == source_release_decision
-    assert calls["update"]["execution_snapshot"]["skill_manifests"] == source_skill_manifests
+    assert calls["update"]["execution_snapshot"]["skill_manifests"] == repository_module.skill_manifest_refs(
+        source_skill_manifests
+    )
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
@@ -5564,6 +5611,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"
     assert calls["queue"]["skill_version"] == "db-version"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "db-version"
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert calls["queue"]["model_id"] == "model-catalog-copy"
     assert calls["queue"]["model_value"] == "provider-model-copy"
     assert any(event["payload"]["skill_version"] == "db-version" for event in calls["events"])
@@ -5612,7 +5660,7 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
                 "selected_version": "db-version",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+                "skill_manifests": replay_manifest_refs("qa-file-reviewer", "db-version"),
             }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5686,7 +5734,7 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
                 "selected_version": "db-version",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+                "skill_manifests": replay_manifest_refs("qa-file-reviewer", "db-version"),
             }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5759,7 +5807,7 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
                 "selected_version": "db-version",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+                "skill_manifests": replay_manifest_refs("qa-file-reviewer", "db-version"),
             }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5932,9 +5980,11 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
                 "selected_version": "hash-uploaded",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [
-                    replay_manifest("qa-file-reviewer", "hash-uploaded", source_kind="uploaded")
-                ],
+                "skill_manifests": replay_manifest_refs(
+                    "qa-file-reviewer",
+                    "hash-uploaded",
+                    source_kind="uploaded",
+                ),
             }
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
@@ -5974,13 +6024,22 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight_for_status)
 
+    async def materialize_uploaded_manifest(conn, **kwargs):
+        return [replay_manifest("qa-file-reviewer", "hash-uploaded", source_kind="uploaded")]
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.materialize_run_skill_manifests",
+        materialize_uploaded_manifest,
+    )
+
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
     assert calls["update"]["skill_version"] == "hash-uploaded"
     assert calls["queue"]["skill_version"] == "hash-uploaded"
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["version"] == "hash-uploaded"
+    assert "source" not in calls["queue"]["skill_manifests"][0]
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
 
 

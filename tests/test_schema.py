@@ -407,6 +407,16 @@ def test_schema_declares_run_skill_snapshots():
     assert "idx_run_skill_snapshots_run" in schema
 
 
+def test_schema_declares_private_run_skill_materializations():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists run_skill_materializations" in schema
+    assert "materialization_sha256 text not null" in schema
+    assert "manifest_json jsonb not null" in schema
+    assert "primary key (tenant_id, run_id, skill_id)" in schema
+    assert "references run_skill_snapshots(tenant_id, run_id, skill_id) on delete cascade" in schema
+
+
 def test_schema_declares_skill_versions():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

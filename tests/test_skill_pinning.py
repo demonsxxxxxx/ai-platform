@@ -8,6 +8,8 @@ import app.skills.dependencies as dependency_policy
 from app.skills.dependencies import SkillDependencyPolicyError
 from app.skills.pinning import (
     attach_skill_snapshot_governance,
+    build_skill_manifest_ref,
+    validate_skill_manifest_refs,
     build_skill_snapshot_governance,
     SkillVersionMaterializationError,
     build_skill_version_dependency_manifest_pins,
@@ -182,6 +184,78 @@ def test_attach_skill_snapshot_governance_keeps_existing_manifest_fields_immutab
     assert attached[0]["files"] == manifest["files"]
     assert attached[0]["snapshot_governance"]["release_lock"]["mode"] == "manifest_pin"
     assert attached[0]["snapshot_governance"]["dependency_evidence"]["status"] == "not_required"
+
+
+def test_skill_manifest_ref_binds_complete_package_without_file_content():
+    manifest = attach_skill_snapshot_governance(
+        [
+            {
+                "skill_id": "qa-file-reviewer",
+                "version": "hash-primary",
+                "content_hash": "hash-primary",
+                "source": {"kind": "uploaded", "storage_key": "private/package.zip"},
+                "files": [
+                    {
+                        "relative_path": "SKILL.md",
+                        "content_base64": "c2tpbGw=",
+                        "size_bytes": 5,
+                    }
+                ],
+                "dependency_ids": [],
+                "mcp_tool_ids": [],
+                "execution_profile": {"strategy": "sdk_native"},
+                "builtin_tool_identities": ["Read"],
+            }
+        ]
+    )[0]
+
+    ref = build_skill_manifest_ref(manifest)
+
+    assert ref == {
+        "schema_version": "ai-platform.skill-materialization-ref.v1",
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-primary",
+        "content_hash": "hash-primary",
+        "materialization_sha256": ref["materialization_sha256"],
+    }
+    assert len(ref["materialization_sha256"]) == 64
+    serialized = json.dumps(ref, ensure_ascii=False)
+    assert "files" not in ref
+    assert "content_base64" not in serialized
+    assert "storage_key" not in serialized
+
+    changed = {
+        **manifest,
+        "files": [{**manifest["files"][0], "content_base64": "ZGlmZmVyZW50"}],
+    }
+    assert build_skill_manifest_ref(changed)["materialization_sha256"] != ref[
+        "materialization_sha256"
+    ]
+
+
+def test_skill_manifest_ref_transport_rejects_full_mixed_and_malformed_payloads():
+    valid = {
+        "schema_version": "ai-platform.skill-materialization-ref.v1",
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-primary",
+        "content_hash": "hash-primary",
+        "materialization_sha256": "a" * 64,
+    }
+
+    assert validate_skill_manifest_refs([valid]) == [valid]
+    for invalid in (
+        [{"skill_id": "qa-file-reviewer", "files": []}],
+        [valid, {"skill_id": "dependency", "files": []}],
+        [{**valid, "unexpected": True}],
+        [{**valid, "content_hash": "different"}],
+        [{**valid, "materialization_sha256": "A" * 64}],
+        [valid, dict(valid)],
+    ):
+        with pytest.raises(
+            SkillVersionMaterializationError,
+            match="skill_version_not_materializable",
+        ):
+            validate_skill_manifest_refs(invalid)
 
 
 def test_build_skill_snapshot_governance_rejects_invalid_or_escaped_file_entries():
