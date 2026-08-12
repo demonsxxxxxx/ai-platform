@@ -383,6 +383,18 @@ def test_legacy_domain_file_cannot_add_third_party_dependency(
     assert "layer_external_dependency_forbidden" in _codes(evaluation)
 
 
+def test_legacy_app_root_file_cannot_add_third_party_dependency(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/auth.py", "BASELINE = True\nimport requests\n")
+    head = _commit(repo, "root module imports third party")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "layer_external_dependency_forbidden" in _codes(evaluation)
+
+
 def test_domain_boundary_cannot_import_concrete_infrastructure(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -640,6 +652,25 @@ def test_registry_rejects_qualified_or_local_constructor_spoof(
         "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
     )
     head = _commit(repo, "spoof adapter constructor")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "registry_adapter_mismatch" in _codes(evaluation)
+
+
+def test_registry_rejects_import_then_local_constructor_rebinding(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/executors/registry.py",
+        "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n"
+        "class ClaudeAgentWorkerAdapter: pass\n"
+        "def _default_adapters():\n"
+        "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
+    )
+    head = _commit(repo, "rebind imported adapter")
 
     evaluation = _evaluate(repo, authority, authority, head)
 

@@ -1208,7 +1208,16 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
                 details={"target": edge.target},
             )
         if source.context is None:
-            return None
+            if source.package in {"bootstrap", "platform"}:
+                return None
+            return Finding(
+                "layer_external_dependency_forbidden",
+                "legacy app modules cannot add third-party dependencies outside a target layer",
+                source_path,
+                edge.line,
+                exemptible=False,
+                details={"target": edge.target},
+            )
         layer_policy = policy["layers"][source.layer]
         if layer_policy["allow_third_party"] or external_root in set(
             layer_policy["allowed_third_party_prefixes"]
@@ -1776,12 +1785,25 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
 def _imported_symbol_bindings(tree: ast.Module) -> dict[str, tuple[str, str]]:
     bindings: dict[str, tuple[str, str]] = {}
     for node in tree.body:
-        if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+        if isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                bindings[alias.asname or alias.name] = (node.module, alias.name)
             continue
-        for alias in node.names:
-            if alias.name == "*":
-                continue
-            bindings[alias.asname or alias.name] = (node.module, alias.name)
+        rebound: set[str] = set()
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            rebound.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                rebound.update(_assignment_target_names(target))
+        elif isinstance(node, ast.AugAssign):
+            rebound.update(_assignment_target_names(node.target))
+        elif isinstance(node, ast.Import):
+            rebound.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+        for name in rebound:
+            bindings.pop(name, None)
     return bindings
 
 
