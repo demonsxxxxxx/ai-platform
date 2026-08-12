@@ -1,4 +1,3 @@
-import re
 from typing import Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
@@ -20,6 +19,7 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
+from app.file_type_validation import normalize_profile_file_type
 from app.skills.release_policy import (
     validate_release_decision_lock,
     validate_release_decision_payload,
@@ -60,9 +60,6 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
-
-
-_SUPPORTED_FILE_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+/-]{0,63}$")
 
 
 def _normalize_profile_display_items(
@@ -296,8 +293,8 @@ class AgentProfileDraftRequest(BaseModel):
     def normalize_supported_file_types(cls, value: list[str]):
         normalized: list[str] = []
         for item in value:
-            candidate = item.strip().lower()
-            if not _SUPPORTED_FILE_TYPE_PATTERN.fullmatch(candidate):
+            candidate = normalize_profile_file_type(item)
+            if candidate is None:
                 raise ValueError("supported_file_types contains an invalid media type or extension")
             if candidate in normalized:
                 raise ValueError("supported_file_types contains duplicates")

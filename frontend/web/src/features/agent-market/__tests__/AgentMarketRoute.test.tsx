@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("market stays in the production shell and resolves durable detail URLs", () => {
+test("market keeps one, two, and three cards responsive while resolving durable detail URLs", () => {
   const source = readFileSync(
     join(process.cwd(), "src/features/agent-market/AgentMarketRoute.tsx"),
     "utf8",
@@ -28,6 +28,9 @@ test("market stays in the production shell and resolves durable detail URLs", ()
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
+  assert.match(source, /grid-cols-\[repeat\(auto-fit,minmax\(min\(100%,24rem\),1fr\)\)\]/);
+  assert.doesNotMatch(source, /xl:grid-cols-3/);
+  assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
   assert.doesNotMatch(source, /<textarea/);
   assert.doesNotMatch(

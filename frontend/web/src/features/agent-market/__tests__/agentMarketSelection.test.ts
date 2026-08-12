@@ -47,8 +47,8 @@ test("market workspace deep links preserve the immutable published revision", ()
     "/agent-market/agt_support/4/chat",
   );
   assert.equal(
-    buildAgentMarketWorkspacePath(profile, "session-42"),
-    "/agent-market/agt_support/4/chat/session-42",
+    buildAgentMarketWorkspacePath(profile, "session/42"),
+    "/agent-market/agt_support/4/chat/session%2F42",
   );
 });
 

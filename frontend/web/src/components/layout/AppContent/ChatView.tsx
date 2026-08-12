@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ListTree } from "lucide-react";
+import { Bot, ListTree } from "lucide-react";
 import toast from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
@@ -63,6 +63,7 @@ import type {
   MessageAttachment,
   ConnectionStatus,
 } from "../../../types";
+import type { AgentProfilePublicProjection } from "../../../types/agentProfile";
 import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
 import type {
   SelectedSkillRecoverableCode,
@@ -117,6 +118,7 @@ interface ChatViewProps {
   composerPlaceholder?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
+  agentEmptyProfile?: AgentProfilePublicProjection;
   tools: ToolState[];
   onToggleTool: (name: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
@@ -188,6 +190,7 @@ export function ChatView({
   composerPlaceholder,
   initialComposerDraft,
   initialComposerDraftKey,
+  agentEmptyProfile,
   tools,
   onToggleTool,
   onToggleCategory,
@@ -729,6 +732,11 @@ export function ChatView({
     isLoading: sessionRunning,
     canSend: canSendMessage,
     placeholder: composerPlaceholder,
+    acceptedFileTypes: agentEmptyProfile
+      ? agentEmptyProfile.supported_input_types.includes("file")
+        ? agentEmptyProfile.supported_file_types
+        : []
+      : undefined,
     tools,
     onToggleTool,
     onToggleCategory,
@@ -832,6 +840,24 @@ export function ChatView({
           </button>
         </div>
       )}
+      {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
+        <div
+          className="mx-auto mb-3 flex max-w-4xl flex-wrap gap-2 px-2"
+          data-agent-starter-prompts
+        >
+          {agentEmptyProfile.starter_prompts.map((prompt) => (
+            <button
+              className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
+              key={prompt}
+              disabled={!canSendMessage || isLoading}
+              onClick={() => void onSendMessage(prompt)}
+              type="button"
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-4xl px-2"
@@ -857,13 +883,38 @@ export function ChatView({
           isLoading ? (
             <ChatSkeleton count={5} />
           ) : (
-            <WelcomePage
-              greeting={greeting}
-              subtitle={
-                t("chat.welcomeSubtitle") ?? "How can I help you today?"
-              }
-              composer={composer}
-            />
+            agentEmptyProfile ? (
+              <div
+                className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 sm:px-5"
+                data-agent-chat-opening
+                data-workbench-empty-state="agent-chat"
+              >
+                <section className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-5">
+                  <div className="max-w-2xl text-center">
+                    <div className="mx-auto flex size-11 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                      <Bot size={22} aria-hidden="true" />
+                    </div>
+                    <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
+                      {agentEmptyProfile.name}
+                    </h1>
+                    {agentEmptyProfile.welcome_message ? (
+                      <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
+                        {agentEmptyProfile.welcome_message}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="w-full">{composer}</div>
+                </section>
+              </div>
+            ) : (
+              <WelcomePage
+                greeting={greeting}
+                subtitle={
+                  t("chat.welcomeSubtitle") ?? "How can I help you today?"
+                }
+                composer={composer}
+              />
+            )
           )
         ) : (
           <Virtuoso

@@ -1774,7 +1774,11 @@ async def chat_stream(
             if submission_id is not None:
                 request_fingerprint = resolved_request_fingerprint
 
-            if submission_id is not None and request_fingerprint is not None:
+            if (
+                admitted_agent_profile is None
+                and submission_id is not None
+                and request_fingerprint is not None
+            ):
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -2032,6 +2036,11 @@ async def chat_stream(
                 reusable_rows=[dict(row) for row in reusable_file_rows],
                 input_modes=input_modes,
             )
+            reusable_primary_file_ids = [
+                file_id
+                for file_id in primary_file_ids
+                if file_id in {str(row.get("id") or "") for row in reusable_file_rows}
+            ]
             if has_file_input_mode(input_modes) and not primary_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
@@ -2165,16 +2174,29 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=requested_file_ids,
+                file_ids=primary_file_ids,
+                reusable_file_ids=reusable_primary_file_ids,
                 input_modes=input_modes,
+                agent_profile_supported_input_types=(
+                    list(admitted_agent_profile.public_identity.supported_input_types)
+                    if admitted_agent_profile is not None
+                    else None
+                ),
+                agent_profile_supported_file_types=(
+                    list(admitted_agent_profile.public_identity.supported_file_types)
+                    if admitted_agent_profile is not None
+                    else None
+                ),
             )
-            if admitted_agent_profile is not None and submission_id is None:
-                # Canonical clients claim their own key before routing. A
-                # legacy unkeyed Agent request gets the same durable recovery
-                # only after every capability and resource check has passed,
-                # immediately before the first session/run write.
-                submission_id = str(uuid4())
-                request_fingerprint = resolved_request_fingerprint
+            if admitted_agent_profile is not None:
+                # Canonical clients supply their own key; a legacy unkeyed
+                # Agent request gets one here. Both are claimed only after
+                # every capability and resource check has passed, immediately
+                # before the first session/run write.
+                if submission_id is None:
+                    submission_id = str(uuid4())
+                    request_fingerprint = resolved_request_fingerprint
+                assert request_fingerprint is not None
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,

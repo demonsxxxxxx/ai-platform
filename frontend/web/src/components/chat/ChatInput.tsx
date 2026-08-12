@@ -74,6 +74,7 @@ export const ChatInput = memo(function ChatInput({
   disabled,
   canSend = true,
   placeholder,
+  acceptedFileTypes,
   tools = [],
   onToggleTool,
   onToggleCategory,
@@ -154,9 +155,11 @@ export const ChatInput = memo(function ChatInput({
   }, [isLoading]);
 
   const uploadCategories = (
-    Object.keys(FILE_CATEGORY_PERMISSIONS) as Array<
-      keyof typeof FILE_CATEGORY_PERMISSIONS
-    >
+    acceptedFileTypes?.length === 0
+      ? []
+      : (Object.keys(FILE_CATEGORY_PERMISSIONS) as Array<
+          keyof typeof FILE_CATEGORY_PERMISSIONS
+        >)
   ).filter((cat) => hasPermission(FILE_CATEGORY_PERMISSIONS[cat]));
 
   const attachments = externalAttachments ?? internalAttachments;
@@ -166,6 +169,7 @@ export const ChatInput = memo(function ChatInput({
     useFileUpload({
       attachments,
       onAttachmentsChange: setAttachments,
+      acceptedFileTypes,
     });
 
   const { history, pushHistory, navigateUp, navigateDown } = useInputHistory();
@@ -176,7 +180,7 @@ export const ChatInput = memo(function ChatInput({
     textareaRef,
     input,
     setInput,
-    uploadFiles,
+    uploadFiles: acceptedFileTypes?.length === 0 ? () => {} : uploadFiles,
     validateCount,
     scheduleTextareaResize,
   });
@@ -739,6 +743,7 @@ export const ChatInput = memo(function ChatInput({
     setIsDraggingOver(false);
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
+    if (acceptedFileTypes?.length === 0) return;
     if (!validateCount(files.length)) return;
     uploadFiles(files);
   };

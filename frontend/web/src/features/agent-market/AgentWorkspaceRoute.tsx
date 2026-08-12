@@ -96,7 +96,13 @@ export function AgentWorkspaceRoute() {
   useEffect(() => {
     let active = true;
     setPhase("loading");
-    setLoadedWorkspace(null);
+    setLoadedWorkspace((current) =>
+      current !== null &&
+      current.agentId === agentId &&
+      current.revision === revision
+        ? current
+        : null,
+    );
 
     if (!agentId || !revision || validRevision === undefined) {
       setPhase("unavailable");
@@ -191,7 +197,8 @@ export function AgentWorkspaceRoute() {
   // Route params can change before the passive fetch cleanup runs. Never let
   // the previous URL's profile reach canonical Chat.
   const resolvedWorkspace =
-    phase === "ready" &&
+    phase !== "unavailable" &&
+    phase !== "error" &&
     loadedWorkspace !== null &&
     loadedWorkspace.agentId === agentId &&
     loadedWorkspace.revision === revision

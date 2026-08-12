@@ -19,6 +19,7 @@ export interface UseFileUploadOptions {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+  acceptedFileTypes?: readonly string[];
 }
 
 type UploadTranslation = (key: string) => unknown;
@@ -58,6 +59,24 @@ type UploadClient = {
     options: { onProgress?: (progress: number) => void },
   ) => ReturnType<typeof uploadApi.uploadFile>;
 };
+
+export function isAcceptedProfileFile(
+  file: Pick<File, "name" | "type">,
+  acceptedFileTypes: readonly string[] | undefined,
+): boolean {
+  if (acceptedFileTypes === undefined) return true;
+  const normalizedType = file.type.toLowerCase();
+  const normalizedName = file.name.toLowerCase();
+  return acceptedFileTypes.some((entry) => {
+    const candidate = entry.trim().toLowerCase();
+    if (!candidate) return false;
+    if (candidate.startsWith(".")) return normalizedName.endsWith(candidate);
+    if (candidate.endsWith("/*")) {
+      return normalizedType.startsWith(candidate.slice(0, -1));
+    }
+    return normalizedType === candidate;
+  });
+}
 
 interface FileUploadTaskOptions {
   file: File;
@@ -220,6 +239,7 @@ export function startFileUploadTask({
 export function useFileUpload({
   attachments,
   onAttachmentsChange,
+  acceptedFileTypes,
 }: UseFileUploadOptions) {
   const { t } = useTranslation();
   const [uploadPolicy, setUploadPolicy] =
@@ -334,12 +354,16 @@ export function useFileUpload({
       if (!validateCount(fileArray.length)) return;
 
       for (const file of fileArray) {
+        if (!isAcceptedProfileFile(file, acceptedFileTypes)) {
+          toast.error(String(t("fileUpload.serverUnsupportedFileType")));
+          continue;
+        }
         const fileCategory = category || getFileCategory(file);
         if (!validateSize(file, fileCategory)) continue;
         uploadFile(file, fileCategory);
       }
     },
-    [validateCount, validateSize, uploadFile],
+    [acceptedFileTypes, t, validateCount, validateSize, uploadFile],
   );
 
   return {

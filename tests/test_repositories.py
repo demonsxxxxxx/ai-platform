@@ -10454,6 +10454,181 @@ async def test_authorize_files_for_run_rejects_skill_file_with_mismatched_mime()
 
 
 @pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_agent_profile_without_file_input():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+                "original_name": "report.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="agent_profile_file_input_not_supported"):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_ids=["file-a"],
+            agent_profile_supported_input_types=["text"],
+            agent_profile_supported_file_types=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_agent_profile_file_type_mismatch():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+                "original_name": "report.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="agent_profile_file_type_not_supported"):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_ids=["file-a"],
+            agent_profile_supported_input_types=["text", "file"],
+            agent_profile_supported_file_types=[".docx", "image/*"],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "allowed_type",
+    [".pdf", "application/pdf", "application/*"],
+)
+async def test_authorize_files_for_run_accepts_agent_profile_file_type_from_authoritative_metadata(
+    allowed_type,
+):
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+                "original_name": "REPORT.PDF",
+                "content_type": "Application/PDF",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    rows = await repositories.authorize_files_for_run(
+        FileConnection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_ids=["file-a"],
+        agent_profile_supported_input_types=["text", "file"],
+        agent_profile_supported_file_types=[allowed_type],
+    )
+    assert [row["id"] for row in rows] == ["file-a"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_mixed_requested_and_reusable_profile_mismatch():
+    rows = {
+        "file-requested": {
+            "id": "file-requested",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": None,
+            "run_id": None,
+            "original_name": "report.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 1024,
+            "sha256": "a" * 64,
+        },
+        "file-reusable": {
+            "id": "file-reusable",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-prior",
+            "original_name": "diagram.png",
+            "content_type": "image/png",
+            "size_bytes": 2048,
+            "sha256": "b" * 64,
+        },
+    }
+
+    class FileCursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor(rows.get(params[0]))
+
+    conn = FileConnection()
+    with pytest.raises(repositories.RepositoryConflictError, match="agent_profile_file_type_not_supported"):
+        await repositories.authorize_files_for_run(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-current",
+            file_ids=["file-requested", "file-reusable"],
+            reusable_file_ids=["file-reusable"],
+            agent_profile_supported_input_types=["text", "file"],
+            agent_profile_supported_file_types=["application/pdf"],
+        )
+    reusable_sql = conn.calls[1][0]
+    assert "join run_context_snapshots authorized_snapshot" in reusable_sql
+    assert "authorized_snapshot.included_file_ids ? files.id" in reusable_sql
+    assert "for update of files" in reusable_sql
+
+
+@pytest.mark.asyncio
 async def test_list_run_skill_snapshots_projects_persisted_telemetry():
     class SnapshotCursor:
         async def fetchall(self):

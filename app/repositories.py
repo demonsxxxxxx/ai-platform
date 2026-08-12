@@ -48,6 +48,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.error_taxonomy import summarize_error_categories
+from app.file_type_validation import profile_file_type_allowed
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.persistence import (
     RepositoryNotFoundError,
@@ -10789,22 +10790,57 @@ async def authorize_files_for_run(
     session_id: str,
     run_id: str,
     file_ids: list[str],
+    reusable_file_ids: list[str] | None = None,
     input_modes: list[object] | None = None,
+    agent_profile_supported_input_types: list[str] | None = None,
+    agent_profile_supported_file_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Lock and validate run input files before any run creation side effect."""
 
     rows: list[dict[str, Any]] = []
+    reusable_ids = set(reusable_file_ids or [])
+    if not reusable_ids.issubset(file_ids):
+        raise RepositoryConflictError("file_scope_mismatch")
     for file_id in file_ids:
-        cursor = await conn.execute(
-            """
+        if file_id in reusable_ids:
+            cursor = await conn.execute(
+                """
+                select files.id, files.tenant_id, files.workspace_id, files.user_id,
+                       files.session_id, files.run_id, files.original_name,
+                       files.content_type, files.size_bytes, files.sha256
+                from files
+                join runs on runs.id = files.run_id
+                  and runs.tenant_id = files.tenant_id
+                  and runs.workspace_id = files.workspace_id
+                  and runs.user_id = files.user_id
+                  and runs.session_id = files.session_id
+                  and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+                  and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
+                join run_context_snapshots authorized_snapshot
+                  on authorized_snapshot.id = runs.context_snapshot_id
+                  and authorized_snapshot.tenant_id = files.tenant_id
+                  and authorized_snapshot.workspace_id = files.workspace_id
+                  and authorized_snapshot.user_id = files.user_id
+                  and authorized_snapshot.session_id = files.session_id
+                  and authorized_snapshot.run_id = files.run_id
+                  and authorized_snapshot.context_kind = 'executor'
+                  and authorized_snapshot.included_file_ids ? files.id
+                where files.id = %s and files.lifecycle_state = 'active'
+                for update of files
+                """,
+                (file_id,),
+            )
+        else:
+            cursor = await conn.execute(
+                """
             select id, tenant_id, workspace_id, user_id, session_id, run_id,
                    original_name, content_type, size_bytes, sha256
             from files
             where id = %s and lifecycle_state = 'active'
             for update
             """,
-            (file_id,),
-        )
+                (file_id,),
+            )
         row = await cursor.fetchone()
         if row is None:
             raise RepositoryNotFoundError("file_not_found")
@@ -10812,16 +10848,37 @@ async def authorize_files_for_run(
             raise RepositoryConflictError("file_scope_mismatch")
         if row["user_id"] != user_id:
             raise RepositoryConflictError("file_user_mismatch")
-        if row["session_id"] and row["session_id"] != session_id:
-            raise RepositoryConflictError("file_session_mismatch")
-        if row["run_id"] and row["run_id"] != run_id:
-            raise RepositoryConflictError("file_already_bound")
+        if file_id in reusable_ids:
+            if row["session_id"] != session_id or not row["run_id"]:
+                raise RepositoryConflictError("file_session_mismatch")
+        else:
+            if row["session_id"] and row["session_id"] != session_id:
+                raise RepositoryConflictError("file_session_mismatch")
+            if row["run_id"] and row["run_id"] != run_id:
+                raise RepositoryConflictError("file_already_bound")
         rows.append(dict(row))
+    if agent_profile_supported_input_types is not None:
+        if rows and "file" not in agent_profile_supported_input_types:
+            raise RepositoryConflictError("agent_profile_file_input_not_supported")
+        allowed_file_types = agent_profile_supported_file_types or []
+        if rows and not all(
+            profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
+            for row in rows
+        ):
+            raise RepositoryConflictError("agent_profile_file_type_not_supported")
     if input_modes is not None and has_file_input_mode(input_modes):
         compatible_ids = compatible_reusable_file_ids(rows, input_modes=input_modes)
         if len(compatible_ids) != len(rows):
             raise RepositoryConflictError("file_required_for_skill")
     return rows
+
+
+def _agent_profile_file_type_allowed(
+    row: dict[str, Any],
+    *,
+    allowed_file_types: list[str],
+) -> bool:
+    return profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
 
 
 async def bind_files_to_run(
@@ -11313,7 +11370,10 @@ async def list_authorized_sessions(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
-        where sessions.tenant_id = %s and sessions.user_id = %s and sessions.status = 'active'
+        where sessions.tenant_id = %s
+          and sessions.user_id = %s
+          and sessions.status = 'active'
+          and sessions.admitted_agent_profile_revision is null
         order by sessions.updated_at desc, sessions.created_at desc
         limit 100
         """,

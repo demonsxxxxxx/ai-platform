@@ -127,6 +127,80 @@ def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(fiel
     assert _revision_hash(changed) != _revision_hash(definition)
 
 
+def test_agent_profile_file_type_contract_normalizes_and_matches_mime_wildcard():
+    from app.repositories import _agent_profile_file_type_allowed
+
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            **profile_draft_payload("Private instruction"),
+            "supported_input_types": ["text", "file"],
+            "supported_file_types": [" IMAGE/* ", "application/pdf", ".docx"],
+        }
+    )
+
+    assert definition.supported_file_types == ["image/*", "application/pdf", ".docx"]
+    assert _agent_profile_file_type_allowed(
+        {"original_name": "diagram.png", "content_type": "image/png"},
+        allowed_file_types=definition.supported_file_types,
+    )
+    assert not _agent_profile_file_type_allowed(
+        {"original_name": "report.pdf", "content_type": "application/pdf"},
+        allowed_file_types=[definition.supported_file_types[0]],
+    )
+
+
+def test_agent_profile_file_type_contract_accepts_standard_docx_mime_and_observed_parameters():
+    from app.repositories import _agent_profile_file_type_allowed
+
+    docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            **profile_draft_payload("Private instruction"),
+            "supported_input_types": ["text", "file"],
+            "supported_file_types": [docx_mime, " APPLICATION/PDF "],
+        }
+    )
+
+    assert definition.supported_file_types == [docx_mime, "application/pdf"]
+    assert _agent_profile_file_type_allowed(
+        {"original_name": "report.docx", "content_type": docx_mime},
+        allowed_file_types=definition.supported_file_types,
+    )
+    assert _agent_profile_file_type_allowed(
+        {"original_name": "report.pdf", "content_type": "application/pdf; charset=binary"},
+        allowed_file_types=definition.supported_file_types,
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_file_type",
+    [
+        "*/pdf",
+        "image/**",
+        "*/*",
+        "image/*; charset=utf-8",
+        "image/ *",
+        "application/pdf; charset=binary",
+        f"application/{'a' * 116}",
+    ],
+)
+def test_agent_profile_file_type_contract_rejects_invalid_wildcards_with_422(
+    monkeypatch, invalid_file_type
+):
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    response = TestClient(create_app()).post(
+        "/api/ai/admin/agent-profiles",
+        headers=admin_headers(),
+        json={
+            **profile_draft_payload("Private instruction"),
+            "supported_input_types": ["text", "file"],
+            "supported_file_types": [invalid_file_type],
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_selected_profile_rejects_client_owned_capability_selectors():
     request = ChatStreamRequest(
         message="Help me",
