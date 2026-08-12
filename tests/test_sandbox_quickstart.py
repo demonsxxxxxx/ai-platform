@@ -264,7 +264,9 @@ def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str])
         release.runner,
         "run",
         lambda command, **_: events.append(
-            "inspect" if list(command)[-3:-1] == ["image", "inspect"] else "pull"
+            f"inspect:{list(command)[-1]}"
+            if list(command)[-3:-1] == ["image", "inspect"]
+            else "pull"
         )
         or "",
     )
@@ -282,7 +284,7 @@ def test_quickstart_orders_config_before_pull_and_up(
     release.run()
 
     assert events == [
-        "source", "compose:config --quiet", "pull", "pull", "inspect", "source",
+        "source", "compose:config --quiet", "pull", "pull", f"inspect:{BACKEND}", "source",
         "rollback-preflight",
         "compose:up -d --no-build --pull never", "health",
     ]
