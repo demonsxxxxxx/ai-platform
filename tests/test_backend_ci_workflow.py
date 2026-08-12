@@ -135,6 +135,8 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "needs: backend-validation" in tests_job
     assert "timeout-minutes: 15" in tests_job
     assert "fail-fast: false" in tests_job
+    assert "ref: ${{ env.BACKEND_TEST_SOURCE_COMMIT }}" in tests_job
+    assert "fetch-depth: 0" in tests_job
     matrix_entries = workflow_document["jobs"]["backend-tests"]["strategy"]["matrix"][
         "include"
     ]

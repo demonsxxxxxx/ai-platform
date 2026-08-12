@@ -47,6 +47,7 @@ from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutor
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
+_ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
 
 @pytest.fixture(autouse=True)
@@ -739,6 +740,17 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
+
+    async def materialize_test_skill_manifests(conn, **kwargs):
+        locked_manifests = list(kwargs.get("skill_manifest_refs") or [])
+        if all(isinstance(item.get("files"), list) for item in locked_manifests):
+            return locked_manifests
+        return await _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS(conn, **kwargs)
+
+    monkeypatch.setattr(
+        "app.worker.repositories.materialize_run_skill_manifests",
+        materialize_test_skill_manifests,
+    )
 
     async def resolve_test_current_principal(*, user_id, tenant_id):
         return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
