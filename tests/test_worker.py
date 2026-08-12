@@ -48,6 +48,7 @@ from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutor
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
+_ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
 
 @pytest.fixture(autouse=True)
@@ -780,6 +781,17 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize_test_profile,
+    )
+
+    async def materialize_test_skill_manifests(conn, **kwargs):
+        locked_manifests = list(kwargs.get("skill_manifest_refs") or [])
+        if all(isinstance(item.get("files"), list) for item in locked_manifests):
+            return locked_manifests
+        return await _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS(conn, **kwargs)
+
+    monkeypatch.setattr(
+        "app.worker.repositories.materialize_run_skill_manifests",
+        materialize_test_skill_manifests,
     )
 
     async def resolve_test_current_principal(*, user_id, tenant_id):
@@ -4165,6 +4177,30 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 @pytest.mark.asyncio
 async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     captured = {}
+    full_manifest = primary_manifest("qa-file-reviewer", "hash-primary")
+    manifest_ref = repository_module.skill_manifest_refs([full_manifest])[0]
+
+    class MaterializationCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "materialization_sha256": manifest_ref[
+                        "materialization_sha256"
+                    ],
+                    "manifest_json": full_manifest,
+                }
+            ]
+
+    class MaterializationConnection:
+        async def execute(self, sql, params):
+            assert "from run_skill_materializations" in sql
+            assert params == ("tenant-a", "run-a")
+            return MaterializationCursor()
+
+    @asynccontextmanager
+    async def materialization_transaction():
+        yield MaterializationConnection()
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -4188,7 +4224,7 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     async def complete_run(conn, **kwargs):
         return True
 
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.transaction", materialization_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -4198,14 +4234,14 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
         base_payload(
             executor_type="claude-agent-worker",
             skill_version="hash-primary",
-            skill_manifests=[{"skill_id": "qa-file-reviewer", "content_hash": "hash-primary"}],
+            skill_manifests=[manifest_ref],
         ),
         AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
     )
 
     assert outcome.status == "succeeded"
     assert captured["payload"].skill_version == "hash-primary"
-    assert captured["payload"].skill_manifests == [{"skill_id": "qa-file-reviewer", "content_hash": "hash-primary"}]
+    assert captured["payload"].skill_manifests == [full_manifest]
 
 
 @pytest.mark.asyncio

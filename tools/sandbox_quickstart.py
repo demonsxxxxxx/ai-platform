@@ -1,11 +1,11 @@
-"""Deploy the controller-approved CI-success main subject to s72 internal-test."""
+"""Deploy a controller-approved main subject to an OpenSandbox internal-test stack."""
 
 from __future__ import annotations
 
 import sys
 
 if __name__ == "__main__" and not sys.flags.isolated:
-    raise SystemExit("run s72 quickstart through scripts/quickstart-s72.sh")
+    raise SystemExit("run sandbox quickstart through an approved host wrapper")
 
 from dataclasses import dataclass
 from http.client import HTTPException
@@ -45,6 +45,14 @@ class Subject:
     backend_image: str
     frontend_image: str
     env_file: Path | None = None
+
+    @property
+    def executor_image(self) -> str:
+        return self.backend_image
+
+    @property
+    def executor_image_digest(self) -> str:
+        return self.executor_image.rsplit("@", 1)[1]
 
 
 class Runner:
@@ -126,6 +134,8 @@ def _compose_command(docker: Sequence[str], repo: Path, env_file: Path,
         f"AI_PLATFORM_IMAGE={subject.backend_image}",
         f"AI_PLATFORM_FRONTEND_IMAGE={subject.frontend_image}",
         f"AI_PLATFORM_SOURCE_COMMIT={subject.commit}",
+        f"OPENSANDBOX_EXECUTOR_IMAGE={subject.executor_image}",
+        f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={subject.executor_image_digest}",
     ]
     prefix = [*docker[:2], "env", "-i", *overrides, *docker[2:]] if docker[:2] == ["sudo", "-n"] else ["env", "-i", *overrides, *docker]
     files = [item for path in COMPOSE_FILES for item in ("-f", str(repo / path))]
@@ -390,13 +400,20 @@ class Quickstart:
         env_file = self._validate_env(subject.env_file)
         self._compose(env_file, subject, "config", "--quiet")
         print("preflight: ok")
-        for image in (subject.backend_image, subject.frontend_image):
+        # The backend artifact also contains the executor app. Pulling this exact
+        # digest on the OpenSandbox Docker host removes first-run registry latency.
+        for image in dict.fromkeys((subject.backend_image, subject.frontend_image)):
             self._validate_env(env_file)
             self.runner.run(
                 [*self.docker, "pull", image], timeout=900,
                 environment=_docker_environment(),
             )
-        print("pull: ok")
+        self.runner.run(
+            [*self.docker, "image", "inspect", subject.executor_image],
+            timeout=30,
+            environment=_docker_environment(),
+        )
+        print("pull: ok (OpenSandbox executor cached)")
         self._verify_source(subject)
         if self._current_runtime() != previous:
             raise QuickstartError("runtime changed while quickstart was preparing images")
@@ -429,10 +446,10 @@ def main() -> int:
     try:
         Quickstart(repo).run()
     except QuickstartError as exc:
-        print(f"s72 quickstart: failed: {exc} (no data volumes were removed)")
+        print(f"sandbox quickstart: failed: {exc} (no data volumes were removed)")
         return 2
     except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
-        print("s72 quickstart: failed: command error (no data volumes were removed)")
+        print("sandbox quickstart: failed: command error (no data volumes were removed)")
         return 2
     finally:
         for signum, handler in previous_handlers.items():

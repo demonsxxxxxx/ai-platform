@@ -101,6 +101,7 @@ from app.skills.pinning import (
     build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
+    validate_skill_manifest_refs,
 )
 from app.skills.registry import BuiltinSkillRegistry
 from app.skills.release_policy import (
@@ -110,6 +111,8 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+
+
 logger = logging.getLogger(__name__)
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
@@ -951,7 +954,9 @@ def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_i
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return QueueRunPayload.model_validate(payload).model_dump(mode="json")
+        validated = QueueRunPayload.model_validate(payload)
+        validate_skill_manifest_refs(validated.skill_manifests)
+        return validated.model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
 
@@ -2116,6 +2121,7 @@ async def chat_stream(
                 skill_version = None
                 release_decision_payload = {}
                 skill_manifests = []
+            skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
             agent_profile_execution_input = None
             if admitted_agent_profile is not None:
                 agent_profile_execution_input = {
@@ -2176,7 +2182,7 @@ async def chat_stream(
                     "executor_type": executor_type,
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
-                    "skill_manifests": skill_manifests,
+                    "skill_manifests": skill_manifest_transport,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                     **(
@@ -2305,7 +2311,7 @@ async def chat_stream(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
-                    skill_manifests=queue_payload["skill_manifests"],
+                    skill_manifests=skill_manifests,
                     release_decision=release_decision_payload,
                 )
             message_id = await repositories.append_message(

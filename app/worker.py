@@ -2463,6 +2463,25 @@ async def process_run_payload(
                     )
                     return terminal_after_transaction.outcome
             payload = locked_payload
+            try:
+                materialized_skill_manifests = await repositories.materialize_run_skill_manifests(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    skill_manifest_refs=payload.skill_manifests,
+                )
+            except repositories.RepositoryConflictError:
+                terminal_after_transaction = await _fail_locked_run_snapshot(
+                    conn,
+                    payload=payload,
+                    locked_run=locked,
+                    run_identity=run_identity,
+                    trace_id=trace_id,
+                )
+                return terminal_after_transaction.outcome
+            payload = payload.model_copy(
+                update={"skill_manifests": materialized_skill_manifests}
+            )
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,
                 payload=payload,

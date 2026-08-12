@@ -22,6 +22,7 @@ from app.models import (
     SelectedSkillRequest,
 )
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app import repositories as repository_module
 from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
@@ -853,6 +854,22 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         roles=["user"],
     )
     locked_version = "b" * 64
+    full_manifest = {
+        "skill_id": "profile-skill",
+        "version": locked_version,
+        "content_hash": locked_version,
+        "source": {"kind": "builtin", "asset_dir": "profile-skill"},
+        "files": [
+            {
+                "relative_path": "SKILL.md",
+                "content_base64": "c2tpbGw=",
+                "size_bytes": 5,
+            }
+        ],
+        "dependency_ids": [],
+        "mcp_tool_ids": ["profile-tool"],
+    }
+    manifest_refs = repository_module.skill_manifest_refs([full_manifest])
     source = {
         "id": "run-profile",
         "tenant_id": "tenant-a",
@@ -866,13 +883,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             "executor_type": "claude-agent-worker",
             "skill_version": locked_version,
             "release_decision": {"selected_version": locked_version},
-            "skill_manifests": [
-                {
-                    "skill_id": "profile-skill",
-                    "version": locked_version,
-                    "content_hash": locked_version,
-                }
-            ],
+            "skill_manifests": manifest_refs,
             "model_id": "model-a",
             "model_value": "provider-model-a",
             "agent_profile": {
@@ -925,6 +936,12 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         replay_validation_calls.append({"manifest_validation": kwargs})
         return ["profile-tool"]
 
+    async def materialize_run_skill_manifests(*_args, **kwargs):
+        refs = kwargs["skill_manifest_refs"]
+        if refs != manifest_refs:
+            raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+        return [full_manifest]
+
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.require_replay_source_identity",
@@ -933,6 +950,10 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
         validate_replay_skill_manifests,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.materialize_run_skill_manifests",
+        materialize_run_skill_manifests,
     )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
@@ -945,6 +966,21 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
     assert len(replay_validation_calls) == 2
     assert replay_validation_calls[0]["source_identity"]["pinned_version"] == locked_version
     assert replay_validation_calls[1]["manifest_validation"]["pinned_version"] == locked_version
+
+    for invalid_refs in (
+        [manifest_refs[0], "unexpected"],
+        [manifest_refs[0], None],
+        "not-a-list",
+        None,
+    ):
+        source["input_json"]["skill_manifests"] = invalid_refs
+        with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+            await authority.reauthorize_pinned_run_for_replay(
+                object(),
+                principal=principal,
+                run_id="run-profile",
+            )
+    source["input_json"]["skill_manifests"] = manifest_refs
 
     async def reject_malformed_manifest(*_args, **_kwargs):
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")

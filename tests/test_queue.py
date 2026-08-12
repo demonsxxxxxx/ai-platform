@@ -20,7 +20,13 @@ def release_decision(version: str) -> dict:
 
 
 def primary_manifest(skill_id: str, version: str) -> dict:
-    return {"skill_id": skill_id, "content_hash": version}
+    return {
+        "schema_version": "ai-platform.skill-materialization-ref.v1",
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "materialization_sha256": "a" * 64,
+    }
 
 
 def queue_payload(**overrides) -> QueueRunPayload:
@@ -1110,6 +1116,62 @@ async def test_enqueue_run_writes_indexed_queue_metadata(monkeypatch):
     assert metadata["raw"] == expected_raw
     assert indexed_message_ids(fake, "tenant-a:run-indexed") == [message_id]
     assert fake.order_scores[message_id] == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_persists_only_skill_materialization_refs(monkeypatch):
+    payload = queue_payload(
+        run_id="run-ref-only",
+        skill_manifests=[
+            {
+                "schema_version": "ai-platform.skill-materialization-ref.v1",
+                "skill_id": "qa-file-reviewer",
+                "version": "hash-qa-file-reviewer",
+                "content_hash": "hash-qa-file-reviewer",
+                "materialization_sha256": "a" * 64,
+            }
+        ],
+    ).model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    await queue.enqueue_run(payload)
+
+    raw = fake.queued[0]
+    queued = json.loads(raw)
+    assert queued["skill_manifests"] == payload["skill_manifests"]
+    assert "files" not in raw
+    assert "content_base64" not in raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "skill_manifests",
+    [
+        [{"skill_id": "qa-file-reviewer", "content_hash": "hash-qa-file-reviewer"}],
+        [
+            primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer"),
+            {"skill_id": "dependency", "content_hash": "hash-dependency"},
+        ],
+    ],
+)
+async def test_enqueue_run_rejects_full_or_mixed_skill_manifests_before_redis(
+    monkeypatch,
+    skill_manifests,
+):
+    payload = queue_payload(skill_manifests=skill_manifests).model_dump()
+
+    async def fail_get_redis():
+        pytest.fail("invalid Skill transport must fail before Redis")
+
+    monkeypatch.setattr("app.queue.get_redis", fail_get_redis)
+
+    with pytest.raises(queue.QueueAdmissionRejected, match="queue_payload_invalid"):
+        await queue.enqueue_run(payload)
 
 
 @pytest.mark.asyncio
