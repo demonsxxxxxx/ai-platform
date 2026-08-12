@@ -248,6 +248,31 @@
       "reason": "The retired artifact-named import surface may only re-export the current transitional persistence owner; app.persistence remains frozen to new modules until object_lifecycle owns the implementation."
     }
   ],
+  "migration_bridges": [
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.agent_apps.infrastructure.postgres",
+      "module_alias": "agent_profile_persistence",
+      "symbols": [
+        "acquire_agent_profile_lifecycle_lock",
+        "create_agent_profile_revision",
+        "ensure_agent_profile_identity",
+        "get_agent_profile_aggregate",
+        "get_agent_profile_revision",
+        "get_bound_published_agent_profile",
+        "get_current_published_agent_profile",
+        "list_agent_profile_revision_history",
+        "list_current_published_agent_profiles",
+        "list_latest_agent_profile_revisions",
+        "record_agent_profile_draft",
+        "record_agent_profile_publication",
+        "record_agent_profile_withdrawal"
+      ],
+      "owner": "agent_apps",
+      "reason": "The frozen global repository may expose these existing Agent Profile symbols only as exact identity aliases while their SQL and lifecycle locks move to the Agent Apps PostgreSQL adapter.",
+      "removal_condition": "After the Agent Profile persistence move, inventory all supported imports of these repositories symbols; migrate internal callers to an Agent Apps boundary and remove this bridge in an authority-only change before deleting the aliases."
+    }
+  ],
   "production_registries": [
     {
       "path": "app/executors/registry.py",
@@ -308,6 +333,11 @@
       "kernel_public_surface_forbidden",
       "layer_dependency_forbidden",
       "layer_external_dependency_forbidden",
+      "migration_bridge_import_contract",
+      "migration_bridge_source_growth",
+      "migration_bridge_source_logic",
+      "migration_bridge_symbol_contract",
+      "migration_bridge_target_contract",
       "platform_product_import",
       "registry_adapter_mismatch",
       "registry_duplicate_key",

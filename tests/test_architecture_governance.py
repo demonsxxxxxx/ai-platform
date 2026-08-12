@@ -104,7 +104,12 @@ def _create_repo(
     _write(
         repo,
         "app/repositories.py",
-        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n",
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n\n"
+        + "\n\n".join(
+            f"async def {name}():\n    return {name!r}"
+            for name in _fixture_policy()["migration_bridges"][0]["symbols"]
+        )
+        + "\n",
     )
     _write(
         repo,
@@ -140,6 +145,29 @@ def _codes(evaluation: Any) -> set[str]:
     return {finding.code for finding in evaluation.findings}
 
 
+def _activate_agent_profile_bridge(repo: Path, *, source_suffix: str = "") -> None:
+    bridge = _fixture_policy()["migration_bridges"][0]
+    symbols = bridge["symbols"]
+    _write(
+        repo,
+        "app/agent_apps/infrastructure/postgres.py",
+        "\n\n".join(
+            f"async def {name}():\n    return {name!r}" for name in symbols
+        )
+        + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}" for name in symbols
+        )
+        + f"\n{source_suffix}",
+    )
+
+
 def test_policy_and_schema_are_closed_sorted_authority_contracts(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -157,6 +185,16 @@ def test_policy_and_schema_are_closed_sorted_authority_contracts(
         "schema_version": "ai-platform.architecture-policy.v1",
         "source_contract": "docs/architecture/source-code-architecture.md",
     }
+
+
+def test_authority_can_retire_the_last_migration_bridge(tmp_path: Path) -> None:
+    policy = _fixture_policy()
+    policy["migration_bridges"] = []
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    evaluation = _evaluate(repo, authority, authority, authority)
+
+    assert evaluation.status == "pass"
 
 
 @pytest.mark.parametrize("value", ["main", "ABCDEF", "0" * 39, "A" * 40])
@@ -585,6 +623,305 @@ def test_allowed_migration_edges_pass(governance_repo: tuple[Path, str]) -> None
 
     assert evaluation.status == "pass"
     assert evaluation.findings == ()
+
+
+def test_exact_legacy_migration_bridge_moves_symbols_as_identity_aliases(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_agent_profile_bridge(repo)
+    head = _commit(repo, "activate exact Agent Profile persistence bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("wrong_alias", "migration_bridge_import_contract"),
+        ("missing_symbol", "migration_bridge_symbol_contract"),
+        ("rebound_symbol", "migration_bridge_symbol_contract"),
+        ("missing_target", "migration_bridge_target_contract"),
+        ("new_logic", "migration_bridge_source_logic"),
+    ],
+)
+def test_legacy_migration_bridge_fails_closed_on_contract_drift(
+    governance_repo: tuple[Path, str], mutation: str, expected: str
+) -> None:
+    repo, authority = governance_repo
+    _activate_agent_profile_bridge(
+        repo,
+        source_suffix="\ndef newly_owned_logic():\n    return True\n"
+        if mutation == "new_logic"
+        else "",
+    )
+    bridge = _fixture_policy()["migration_bridges"][0]
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    first_symbol = bridge["symbols"][0]
+    if mutation == "wrong_alias":
+        source = source.replace(
+            f" as {bridge['module_alias']}",
+            " as unauthorized_alias",
+            1,
+        )
+    elif mutation == "missing_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}\n",
+            "",
+        )
+    elif mutation == "rebound_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}",
+            f"{first_symbol} = object()",
+        )
+    elif mutation == "missing_target":
+        (repo / "app/agent_apps/infrastructure/postgres.py").unlink()
+    _write(repo, bridge["source_path"], source)
+    head = _commit(repo, f"reject migration bridge {mutation}")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(item for item in evaluation.findings if item.code == expected)
+    assert finding.exemptible is False
+
+
+def test_undeclared_root_to_domain_internal_import_remains_forbidden(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    current = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(
+        repo,
+        "app/repositories.py",
+        "import app.agent_apps.infrastructure.private as hidden_profile_persistence\n"
+        + current,
+    )
+    head = _commit(repo, "attempt undeclared persistence bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "cross_domain_internal_import" in _codes(evaluation)
+
+
+def test_inactive_bridge_source_cannot_be_deleted_before_authority_retirement(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    (repo / "app/repositories.py").unlink()
+    head = _commit(repo, "attempt premature inactive bridge deletion")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_import_contract"
+    )
+    assert finding.exemptible is False
+
+
+def test_dynamic_import_cannot_activate_a_migration_bridge(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    bridge = _fixture_policy()["migration_bridges"][0]
+    current = (repo / bridge["source_path"]).read_text(encoding="utf-8")
+    _write(
+        repo,
+        bridge["source_path"],
+        f"{bridge['module_alias']} = __import__({bridge['target_module']!r})\n" + current,
+    )
+    head = _commit(repo, "attempt dynamic migration bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_import_contract" in _codes(evaluation)
+
+
+def test_obfuscated_dynamic_import_cannot_replace_declared_definitions(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    bridge = _fixture_policy()["migration_bridges"][0]
+    _write(
+        repo,
+        bridge["source_path"],
+        "import importlib\n"
+        f"{bridge['module_alias']} = importlib.import_module(\n"
+        "    'app.agent_apps.infrastructure.' + 'postgres'\n"
+        ")\n"
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n",
+    )
+    head = _commit(repo, "attempt obfuscated dynamic migration bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_import_contract" in _codes(evaluation)
+
+
+def test_obfuscated_dynamic_import_with_undeclared_alias_is_rejected(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    current = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(
+        repo,
+        "app/repositories.py",
+        "import importlib\n"
+        "unauthorized_alias = importlib.import_module(\n"
+        "    'app.agent_apps.infrastructure.' + 'postgres'\n"
+        ")\n"
+        + current,
+    )
+    head = _commit(repo, "attempt obfuscated undeclared bridge alias")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_import_contract" in _codes(evaluation)
+
+
+def test_bridge_activation_must_strictly_shrink_the_legacy_source(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_agent_profile_bridge(repo)
+    bridge = _fixture_policy()["migration_bridges"][0]
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    base_lines = len(
+        _git(repo, "show", f"{authority}:{bridge['source_path']}").splitlines()
+    )
+    current_lines = len(source.splitlines())
+    source_path.write_text(
+        source + "\n".join("# padding" for _ in range(base_lines - current_lines + 1)) + "\n",
+        encoding="utf-8",
+    )
+    head = _commit(repo, "attempt non-shrinking bridge activation")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_source_growth" in _codes(evaluation)
+
+
+def test_active_bridge_rechecks_target_even_when_only_target_changes(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_agent_profile_bridge(repo)
+    active_base = _commit(repo, "activate bridge")
+    bridge = _fixture_policy()["migration_bridges"][0]
+    target_path = repo / "app/agent_apps/infrastructure/postgres.py"
+    target = target_path.read_text(encoding="utf-8")
+    target_path.write_text(
+        target.replace(f"async def {bridge['symbols'][0]}():", "async def removed_symbol():", 1),
+        encoding="utf-8",
+    )
+    head = _commit(repo, "break active bridge target")
+
+    evaluation = _evaluate(repo, authority, active_base, head)
+
+    assert "migration_bridge_target_contract" in _codes(evaluation)
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "\ndef newly_owned_logic():\n    return True\n",
+        "\nimport app.agent_apps.infrastructure.postgres as alternate_owner\n",
+        "\nfrom app.agent_apps.infrastructure.postgres import record_agent_profile_draft\n",
+        "\nif True:\n    BRIDGE_SIDE_EFFECT = True\n",
+    ],
+)
+def test_active_bridge_rejects_later_source_logic_and_extra_imports(
+    governance_repo: tuple[Path, str], addition: str
+) -> None:
+    repo, authority = governance_repo
+    _activate_agent_profile_bridge(repo)
+    active_base = _commit(repo, "activate bridge")
+    source_path = repo / "app/repositories.py"
+    source_path.write_text(
+        source_path.read_text(encoding="utf-8") + addition,
+        encoding="utf-8",
+    )
+    head = _commit(repo, "attempt post-activation bridge growth")
+
+    evaluation = _evaluate(repo, authority, active_base, head)
+
+    assert "migration_bridge_source_logic" in _codes(evaluation)
+    assert "migration_bridge_source_growth" in _codes(evaluation)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from app.agent_apps.infrastructure.postgres import record_agent_profile_draft\n",
+        "if True:\n    import app.agent_apps.infrastructure.postgres as agent_profile_persistence\n",
+    ],
+)
+def test_noncanonical_import_forms_do_not_bypass_cross_domain_enforcement(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    current = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(repo, "app/repositories.py", source + current)
+    head = _commit(repo, "attempt noncanonical bridge import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "cross_domain_internal_import" in _codes(evaluation)
+
+
+def test_candidate_cannot_self_authorize_an_undeclared_bridge(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    relaxed = _fixture_policy()
+    relaxed["migration_bridges"][0]["target_module"] = (
+        "app.agent_apps.infrastructure.private"
+    )
+    _write(repo, "architecture-policy.json", json.dumps(relaxed, indent=2))
+    current = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(
+        repo,
+        "app/repositories.py",
+        "import app.agent_apps.infrastructure.private as agent_profile_persistence\n"
+        + current,
+    )
+    head = _commit(repo, "attempt candidate bridge self authorization")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "cross_domain_internal_import" in _codes(evaluation)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda bridge: bridge.update(target_module="app.agent_apps.infrastructure_evil.postgres"),
+        lambda bridge: bridge.update(symbols=list(reversed(bridge["symbols"]))),
+        lambda bridge: bridge.update(module_alias="DynamicAlias"),
+    ],
+)
+def test_authority_rejects_broad_or_unsorted_migration_bridge_contracts(
+    tmp_path: Path, mutate: Any
+) -> None:
+    policy = _fixture_policy()
+    mutate(policy["migration_bridges"][0])
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
 
 
 def test_unapproved_root_and_generic_modules_are_rejected(

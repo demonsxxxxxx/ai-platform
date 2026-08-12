@@ -20,6 +20,7 @@
     "forbidden_delivery_tokens",
     "frozen_hot_files",
     "compatibility_facades",
+    "migration_bridges",
     "production_registries",
     "governed_symbols",
     "exception_contract"
@@ -99,6 +100,13 @@
       "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/facade"
+      }
+    },
+    "migration_bridges": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/migrationBridge"
       }
     },
     "production_registries": {
@@ -228,6 +236,50 @@
           "$ref": "#/$defs/nonEmptyString"
         },
         "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "migrationBridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_path",
+        "target_module",
+        "module_alias",
+        "symbols",
+        "owner",
+        "reason",
+        "removal_condition"
+      ],
+      "properties": {
+        "source_path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "target_module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "module_alias": {
+          "type": "string",
+          "pattern": "^_?[a-z][a-z0-9_]*$"
+        },
+        "symbols": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^_?[a-z][a-z0-9_]*$"
+          }
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "removal_condition": {
           "$ref": "#/$defs/nonEmptyString"
         }
       }
