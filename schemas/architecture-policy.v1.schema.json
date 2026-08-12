@@ -251,7 +251,7 @@
         "path",
         "factory_function",
         "allowed_keys",
-        "allowed_adapter_constructors",
+        "adapter_constructors",
         "selector_owners",
         "test_double_terms",
         "owner",
@@ -273,13 +273,12 @@
             "$ref": "#/$defs/nonEmptyString"
           }
         },
-        "allowed_adapter_constructors": {
+        "adapter_constructors": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "type": "string",
-            "pattern": "^[A-Z][A-Za-z0-9]*$"
+            "$ref": "#/$defs/adapterConstructor"
           }
         },
         "selector_owners": {
@@ -303,6 +302,21 @@
         },
         "reason": {
           "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "adapterConstructor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "name"],
+      "properties": {
+        "module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
         }
       }
     },

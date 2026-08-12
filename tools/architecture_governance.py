@@ -60,6 +60,7 @@ BUILTIN_NON_EXEMPTIBLE_CODES = frozenset({
     "compatibility_import_forbidden",
     "cross_domain_internal_import",
     "facade_missing",
+    "facade_wildcard_import",
     "governed_symbol_missing",
     "governed_symbol_owner",
     "kernel_product_import",
@@ -685,6 +686,7 @@ def _validate_policy_schema(schema: dict[str, Any]) -> None:
     definitions = schema.get("$defs")
     required_definitions = {
         "exceptionContract",
+        "adapterConstructor",
         "facade",
         "governedSymbol",
         "hotFile",
@@ -893,7 +895,7 @@ def _validate_policy(policy: dict[str, Any], git: _GitObjects, authority: str) -
             "path",
             "factory_function",
             "allowed_keys",
-            "allowed_adapter_constructors",
+            "adapter_constructors",
             "selector_owners",
             "test_double_terms",
             "owner",
@@ -980,19 +982,39 @@ def _validate_registry_entry(entry: dict[str, Any], label: str) -> None:
         raise ArchitectureError("invalid_policy", f"{label}.allowed_keys must be non-empty strings")
     if len(allowed) != len(set(allowed)) or allowed != sorted(allowed):
         raise ArchitectureError("invalid_policy", f"{label}.allowed_keys must be sorted and unique")
-    constructors = entry["allowed_adapter_constructors"]
-    if not isinstance(constructors, list) or not constructors or any(
-        not isinstance(item, str) or re.fullmatch(r"[A-Z][A-Za-z0-9]*", item) is None
-        for item in constructors
-    ):
+    constructors = entry["adapter_constructors"]
+    if not isinstance(constructors, list) or not constructors:
         raise ArchitectureError(
             "invalid_policy",
-            f"{label}.allowed_adapter_constructors must contain class names",
+            f"{label}.adapter_constructors must be a non-empty list",
         )
-    if constructors != sorted(set(constructors)):
+    constructor_identities: list[tuple[str, str]] = []
+    for constructor in constructors:
+        _require_exact_keys(
+            constructor,
+            {"module", "name"},
+            f"{label}.adapter_constructors",
+            "invalid_policy",
+        )
+        module = constructor["module"]
+        name = constructor["name"]
+        if not isinstance(module, str) or not module.startswith("app.") or any(
+            MODULE_NAME.fullmatch(part) is None for part in module.split(".")[1:]
+        ):
+            raise ArchitectureError(
+                "invalid_policy",
+                f"{label}.adapter_constructors.module must be an app module",
+            )
+        if not isinstance(name, str) or re.fullmatch(r"[A-Z][A-Za-z0-9]*", name) is None:
+            raise ArchitectureError(
+                "invalid_policy",
+                f"{label}.adapter_constructors.name must be a class name",
+            )
+        constructor_identities.append((module, name))
+    if constructor_identities != sorted(set(constructor_identities)):
         raise ArchitectureError(
             "invalid_policy",
-            f"{label}.allowed_adapter_constructors must be sorted and unique",
+            f"{label}.adapter_constructors must be sorted and unique",
         )
     selector_owners = entry["selector_owners"]
     if not isinstance(selector_owners, list) or not selector_owners:
@@ -1176,7 +1198,16 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
                 exemptible=False,
                 details={"target": edge.target},
             )
-        if source.context is None or source.layer is None:
+        if source.context is not None and source.layer is None:
+            return Finding(
+                "layer_external_dependency_forbidden",
+                "legacy or boundary domain modules cannot add third-party dependencies",
+                source_path,
+                edge.line,
+                exemptible=False,
+                details={"target": edge.target},
+            )
+        if source.context is None:
             return None
         layer_policy = policy["layers"][source.layer]
         if layer_policy["allow_third_party"] or external_root in set(
@@ -1318,7 +1349,7 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
 
 def _kernel_import_allowed(target: str, policy: dict[str, Any]) -> bool:
     parts = target.split(".")
-    return len(parts) >= 3 and parts[2] in set(policy["public_kernel_modules"])
+    return len(parts) == 3 and parts[2] in set(policy["public_kernel_modules"])
 
 
 def _assignment_names(tree: ast.Module) -> set[str]:
@@ -1495,7 +1526,18 @@ def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Fin
                     )
                 )
             else:
-                canonical_bindings.update(alias.asname or alias.name for alias in node.names)
+                if any(alias.name == "*" for alias in node.names):
+                    findings.append(
+                        Finding(
+                            "facade_wildcard_import",
+                            "compatibility facades cannot use wildcard imports",
+                            path,
+                            node.lineno,
+                            exemptible=False,
+                        )
+                    )
+                else:
+                    canonical_bindings.update(alias.asname or alias.name for alias in node.names)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if not _module_has_prefix(alias.name, facade["canonical_prefix"]):
@@ -1542,6 +1584,7 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
     tree = _parse_python(source, path, candidate=True)
     findings: list[Finding] = []
     literal_keys: list[tuple[str, int]] = []
+    imported_constructors = _imported_symbol_bindings(tree)
     factories = [
         node
         for node in ast.walk(tree)
@@ -1579,7 +1622,10 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
 
     if registry_dict is not None:
         current: set[str] = set()
-        allowed_constructors = set(registry["allowed_adapter_constructors"])
+        allowed_constructors = {
+            (entry["module"], entry["name"])
+            for entry in registry["adapter_constructors"]
+        }
         for key, value in zip(registry_dict.keys, registry_dict.values, strict=True):
             if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
                 findings.append(
@@ -1603,9 +1649,14 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
                 )
             current.add(key.value)
             constructor = _call_name(value.func) if isinstance(value, ast.Call) else ""
+            constructor_identity = (
+                imported_constructors.get(constructor)
+                if isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                else None
+            )
             if (
                 not isinstance(value, ast.Call)
-                or constructor not in allowed_constructors
+                or constructor_identity not in allowed_constructors
                 or value.args
                 or value.keywords
             ):
@@ -1618,7 +1669,12 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
                         exemptible=False,
                         details={
                             "actual_constructor": constructor or None,
-                            "allowed_constructors": sorted(allowed_constructors),
+                            "actual_identity": None
+                            if constructor_identity is None
+                            else ".".join(constructor_identity),
+                            "allowed_constructors": [
+                                ".".join(identity) for identity in sorted(allowed_constructors)
+                            ],
                             "key": key.value,
                         },
                     )
@@ -1715,6 +1771,18 @@ def _registry_findings(registry: dict[str, Any], source: str, path: str) -> list
             )
         )
     return _sort_findings(_deduplicate_findings(findings))
+
+
+def _imported_symbol_bindings(tree: ast.Module) -> dict[str, tuple[str, str]]:
+    bindings: dict[str, tuple[str, str]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            bindings[alias.asname or alias.name] = (node.module, alias.name)
+    return bindings
 
 
 def _registry_selector_findings(

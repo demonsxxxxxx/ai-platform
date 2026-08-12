@@ -97,6 +97,7 @@ def _create_repo(
     _write(
         repo,
         "app/executors/registry.py",
+        "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n"
         "def _default_adapters():\n"
         "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
     )
@@ -368,6 +369,20 @@ def test_legacy_domain_file_cannot_add_same_context_infrastructure_import(
     assert "layer_dependency_forbidden" in _codes(evaluation)
 
 
+def test_legacy_domain_file_cannot_add_third_party_dependency(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/legacy.py", "BASELINE = True\n")
+    base = _commit(repo, "legacy domain file")
+    _write(repo, "app/runs/legacy.py", "import malicious_pkg\n")
+    head = _commit(repo, "legacy file imports third party")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert "layer_external_dependency_forbidden" in _codes(evaluation)
+
+
 def test_domain_boundary_cannot_import_concrete_infrastructure(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -388,6 +403,26 @@ def test_arbitrary_kernel_module_is_not_a_public_surface(
     head = _commit(repo, "arbitrary kernel import")
 
     evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "kernel_public_surface_forbidden" in _codes(evaluation)
+
+
+def test_kernel_allowlist_does_not_authorize_private_descendants(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    policy = _fixture_policy()
+    policy["public_kernel_modules"] = ["identity"]
+    _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
+    policy_head = _commit(repo, "authority with kernel public module")
+    _write(
+        repo,
+        "app/runs/domain/attempt.py",
+        "from app.kernel.identity.private import secret\n",
+    )
+    head = _commit(repo, "private kernel descendant")
+
+    evaluation = _evaluate(repo, policy_head, policy_head, head)
 
     assert "kernel_public_surface_forbidden" in _codes(evaluation)
 
@@ -517,15 +552,33 @@ def test_logic_free_facade_rejects_nonexistent_export_and_prefix_collision(
     assert {"facade_export_contract", "facade_import_forbidden"} <= _codes(evaluation)
 
 
+def test_logic_free_facade_rejects_wildcard_import_and_export(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/artifact_lifecycle_repository.py",
+        "from app.persistence import *\n__all__ = [\"*\"]\n",
+    )
+    head = _commit(repo, "wildcard facade")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "facade_wildcard_import" in _codes(evaluation)
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
         (
+            "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n"
             "def _default_adapters():\n"
             "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter(), \"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
             "registry_duplicate_key",
         ),
         (
+            "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n"
             "def _default_adapters():\n"
             "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter(), \"unknown-worker\": ClaudeAgentWorkerAdapter()}\n",
             "registry_unknown_key",
@@ -573,6 +626,24 @@ def test_registry_ignores_unrelated_metadata_dict_but_checks_factory_values(
 
     assert "registry_test_double" in _codes(evaluation)
     assert "registry_unknown_key" not in _codes(evaluation)
+
+
+def test_registry_rejects_qualified_or_local_constructor_spoof(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/executors/registry.py",
+        "class ClaudeAgentWorkerAdapter: pass\n"
+        "def _default_adapters():\n"
+        "    return {\"claude-agent-worker\": ClaudeAgentWorkerAdapter()}\n",
+    )
+    head = _commit(repo, "spoof adapter constructor")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "registry_adapter_mismatch" in _codes(evaluation)
 
 
 def test_registry_rejects_arbitrary_os_command_selector(

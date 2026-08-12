@@ -255,8 +255,11 @@
       "allowed_keys": [
         "claude-agent-worker"
       ],
-      "allowed_adapter_constructors": [
-        "ClaudeAgentWorkerAdapter"
+      "adapter_constructors": [
+        {
+          "module": "app.executors.claude_agent_worker",
+          "name": "ClaudeAgentWorkerAdapter"
+        }
       ],
       "selector_owners": [
         {
@@ -298,6 +301,7 @@
       "compatibility_import_forbidden",
       "cross_domain_internal_import",
       "facade_missing",
+      "facade_wildcard_import",
       "governed_symbol_missing",
       "governed_symbol_owner",
       "kernel_product_import",
