@@ -1642,12 +1642,58 @@ def _bridge_import_count(tree: ast.Module, bridge: dict[str, Any]) -> int:
     return sum(
         1
         for node in tree.body
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.name == bridge["target_module"]
-        and alias.asname == bridge["module_alias"]
-        and len(node.names) == 1
+        if _is_bridge_import(node, bridge)
     )
+
+
+def _is_bridge_import(node: ast.stmt, bridge: dict[str, Any]) -> bool:
+    return (
+        isinstance(node, ast.Import)
+        and len(node.names) == 1
+        and node.names[0].name == bridge["target_module"]
+        and node.names[0].asname == bridge["module_alias"]
+    )
+
+
+def _bridge_alias_assignment_name(
+    node: ast.stmt,
+    bridge: dict[str, Any],
+) -> str | None:
+    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        return None
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    names = set().union(*(_assignment_target_names(target) for target in targets))
+    if len(names) != 1:
+        return None
+    exact_name = next(iter(names))
+    value = node.value
+    if (
+        exact_name in set(bridge["symbols"])
+        and isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id == bridge["module_alias"]
+        and value.attr == exact_name
+    ):
+        return exact_name
+    return None
+
+
+def _active_migration_bridge_nodes(
+    policy: dict[str, Any],
+    path: str,
+    tree: ast.Module,
+) -> set[int]:
+    allowed_nodes: set[int] = set()
+    for bridge in policy["migration_bridges"]:
+        if bridge["source_path"] != path or _bridge_import_count(tree, bridge) != 1:
+            continue
+        for node in tree.body:
+            if _is_bridge_import(node, bridge):
+                allowed_nodes.add(id(node))
+                continue
+            if _bridge_alias_assignment_name(node, bridge) is not None:
+                allowed_nodes.add(id(node))
+    return allowed_nodes
 
 
 def _migration_bridge_findings(
@@ -1662,6 +1708,7 @@ def _migration_bridge_findings(
     head: str,
 ) -> list[Finding]:
     findings: list[Finding] = []
+    active_bridge_nodes = _active_migration_bridge_nodes(policy, path, head_tree)
     for bridge in policy["migration_bridges"]:
         if bridge["source_path"] != path:
             continue
@@ -1677,6 +1724,14 @@ def _migration_bridge_findings(
         dynamic_import_added = not _dynamic_import_fingerprints(head_tree) <= (
             _dynamic_import_fingerprints(base_tree)
         )
+        dynamic_import_capabilities = sorted(
+            set(_dynamic_import_capability_labels(head_tree))
+            - set(_dynamic_import_capability_labels(base_tree))
+        )
+        if dynamic_import_added and not dynamic_import_capabilities:
+            dynamic_import_capabilities = sorted(
+                set(_dynamic_import_capability_labels(head_tree))
+            )
         target_mentioned = any(
             isinstance(node, ast.Import)
             and any(alias.name == bridge["target_module"] for alias in node.names)
@@ -1705,6 +1760,8 @@ def _migration_bridge_findings(
             "source_path": bridge["source_path"],
             "target_module": bridge["target_module"],
         }
+        if dynamic_import_added:
+            details["dynamic_import_capabilities"] = dynamic_import_capabilities
         if old_path != path or not head_active:
             findings.append(
                 Finding(
@@ -1750,29 +1807,16 @@ def _migration_bridge_findings(
 
         exact_aliases: Counter[str] = Counter()
         rebound_names: set[str] = set()
-        allowed_nodes: set[int] = set()
         for node in head_tree.body:
-            if isinstance(node, ast.Import) and any(
-                alias.name == bridge["target_module"]
-                and alias.asname == bridge["module_alias"]
-                for alias in node.names
-            ):
-                allowed_nodes.add(id(node))
+            if _is_bridge_import(node, bridge):
+                continue
             if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                 continue
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names = set().union(*(_assignment_target_names(target) for target in targets))
-            value = node.value
-            exact_name = next(iter(names), None) if len(names) == 1 else None
-            if (
-                exact_name in set(bridge["symbols"])
-                and isinstance(value, ast.Attribute)
-                and isinstance(value.value, ast.Name)
-                and value.value.id == bridge["module_alias"]
-                and value.attr == exact_name
-            ):
+            exact_name = _bridge_alias_assignment_name(node, bridge)
+            if exact_name is not None:
                 exact_aliases[exact_name] += 1
-                allowed_nodes.add(id(node))
             elif names & (set(bridge["symbols"]) | {bridge["module_alias"]}):
                 rebound_names.update(names)
         local_definitions = {
@@ -1827,7 +1871,7 @@ def _migration_bridge_findings(
             fingerprint = ast.dump(node, include_attributes=False)
             if base_nodes[fingerprint] > 0:
                 base_nodes[fingerprint] -= 1
-            elif id(node) not in allowed_nodes:
+            elif id(node) not in active_bridge_nodes:
                 unexpected.append(node)
         if unexpected:
             findings.append(
@@ -1864,9 +1908,65 @@ def _dynamic_import_fingerprints(tree: ast.Module | None) -> Counter[str]:
     return Counter(
         ast.dump(node, include_attributes=False)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and _call_name(node.func) in {"__import__", "import_module"}
+        if _is_dynamic_import_capability(node)
     )
+
+
+def _dynamic_import_capability_labels(tree: ast.Module | None) -> set[str]:
+    if tree is None:
+        return set()
+    return {
+        label
+        for node in ast.walk(tree)
+        for label in _dynamic_import_capability_labels_for_node(node)
+    }
+
+
+def _dynamic_import_capability_labels_for_node(node: ast.AST) -> set[str]:
+    labels: set[str] = set()
+    if isinstance(node, ast.Import):
+        labels.update(
+            module
+            for module in ("builtins", "importlib")
+            if any(
+                alias.name == module or alias.name.startswith(f"{module}.")
+                for alias in node.names
+            )
+        )
+    elif isinstance(node, ast.ImportFrom):
+        labels.update(
+            module
+            for module in ("builtins", "importlib")
+            if node.module == module
+            or (node.module is not None and node.module.startswith(f"{module}."))
+        )
+        labels.update(
+            alias.name
+            for alias in node.names
+            if alias.name in {"__import__", "import_module"}
+        )
+    elif isinstance(node, ast.Name) and node.id in {"__import__", "import_module"}:
+        labels.add(node.id)
+    elif isinstance(node, ast.Attribute) and node.attr in {"__import__", "import_module"}:
+        labels.add(node.attr)
+    elif isinstance(node, ast.Call):
+        function_name = _call_name(node.func)
+        if function_name in {
+            "__import__",
+            "eval",
+            "exec",
+            "getattr",
+            "globals",
+            "import_module",
+            "locals",
+            "vars",
+        }:
+            labels.add(function_name)
+    return labels
+
+
+def _is_dynamic_import_capability(node: ast.AST) -> bool:
+    return bool(_dynamic_import_capability_labels_for_node(node))
 
 
 def _facade_findings(facade: dict[str, Any], source: str, path: str) -> list[Finding]:

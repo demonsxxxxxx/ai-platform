@@ -88,12 +88,25 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
     _write(repo, "tools/architecture_governance.py", ARCHITECTURE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/pre_push_readiness.py", READINESS_TOOL.read_text(encoding="utf-8"))
     policy = json.loads(ARCHITECTURE_POLICY.read_text(encoding="utf-8"))
-    policy["approved_root_modules"] = [
-        "app/__init__.py",
-        "app/artifact_lifecycle_repository.py",
-        "app/billing.py",
-        "app/repositories.py",
-    ]
+    migration_bridge_sources = sorted(
+        {bridge["source_path"] for bridge in policy["migration_bridges"]}
+    )
+    for source_path in migration_bridge_sources:
+        if not (repo / source_path).exists():
+            _write(repo, source_path, "FIXTURE = True\n")
+    policy["approved_root_modules"] = sorted(
+        {
+            "app/__init__.py",
+            "app/artifact_lifecycle_repository.py",
+            "app/billing.py",
+            "app/repositories.py",
+            *(
+                source_path
+                for source_path in migration_bridge_sources
+                if Path(source_path).parent.as_posix() == "app"
+            ),
+        }
+    )
     policy["frozen_hot_files"] = [
         {
             "path": "app/persistence/object_deletions.py",
@@ -155,6 +168,26 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
 @pytest.fixture
 def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     return _create_readiness_repo(tmp_path, code_governance_test_path="tests/test_code_governance.py")
+
+
+def test_readiness_fixture_materializes_every_migration_bridge_source(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, authority = readiness_repo
+    policy = json.loads(_git(repo, "show", f"{authority}:architecture-policy.json"))
+
+    for bridge in policy["migration_bridges"]:
+        source_path = bridge["source_path"]
+        assert _run(
+            repo,
+            "git",
+            "cat-file",
+            "-e",
+            f"{authority}:{source_path}",
+            check=False,
+        ).returncode == 0
+        if Path(source_path).parent.as_posix() == "app":
+            assert source_path in policy["approved_root_modules"]
 
 
 def _check(
