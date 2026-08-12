@@ -4,6 +4,7 @@ import re
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SAFE_PRINCIPAL_USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$")
 MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS = 16_000
+CANONICAL_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def assert_safe_id(value: str, field_name: str) -> str:
@@ -15,4 +16,10 @@ def assert_safe_id(value: str, field_name: str) -> str:
 def assert_safe_principal_user_id(value: str, field_name: str = "user_id") -> str:
     if not SAFE_PRINCIPAL_USER_ID_PATTERN.fullmatch(value) or ".." in value:
         raise ValueError(f"{field_name} contains unsupported characters")
+    return value
+
+
+def assert_canonical_sha256(value: object, error_code: str) -> str:
+    if not isinstance(value, str) or not CANONICAL_SHA256_PATTERN.fullmatch(value):
+        raise ValueError(error_code)
     return value

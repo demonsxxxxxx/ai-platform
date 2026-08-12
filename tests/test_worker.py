@@ -725,6 +725,9 @@ def _test_current_principal(
 def default_cancel_not_requested(monkeypatch):
     global _CURRENT_QUEUE_PAYLOAD
     _CURRENT_QUEUE_PAYLOAD = None
+    original_locked_agent_profile_identity_valid = (
+        worker_module._locked_agent_profile_identity_valid
+    )
 
     def capture_queue_payload(raw):
         global _CURRENT_QUEUE_PAYLOAD
@@ -737,8 +740,17 @@ def default_cancel_not_requested(monkeypatch):
             locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
         return _payload_from_locked_run(locked_run, run_identity=run_identity)
 
+    def validate_materialized_locked_agent_profile(agent_profile, locked_run):
+        if locked_run is True:
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        return original_locked_agent_profile_identity_valid(agent_profile, locked_run)
+
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
+    monkeypatch.setattr(
+        "app.worker._locked_agent_profile_identity_valid",
+        validate_materialized_locked_agent_profile,
+    )
 
     async def resolve_test_current_principal(*, user_id, tenant_id):
         return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
@@ -1287,13 +1299,24 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
         "required_skill_id": "qa-file-reviewer",
         "required_skill_version": "hash-qa-file-reviewer",
     }
-    payload = parse_queue_payload(base_payload(_leased=False, agent_profile=profile))
+    payload = parse_queue_payload(
+        base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
+    )
 
     assert payload.agent_profile == profile
+    with pytest.raises(ValueError, match="agent_profile_agent_id_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_id="other-agent",
+                agent_profile=profile,
+            )
+        )
     with pytest.raises(ValueError, match="agent_profile_required_skill_invalid"):
         parse_queue_payload(
             base_payload(
                 _leased=False,
+                agent_id="agt_support",
                 agent_profile={**profile, "required_skill_id": "hostile-skill"},
             )
         )
@@ -1301,6 +1324,7 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
         parse_queue_payload(
             base_payload(
                 _leased=False,
+                agent_id="agt_support",
                 agent_profile={**profile, "required_skill_version": "hostile-version"},
             )
         )
@@ -1333,9 +1357,50 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         {**profile, "agent_id": "other-agent"},
         {**profile, "required_skill_id": "other-skill"},
         {**profile, "required_skill_version": ""},
+        {**profile, "content_hash": "A" * 64},
+        {**profile, "content_hash": "g" * 64},
+        {**profile, "content_hash": "a" * 63 + " "},
     ):
-        with pytest.raises(ValueError, match="agent_profile_harness_identity_invalid"):
+        with pytest.raises(ValueError, match="agent_profile_(harness_identity|hash)_invalid"):
             parse_queue_payload({**harness_payload, "agent_profile": hostile_profile})
+
+
+def test_run_payload_accepts_only_complete_pinned_harness_profile():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    harness = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "qat-test-attempt",
+        "agent_id": "agt_support",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+        "file_ids": [],
+        "input": {"message": "hello"},
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+
+    assert RunPayload(**harness, agent_profile=profile).agent_profile == profile
+    assert RunPayload(**{**harness, "agent_id": "general-agent"}).agent_profile == {}
+    for hostile_profile in (
+        {**profile, "agent_id": "other-agent"},
+        {**profile, "revision": 0},
+        {**profile, "content_hash": "A" * 64},
+        {**profile, "content_hash": "g" * 64},
+        {**profile, "required_skill_id": "other-skill"},
+        {**profile, "required_skill_version": ""},
+    ):
+        with pytest.raises(ValueError, match="agent_profile_"):
+            RunPayload(**harness, agent_profile=hostile_profile)
 
 
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
@@ -1486,6 +1551,7 @@ def locked_run_from_payload(payload):
     validated = QueueRunPayload.model_validate(
         {key: value for key, value in payload.items() if key != "_queue_attempt_id"}
     ).model_dump(mode="json")
+    agent_profile = validated.get("agent_profile") or {}
     return {
         "id": validated["run_id"],
         "tenant_id": validated["tenant_id"],
@@ -1499,6 +1565,10 @@ def locked_run_from_payload(payload):
         "principal_roles": [],
         "principal_department_id": "",
         "auth_source": "test",
+        "admitted_agent_profile_revision": agent_profile.get("revision"),
+        "admitted_agent_profile_hash": agent_profile.get("content_hash"),
+        "session_admitted_agent_profile_revision": agent_profile.get("revision"),
+        "session_admitted_agent_profile_hash": agent_profile.get("content_hash"),
         "input_json": {
             key: value
             for key, value in validated.items()
@@ -1515,6 +1585,225 @@ def locked_run_from_payload(payload):
             }
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("profile_change", "pin_change", "expected"),
+    [
+        (None, None, True),
+        ("missing", None, False),
+        ("agent", None, False),
+        ("revision", None, False),
+        ("hash", None, False),
+        (None, "missing_revision", False),
+        (None, "missing_hash", False),
+        (None, "revision", False),
+        (None, "hash", False),
+        (None, "session_revision", False),
+        (None, "session_hash", False),
+    ],
+)
+def test_locked_agent_profile_identity_requires_exact_physical_pin(
+    profile_change,
+    pin_change,
+    expected,
+):
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Private profile instruction.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    locked_run = {
+        "agent_id": "agt_support",
+        "admitted_agent_profile_revision": 7,
+        "admitted_agent_profile_hash": "a" * 64,
+        "session_admitted_agent_profile_revision": 7,
+        "session_admitted_agent_profile_hash": "a" * 64,
+    }
+    candidate = dict(profile)
+    if profile_change == "missing":
+        candidate = {}
+    elif profile_change == "agent":
+        candidate["agent_id"] = "other-agent"
+    elif profile_change == "revision":
+        candidate["revision"] = 8
+    elif profile_change == "hash":
+        candidate["content_hash"] = "b" * 64
+    if pin_change == "missing_revision":
+        locked_run["admitted_agent_profile_revision"] = None
+    elif pin_change == "missing_hash":
+        locked_run["admitted_agent_profile_hash"] = None
+    elif pin_change == "revision":
+        locked_run["admitted_agent_profile_revision"] = 8
+    elif pin_change == "hash":
+        locked_run["admitted_agent_profile_hash"] = "b" * 64
+    elif pin_change == "session_revision":
+        locked_run["session_admitted_agent_profile_revision"] = 8
+    elif pin_change == "session_hash":
+        locked_run["session_admitted_agent_profile_hash"] = "b" * 64
+
+    assert worker_module._locked_agent_profile_identity_valid(
+        candidate,
+        locked_run,
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    ("pin_change", "expected"),
+    [
+        (None, True),
+        ("missing_run_revision", False),
+        ("missing_run_hash", False),
+        ("missing_session_revision", False),
+        ("missing_session_hash", False),
+        ("run_revision", False),
+        ("run_hash", False),
+        ("session_revision", False),
+        ("session_hash", False),
+    ],
+)
+def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, expected):
+    locked_run = {
+        "agent_id": "general-agent",
+        "admitted_agent_profile_revision": None,
+        "admitted_agent_profile_hash": None,
+        "session_admitted_agent_profile_revision": None,
+        "session_admitted_agent_profile_hash": None,
+    }
+    field = {
+        "missing_run_revision": "admitted_agent_profile_revision",
+        "missing_run_hash": "admitted_agent_profile_hash",
+        "missing_session_revision": "session_admitted_agent_profile_revision",
+        "missing_session_hash": "session_admitted_agent_profile_hash",
+        "run_revision": "admitted_agent_profile_revision",
+        "run_hash": "admitted_agent_profile_hash",
+        "session_revision": "session_admitted_agent_profile_revision",
+        "session_hash": "session_admitted_agent_profile_hash",
+    }.get(pin_change)
+    if pin_change and pin_change.startswith("missing_"):
+        locked_run.pop(field)
+    elif field is not None:
+        locked_run[field] = 7 if field.endswith("revision") else "a" * 64
+
+    assert worker_module._locked_agent_profile_identity_valid({}, locked_run) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pin_change",
+    [None, "missing_revision", "agent", "revision", "hash", "session_revision", "session_hash"],
+)
+async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, pin_change):
+    calls = []
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Private profile instruction.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    raw = base_payload(
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "hello"},
+        executor_type="claude-agent-worker",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version="ai-platform.run-payload.v2",
+        agent_profile=profile,
+    )
+    locked_run = locked_run_from_payload(raw)
+    if pin_change == "missing_revision":
+        locked_run["admitted_agent_profile_revision"] = None
+    elif pin_change == "agent":
+        locked_run["agent_id"] = "other-agent"
+    elif pin_change == "revision":
+        locked_run["admitted_agent_profile_revision"] = 8
+    elif pin_change == "hash":
+        locked_run["admitted_agent_profile_hash"] = "b" * 64
+    elif pin_change == "session_revision":
+        locked_run["session_admitted_agent_profile_revision"] = 8
+    elif pin_change == "session_hash":
+        locked_run["session_admitted_agent_profile_hash"] = "b" * 64
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture",
+                capabilities={"artifacts": False, "streaming": False, "tools": False},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(_conn, **_kwargs):
+        return locked_run
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        raw,
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    if pin_change is None:
+        assert outcome.status == "succeeded"
+        assert outcome.error_code is None
+        adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
+        assert adapter_payload.agent_profile == profile
+        public_calls = [call for call in calls if call[0] != "adapter"]
+        assert profile["instructions"] not in repr(public_calls)
+    else:
+        assert outcome.status == "failed"
+        assert outcome.error_code in {"queue_payload_identity_mismatch", "capability_not_authorized"}
+        assert not any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_mark_run_running_projects_distinct_run_and_session_profile_pins():
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        async def execute(self, sql, params):
+            assert params == ("tenant-a", "run-a")
+            normalized = " ".join(sql.split())
+            assert "runs.admitted_agent_profile_revision" in normalized
+            assert "runs.admitted_agent_profile_hash" in normalized
+            assert (
+                "sessions.admitted_agent_profile_revision as "
+                "session_admitted_agent_profile_revision"
+            ) in normalized
+            assert (
+                "sessions.admitted_agent_profile_hash as session_admitted_agent_profile_hash"
+            ) in normalized
+            return Cursor()
+
+    assert (
+        await repository_module.mark_run_running(
+            Connection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -1692,7 +1981,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
-        return True
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -4671,6 +4960,10 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "user_id": "user-a",
             "session_id": "session-a",
             "agent_id": "general-agent",
+            "admitted_agent_profile_revision": None,
+            "admitted_agent_profile_hash": None,
+            "session_admitted_agent_profile_revision": None,
+            "session_admitted_agent_profile_hash": None,
             "skill_id": "general-chat",
             "trace_id": "trace_run_a",
             "input_json": {
@@ -5313,6 +5606,7 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
 
     outcome = await process_run_payload(
         base_payload(
+            agent_id="agt_support",
             agent_profile={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -5433,6 +5727,7 @@ async def test_agent_app_required_skill_without_exact_provenance_forces_run_fail
 
     outcome = await process_run_payload(
         base_payload(
+            agent_id="agt_support",
             agent_profile={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -5500,6 +5795,7 @@ async def test_agent_app_capability_completed_waits_for_platform_terminal_contra
 
     outcome = await process_run_payload(
         base_payload(
+            agent_id="agt_support",
             agent_profile={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -7811,6 +8107,10 @@ def _install_task6_worker_fakes(
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": agent_id,
+        "admitted_agent_profile_revision": None,
+        "admitted_agent_profile_hash": None,
+        "session_admitted_agent_profile_revision": None,
+        "session_admitted_agent_profile_hash": None,
         "skill_id": skill_id,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),

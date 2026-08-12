@@ -10962,6 +10962,12 @@ async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str
                   runs.session_id, runs.agent_id, runs.execution_kind,
                   runs.skill_id, runs.trace_id,
                   runs.principal_roles, runs.principal_department_id, runs.auth_source,
+                  runs.admitted_agent_profile_revision,
+                  runs.admitted_agent_profile_hash,
+                  sessions.admitted_agent_profile_revision
+                    as session_admitted_agent_profile_revision,
+                  sessions.admitted_agent_profile_hash
+                    as session_admitted_agent_profile_hash,
                   runs.input_json
         """,
         (tenant_id, run_id),
