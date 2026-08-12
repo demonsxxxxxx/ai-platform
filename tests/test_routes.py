@@ -2353,7 +2353,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
             "status": "running",
             "input_json": {
                 "skill_id": "qa-file-reviewer",
-                "executor_type": "embedded-poco-kernel",
+                "executor_type": "retired-executor-fixture",
                 "skill_version": "internal-version",
                 "release_decision": {
                     "schema_version": "ai-platform.skill-release-decision.v1",

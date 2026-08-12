@@ -3179,7 +3179,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
                 "executorPayload": {"cwd": "/var/lib/ai-platform/run_old"},
                 "input": {
                     "message": "build feature",
-                    "executor_type": "embedded-poco-kernel",
+                    "executor_type": "retired-executor-fixture",
                     "skill_ids": ["qa-file-reviewer"],
                     "skillIds": ["qa-file-reviewer"],
                     "execution_mode": "multi_agent",
@@ -3190,13 +3190,12 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
                             "role": "coding",
                             "skill_ids": ["qa-file-reviewer"],
                             "skillIds": ["qa-file-reviewer"],
-                            "executor_type": "embedded-poco-kernel",
+                            "executor_type": "retired-executor-fixture",
                             "workerPath": "/var/lib/ai-platform/run_old",
                         },
                         {"step_key": "verify", "role": "test", "depends_on": ["code"]},
                     ],
                 },
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance("qa-file-reviewer", "hash-v1"),
                 "model_id": "model-catalog-a",
                 "model_value": "provider-model-a",
@@ -3299,7 +3298,6 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
             "skill_id": "qa-file-reviewer",
             "input_json": {
                 "input": {"message": "retry"},
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance(
                     "qa-file-reviewer",
                     "hash-old",
@@ -3391,7 +3389,6 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
             "auth_source": "session-token",
             "input_json": {
                 "input": {"message": "retry"},
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
@@ -3465,7 +3462,6 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
                         {"step_key": "verify", "role": "test", "depends_on": ["code"]},
                     ],
                 },
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
@@ -3550,7 +3546,6 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
                         {"step_key": "verify", "role": "test", "depends_on": ["code", "docs"]},
                     ],
                 },
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
@@ -3878,7 +3873,6 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
                         },
                     },
                 },
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
@@ -3946,7 +3940,6 @@ async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineag
                     "execution_mode": "multi_agent",
                     "multi_agent_steps": [{"step_key": "code", "role": "coding"}],
                 },
-                "executor_type": "embedded-poco-kernel",
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
