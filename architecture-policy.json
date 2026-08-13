@@ -113,7 +113,6 @@
     "app/capabilities.py",
     "app/capability_distribution.py",
     "app/capacity_baseline.py",
-    "app/capacity_bounded_load_harness.py",
     "app/chat_session_projection.py",
     "app/context_builder.py",
     "app/context_manifest.py",
