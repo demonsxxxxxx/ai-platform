@@ -178,7 +178,7 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         payload = json.loads(_b64url_decode(payload_part).decode("utf-8"))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session") from exc
-    if int(payload.get("exp") or 0) < int(time.time()):
+    if int(payload.get("exp") or 0) <= int(time.time()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_expired")
     source = str(payload.get("source") or "ai-session")
     if source == "company-login" and payload.get("authz_policy_version") != COMPANY_AUTHZ_POLICY_VERSION:
