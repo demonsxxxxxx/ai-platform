@@ -266,6 +266,39 @@ def _activate_conversation_bridges(repo: Path) -> None:
         )
 
 
+def _activate_runs_bridge(repo: Path) -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.runs.infrastructure.postgres",
+    )
+    remaining_symbols = sorted(
+        {
+            symbol
+            for other in _fixture_policy()["migration_bridges"]
+            if other["source_path"] == bridge["source_path"] and other != bridge
+            for symbol in other["symbols"]
+        }
+    )
+    _write(
+        repo,
+        "app/runs/infrastructure/postgres.py",
+        _fixture_async_definitions(bridge["symbols"]) + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
+        + _fixture_async_definitions(remaining_symbols)
+        + "\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n",
+    )
+
+
 def _activate_all_migration_bridges(repo: Path) -> None:
     bridges = _fixture_policy()["migration_bridges"]
     for target_module in sorted({bridge["target_module"] for bridge in bridges}):
@@ -787,6 +820,19 @@ def test_exact_conversation_migration_bridges_move_symbols_as_identity_aliases(
     assert evaluation.findings == ()
 
 
+def test_exact_runs_migration_bridge_moves_symbols_as_identity_aliases(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_runs_bridge(repo)
+    head = _commit(repo, "activate exact Runs persistence bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
 def test_multiple_declared_bridges_can_share_one_legacy_source(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -894,6 +940,42 @@ def test_persistence_limits_platform_bridge_authority_is_exact() -> None:
     }
 
 
+def test_runs_persistence_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.runs.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.runs.infrastructure.postgres",
+        "module_alias": "run_persistence",
+        "symbols": [
+            "_stage_run_tool_permission_terminalization",
+            "acquire_user_active_run_admission_lock",
+            "count_active_runs_for_user",
+            "enforce_user_active_run_admission",
+            "enforce_user_active_run_admission_under_lock",
+            "get_active_resume_for_source_run",
+            "get_active_retry_for_source_run",
+            "get_run",
+            "get_run_identity",
+        ],
+        "owner": "runs",
+        "reason": (
+            "The frozen global repository may expose these existing run identity, "
+            "admission-lock, active-child, and terminal-intent persistence primitives "
+            "only as exact identity aliases while their PostgreSQL implementation "
+            "moves to the Runs adapter."
+        ),
+        "removal_condition": (
+            "After the Runs persistence move, migrate supported internal callers to "
+            "the Runs API, inventory external imports, and remove this bridge in an "
+            "authority-only change before deleting the repositories aliases."
+        ),
+    }
+
+
 @pytest.mark.parametrize(
     "target_module",
     [
@@ -954,7 +1036,11 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         for entry in policy["migration_bridges"]
         if entry["source_path"] == "app/repositories.py"
     ]
-    assert len(bridges) == 2
+    assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.postgres",
+        "app.conversations.infrastructure.postgres",
+        "app.runs.infrastructure.postgres",
+    }
     bridges[1]["module_alias"] = bridges[0]["module_alias"]
     repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
 
@@ -973,7 +1059,11 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         for entry in policy["migration_bridges"]
         if entry["source_path"] == "app/repositories.py"
     ]
-    assert len(bridges) == 2
+    assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.postgres",
+        "app.conversations.infrastructure.postgres",
+        "app.runs.infrastructure.postgres",
+    }
     duplicate_symbol = bridges[0]["symbols"][0]
     bridges[1]["symbols"] = sorted([*bridges[1]["symbols"], duplicate_symbol])
     repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
@@ -1059,6 +1149,79 @@ def test_conversation_migration_bridges_fail_closed_on_contract_drift(
         for item in evaluation.findings
         if item.code == expected
         and item.path == expected_path
+    )
+    assert finding.exemptible is False
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("wrong_alias", "migration_bridge_import_contract"),
+        ("missing_symbol", "migration_bridge_symbol_contract"),
+        ("rebound_symbol", "migration_bridge_symbol_contract"),
+        ("missing_target", "migration_bridge_target_contract"),
+        ("missing_target_symbol", "migration_bridge_target_contract"),
+        ("new_logic", "migration_bridge_source_logic"),
+    ],
+)
+def test_runs_migration_bridge_fails_closed_on_contract_drift(
+    governance_repo: tuple[Path, str], mutation: str, expected: str
+) -> None:
+    repo, authority = governance_repo
+    _activate_runs_bridge(repo)
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.runs.infrastructure.postgres",
+    )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    first_symbol = bridge["symbols"][0]
+    if mutation == "wrong_alias":
+        source = source.replace(
+            f" as {bridge['module_alias']}",
+            " as unauthorized_alias",
+            1,
+        )
+    elif mutation == "missing_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}\n",
+            "",
+        )
+    elif mutation == "rebound_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}",
+            f"{first_symbol} = object()",
+        )
+    elif mutation == "missing_target":
+        (repo / "app/runs/infrastructure/postgres.py").unlink()
+    elif mutation == "missing_target_symbol":
+        target_path = repo / "app/runs/infrastructure/postgres.py"
+        target_source = target_path.read_text(encoding="utf-8")
+        target_path.write_text(
+            target_source.replace(
+                _fixture_async_definitions([first_symbol]),
+                "",
+                1,
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "new_logic":
+        source += "\ndef newly_owned_logic():\n    return True\n"
+    _write(repo, bridge["source_path"], source)
+    head = _commit(repo, f"reject Runs bridge {mutation}")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+    assert evaluation.status != "pass"
+
+    expected_path = (
+        "app/runs/infrastructure/postgres.py"
+        if mutation in {"missing_target", "missing_target_symbol"}
+        else bridge["source_path"]
+    )
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == expected and item.path == expected_path
     )
     assert finding.exemptible is False
 

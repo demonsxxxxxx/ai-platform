@@ -328,6 +328,25 @@
       "owner": "conversations",
       "reason": "The frozen global repository may expose these existing session and message persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Conversations adapter.",
       "removal_condition": "After the Conversation persistence move, migrate supported internal callers to the Conversations API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.runs.infrastructure.postgres",
+      "module_alias": "run_persistence",
+      "symbols": [
+        "_stage_run_tool_permission_terminalization",
+        "acquire_user_active_run_admission_lock",
+        "count_active_runs_for_user",
+        "enforce_user_active_run_admission",
+        "enforce_user_active_run_admission_under_lock",
+        "get_active_resume_for_source_run",
+        "get_active_retry_for_source_run",
+        "get_run",
+        "get_run_identity"
+      ],
+      "owner": "runs",
+      "reason": "The frozen global repository may expose these existing run identity, admission-lock, active-child, and terminal-intent persistence primitives only as exact identity aliases while their PostgreSQL implementation moves to the Runs adapter.",
+      "removal_condition": "After the Runs persistence move, migrate supported internal callers to the Runs API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
     }
   ],
   "production_registries": [
