@@ -60,6 +60,7 @@ from app.persistence import (
 )
 import app.agent_apps.infrastructure.postgres as agent_profile_persistence
 import app.conversations.infrastructure.postgres as conversation_persistence
+import app.runs.infrastructure.postgres as run_persistence
 from app.platform.postgres.errors import RepositoryConflictError
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
@@ -157,6 +158,21 @@ list_authorized_user_messages_for_runs = (
 list_session_messages_for_fork = conversation_persistence.list_session_messages_for_fork
 mark_session_deleted = conversation_persistence.mark_session_deleted
 update_session_title = conversation_persistence.update_session_title
+_stage_run_tool_permission_terminalization = (
+    run_persistence._stage_run_tool_permission_terminalization
+)
+acquire_user_active_run_admission_lock = (
+    run_persistence.acquire_user_active_run_admission_lock
+)
+count_active_runs_for_user = run_persistence.count_active_runs_for_user
+enforce_user_active_run_admission = run_persistence.enforce_user_active_run_admission
+enforce_user_active_run_admission_under_lock = (
+    run_persistence.enforce_user_active_run_admission_under_lock
+)
+get_active_resume_for_source_run = run_persistence.get_active_resume_for_source_run
+get_active_retry_for_source_run = run_persistence.get_active_retry_for_source_run
+get_run = run_persistence.get_run
+get_run_identity = run_persistence.get_run_identity
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
@@ -3908,77 +3924,6 @@ async def update_run_auth_snapshot(
     )
 
 
-async def count_active_runs_for_user(conn: AsyncConnection, *, tenant_id: str, user_id: str) -> int:
-    cursor = await conn.execute(
-        """
-        select count(*) as count
-        from runs
-        where tenant_id = %s
-          and user_id = %s
-          and status in ('queued', 'running')
-        """,
-        (tenant_id, user_id),
-    )
-    row = await cursor.fetchone()
-    return int(row["count"] if row else 0)
-
-
-async def enforce_user_active_run_admission(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    limit: int,
-) -> int:
-    limit = int(limit)
-    if limit <= 0:
-        return 0
-    await acquire_user_active_run_admission_lock(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-    )
-    return await enforce_user_active_run_admission_under_lock(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        limit=limit,
-    )
-
-
-async def acquire_user_active_run_admission_lock(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-) -> None:
-    """Acquire the transaction-scoped per-user run-admission serialization lock."""
-
-    lock_scope = dumps_json({"tenant_id": tenant_id, "user_id": user_id})
-    await conn.execute(
-        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
-        (lock_scope,),
-    )
-
-
-async def enforce_user_active_run_admission_under_lock(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    limit: int,
-) -> int:
-    """Check the active-run limit after the caller acquired its user lock."""
-
-    limit = int(limit)
-    if limit <= 0:
-        return 0
-    active_count = await count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
-    if active_count >= limit:
-        raise RepositoryConflictError("user_active_run_limit_exceeded")
-    return active_count
-
-
 def _validated_run_control_operation_identity(*, action: str, operation_id: str) -> tuple[str, str]:
     normalized_action = str(action or "").strip()
     if normalized_action not in RUN_CONTROL_OPERATION_ACTIONS:
@@ -4314,53 +4259,6 @@ async def stage_stale_run_reconciliation(
     return dict(staged)
 
 
-async def get_active_retry_for_source_run(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    run_id: str,
-) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select id, status
-        from runs
-        where tenant_id = %s
-          and user_id = %s
-          and copied_from_run_id = %s
-          and status in ('queued', 'running')
-        order by created_at desc
-        limit 1
-        """,
-        (tenant_id, user_id, run_id),
-    )
-    return await cursor.fetchone()
-
-
-async def get_active_resume_for_source_run(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    run_id: str,
-) -> dict[str, Any] | None:
-    """Return an active same-owner child run that would duplicate a resume request."""
-    cursor = await conn.execute(
-        """
-        select id, status
-        from runs
-        where tenant_id = %s
-          and user_id = %s
-          and copied_from_run_id = %s
-          and status in ('queued', 'running')
-        order by created_at desc
-        limit 1
-        """,
-        (tenant_id, user_id, run_id),
-    )
-    return await cursor.fetchone()
-
-
 async def append_event(
     conn: AsyncConnection,
     *,
@@ -4443,29 +4341,6 @@ async def acquire_run_event_terminal_drain_fence(
         )
     except _run_event_repository.RunEventLedgerConflictError as exc:
         raise _repository_ledger_conflict(exc) from exc
-
-
-async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
-    lock_clause = "for update" if for_update else ""
-    cursor = await conn.execute(
-        f"select * from runs where tenant_id = %s and id = %s {lock_clause}",
-        (tenant_id, run_id),
-    )
-    return await cursor.fetchone()
-
-
-async def get_run_identity(conn: AsyncConnection, *, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
-    sql = (
-        "select id, tenant_id, workspace_id, user_id, session_id, agent_id, status, context_snapshot_id "
-        "from runs where id = %s"
-    )
-    if for_update:
-        sql = f"{sql} for update"
-    cursor = await conn.execute(
-        sql,
-        (run_id,),
-    )
-    return await cursor.fetchone()
 
 
 async def get_authorized_run(
@@ -6040,74 +5915,6 @@ async def list_multi_agent_parent_runs_requiring_finalization(
         (bounded_limit,),
     )
     return list(await cursor.fetchall())
-
-
-async def _stage_run_tool_permission_terminalization(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    target_status: str,
-    terminal_reason: str,
-    result_json: dict[str, Any] | None = None,
-    error_code: str | None = None,
-    error_message: str | None = None,
-) -> dict[str, Any] | None:
-    """Persist the first terminal intent while holding the owning run row first."""
-
-    if target_status not in {"failed", "cancel_requested", "cancelled"}:
-        raise ValueError("invalid_run_tool_permission_terminal_target")
-    cursor = await conn.execute(
-        """
-        update runs
-        set permission_terminalization_target = case
-              when permission_terminalization_target = 'cancel_requested'
-                   and %s = 'cancelled' then 'cancelled'
-              else coalesce(permission_terminalization_target, %s)
-            end,
-            permission_terminalization_reason = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_reason
-            end,
-            permission_terminalization_result_json = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s::jsonb
-              else permission_terminalization_result_json
-            end,
-            permission_terminalization_error_code = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_error_code
-            end,
-            permission_terminalization_error_message = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_error_message
-            end
-        where tenant_id = %s
-          and id = %s
-          and status not in ('succeeded', 'failed', 'cancelled')
-        returning id, trace_id, permission_terminalization_target,
-                  permission_terminalization_reason, permission_terminalization_result_json,
-                  permission_terminalization_error_code, permission_terminalization_error_message
-        """,
-        (
-            target_status,
-            target_status,
-            target_status,
-            terminal_reason,
-            target_status,
-            dumps_json(result_json or {}),
-            target_status,
-            error_code,
-            target_status,
-            error_message,
-            tenant_id,
-            run_id,
-        ),
-    )
-    return await cursor.fetchone()
 
 
 async def _has_unterminalized_run_tool_permissions(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> bool:
