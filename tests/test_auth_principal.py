@@ -156,6 +156,20 @@ def test_non_company_signed_session_remains_compatible_without_policy_version(mo
     assert principal.roles == ["user"]
 
 
+def test_signed_session_expires_at_the_exact_expiry_second(monkeypatch):
+    payload = legacy_payload(source="trusted-header")
+    payload["iat"] = 999
+    payload["exp"] = 1000
+    monkeypatch.setattr("app.auth.get_settings", session_settings)
+    monkeypatch.setattr(auth_module.time, "time", lambda: 1000)
+
+    with pytest.raises(HTTPException) as exc_info:
+        verify_principal_session(sign_legacy_session(payload))
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "session_expired"
+
+
 def _browser_company_snapshot(*, policy_version: int = 1, checked_at: str | None = None) -> dict[str, object]:
     return {
         "user_id": "browser-user",

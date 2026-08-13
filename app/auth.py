@@ -178,7 +178,7 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         payload = json.loads(_b64url_decode(payload_part).decode("utf-8"))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session") from exc
-    if int(payload.get("exp") or 0) < int(time.time()):
+    if int(payload.get("exp") or 0) <= int(time.time()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_expired")
     source = str(payload.get("source") or "ai-session")
     if source == "company-login" and payload.get("authz_policy_version") != COMPANY_AUTHZ_POLICY_VERSION:
@@ -228,7 +228,7 @@ def _enforce_company_authority_freshness(
     if checked_at.tzinfo is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
     age_seconds = (datetime.now(timezone.utc) - checked_at.astimezone(timezone.utc)).total_seconds()
-    max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 15 * 60))
+    max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 24 * 60 * 60))
     if age_seconds < -60 or age_seconds > max_age_seconds:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
     return principal

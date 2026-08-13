@@ -32,6 +32,8 @@ does not represent deployed runtime state.
   boundary between ordinary Harness chat and explicitly authorized Skills.
 - `adr/0006-domain-first-modular-monolith.md` records the decision to organize
   backend source by bounded context rather than global technical layers.
+- `adr/0007-fixed-browser-authentication-day.md` records the fixed, non-sliding
+  24-hour browser authentication lifetime and its revocation tradeoff.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/redis-streams-sse-event-channel.md` indexes the current v2.1

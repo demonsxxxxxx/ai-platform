@@ -1127,7 +1127,7 @@ def _context_ttl_seconds(settings: Any) -> int:
             _settings_value(
                 settings,
                 "auth_context_max_age_seconds",
-                _settings_value(settings, "ai_session_max_age_seconds", 8 * 60 * 60),
+                _settings_value(settings, "ai_session_max_age_seconds", 24 * 60 * 60),
             )
         ),
     )
