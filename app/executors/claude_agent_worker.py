@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import binascii
 import inspect
@@ -51,6 +50,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
+from app.executors.skill_invocation_evidence import SkillInvocationEvidenceBinder
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     MaterializedAttachmentFact,
@@ -2195,87 +2195,33 @@ class ClaudeAgentWorkerAdapter:
                 )
 
         autonomous_agent_profile = bool(payload.agent_profile)
-        selected_skill_declaration = (
-            RequiredCapabilityDeclaration.from_authorized_subject(
-                capability_kind="skill",
-                canonical_identity=payload.skill_id,
-            )
+        evidence_skill_names = (
+            set(staged_skill_names or [])
+            if autonomous_agent_profile
+            else {
+                payload.skill_id
+            }
             if payload.execution_kind == RUN_EXECUTION_KIND_SKILL
             and payload.skill_id is not None
             and payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
             and (staged_skill_names is None or payload.skill_id in staged_skill_names)
-            and not autonomous_agent_profile
+            else set()
+        )
+        skill_evidence_binder = (
+            SkillInvocationEvidenceBinder(
+                allowed_skill_names=evidence_skill_names,
+                binding={
+                    "tenant_id": payload.tenant_id,
+                    "workspace_id": payload.workspace_id,
+                    "user_id": payload.user_id,
+                    "session_id": payload.session_id,
+                    "run_id": payload.run_id,
+                    "attempt_id": payload.attempt_id,
+                },
+            )
+            if evidence_skill_names
             else None
         )
-        bound_skill_evidence: list[dict[str, Any]] = []
-        skill_invocation_states: dict[tuple[str, str], str] = {}
-        skill_evidence_rejected = {"value": False}
-        skill_evidence_lock = asyncio.Lock()
-
-        def reject_skill_evidence() -> bool:
-            skill_evidence_rejected["value"] = True
-            bound_skill_evidence.clear()
-            skill_invocation_states.clear()
-            return False
-
-        async def on_capability_evidence(raw: dict[str, str]) -> bool:
-            """Bind exact worker-local hook facts for any staged authorized Skill."""
-
-            async with skill_evidence_lock:
-                if skill_evidence_rejected["value"]:
-                    return False
-                try:
-                    skill_name = raw.get("canonical_identity")
-                    tool_call_id = raw.get("tool_call_id")
-                    lifecycle_phase = raw.get("lifecycle_phase")
-                    if (
-                        raw.get("capability_kind") != "skill"
-                        or not isinstance(skill_name, str)
-                        or skill_name not in set(staged_skill_names or [])
-                        or not isinstance(tool_call_id, str)
-                        or not isinstance(lifecycle_phase, str)
-                    ):
-                        return reject_skill_evidence()
-                    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-                        capability_kind="skill",
-                        canonical_identity=skill_name,
-                    )
-                    expected = RequiredCapabilityEvidence.sdk_hook_payload(
-                        declaration=declaration,
-                        tool_call_id=tool_call_id,
-                        lifecycle_phase=lifecycle_phase,
-                    )
-                    if raw != expected:
-                        return reject_skill_evidence()
-                    invocation_key = (skill_name, tool_call_id)
-                    current_phase = skill_invocation_states.get(invocation_key)
-                    if lifecycle_phase == "invocation_requested":
-                        if current_phase is not None:
-                            return reject_skill_evidence()
-                    elif current_phase != "invocation_requested":
-                        return reject_skill_evidence()
-                    evidence = RequiredCapabilityEvidence.from_sdk_hook(
-                        declaration=declaration,
-                        binding={
-                            "tenant_id": payload.tenant_id,
-                            "workspace_id": payload.workspace_id,
-                            "user_id": payload.user_id,
-                            "session_id": payload.session_id,
-                            "run_id": payload.run_id,
-                            "attempt_id": payload.attempt_id,
-                        },
-                        tool_call_id=tool_call_id,
-                        lifecycle_phase=lifecycle_phase,
-                    )
-                except (AttributeError, RequiredToolContractError):
-                    return reject_skill_evidence()
-                bound_skill_evidence.append(asdict(evidence))
-                skill_invocation_states[invocation_key] = (
-                    "invocation_requested"
-                    if lifecycle_phase == "invocation_requested"
-                    else "terminal"
-                )
-                return True
 
         try:
             sdk_kwargs = {
@@ -2307,12 +2253,8 @@ class ClaudeAgentWorkerAdapter:
             if context_retrieval is not None and context_retrieval_identity is not None:
                 sdk_kwargs["context_retrieval"] = context_retrieval
                 sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
-            should_bind_skill_evidence = bool(
-                selected_skill_declaration is not None
-                or (autonomous_agent_profile and staged_skill_names)
-            )
-            if should_bind_skill_evidence:
-                sdk_kwargs["on_capability_evidence"] = on_capability_evidence
+            if skill_evidence_binder is not None:
+                sdk_kwargs["on_capability_evidence"] = skill_evidence_binder.bind
             await _emit_public_progress_event(
                 event_sink,
                 event_type="run_started",
@@ -2320,13 +2262,13 @@ class ClaudeAgentWorkerAdapter:
                 message="SDK runtime dispatch is active",
             )
             sdk_result = await run_claude_agent_sdk(**sdk_kwargs)
-            if should_bind_skill_evidence and isinstance(
+            if skill_evidence_binder is not None and isinstance(
                 sdk_result,
                 ClaudeAgentSdkRunResult,
             ):
                 return replace(
                     sdk_result,
-                    capability_evidence=list(bound_skill_evidence),
+                    capability_evidence=skill_evidence_binder.records,
                 )
             return sdk_result
         except ClaudeAgentSdkNotAvailable:
