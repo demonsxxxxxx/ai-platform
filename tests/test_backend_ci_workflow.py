@@ -15,6 +15,7 @@ from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
+TRUSTED_GOVERNANCE_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-trusted-governance.yml"
 FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 AGENT_RULES = ROOT / "AGENTS.md"
@@ -36,6 +37,7 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
+    "tests/test_agent_profiles_postgres.py",
     "tests/test_authorized_skill_catalog.py",
     "tests/test_skill_dependencies.py",
     "tests/test_skill_lifecycle.py",
@@ -68,7 +70,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_runtime_launch_script.py",
     ),
     "release-governance": (
+        "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
+        "tests/test_pre_push_readiness.py",
         "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
@@ -145,7 +149,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     }
     assert actual_shards == BACKEND_TEST_SHARDS
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 26
+    assert len(all_selectors) == len(set(all_selectors)) == 28
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step
@@ -172,7 +176,9 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
 
 def test_agent_skill_contract_job_is_bounded_and_required():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    workflow_document = yaml.safe_load(workflow)
     agent_skill_job = _workflow_job_block(workflow, "agent-skill-contracts")
+    agent_skill_job_document = workflow_document["jobs"]["agent-skill-contracts"]
     required_job = _workflow_job_block(workflow, "required")
     pytest_step = agent_skill_job.split("- name: Run Agent and Skill contract tests", 1)
 
@@ -195,6 +201,27 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert "uv lock --check" in agent_skill_job
     assert "uv sync --locked --extra test --no-install-project" in agent_skill_job
     assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
+    assert agent_skill_job_document["services"] == {
+        "postgres": {
+            "image": "postgres:16-alpine",
+            "env": {
+                "POSTGRES_DB": "ai_platform",
+                "POSTGRES_USER": "ai_platform",
+                "POSTGRES_PASSWORD": "ai_platform_ci_password",
+            },
+            "ports": ["54329:5432"],
+            "options": (
+                '--health-cmd "pg_isready -U ai_platform -d ai_platform" '
+                "--health-interval 10s --health-timeout 5s --health-retries 10"
+            ),
+        }
+    }
+    assert agent_skill_job_document["env"] == {
+        "AGENT_SKILL_SOURCE_COMMIT": "${{ github.event.pull_request.head.sha || github.sha }}",
+        "AI_PLATFORM_AGENT_PROFILE_TEST_DSN": (
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform"
+        ),
+    }
 
     run_script = pytest_step[1].split("run: |", 1)[1]
     assert run_script.index("mkdir -p .pytest-tmp") < run_script.index("timeout --signal")
@@ -603,11 +630,11 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert "persist-credentials: true" not in workflow
     assert "pull_request_target:" not in workflow
 
-    governance_step = workflow.split("- name: Run code governance", 1)[1].split(
+    governance_step = workflow.split("- name: Run code and architecture governance", 1)[1].split(
         "- name: Checkout validated pull request head for existing checks", 1
     )[0]
     install_start = workflow.index("- name: Install trusted-base governance dependency")
-    governance_start = workflow.index("- name: Run code governance")
+    governance_start = workflow.index("- name: Run code and architecture governance")
     pre_governance = workflow[:governance_start]
     assert (
         workflow.index("ref: ${{ github.event.pull_request.base.sha || github.sha }}")
@@ -616,14 +643,14 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert install_start < governance_start
     assert "github.event.pull_request.head" not in pre_governance
     assert "refs/pull/" not in pre_governance
-    assert "if: github.event_name == 'pull_request'" in governance_step
+    assert "if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}" in governance_step
     assert "GOVERNANCE_PR_NUMBER: ${{ github.event.number }}" in governance_step
     assert (
-        "GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}"
+        "GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}"
         in governance_step
     )
     assert (
-        "GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}"
+        "GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}"
         in governance_step
     )
     assert "GOVERNANCE_FETCH_TOKEN: ${{ github.token }}" in governance_step
@@ -670,10 +697,16 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
         'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
         in governance_step
     )
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check'
+        in governance_step
+    )
     assert "python tools/code_governance.py" not in governance_step
+    assert "python tools/architecture_governance.py" not in governance_step
     assert "git checkout" not in governance_step
     assert '--base-ref "$GOVERNANCE_BASE_REF"' in governance_step
     assert '--head-ref "$GOVERNANCE_HEAD_REF"' in governance_step
+    assert '--authority-ref "$GOVERNANCE_BASE_REF"' in governance_step
     assert "--format text" in governance_step
 
     governance_run = governance_step.split("run: |", 1)[1]
@@ -704,6 +737,12 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
         if 'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
         in line
     )
+    architecture_command_index = next(
+        index
+        for index, line in enumerate(governance_lines)
+        if 'python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check'
+        in line
+    )
     assert (
         governance_lines.index('echo "::add-mask::$GOVERNANCE_FETCH_BASIC"')
         < fetch_index
@@ -711,11 +750,92 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert unset_index == fetch_index + 1
     assert fetch_index < fetched_ref_check_index < ancestry_index < base_worktree_index
     assert base_worktree_index < governance_command_index
+    assert governance_command_index < architecture_command_index
+
+
+def test_main_push_governance_uses_the_previous_exact_main_as_authority():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    governance_step = workflow.split("- name: Run code and architecture governance", 1)[1].split(
+        "- name: Checkout validated pull request head for existing checks", 1
+    )[0]
+
+    assert "github.event.pull_request.base.sha || github.event.before" in governance_step
+    assert "github.event.pull_request.head.sha || github.sha" in governance_step
+    assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in governance_step
+    assert 'test "$GITHUB_EVENT_NAME" = "push"' in governance_step
+    assert (
+        'test "$GOVERNANCE_BASE_REF" != "0000000000000000000000000000000000000000"'
+        in governance_step
+    )
+    assert 'unset GOVERNANCE_FETCH_TOKEN' in governance_step
+    assert (
+        'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"'
+        in governance_step
+    )
+    assert '--authority-ref "$GOVERNANCE_BASE_REF"' in governance_step
+
+
+def test_pull_request_target_governance_is_immutable_and_never_executes_candidate_code():
+    workflow = TRUSTED_GOVERNANCE_WORKFLOW.read_text(encoding="utf-8")
+    parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
+
+    assert parsed["on"] == {"pull_request_target": {"branches": ["main"]}}
+    assert parsed["permissions"] == {"contents": "read"}
+    assert set(parsed["jobs"]) == {"trusted-governance"}
+    trusted_job = parsed["jobs"]["trusted-governance"]
+    assert trusted_job["name"] == "trusted architecture and code governance"
+    assert trusted_job["timeout-minutes"] == "10"
+    assert "continue-on-error" not in trusted_job
+    assert all("continue-on-error" not in step for step in trusted_job["steps"])
+    assert "pull_request:\n" not in workflow
+    assert "push:\n" not in workflow
+    assert "workflow_dispatch:" not in workflow
+    assert "persist-credentials: false" in workflow
+    assert "persist-credentials: true" not in workflow
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in workflow
+    assert "python -m pip install ruff==0.11.13 PyYAML==6.0.3" in workflow
+    assert 'PYTHONSAFEPATH: "1"' in workflow
+    assert "uv sync" not in workflow
+    assert "pytest" not in workflow
+    assert "docker " not in workflow
+
+    immutable_step = workflow.split("- name: Run immutable exact-range governance", 1)[1]
+    assert '[[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]' in immutable_step
+    assert '[[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]' in immutable_step
+    assert (
+        'GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"'
+        in immutable_step
+    )
+    assert (
+        'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"'
+        in immutable_step
+    )
+    assert "class UniqueKeyLoader(yaml.BaseLoader):" in immutable_step
+    assert 'for key in ("permissions", "concurrency", "env"):' in immutable_step
+    assert "if head_events != base_events:" in immutable_step
+    assert "if head_jobs != base_jobs:" in immutable_step
+    assert 'head_backend_events.get("push") != base_backend_events.get("push")' in immutable_step
+    assert 'protected_step_name = "Run code and architecture governance"' in immutable_step
+    assert "if head_validation_contract != base_validation_contract:" in immutable_step
+    assert "if len(base_protected) != 1 or head_protected != base_protected:" in immutable_step
+    assert "if not isinstance(base_required, dict) or head_required != base_required:" in immutable_step
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
+        in immutable_step
+    )
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check'
+        in immutable_step
+    )
+    assert '--authority-ref "$GOVERNANCE_BASE_REF"' in immutable_step
+    assert "python tools/code_governance.py" not in immutable_step
+    assert "python tools/architecture_governance.py" not in immutable_step
 
 
 def test_code_governance_rejects_credential_and_untrusted_ref_fallbacks():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    governance_step = workflow.split("- name: Run code governance", 1)[1].split(
+    governance_step = workflow.split("- name: Run code and architecture governance", 1)[1].split(
         "- name: Checkout validated pull request head for existing checks", 1
     )[0]
     normalized = governance_step.lower()
@@ -756,7 +876,7 @@ def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_fai
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     install_start = workflow.index("- name: Install trusted-base governance dependency")
-    governance_start = workflow.index("- name: Run code governance")
+    governance_start = workflow.index("- name: Run code and architecture governance")
     governance_step = workflow[governance_start : workflow.index("  backend-tests:")]
 
     assert install_start < governance_start
@@ -774,7 +894,7 @@ def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_fai
 def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    governance_start = workflow.index("- name: Run code governance")
+    governance_start = workflow.index("- name: Run code and architecture governance")
     head_checkout_start = workflow.index(
         "- name: Checkout validated pull request head for existing checks"
     )

@@ -45,6 +45,47 @@ def test_skill_prompt_lists_context_manifest_and_requires_retrieval_tools_withou
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
 
 
+def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payload():
+    prompt = claude_prompts.build_harness_chat_prompt(
+        user_message="continue",
+        file_names=["input.docx"],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "context_pack_version": "v-context-manifest",
+            "context_pack_generated_at": "2026-07-02T01:02:03Z",
+            "prompt_summary": "Context manifest: 1 file ref.",
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "files": [
+                    {
+                        "file_id": "file-a",
+                        "name": "input.docx",
+                        "storage_key": "secret",
+                    }
+                ],
+                "available_retrieval_tools": ["read_context_file"],
+                "private_payload": {
+                    "storage_key": "tenants/private/input.docx",
+                },
+            },
+        },
+    )
+
+    assert (
+        "Context manifest refs: 0 message(s), 1 file(s), 0 artifact(s), "
+        "0 memory record(s)" in prompt
+    )
+    assert (
+        "Use context retrieval tools before assuming full prior message, file, "
+        "artifact, or memory content is available" in prompt
+    )
+    assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
+    assert "Available context retrieval tools: read_context_file" in prompt
+    assert "storage_key" not in prompt
+    assert "tenants/private" not in prompt
+    assert "private_payload" not in prompt
+
+
 def test_skill_prompt_injects_ordered_prior_messages_once_and_excludes_current_run_message():
     prompt = build_skill_prompt(
         skill_id="general-chat",

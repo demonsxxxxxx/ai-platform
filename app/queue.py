@@ -1432,30 +1432,6 @@ async def get_queue_status() -> dict[str, Any]:
         await redis.aclose()
 
 
-def _count_queued_for_tenant(raw_items: list[str], tenant_id: str) -> int:
-    count = 0
-    for raw in raw_items:
-        try:
-            payload = QueueRunPayload.model_validate_json(raw)
-        except Exception:
-            continue
-        if payload.tenant_id == tenant_id:
-            count += 1
-    return count
-
-
-def _count_processing_for_tenant(meta_items: dict[str, str], tenant_id: str) -> int:
-    count = 0
-    for raw_meta in meta_items.values():
-        try:
-            meta = json.loads(raw_meta)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if meta.get("tenant_id") == tenant_id:
-            count += 1
-    return count
-
-
 def _queued_quota_counts(raw_items: list[str], tenant_id: str) -> tuple[int, dict[str, int]]:
     tenant_queued = 0
     user_queued: dict[str, int] = {}
@@ -1485,63 +1461,6 @@ def _processing_quota_counts_from_raw_items(
         key = (payload.tenant_id, payload.user_id)
         user_counts[key] = user_counts.get(key, 0) + 1
     return tenant_counts, user_counts
-
-
-def _processing_quota_counts(meta_items: dict[str, str]) -> tuple[dict[str, int], dict[tuple[str, str], int]]:
-    tenant_counts: dict[str, int] = {}
-    user_counts: dict[tuple[str, str], int] = {}
-    for raw_meta in meta_items.values():
-        try:
-            meta = json.loads(raw_meta)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        tenant_id = str(meta.get("tenant_id") or "")
-        user_id = str(meta.get("user_id") or "")
-        if tenant_id:
-            tenant_counts[tenant_id] = tenant_counts.get(tenant_id, 0) + 1
-        if tenant_id and user_id:
-            key = (tenant_id, user_id)
-            user_counts[key] = user_counts.get(key, 0) + 1
-    return tenant_counts, user_counts
-
-
-def _quota_snapshot(
-    payload: QueueRunPayload,
-    *,
-    tenant_counts: dict[str, int],
-    user_counts: dict[tuple[str, str], int],
-    tenant_processing_limit: int,
-    user_processing_limit: int,
-) -> dict[str, Any]:
-    tenant_processing = tenant_counts.get(payload.tenant_id, 0)
-    user_processing = user_counts.get((payload.tenant_id, payload.user_id), 0)
-    return {
-        "tenant_processing": tenant_processing,
-        "tenant_processing_limit": tenant_processing_limit,
-        "tenant_processing_saturated": tenant_processing_limit > 0 and tenant_processing >= tenant_processing_limit,
-        "user_processing": user_processing,
-        "user_processing_limit": user_processing_limit,
-        "user_processing_saturated": user_processing_limit > 0 and user_processing >= user_processing_limit,
-    }
-
-
-def _quota_allows(snapshot: dict[str, Any]) -> bool:
-    return not bool(snapshot["tenant_processing_saturated"] or snapshot["user_processing_saturated"])
-
-
-def _next_attempts(*, retry_meta: str | None, existing_meta: str | None) -> int:
-    attempts = 1
-    if retry_meta:
-        try:
-            attempts = int(json.loads(retry_meta).get("attempts", 0)) + 1
-        except (TypeError, ValueError, json.JSONDecodeError):
-            attempts = 1
-    elif existing_meta:
-        try:
-            attempts = int(json.loads(existing_meta).get("attempts", 0)) + 1
-        except (TypeError, ValueError, json.JSONDecodeError):
-            attempts = 1
-    return attempts
 
 
 def _decode_redis_script_result(raw_result: object) -> dict[str, Any]:

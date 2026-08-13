@@ -1,0 +1,387 @@
+{
+  "schema_version": "ai-platform.architecture-policy.v1",
+  "owner": "platform-architecture",
+  "reason": "Enforce the domain-first modular-monolith source contract for new backend changes without claiming that the legacy tree is already compliant.",
+  "source_contract": "docs/architecture/source-code-architecture.md",
+  "app_root": "app",
+  "target_packages": [
+    "agent_apps",
+    "artifacts",
+    "bootstrap",
+    "compat",
+    "context",
+    "conversations",
+    "execution",
+    "files",
+    "identity",
+    "kernel",
+    "mcp",
+    "object_lifecycle",
+    "platform",
+    "runs",
+    "sandbox",
+    "skills",
+    "streaming"
+  ],
+  "bounded_contexts": [
+    "agent_apps",
+    "artifacts",
+    "context",
+    "conversations",
+    "execution",
+    "files",
+    "identity",
+    "mcp",
+    "object_lifecycle",
+    "runs",
+    "sandbox",
+    "skills",
+    "streaming"
+  ],
+  "layers": {
+    "domain": {
+      "owner": "platform-architecture",
+      "reason": "Domain policy is framework-neutral and may depend only on its own domain and kernel primitives.",
+      "may_import_own_layers": [
+        "domain"
+      ],
+      "may_import_platform": false,
+      "allow_third_party": false,
+      "allowed_third_party_prefixes": []
+    },
+    "application": {
+      "owner": "platform-architecture",
+      "reason": "Application use cases own ports and orchestrate their own domain without concrete adapters.",
+      "may_import_own_layers": [
+        "application",
+        "domain"
+      ],
+      "may_import_platform": false,
+      "allow_third_party": false,
+      "allowed_third_party_prefixes": []
+    },
+    "infrastructure": {
+      "owner": "platform-architecture",
+      "reason": "Infrastructure implements application-owned ports and may use technical platform clients.",
+      "may_import_own_layers": [
+        "application",
+        "domain",
+        "infrastructure"
+      ],
+      "may_import_platform": true,
+      "allow_third_party": true,
+      "allowed_third_party_prefixes": []
+    },
+    "transport": {
+      "owner": "platform-architecture",
+      "reason": "Transport translates protocols into application operations and never imports concrete infrastructure.",
+      "may_import_own_layers": [
+        "application",
+        "domain",
+        "transport"
+      ],
+      "may_import_platform": false,
+      "allow_third_party": false,
+      "allowed_third_party_prefixes": [
+        "fastapi",
+        "pydantic",
+        "starlette"
+      ]
+    }
+  },
+  "public_cross_domain_modules": [
+    "api",
+    "events"
+  ],
+  "public_kernel_modules": [],
+  "approved_root_modules": [
+    "app/__init__.py",
+    "app/agent_conversation_repository.py",
+    "app/agent_profile_execution_validation.py",
+    "app/agent_profiles.py",
+    "app/alert_slo_readiness.py",
+    "app/alert_trace_export_runtime_acceptance.py",
+    "app/artifact_lifecycle_repository.py",
+    "app/artifact_preview.py",
+    "app/auth.py",
+    "app/auth_sessions.py",
+    "app/b1_memory_context_readiness.py",
+    "app/b2_sandbox_readiness.py",
+    "app/b5_file_tool_readiness.py",
+    "app/b6_operations_beta_readiness.py",
+    "app/backend_stage_closure_evidence.py",
+    "app/capabilities.py",
+    "app/capability_distribution.py",
+    "app/capacity_baseline.py",
+    "app/capacity_bounded_load_harness.py",
+    "app/chat_session_projection.py",
+    "app/context_builder.py",
+    "app/context_manifest.py",
+    "app/context_retrieval.py",
+    "app/control_plane_contracts.py",
+    "app/data_retention.py",
+    "app/db.py",
+    "app/department_directory.py",
+    "app/error_taxonomy.py",
+    "app/error_taxonomy_dashboard_readiness.py",
+    "app/execution_boundary.py",
+    "app/file_parser_contracts.py",
+    "app/file_preview_contracts.py",
+    "app/file_type_validation.py",
+    "app/foundation_alpha_readiness.py",
+    "app/foundation_runtime_concurrency.py",
+    "app/governance_readiness.py",
+    "app/intent_router.py",
+    "app/main.py",
+    "app/memory_erasure_readiness.py",
+    "app/memory_redaction.py",
+    "app/model_catalog.py",
+    "app/models.py",
+    "app/observability_readiness.py",
+    "app/office_context_readiness.py",
+    "app/office_execution_tier.py",
+    "app/path_safety.py",
+    "app/persistence_limits.py",
+    "app/principal_authority.py",
+    "app/product_events.py",
+    "app/projection_redaction.py",
+    "app/public_context_keys.py",
+    "app/public_execution.py",
+    "app/quality_golden_set_readiness.py",
+    "app/queue.py",
+    "app/queue_payload_validation.py",
+    "app/redis_client.py",
+    "app/release_evidence_export_acceptance.py",
+    "app/release_evidence_readiness.py",
+    "app/release_evidence_runtime_acceptance.py",
+    "app/repositories.py",
+    "app/required_tool_contract.py",
+    "app/run_admission_policy.py",
+    "app/run_admission_terminalization.py",
+    "app/run_control_readiness.py",
+    "app/run_event_repository.py",
+    "app/run_projection.py",
+    "app/run_provenance.py",
+    "app/sandbox_hardening_contract.py",
+    "app/schema_migrations.py",
+    "app/session_actions.py",
+    "app/session_continuity.py",
+    "app/settings.py",
+    "app/storage.py",
+    "app/tool_permission_lifecycle.py",
+    "app/tool_permission_projection.py",
+    "app/tool_policy.py",
+    "app/tool_policy_bulk_review_readiness.py",
+    "app/tool_policy_readiness.py",
+    "app/trace_audit_export_readiness.py",
+    "app/validation.py",
+    "app/worker.py",
+    "app/worker_main.py",
+    "app/worker_principal_authority.py"
+  ],
+  "forbidden_module_names": [
+    "common",
+    "helpers",
+    "manager",
+    "models",
+    "repositories",
+    "service",
+    "services",
+    "utils"
+  ],
+  "forbidden_delivery_tokens": [
+    "acceptance",
+    "b1",
+    "b2",
+    "b5",
+    "b6",
+    "phase2",
+    "poc",
+    "readiness"
+  ],
+  "frozen_hot_files": [
+    {
+      "path": "app/executors/claude_agent_worker.py",
+      "max_lines": 3116,
+      "owner": "execution",
+      "reason": "Legacy Harness worker adapter must shrink into execution infrastructure instead of accumulating responsibilities."
+    },
+    {
+      "path": "app/models.py",
+      "max_lines": 2326,
+      "owner": "platform-architecture",
+      "reason": "Legacy global DTO bucket is frozen while contracts move to owning domains."
+    },
+    {
+      "path": "app/repositories.py",
+      "max_lines": 11945,
+      "owner": "platform-architecture",
+      "reason": "Legacy global persistence facade is frozen while SQL and ports move to owning domains."
+    },
+    {
+      "path": "app/routes/chat.py",
+      "max_lines": 2684,
+      "owner": "conversations",
+      "reason": "Legacy Chat transport is frozen while admission and orchestration move behind domain APIs."
+    },
+    {
+      "path": "app/runtime/sandbox/container_provider.py",
+      "max_lines": 5927,
+      "owner": "sandbox",
+      "reason": "Legacy Sandbox provider aggregate is frozen while provider adapters and lifecycle policy are separated."
+    },
+    {
+      "path": "app/worker.py",
+      "max_lines": 3420,
+      "owner": "execution",
+      "reason": "Legacy worker orchestration is frozen while execution use cases and adapters are extracted."
+    }
+  ],
+  "compatibility_facades": [
+    {
+      "path": "app/artifact_lifecycle_repository.py",
+      "canonical_prefix": "app.persistence",
+      "max_lines": 80,
+      "shape": "imports_only",
+      "owner": "object_lifecycle",
+      "reason": "The retired artifact-named import surface may only re-export the current transitional persistence owner; app.persistence remains frozen to new modules until object_lifecycle owns the implementation."
+    }
+  ],
+  "migration_bridges": [
+    {
+      "source_path": "app/agent_conversation_repository.py",
+      "target_module": "app.conversations.infrastructure.postgres",
+      "module_alias": "conversation_persistence",
+      "symbols": [
+        "list_authorized_agent_conversations"
+      ],
+      "owner": "conversations",
+      "reason": "The root-level Agent Conversation repository may preserve its existing history-query symbol only as an exact identity alias while its PostgreSQL projection moves to the Conversations adapter.",
+      "removal_condition": "After the Conversation persistence move, migrate the Chat Sessions transport to the Conversations API, inventory supported external imports, and remove this bridge in an authority-only change before deleting the legacy alias."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.agent_apps.infrastructure.postgres",
+      "module_alias": "agent_profile_persistence",
+      "symbols": [
+        "acquire_agent_profile_lifecycle_lock",
+        "create_agent_profile_revision",
+        "ensure_agent_profile_identity",
+        "get_agent_profile_aggregate",
+        "get_agent_profile_revision",
+        "get_bound_published_agent_profile",
+        "get_current_published_agent_profile",
+        "list_agent_profile_revision_history",
+        "list_current_published_agent_profiles",
+        "list_latest_agent_profile_revisions",
+        "record_agent_profile_draft",
+        "record_agent_profile_publication",
+        "record_agent_profile_withdrawal"
+      ],
+      "owner": "agent_apps",
+      "reason": "The frozen global repository may expose these existing Agent Profile symbols only as exact identity aliases while their SQL and lifecycle locks move to the Agent Apps PostgreSQL adapter.",
+      "removal_condition": "After the Agent Profile persistence move, inventory all supported imports of these repositories symbols; migrate internal callers to an Agent Apps boundary and remove this bridge in an authority-only change before deleting the aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.conversations.infrastructure.postgres",
+      "module_alias": "conversation_persistence",
+      "symbols": [
+        "append_message",
+        "create_session",
+        "get_authorized_lambchat_session",
+        "get_authorized_session_projection",
+        "get_session_for_action",
+        "list_authorized_messages",
+        "list_authorized_sessions",
+        "list_authorized_user_messages_for_runs",
+        "list_session_messages_for_fork",
+        "mark_session_deleted",
+        "update_session_title"
+      ],
+      "owner": "conversations",
+      "reason": "The frozen global repository may expose these existing session and message persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Conversations adapter.",
+      "removal_condition": "After the Conversation persistence move, migrate supported internal callers to the Conversations API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    }
+  ],
+  "production_registries": [
+    {
+      "path": "app/executors/registry.py",
+      "factory_function": "_default_adapters",
+      "allowed_keys": [
+        "claude-agent-worker"
+      ],
+      "adapter_constructors": [
+        {
+          "module": "app.executors.claude_agent_worker",
+          "name": "ClaudeAgentWorkerAdapter"
+        }
+      ],
+      "selector_owners": [
+        {
+          "path": "app/repositories.py",
+          "symbol": "DEFAULT_RUN_EXECUTOR_TYPES"
+        }
+      ],
+      "test_double_terms": [
+        "deterministic",
+        "dummy",
+        "fake",
+        "mock",
+        "stub",
+        "test"
+      ],
+      "owner": "execution",
+      "reason": "Only explicitly supported production executor adapters may be selected at runtime."
+    }
+  ],
+  "governed_symbols": [
+    {
+      "name": "OUTBOX_TARGET_ARTIFACT",
+      "path": "app/persistence/object_deletions.py",
+      "owner": "object_lifecycle",
+      "reason": "Typed object-deletion target identities have one protocol owner."
+    },
+    {
+      "name": "OUTBOX_TARGET_FILE",
+      "path": "app/persistence/object_deletions.py",
+      "owner": "object_lifecycle",
+      "reason": "Typed object-deletion target identities have one protocol owner."
+    }
+  ],
+  "exception_contract": {
+    "path": ".architecture-governance-exception.json",
+    "schema_version": "ai-platform.architecture-governance-exception.v1",
+    "max_days": 30,
+    "non_exemptible_codes": [
+      "compatibility_import_forbidden",
+      "cross_domain_internal_import",
+      "facade_missing",
+      "facade_wildcard_import",
+      "governed_symbol_missing",
+      "governed_symbol_owner",
+      "kernel_product_import",
+      "kernel_public_surface_forbidden",
+      "layer_dependency_forbidden",
+      "layer_external_dependency_forbidden",
+      "migration_bridge_import_contract",
+      "migration_bridge_source_growth",
+      "migration_bridge_source_logic",
+      "migration_bridge_symbol_contract",
+      "migration_bridge_target_contract",
+      "platform_product_import",
+      "registry_adapter_mismatch",
+      "registry_duplicate_key",
+      "registry_dynamic_selector",
+      "registry_factory_contract",
+      "registry_missing",
+      "registry_missing_key",
+      "registry_nonliteral_key",
+      "registry_selector_mismatch",
+      "registry_test_double",
+      "registry_unknown_key"
+    ],
+    "owner": "platform-architecture",
+    "reason": "Exceptions are candidate-bound migration evidence and cannot waive authority or security boundaries."
+  }
+}

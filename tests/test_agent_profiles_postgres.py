@@ -16,6 +16,7 @@ from app import repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_AGENT_PROFILE_TEST_DSN"
+POSTGRES_CONCURRENCY_TIMEOUT_SECONDS = 5
 REQUIRED_SCHEMA_SQL = """
 create table tenants (
   id text primary key,
@@ -67,18 +68,29 @@ create table agent_profile_revisions (
   revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
+  welcome_message text not null default '',
+  starter_prompts jsonb not null default '[]'::jsonb,
+  capability_summary text not null default '',
+  recommended_tasks jsonb not null default '[]'::jsonb,
+  supported_input_types jsonb not null default '["text"]'::jsonb,
+  supported_file_types jsonb not null default '[]'::jsonb,
+  expected_outputs jsonb not null default '[]'::jsonb,
+  permissions_and_data_access_notice text not null default '',
   instructions text not null,
   model_id text not null,
   skill_id text not null references skills(id),
   skill_version text not null,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
-  avatar_ref text not null default 'builtin:agent',
-  category text not null default 'general',
-  visibility text not null default 'tenant',
-  allowed_department_ids jsonb not null default '[]'::jsonb,
-  allowed_roles jsonb not null default '[]'::jsonb,
-  allowed_user_ids jsonb not null default '[]'::jsonb,
+  avatar_ref text not null
+    check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_asset_id text,
+  category text not null
+    check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  visibility text not null,
+  allowed_department_ids jsonb not null,
+  allowed_roles jsonb not null,
+  allowed_user_ids jsonb not null,
   legacy_compatibility_write boolean not null default false,
   created_by text references users(id),
   created_at timestamptz not null default now(),
@@ -88,6 +100,8 @@ create table agent_profile_revisions (
   withdrawn_from_revision bigint,
   constraint fk_agent_profile_revisions_tenant_agent
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
+  constraint chk_agent_profile_revisions_visibility
+    check (visibility in ('tenant', 'restricted')),
   constraint uq_agent_profile_revision_publication
     unique (tenant_id, agent_id, revision, content_hash, revision_status),
   primary key (tenant_id, agent_id, revision)
@@ -136,12 +150,46 @@ create unique index idx_agent_profile_revisions_published_from_draft
 def _postgres_dsn() -> str:
     dsn = os.getenv(POSTGRES_DSN_ENV, "").strip()
     if not dsn:
+        if os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true":
+            raise RuntimeError(f"{POSTGRES_DSN_ENV} must be configured in GitHub Actions")
         pytest.skip(f"{POSTGRES_DSN_ENV} is not configured")
     return dsn
 
 
+def test_postgres_dsn_fails_closed_in_github_actions(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(POSTGRES_DSN_ENV, raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    with pytest.raises(RuntimeError, match=f"^{POSTGRES_DSN_ENV} must be configured"):
+        _postgres_dsn()
+
+
 async def _set_search_path(conn: psycopg.AsyncConnection, schema_name: str) -> None:
     await conn.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+
+
+async def _wait_for_event_or_task(
+    event: asyncio.Event,
+    task: asyncio.Task,
+) -> None:
+    """Surface an admission failure instead of hiding it behind an event timeout."""
+
+    event_waiter = asyncio.create_task(event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {event_waiter, task},
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            await task
+            raise AssertionError("admission completed before reaching the paused queue")
+        if event_waiter not in done:
+            raise TimeoutError("admission did not reach the paused queue")
+    finally:
+        if not event_waiter.done():
+            event_waiter.cancel()
+            await asyncio.gather(event_waiter, return_exceptions=True)
 
 
 async def _agent_profile_storage_projection(
@@ -166,12 +214,16 @@ async def _agent_profile_storage_projection(
     revisions_cursor = await conn.execute(
         """
         select tenant_id, agent_id, revision, status, revision_status,
-               name, description, instructions, model_id, skill_id,
-               skill_version, mcp_tool_ids, content_hash, avatar_ref,
-               category, visibility, allowed_department_ids, allowed_roles,
-               allowed_user_ids, legacy_compatibility_write, created_by,
-               created_at, published_by, published_at, published_from_revision,
-               withdrawn_from_revision, xmin::text as storage_version
+               name, description, welcome_message, starter_prompts,
+               capability_summary, recommended_tasks, supported_input_types,
+               supported_file_types, expected_outputs,
+               permissions_and_data_access_notice, instructions, model_id,
+               skill_id, skill_version, mcp_tool_ids, content_hash, avatar_ref,
+               avatar_asset_id, category, visibility, allowed_department_ids,
+               allowed_roles, allowed_user_ids, legacy_compatibility_write,
+               created_by, created_at, published_by, published_at,
+               published_from_revision, withdrawn_from_revision,
+               xmin::text as storage_version
         from agent_profile_revisions
         where tenant_id = %s
         order by agent_id, revision
@@ -206,6 +258,7 @@ def _profile_chat_manifest(skill_id: str) -> dict[str, object]:
             }
         ],
         "dependency_ids": [],
+        "mcp_tool_ids": [],
         "allowed": True,
         "staged": False,
         "used": False,
@@ -736,6 +789,8 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
     observer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
     release_queue = asyncio.Event()
     queue_entered = asyncio.Event()
+    manifest = _profile_chat_manifest("profile-skill")
+    locked_skill_version = str(manifest["content_hash"])
     admission_task = None
     withdrawal_task = None
     try:
@@ -767,7 +822,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
         )
         await admission_conn.execute(
             "insert into skills(id, name, version, executor_type) values (%s, %s, %s, %s)",
-            ("profile-skill", "Profile skill", "version-a", "claude-agent-worker"),
+            ("profile-skill", "Profile skill", locked_skill_version, "claude-agent-worker"),
         )
         await admission_conn.execute(
             """
@@ -801,7 +856,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "private profile instructions",
                 "model-a",
                 "profile-skill",
-                "version-a",
+                locked_skill_version,
                 "a" * 64,
                 "admin-profile",
                 "admin-profile",
@@ -837,9 +892,9 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             "input": {"message": "queued profile run", "mcp_tool_ids": []},
             "file_ids": [],
             "executor_type": "claude-agent-worker",
-            "skill_version": "version-a",
-            "release_decision": {},
-            "skill_manifests": [],
+            "skill_version": locked_skill_version,
+            "release_decision": {"selected_version": locked_skill_version},
+            "skill_manifests": repositories.skill_manifest_refs([manifest]),
             "model_id": "model-a",
             "model_value": "provider-model-a",
             "agent_profile": {
@@ -847,6 +902,8 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "revision": 1,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instructions",
+                "required_skill_id": "profile-skill",
+                "required_skill_version": locked_skill_version,
             },
         }
         await admission_conn.execute(
@@ -869,6 +926,13 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "a" * 64,
             ),
         )
+        await repositories.insert_run_skill_snapshots_at_creation(
+            admission_conn,
+            tenant_id="tenant-profile",
+            run_id="run-profile",
+            skill_manifests=[manifest],
+            release_decision={"selected_version": locked_skill_version},
+        )
 
         async def validate_definition(_self, _conn, *, principal, agent_id, definition):
             assert principal.tenant_id == "tenant-profile"
@@ -877,7 +941,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             return (
                 {
                     "skill_id": "profile-skill",
-                    "skill_version": "version-a",
+                    "skill_version": locked_skill_version,
                     "executor_type": "claude-agent-worker",
                 },
                 {"id": "model-a", "value": "provider-model-a"},
@@ -922,7 +986,42 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 principal=user,
             )
         )
-        await asyncio.wait_for(queue_entered.wait(), timeout=2)
+        await _wait_for_event_or_task(queue_entered, admission_task)
+        authority_evidence_cursor = await observer_conn.execute(
+            """
+            select runs.input_json->'agent_profile' as agent_profile,
+                   runs.input_json->'skill_manifests' as manifest_refs,
+                   snapshots.skill_version, snapshots.content_hash,
+                   snapshots.source_json,
+                   materializations.materialization_sha256,
+                   materializations.manifest_json
+            from runs
+            join run_skill_snapshots as snapshots
+              on snapshots.tenant_id = runs.tenant_id
+             and snapshots.run_id = runs.id
+             and snapshots.skill_id = runs.skill_id
+            join run_skill_materializations as materializations
+              on materializations.tenant_id = snapshots.tenant_id
+             and materializations.run_id = snapshots.run_id
+             and materializations.skill_id = snapshots.skill_id
+            where runs.tenant_id = %s and runs.id = %s
+            """,
+            ("tenant-profile", "run-profile"),
+        )
+        assert await authority_evidence_cursor.fetchone() == {
+            "agent_profile": execution_snapshot["agent_profile"],
+            "manifest_refs": execution_snapshot["skill_manifests"],
+            "skill_version": locked_skill_version,
+            "content_hash": locked_skill_version,
+            "source_json": repositories.run_skill_snapshot_source_json(
+                manifest,
+                release_decision={"selected_version": locked_skill_version},
+            ),
+            "materialization_sha256": repositories.skill_manifest_materialization_sha256(
+                manifest
+            ),
+            "manifest_json": manifest,
+        }
 
         async def withdraw_profile():
             async with lifecycle_conn.transaction():
@@ -946,11 +1045,20 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                     return
                 await asyncio.sleep(0.02)
 
-        await asyncio.wait_for(wait_for_row_block(), timeout=2)
+        await asyncio.wait_for(
+            wait_for_row_block(),
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+        )
         assert not withdrawal_task.done()
         release_queue.set()
-        admission = await asyncio.wait_for(admission_task, timeout=2)
-        withdrawn, _audit_id = await asyncio.wait_for(withdrawal_task, timeout=2)
+        admission = await asyncio.wait_for(
+            admission_task,
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+        )
+        withdrawn, _audit_id = await asyncio.wait_for(
+            withdrawal_task,
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+        )
         assert admission.source == "idempotent_enqueue"
         assert withdrawn.status == "withdrawn"
         aggregate_cursor = await observer_conn.execute(
@@ -1040,6 +1148,8 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
                 "revision": 1,
                 "content_hash": "a" * 64,
                 "instructions": "private profile chat instructions",
+                "required_skill_id": "profile-chat-skill",
+                "required_skill_version": str(manifest["content_hash"]),
             }
             queue_entered.set()
             await release_queue.wait()
@@ -1048,6 +1158,9 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
         async def queue_insight(*_args, **_kwargs):
             return {}
 
+        async def no_existing_queue_admission(*_args, **_kwargs):
+            return None
+
         monkeypatch.setattr("app.routes.chat.transaction", admission_transaction)
         monkeypatch.setattr(
             "app.agent_apps.authority.resolve_model_selection",
@@ -1055,6 +1168,7 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
         )
         monkeypatch.setattr(repositories, "authorize_selected_run_capabilities", authorize_profile_skill)
         monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
+        monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_queue_admission)
         monkeypatch.setattr("app.routes.chat.enqueue_run", paused_enqueue)
         monkeypatch.setattr("app.routes.chat.get_queue_insight", queue_insight)
 
@@ -1088,7 +1202,7 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
                 principal=user,
             )
         )
-        await asyncio.wait_for(queue_entered.wait(), timeout=2)
+        await _wait_for_event_or_task(queue_entered, admission_task)
 
         committed_cursor = await observer_conn.execute(
             "select count(*) as count from runs where tenant_id = %s",
@@ -1126,11 +1240,20 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
                     return
                 await asyncio.sleep(0.02)
 
-        await asyncio.wait_for(wait_for_profile_lock(), timeout=2)
+        await asyncio.wait_for(
+            wait_for_profile_lock(),
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+        )
         assert not withdrawal_task.done()
         release_queue.set()
-        response = await asyncio.wait_for(admission_task, timeout=3)
-        withdrawn, _audit_id = await asyncio.wait_for(withdrawal_task, timeout=3)
+        response = await asyncio.wait_for(
+            admission_task,
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+        )
+        withdrawn, _audit_id = await asyncio.wait_for(
+            withdrawal_task,
+            timeout=POSTGRES_CONCURRENCY_TIMEOUT_SECONDS,
+        )
 
         assert response.status == "queued"
         assert response.submission_id is not None
@@ -1182,6 +1305,7 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
     from app.auth import AuthPrincipal
     from app.models import ChatStreamRequest, SelectedAgentProfileRequest
     from app.routes.chat import chat_stream
+    from fastapi import HTTPException
 
     dsn = _postgres_dsn()
     schema_name = f"agent_profile_chat_rollback_{uuid.uuid4().hex}"
@@ -1230,7 +1354,7 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
         monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
         monkeypatch.setattr("app.routes.chat.enqueue_run", capture_enqueue)
 
-        with pytest.raises(RuntimeError, match="forced producer commit failure"):
+        with pytest.raises(HTTPException) as exc_info:
             await chat_stream(
                 ChatStreamRequest(
                     workspace_id="workspace-profile-chat",
@@ -1247,6 +1371,9 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
                     roles=["user"],
                 ),
             )
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "chat_submission_internal_error"
+        assert "forced producer commit failure" not in json.dumps(exc_info.value.detail)
         assert enqueued_payloads == []
 
         persisted_cursor = await observer_conn.execute(

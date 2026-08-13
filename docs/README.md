@@ -15,6 +15,10 @@ does not represent deployed runtime state.
 - `architecture/expert-agent-service-workbench.md` defines the Agent-first
   authenticated product, Agent.md Builder language, progressive configuration,
   task-oriented Market/Workspace UX, and truthful Skill archive semantics.
+- `architecture/source-code-architecture.md` defines the normative backend
+  package tree, dependency direction, naming, compatibility, deletion proof,
+  and strangler migration contract. ADR 0006 records the decision and rejected
+  alternatives.
 - `architecture/single-enterprise-data-lifecycle.md` defines the fixed
   single-enterprise identity scope, datastore ownership, versioned schema
   lifecycle, bounded reads, retention workflow, and PostgreSQL payload limits.
@@ -26,6 +30,8 @@ does not represent deployed runtime state.
   history as read-only.
 - `adr/0005-harness-chat-is-not-a-skill.md` records the execution-identity
   boundary between ordinary Harness chat and explicitly authorized Skills.
+- `adr/0006-domain-first-modular-monolith.md` records the decision to organize
+  backend source by bounded context rather than global technical layers.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/redis-streams-sse-event-channel.md` indexes the current v2.1
