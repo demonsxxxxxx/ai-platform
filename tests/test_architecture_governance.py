@@ -299,6 +299,39 @@ def _activate_runs_bridge(repo: Path) -> None:
     )
 
 
+def _activate_runs_lifecycle_bridge(repo: Path) -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.runs.infrastructure.lifecycle",
+    )
+    remaining_symbols = sorted(
+        {
+            symbol
+            for other in _fixture_policy()["migration_bridges"]
+            if other["source_path"] == bridge["source_path"] and other != bridge
+            for symbol in other["symbols"]
+        }
+    )
+    _write(
+        repo,
+        "app/runs/infrastructure/lifecycle.py",
+        _fixture_bridge_definitions(bridge["symbols"]) + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
+        + _fixture_bridge_definitions(remaining_symbols)
+        + "\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n",
+    )
+
+
 def _activate_repository_authorization_error_bridge(repo: Path) -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -1022,6 +1055,54 @@ def test_runs_persistence_bridge_authority_is_exact() -> None:
     }
 
 
+def test_runs_lifecycle_persistence_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.runs.infrastructure.lifecycle",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.runs.infrastructure.lifecycle",
+        "module_alias": "run_lifecycle_persistence",
+        "symbols": [
+            "ToolPermissionTerminalizationProgress",
+            "cancel_run",
+            "classify_success_commit_block",
+            "complete_run",
+            "fail_run",
+            "finalize_multi_agent_parent_run_if_ready",
+            "list_multi_agent_parent_runs_requiring_finalization",
+            "list_multi_agent_terminal_children_requiring_reconciliation",
+            "list_runs_requiring_tool_permission_terminalization",
+            "mark_run_enqueue_failed",
+            "progress_run_tool_permission_terminalization",
+            "request_admin_run_cancel",
+            "request_run_cancel",
+            "stage_stale_run_reconciliation",
+        ],
+        "owner": "runs",
+        "reason": (
+            "The frozen global repository may expose these existing Run lifecycle, "
+            "cancellation, maintenance, and terminalization persistence symbols only "
+            "as exact identity aliases while their PostgreSQL implementation moves "
+            "to the Runs adapter."
+        ),
+        "removal_condition": (
+            "After the Run lifecycle persistence move, migrate supported internal "
+            "callers to the Runs API, inventory external imports, and remove this "
+            "bridge in an authority-only change before deleting the repositories aliases."
+        ),
+    }
+
+    assert "_stage_run_terminalization" not in {
+        symbol
+        for item in _fixture_policy()["migration_bridges"]
+        if item["source_path"] == "app/repositories.py"
+        for symbol in item["symbols"]
+    }
+
+
 def test_repository_authorization_error_bridge_authority_is_exact() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -1143,6 +1224,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
+        "app.runs.infrastructure.lifecycle",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
     }
@@ -1168,6 +1250,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
+        "app.runs.infrastructure.lifecycle",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
     }
@@ -1322,6 +1405,79 @@ def test_runs_migration_bridge_fails_closed_on_contract_drift(
 
     expected_path = (
         "app/runs/infrastructure/postgres.py"
+        if mutation in {"missing_target", "missing_target_symbol"}
+        else bridge["source_path"]
+    )
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == expected and item.path == expected_path
+    )
+    assert finding.exemptible is False
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("wrong_alias", "migration_bridge_import_contract"),
+        ("missing_symbol", "migration_bridge_symbol_contract"),
+        ("rebound_symbol", "migration_bridge_symbol_contract"),
+        ("missing_target", "migration_bridge_target_contract"),
+        ("missing_target_symbol", "migration_bridge_target_contract"),
+        ("new_logic", "migration_bridge_source_logic"),
+    ],
+)
+def test_runs_lifecycle_migration_bridge_fails_closed_on_contract_drift(
+    governance_repo: tuple[Path, str], mutation: str, expected: str
+) -> None:
+    repo, authority = governance_repo
+    _activate_runs_lifecycle_bridge(repo)
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.runs.infrastructure.lifecycle",
+    )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    first_symbol = bridge["symbols"][0]
+    if mutation == "wrong_alias":
+        source = source.replace(
+            f" as {bridge['module_alias']}",
+            " as unauthorized_alias",
+            1,
+        )
+    elif mutation == "missing_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}\n",
+            "",
+        )
+    elif mutation == "rebound_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}",
+            f"{first_symbol} = object()",
+        )
+    elif mutation == "missing_target":
+        (repo / "app/runs/infrastructure/lifecycle.py").unlink()
+    elif mutation == "missing_target_symbol":
+        target_path = repo / "app/runs/infrastructure/lifecycle.py"
+        target_source = target_path.read_text(encoding="utf-8")
+        target_path.write_text(
+            target_source.replace(
+                _fixture_bridge_definitions([first_symbol]),
+                "",
+                1,
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "new_logic":
+        source += "\ndef newly_owned_logic():\n    return True\n"
+    _write(repo, bridge["source_path"], source)
+    head = _commit(repo, f"reject Runs lifecycle bridge {mutation}")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+    assert evaluation.status != "pass"
+
+    expected_path = (
+        "app/runs/infrastructure/lifecycle.py"
         if mutation in {"missing_target", "missing_target_symbol"}
         else bridge["source_path"]
     )
