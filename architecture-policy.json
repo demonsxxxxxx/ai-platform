@@ -346,6 +346,20 @@
       "owner": "runs",
       "reason": "The frozen global repository may expose these existing run identity, admission-lock, active-child, and terminal-intent persistence primitives only as exact identity aliases while their PostgreSQL implementation moves to the Runs adapter.",
       "removal_condition": "After the Runs persistence move, migrate supported internal callers to the Runs API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.skills.infrastructure.postgres",
+      "module_alias": "skill_persistence",
+      "symbols": [
+        "canonical_builtin_tool_identities",
+        "get_skill_version",
+        "run_skill_snapshot_source_json",
+        "validate_replay_skill_manifests"
+      ],
+      "owner": "skills",
+      "reason": "The frozen global repository may expose these existing Skill version, replay-validation, and run-snapshot persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Skills adapter.",
+      "removal_condition": "After the Skill persistence move, migrate supported internal callers to the Skills API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
     }
   ],
   "production_registries": [
