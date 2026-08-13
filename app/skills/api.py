@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from psycopg import AsyncConnection
-
 from app.skills.dependencies import INTERNAL_DEPENDENCY_SKILL_IDS
 from app.skills.infrastructure.postgres import validate_replay_skill_manifests as _validate_replay
 
@@ -13,7 +11,7 @@ def is_internal_dependency_skill(skill_id: str) -> bool:
 
 
 async def validate_replay_skill_manifests(
-    conn: AsyncConnection,
+    conn: Any,
     *,
     skill_id: str,
     pinned_version: str,
