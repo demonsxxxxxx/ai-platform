@@ -896,7 +896,7 @@ def default_cancel_not_requested(monkeypatch):
         return tool_ids
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_replay_skill_manifests",
+        "app.worker.validate_replay_skill_manifests",
         validate_replay_skill_manifests,
         raising=False,
     )
@@ -8736,7 +8736,7 @@ async def test_worker_revoked_historical_pin_blocks_before_stage_or_adapter(monk
         raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_replay_skill_manifests",
+        "app.worker.validate_replay_skill_manifests",
         revoked,
         raising=False,
     )

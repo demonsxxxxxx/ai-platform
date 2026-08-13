@@ -1664,9 +1664,7 @@ class ClaudeAgentWorkerAdapter:
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
-            available_skill_identities=(
-                prepared.allowed_skill_names if payload.agent_profile else ()
-            ),
+            available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
         )
         runtime_sdk_result = type(
             "RuntimeSdkResult",
@@ -1933,9 +1931,7 @@ class ClaudeAgentWorkerAdapter:
             selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
-                available_skill_identities=(
-                    prepared.allowed_skill_names if payload.agent_profile else ()
-                ),
+                available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
             )
             if selected_skill_error is not None:
                 turn_diagnostics = _public_sdk_turn_diagnostics(

@@ -31,9 +31,7 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
-from app.context.file_continuity import (
-    select_authorized_run_file_snapshot,
-)
+from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
@@ -2091,9 +2089,7 @@ async def chat_stream(
                     conflict_error=RepositoryConflictError,
                 )
             elif admitted_agent_profile is not None:
-                skill_version = None
-                release_decision_payload = {}
-                skill_manifests = []
+                skill_version, release_decision_payload, skill_manifests = None, {}, []
             elif execution_kind == RUN_EXECUTION_KIND_SKILL:
                 assert skill is not None and resolved_skill_id is not None
                 release_decision = resolve_rollout_skill_decision(
@@ -2456,11 +2452,7 @@ async def chat_stream(
     except HTTPException as exc:
         authorization_error = exc.__cause__
         if isinstance(authorization_error, repositories.RepositoryAuthorizationError):
-            await _audit_capability_denial(
-                principal,
-                authorization_error,
-                source="chat_stream",
-            )
+            await _audit_capability_denial(principal, authorization_error, source="chat_stream")
         code = _submission_code(exc.detail)
         rejected_before_persist = 400 <= exc.status_code < 500 or code == _QUEUE_PAYLOAD_INVALID_CODE
         if rejected_before_persist:

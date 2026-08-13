@@ -79,6 +79,7 @@ from app.skills.catalog import (
     AuthorizedSkillCatalogResolution,
     resolve_authorized_skill_catalog,
 )
+from app.skills.api import validate_replay_skill_manifests
 from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.tool_permission_lifecycle import (
     drain_run_tool_permission_terminalization,
@@ -1647,7 +1648,7 @@ async def _reauthorize_worker_capabilities(
             if isinstance(payload.agent_profile, dict)
             else None
         )
-        pinned_mcp_tool_ids = await repositories.validate_replay_skill_manifests(
+        pinned_mcp_tool_ids = await validate_replay_skill_manifests(
             conn,
             skill_id=run_identity["skill_id"],
             pinned_version=str(payload.skill_version or ""),

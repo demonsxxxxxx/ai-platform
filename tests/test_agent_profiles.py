@@ -1105,7 +1105,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         require_replay_source_identity,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        "app.agent_apps.authority.validate_replay_skill_manifests",
         validate_replay_skill_manifests,
     )
     monkeypatch.setattr(
@@ -1144,7 +1144,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        "app.agent_apps.authority.validate_replay_skill_manifests",
         reject_malformed_manifest,
     )
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
@@ -1155,7 +1155,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         )
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        "app.agent_apps.authority.validate_replay_skill_manifests",
         validate_replay_skill_manifests,
     )
 
@@ -1269,7 +1269,7 @@ async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_c
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
     monkeypatch.setattr("app.agent_apps.authority.repositories.materialize_run_skill_manifests", materialize)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.validate_replay_skill_manifests", validate)
+    monkeypatch.setattr("app.agent_apps.authority.validate_replay_skill_manifests", validate)
     monkeypatch.setattr("app.agent_apps.authority.repositories.require_replay_source_identity", lambda **_kwargs: None)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)

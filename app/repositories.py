@@ -2861,7 +2861,6 @@ async def authorize_replay_run_capabilities(
     pinned_version: str,
     pinned_executor_type: str,
     skill_manifests: list[dict[str, Any]],
-    skill_set: list[dict[str, Any]] | None = None,
     normalized_input: dict[str, Any],
     principal_department_id: str,
     principal_roles: list[str] | None,
@@ -2875,7 +2874,6 @@ async def authorize_replay_run_capabilities(
         pinned_version=pinned_version,
         pinned_executor_type=pinned_executor_type,
         skill_manifests=skill_manifests,
-        skill_set=skill_set,
     )
     replay_input = dict(normalized_input)
     if pinned_mcp_tool_ids:
@@ -2892,16 +2890,13 @@ async def authorize_replay_run_capabilities(
         permissions=permissions,
         skill_resolver=resolve_selected_skill,
     )
-    validated_mcp_tool_ids = await validate_replay_skill_manifests(
+    await validate_replay_skill_manifests(
         conn,
         skill_id=skill_id,
         pinned_version=pinned_version,
         pinned_executor_type=pinned_executor_type,
         skill_manifests=skill_manifests,
-        skill_set=skill_set,
     )
-    if validated_mcp_tool_ids != pinned_mcp_tool_ids:
-        raise _capability_not_authorized()
     return skill
 
 
@@ -2911,55 +2906,33 @@ def pinned_replay_mcp_tool_ids(
     pinned_version: str,
     pinned_executor_type: str,
     skill_manifests: list[dict[str, Any]],
-    skill_set: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Extract the historical MCP authorization set without consulting mutable release state."""
 
     if pinned_executor_type not in DEFAULT_RUN_EXECUTOR_TYPES or not pinned_version:
         raise _capability_not_authorized()
-    requested_versions = {skill_id: pinned_version}
-    if skill_set is not None:
-        if not skill_set:
-            raise _capability_not_authorized()
-        requested_versions = {}
-        for selection in skill_set:
-            selected_skill_id = str(selection.get("skill_id") or "") if isinstance(selection, dict) else ""
-            selected_version = str(selection.get("expected_version") or "") if isinstance(selection, dict) else ""
-            if not selected_skill_id or not selected_version or selected_skill_id in requested_versions:
-                raise _capability_not_authorized()
-            requested_versions[selected_skill_id] = selected_version
-        if requested_versions.get(skill_id) != pinned_version:
-            raise _capability_not_authorized()
-    root_manifests: dict[str, dict[str, Any]] = {}
-    for manifest in skill_manifests:
-        manifest_skill_id = str(manifest.get("skill_id") or "") if isinstance(manifest, dict) else ""
-        manifest_version = (
-            str(manifest.get("version") or manifest.get("skill_version") or "")
-            if isinstance(manifest, dict)
-            else ""
-        )
-        if requested_versions.get(manifest_skill_id) != manifest_version:
-            continue
-        if manifest_skill_id in root_manifests:
-            raise _capability_not_authorized()
-        root_manifests[manifest_skill_id] = manifest
-    if set(root_manifests) != set(requested_versions):
+    primary = next(
+        (
+            manifest
+            for manifest in skill_manifests
+            if str(manifest.get("skill_id") or "") == skill_id
+            and str(manifest.get("version") or manifest.get("skill_version") or "") == pinned_version
+        ),
+        None,
+    )
+    if primary is None:
         raise _capability_not_authorized()
-    pinned_mcp_tool_ids: list[str] = []
-    for selected_skill_id in requested_versions:
-        raw_mcp_tool_ids = root_manifests[selected_skill_id].get("mcp_tool_ids")
-        if not isinstance(raw_mcp_tool_ids, list) or any(
-            not isinstance(item, str) or not item for item in raw_mcp_tool_ids
-        ):
-            raise _capability_not_authorized()
-        if (
-            selected_skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID
-            and _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID not in raw_mcp_tool_ids
-        ):
-            raise _capability_not_authorized()
-        for tool_id in raw_mcp_tool_ids:
-            if tool_id not in pinned_mcp_tool_ids:
-                pinned_mcp_tool_ids.append(tool_id)
+    raw_mcp_tool_ids = primary.get("mcp_tool_ids")
+    if not isinstance(raw_mcp_tool_ids, list) or any(
+        not isinstance(item, str) or not item for item in raw_mcp_tool_ids
+    ):
+        raise _capability_not_authorized()
+    pinned_mcp_tool_ids = list(dict.fromkeys(raw_mcp_tool_ids))
+    if (
+        skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID
+        and _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID not in pinned_mcp_tool_ids
+    ):
+        raise _capability_not_authorized()
     return pinned_mcp_tool_ids
 
 
@@ -9355,13 +9328,6 @@ async def copy_run_as_new_task(
     else:
         source_execution_input = {}
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
-    source_profile_snapshot = source_execution_snapshot.get("agent_profile")
-    source_skill_set = (
-        source_profile_snapshot.get("skill_set")
-        if isinstance(source_profile_snapshot, dict)
-        and isinstance(source_profile_snapshot.get("skill_set"), list)
-        else None
-    )
     source_execution_kind = str(
         source.get("execution_kind")
         or source_execution_snapshot.get("execution_kind")
@@ -9454,7 +9420,6 @@ async def copy_run_as_new_task(
             pinned_version=skill_version,
             pinned_executor_type=executor_type,
             skill_manifests=skill_manifests,
-            skill_set=source_skill_set,
             normalized_input=source_execution_input,
             principal_department_id=inherited_department_id,
             principal_roles=inherited_roles,
