@@ -119,6 +119,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         ("expected_outputs", ["Review memo"]),
         ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
         ("avatar_asset_id", "file-avatar-a"),
+        ("avatar_seed", "stable-expert-avatar"),
     ],
 )
 def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(field, value):

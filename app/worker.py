@@ -1642,12 +1642,18 @@ async def _reauthorize_worker_capabilities(
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
     try:
+        profile_skill_set = (
+            payload.agent_profile.get("skill_set")
+            if isinstance(payload.agent_profile, dict)
+            else None
+        )
         pinned_mcp_tool_ids = await repositories.validate_replay_skill_manifests(
             conn,
             skill_id=run_identity["skill_id"],
             pinned_version=str(payload.skill_version or ""),
             pinned_executor_type=payload.executor_type,
             skill_manifests=payload.skill_manifests,
+            skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
         )
     except (repositories.RepositoryAuthorizationError, repositories.RepositoryConflictError):
         denial = _worker_capability_record(

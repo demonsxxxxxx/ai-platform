@@ -51,6 +51,10 @@ async def pin_agent_skill_set(
             raise conflict_error("agent_profile_skill_set_stale")
         decision_payload = decision_payload_for_version(decision, locked_version=version)
         manifests = attach_snapshot_governance(manifests, release_decision=decision_payload)
+        manifests = [
+            {**manifest, "release_decision": dict(decision_payload)}
+            for manifest in manifests
+        ]
         manifests = pin_mcp_tool_ids(
             manifests,
             skill_id=skill_id,
@@ -63,7 +67,10 @@ async def pin_agent_skill_set(
                 manifest.get("content_hash") or ""
             ):
                 raise conflict_error("agent_profile_skill_set_conflict")
-            manifests_by_id.setdefault(manifest_id, manifest)
+            if manifest_id == skill_id:
+                manifests_by_id[manifest_id] = manifest
+            else:
+                manifests_by_id.setdefault(manifest_id, manifest)
         if index == 0:
             primary_version = version
             primary_decision = decision_payload

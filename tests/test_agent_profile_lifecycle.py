@@ -1064,6 +1064,49 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     assert calls[0][1]["for_update"] is True
 
 
+@pytest.mark.asyncio
+async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _legacy_revision_hash
+
+    row = _profile_row()
+    row["content_hash"] = _legacy_revision_hash(_draft_from_row(row))
+
+    async def get_bound(*_args, **_kwargs):
+        return row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        get_bound,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    admission = await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(row["content_hash"]),
+    )
+    assert admission is not None
+
+    row["instructions"] = "tampered"
+    assert await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(row["content_hash"]),
+    ) is None
+
+
 @pytest.mark.parametrize("denial", ["withdrawn", "hash_mismatch", "acl", "capability"])
 @pytest.mark.asyncio
 async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch, denial):

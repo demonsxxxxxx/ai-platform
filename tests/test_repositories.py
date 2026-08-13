@@ -379,7 +379,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[30] is None else "database-timestamp"}
+                    {"published_at": None if params[32] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -408,33 +408,35 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
-          model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
-          avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
+          model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+          avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
           recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
           permissions_and_data_access_notice, avatar_asset_id,
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+                %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
                 %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
                 %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-                  model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
-                  avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
+                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+                  avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
                   recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
                   permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """.split()
     )
-    assert len(params) == insert_sql.count("%s") == 33
+    assert len(params) == insert_sql.count("%s") == 35
     assert params == (
         "tenant-a", "agt_support", 8, expected_legacy_status, status,
         "Support assistant", "Approved support helper.",
-        "Private instruction", "model-a", "general-chat", "version-a", '["mcp-a", "mcp-b"]',
-        "a" * 64, "builtin:agent", "general", "tenant", "[]", "[]", "[]",
+        "Private instruction", "model-a", "general-chat", "version-a",
+        '[{"skill_id": "general-chat", "expected_version": "version-a"}]',
+        '["mcp-a", "mcp-b"]',
+        "a" * 64, "builtin:agent", "", "general", "tenant", "[]", "[]", "[]",
         "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
         "creator-a", published_by, published_by, published_from_revision, None,
     )
@@ -10471,6 +10473,81 @@ async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_exe
     assert len(conn.calls) == 4
     dependency_source = json.loads(conn.calls[2][1][6])
     assert dependency_source["mcp_tool_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_insert_run_skill_snapshots_preserves_each_root_release_decision():
+    conn = RecordingConnection()
+    manifests = [
+        {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "source": {"kind": "builtin"},
+            "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+            "dependency_ids": [],
+            "mcp_tool_ids": [],
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "selected_version": version,
+                "selected_track": track,
+            },
+        }
+        for skill_id, version, track in (
+            ("skill-a", "hash-a", "current"),
+            ("skill-b", "hash-b", "previous"),
+        )
+    ]
+
+    await repositories.insert_run_skill_snapshots_at_creation(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_manifests=manifests,
+        release_decision=manifests[0]["release_decision"],
+    )
+
+    first_source = json.loads(conn.calls[0][1][6])
+    second_source = json.loads(conn.calls[2][1][6])
+    assert first_source["release_decision_sha256"] != second_source["release_decision_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(monkeypatch):
+    async def get_version(_conn, *, skill_id, version):
+        return {"version": version, "content_hash": version, "status": "released"}
+
+    monkeypatch.setattr(repositories, "get_skill_version", get_version)
+    manifests = [
+        {
+            "skill_id": "skill-a",
+            "version": "hash-a",
+            "content_hash": "hash-a",
+            "files": [{}],
+            "dependency_ids": [],
+            "mcp_tool_ids": ["mcp:a"],
+        },
+        {
+            "skill_id": "skill-b",
+            "version": "hash-b",
+            "content_hash": "hash-b",
+            "files": [{}],
+            "dependency_ids": [],
+            "mcp_tool_ids": ["mcp:b"],
+        },
+    ]
+
+    assert await repositories.validate_replay_skill_manifests(
+        object(),
+        skill_id="skill-a",
+        pinned_version="hash-a",
+        pinned_executor_type="claude-agent-worker",
+        skill_manifests=manifests,
+        skill_set=[
+            {"skill_id": "skill-a", "expected_version": "hash-a"},
+            {"skill_id": "skill-b", "expected_version": "hash-b"},
+        ],
+    ) == ["mcp:a", "mcp:b"]
 
 
 @pytest.mark.asyncio

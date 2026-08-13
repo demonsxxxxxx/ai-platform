@@ -232,6 +232,7 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": definition.avatar_seed,
         "category": definition.category,
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
@@ -240,6 +241,45 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
     }
     encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the pre-Skill-Set hash for exact one-Skill compatibility."""
+
+    if len(definition.skill_set) != 1:
+        return ""
+    primary = definition.skill_set[0]
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": definition.supported_input_types,
+        "supported_file_types": definition.supported_file_types,
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_id": primary.skill_id,
+        "skill_version": primary.expected_version,
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
+    definition = _draft_from_row(row)
+    return content_hash in {_revision_hash(definition), _legacy_revision_hash(definition)}
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
@@ -462,6 +502,8 @@ class AgentProfileAuthority:
             if prior_row is None:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
+        if not definition.avatar_seed:
+            definition = definition.model_copy(update={"avatar_seed": resolved_agent_id})
         await repositories.ensure_agent_profile_identity(
             conn,
             tenant_id=principal.tenant_id,
@@ -492,7 +534,7 @@ class AgentProfileAuthority:
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
-            avatar_seed=definition.avatar_seed or resolved_agent_id,
+            avatar_seed=definition.avatar_seed,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -919,7 +961,7 @@ class AgentProfileAuthority:
                 content_hash=content_hash,
                 for_update=True,
             )
-            if row is None or _revision_hash(_draft_from_row(row)) != content_hash:
+            if row is None or not _revision_hash_matches(row, content_hash):
                 return None
             return await self._admission_from_row(
                 conn,

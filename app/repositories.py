@@ -2953,6 +2953,7 @@ async def validate_replay_skill_manifests(
     pinned_version: str,
     pinned_executor_type: str,
     skill_manifests: list[dict[str, Any]],
+    skill_set: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Validate an exact historical package while allowing ordinary deprecation."""
 
@@ -2962,6 +2963,24 @@ async def validate_replay_skill_manifests(
         pinned_executor_type=pinned_executor_type,
         skill_manifests=skill_manifests,
     )
+    requested_skill_versions: dict[str, str] = {skill_id: pinned_version}
+    if skill_set is not None:
+        requested_skill_versions = {}
+        for selection in skill_set:
+            if not isinstance(selection, dict):
+                raise _capability_not_authorized()
+            selected_skill_id = str(selection.get("skill_id") or "")
+            selected_version = str(selection.get("expected_version") or "")
+            if (
+                not selected_skill_id
+                or not selected_version
+                or selected_skill_id in requested_skill_versions
+            ):
+                raise _capability_not_authorized()
+            requested_skill_versions[selected_skill_id] = selected_version
+        if requested_skill_versions.get(skill_id) != pinned_version:
+            raise _capability_not_authorized()
+    root_manifests: dict[str, dict[str, Any]] = {}
     primary_found = False
     for manifest in skill_manifests:
         canonical_builtin_tool_identities(manifest)
@@ -2981,6 +3000,8 @@ async def validate_replay_skill_manifests(
             raise _capability_not_authorized()
         if manifest_skill_id == skill_id:
             primary_found = version == pinned_version
+        if requested_skill_versions.get(manifest_skill_id) == version:
+            root_manifests[manifest_skill_id] = manifest
         exact_version = await get_skill_version(conn, skill_id=manifest_skill_id, version=version)
         if exact_version is None:
             source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
@@ -2995,7 +3016,24 @@ async def validate_replay_skill_manifests(
             raise _capability_not_authorized()
     if not primary_found:
         raise _capability_not_authorized()
-    return pinned_mcp_tool_ids
+    if set(root_manifests) != set(requested_skill_versions):
+        raise _capability_not_authorized()
+    all_pinned_mcp_tool_ids: list[str] = []
+    for selected_skill_id in requested_skill_versions:
+        raw_mcp_tool_ids = root_manifests[selected_skill_id].get("mcp_tool_ids")
+        if not isinstance(raw_mcp_tool_ids, list) or any(
+            not isinstance(item, str) or not item for item in raw_mcp_tool_ids
+        ):
+            raise _capability_not_authorized()
+        if (
+            selected_skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID
+            and _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID not in raw_mcp_tool_ids
+        ):
+            raise _capability_not_authorized()
+        for tool_id in raw_mcp_tool_ids:
+            if tool_id not in all_pinned_mcp_tool_ids:
+                all_pinned_mcp_tool_ids.append(tool_id)
+    return all_pinned_mcp_tool_ids or pinned_mcp_tool_ids
 
 
 def require_replay_source_identity(
@@ -7149,15 +7187,24 @@ def run_skill_snapshot_source_json(
     )
     projected = _without_snapshot_private_material(source if isinstance(source, dict) else {})
     projected.pop("version", None)
+    manifest_release_decision = skill_manifest.get("release_decision")
+    if manifest_release_decision is not None:
+        if not isinstance(manifest_release_decision, dict):
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+        effective_release_decision = manifest_release_decision
+    else:
+        effective_release_decision = release_decision
     try:
         governance = build_skill_snapshot_governance(
             skill_manifest,
-            release_decision=release_decision,
+            release_decision=effective_release_decision,
         )
     except SkillVersionMaterializationError as exc:
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
     projected["snapshot_governance"] = _without_snapshot_private_material(governance)
-    projected["release_decision_sha256"] = _release_decision_sha256(release_decision)
+    projected["release_decision_sha256"] = _release_decision_sha256(
+        effective_release_decision
+    )
     projected["builtin_tool_identities"] = canonical_builtin_tool_identities(skill_manifest)
     try:
         projected["execution_profile"] = canonical_skill_execution_profile(skill_manifest)

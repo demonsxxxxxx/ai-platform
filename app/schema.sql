@@ -714,6 +714,26 @@ set skill_set = jsonb_build_array(
 )
 where jsonb_typeof(skill_set) <> 'array' or jsonb_array_length(skill_set) = 0;
 
+update agent_profile_revisions
+set skill_set = jsonb_build_array(
+  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
+)
+where exists (
+    select 1
+    from jsonb_array_elements(skill_set) item
+    where jsonb_typeof(item) <> 'object'
+       or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+       or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  )
+   or exists (
+    select 1
+    from jsonb_array_elements(skill_set) item
+    group by item->>'skill_id'
+    having count(*) > 1
+  )
+   or skill_set->0->>'skill_id' is distinct from skill_id
+   or skill_set->0->>'expected_version' is distinct from skill_version;
+
 -- No metadata defaults: omission is how the compatibility trigger recognizes
 -- an old writer and inherits the existing ACL without broadening it.
 alter table agent_profile_revisions alter column avatar_ref drop default;
@@ -1020,6 +1040,29 @@ declare
   next_revision bigint;
   legacy_publication_allowed boolean := false;
 begin
+  if new.revision_status is null
+     and (jsonb_typeof(new.skill_set) <> 'array' or jsonb_array_length(new.skill_set) = 0) then
+    new.skill_set := jsonb_build_array(
+      jsonb_build_object('skill_id', new.skill_id, 'expected_version', new.skill_version)
+    );
+  end if;
+  if exists (
+      select 1
+      from jsonb_array_elements(new.skill_set) item
+      where jsonb_typeof(item) <> 'object'
+         or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+         or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+    )
+     or exists (
+      select 1
+      from jsonb_array_elements(new.skill_set) item
+      group by item->>'skill_id'
+      having count(*) > 1
+    )
+     or new.skill_set->0->>'skill_id' is distinct from new.skill_id
+     or new.skill_set->0->>'expected_version' is distinct from new.skill_version then
+    raise exception 'agent_profile_skill_set_invalid' using errcode = '23514';
+  end if;
   if new.revision_status is not null then
     return new;
   end if;
