@@ -1,7 +1,5 @@
-"""Shared persistence-domain exceptions and package entry points."""
+"""Compatibility entry points for persistence-domain exceptions."""
 
+from app.platform.postgres.errors import RepositoryNotFoundError
 
-class RepositoryNotFoundError(ValueError):
-    """Signal that a requested persistence record does not exist."""
-
-    pass
+__all__ = ["RepositoryNotFoundError"]
