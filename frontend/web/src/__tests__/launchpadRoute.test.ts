@@ -8,6 +8,13 @@ import {
 } from "../appRouteManifest.ts";
 
 const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+const chatRouteBoundarySource = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../components/common/ChatRouteBoundary.tsx",
+  ),
+  "utf8",
+);
 const typesSource = readFileSync(
   resolve(import.meta.dirname, "../components/layout/AppContent/types.ts"),
   "utf8",
@@ -76,8 +83,8 @@ test("root path routes by auth state instead of rendering the marketing landing 
     /<Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
   );
   assert.match(
-    appSource,
-    /if \(!sessionId\)[\s\S]{0,120}<Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
+    chatRouteBoundarySource,
+    /sessionId \? children : <Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
   );
   assert.match(appSource, /<Navigate to="\/auth\/login" replace \/>/);
   assert.match(

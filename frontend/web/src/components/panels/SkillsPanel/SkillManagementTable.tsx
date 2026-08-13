@@ -13,6 +13,20 @@ import type {
   SkillCatalogStatus,
 } from "./skillCatalogEntries";
 
+const INTERACTIVE_ROW_TARGET =
+  'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [contenteditable="true"]';
+
+function isInteractiveRowTarget(
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean {
+  return (
+    target !== currentTarget &&
+    target instanceof Element &&
+    target.closest(INTERACTIVE_ROW_TARGET) !== null
+  );
+}
+
 interface SkillManagementTableProps {
   canBatch: boolean;
   canDelete: boolean;
@@ -99,6 +113,9 @@ export function SkillManagementTable({
             key={entry.id}
             onClick={() => onSelectDetail(entry.id)}
             onKeyDown={(event) => {
+              if (isInteractiveRowTarget(event.target, event.currentTarget)) {
+                return;
+              }
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
                 onSelectDetail(entry.id);

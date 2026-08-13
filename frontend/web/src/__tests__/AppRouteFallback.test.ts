@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
+import { installTestDom } from "../hooks/useAgent/__tests__/testDom.ts";
+
+const routeDom = installTestDom();
 
 const src = resolve(import.meta.dirname, "..");
 const read = (relativePath: string) =>
@@ -85,4 +88,80 @@ test("generic Chat deep links remain readable without exposing generic creation 
   assert.match(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
   assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
   assert.match(header, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
+});
+
+test("bare Chat redirects to Agent Market while session deep links remain readable", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import(
+    "react-router-dom"
+  );
+  const { ChatRouteBoundary } = await import(
+    "../components/common/ChatRouteBoundary.tsx"
+  );
+
+  async function renderRoute(initialEntry: string) {
+    let pathname = initialEntry;
+    let sessionReadable = false;
+    const container = routeDom.document.createElement("div");
+    const root = createRoot(container as never);
+
+    function LocationProbe() {
+      pathname = useLocation().pathname;
+      return null;
+    }
+
+    function SessionProbe() {
+      sessionReadable = true;
+      return null;
+    }
+
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: [initialEntry] },
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(LocationProbe),
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: APP_ROUTE_PATHS.chat,
+                element: React.createElement(
+                  ChatRouteBoundary,
+                  null,
+                  React.createElement(SessionProbe),
+                ),
+              }),
+              React.createElement(Route, {
+                path: APP_ROUTE_PATHS.agentMarket,
+                element: React.createElement("span", null, "Agent Market"),
+              }),
+            ),
+          ),
+        ),
+      );
+    });
+
+    return {
+      pathname,
+      sessionReadable,
+      unmount: async () => {
+        await React.act(async () => root.unmount());
+      },
+    };
+  }
+
+  const bareChat = await renderRoute("/chat");
+  assert.equal(bareChat.pathname, APP_ROUTE_PATHS.agentMarket);
+  assert.equal(bareChat.sessionReadable, false);
+  await bareChat.unmount();
+
+  const historicalSession = await renderRoute("/chat/session-123");
+  assert.equal(historicalSession.pathname, "/chat/session-123");
+  assert.equal(historicalSession.sessionReadable, true);
+  await historicalSession.unmount();
 });

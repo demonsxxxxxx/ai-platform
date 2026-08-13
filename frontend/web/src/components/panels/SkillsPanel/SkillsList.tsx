@@ -19,7 +19,10 @@ import { SkillsPanelSkeleton } from "../../skeletons";
 import { Pagination } from "../../common/Pagination";
 import { SkillManagementTable } from "./SkillManagementTable";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
-import type { SkillCatalogEntry } from "./skillCatalogEntries";
+import {
+  resolveSkillCatalogMetrics,
+  type SkillCatalogEntry,
+} from "./skillCatalogEntries";
 
 interface SkillsListProps {
   embedded?: boolean;
@@ -31,6 +34,7 @@ interface SkillsListProps {
   setIsFilterOpen: React.Dispatch<React.SetStateAction<boolean>>;
   availableTags: string[];
   catalogEntries: SkillCatalogEntry[];
+  metricsCatalogEntries: SkillCatalogEntry[];
   paginatedCatalogEntries: SkillCatalogEntry[];
   total: number;
   page: number;
@@ -72,6 +76,7 @@ export function SkillsList({
   setIsFilterOpen,
   availableTags,
   catalogEntries,
+  metricsCatalogEntries,
   paginatedCatalogEntries,
   total,
   page,
@@ -154,12 +159,7 @@ export function SkillsList({
   const allSelectableSelected =
     selectableNames.length > 0 &&
     selectableNames.every((name) => selectedNames.has(name));
-  const enabledCount = catalogEntries.filter(
-    (entry) => entry.runtimeEnabled === true,
-  ).length;
-  const visibleCount = catalogEntries.filter(
-    (entry) => entry.catalogStatus === "available",
-  ).length;
+  const catalogMetrics = resolveSkillCatalogMetrics(metricsCatalogEntries);
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -253,6 +253,7 @@ export function SkillsList({
       {canImportSkills && (
         <>
           <button
+            aria-label={t("skills.importFromGitHub")}
             onClick={onGithubClick}
             className="btn-secondary h-10"
             type="button"
@@ -322,21 +323,21 @@ export function SkillsList({
                   <Package aria-hidden="true" size={14} />
                   {t("skills.metrics.total")}
                 </dt>
-                <dd className="mt-2 text-xl font-semibold text-[var(--theme-text)]">{total}</dd>
+                <dd className="mt-2 text-xl font-semibold text-[var(--theme-text)]">{catalogMetrics.total}</dd>
               </div>
               <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
                 <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
                   <CheckCircle2 aria-hidden="true" size={14} />
                   {t("skills.metrics.enabled")}
                 </dt>
-                <dd className="mt-2 text-xl font-semibold text-[var(--theme-success)]">{enabledCount}</dd>
+                <dd className="mt-2 text-xl font-semibold text-[var(--theme-success)]">{catalogMetrics.enabled}</dd>
               </div>
               <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
                 <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
                   <Eye aria-hidden="true" size={14} />
                   {t("skills.metrics.visible")}
                 </dt>
-                <dd className="mt-2 text-xl font-semibold text-[var(--theme-info)]">{visibleCount}</dd>
+                <dd className="mt-2 text-xl font-semibold text-[var(--theme-info)]">{catalogMetrics.visible}</dd>
               </div>
             </dl>
           </section>

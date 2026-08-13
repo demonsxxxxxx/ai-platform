@@ -1633,7 +1633,7 @@
     "managementEyebrow": "機能ガバナンス",
     "managementTitle": "Skill管理",
     "metrics": {
-      "enabled": "実行中",
+      "enabled": "有効",
       "total": "カタログ内",
       "visible": "ユーザーに表示"
     },

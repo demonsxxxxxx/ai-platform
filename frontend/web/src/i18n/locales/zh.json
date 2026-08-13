@@ -1990,7 +1990,7 @@
     "managementEyebrow": "能力治理",
     "managementTitle": "Skill 管理",
     "metrics": {
-      "enabled": "运行中",
+      "enabled": "已启用",
       "total": "当前目录",
       "visible": "用户可见"
     },

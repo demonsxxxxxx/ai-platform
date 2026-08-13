@@ -28,6 +28,12 @@ export interface SkillCatalogPage {
   total: number;
 }
 
+export interface SkillCatalogMetrics {
+  total: number;
+  enabled: number;
+  visible: number;
+}
+
 export interface SkillCatalogSelection {
   selectedSkillId: string | null;
   changed: boolean;
@@ -124,6 +130,18 @@ export function filterSkillCatalogEntries(
     }
     return selectedTags.every((tag) => entry.tags.includes(tag));
   });
+}
+
+/** Compute overview metrics before search, tag filters, or pagination. */
+export function resolveSkillCatalogMetrics(
+  entries: ReadonlyArray<SkillCatalogEntry>,
+): SkillCatalogMetrics {
+  return {
+    total: entries.length,
+    enabled: entries.filter((entry) => entry.runtimeEnabled === true).length,
+    visible: entries.filter((entry) => entry.catalogStatus === "available")
+      .length,
+  };
 }
 
 /** Keep master-list selection and the detail panel on the same catalog entry. */

@@ -28,8 +28,11 @@ test("Skill workbench separates runtime and catalog visibility without a public 
   assert.match(list, /<SkillManagementTable/);
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
   assert.match(list, /skills\.adminReleaseZipTitle/);
+  assert.match(list, /aria-label=\{t\("skills\.importFromGitHub"\)\}/);
+  assert.match(list, /resolveSkillCatalogMetrics\(metricsCatalogEntries\)/);
   assert.match(list, /canExport=\{canExport && !governedUnavailable\}/);
   assert.match(panel, /const canExportSkills = canEditSkills;/);
+  assert.match(panel, /metricsCatalogEntries=\{catalogEntries\}/);
   assert.doesNotMatch(
     panel,
     /canExportSkills\s*=.*canAdminUploadSkills/,
@@ -57,6 +60,8 @@ test("management rows expose stable icon actions and a read-only state", () => {
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
   assert.match(source, /role="table"/);
   assert.match(source, /role="columnheader"/);
+  assert.match(source, /isInteractiveRowTarget\(event\.target, event\.currentTarget\)/);
+  assert.match(source, /target\.closest\(INTERACTIVE_ROW_TARGET\)/);
 });
 
 test("management table translations stay complete across supported locales", () => {

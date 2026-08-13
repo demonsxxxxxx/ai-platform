@@ -1635,7 +1635,7 @@
     "managementEyebrow": "Управление возможностями",
     "managementTitle": "Управление Skill",
     "metrics": {
-      "enabled": "Запущено",
+      "enabled": "Включён",
       "total": "В каталоге",
       "visible": "Видно пользователям"
     },

@@ -1633,7 +1633,7 @@
     "managementEyebrow": "기능 거버넌스",
     "managementTitle": "Skill 관리",
     "metrics": {
-      "enabled": "실행 중",
+      "enabled": "활성화됨",
       "total": "카탈로그",
       "visible": "사용자 공개"
     },

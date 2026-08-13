@@ -127,10 +127,9 @@ test("Skill archiving removes local catalog rows and announces the synchronized 
   assert.match(skillsHook, /Promise<string\[\]>/);
   assert.match(skillsHook, /return result\.deleted/);
   assert.match(skillsHook, /current\.filter\(\(skill\) => skill\.name !== name\)/);
-  assert.doesNotMatch(
-    skillsHook,
-    /await skillApi\.delete\(name\);\s*await fetchSkills\(\)/,
-  );
+  assert.match(skillsHook, /catalogMutationRevisionRef/);
+  assert.match(skillsHook, /pendingCatalogMutationsRef/);
+  assert.match(skillsHook, /if \(finishCatalogMutation\(\)\) \{\s*await fetchSkills\(\);/);
 });
 
 test("Skill selection synchronization copy exists in every supported locale", () => {
@@ -157,6 +156,27 @@ test("Skill selection synchronization copy exists in every supported locale", ()
         `${locale}.skills.managementTable.${key}`,
       );
     }
+  }
+});
+
+test("Skill management enabled metrics use enabled-state wording in every locale", () => {
+  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
+    const catalog = JSON.parse(
+      readFileSync(
+        new URL(`../../../i18n/locales/${locale}.json`, import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      skills?: {
+        managementTable?: { enabled?: string };
+        metrics?: { enabled?: string };
+      };
+    };
+    assert.equal(
+      catalog.skills?.metrics?.enabled,
+      catalog.skills?.managementTable?.enabled,
+      `${locale}.skills.metrics.enabled`,
+    );
   }
 });
 

@@ -1989,7 +1989,7 @@
     "managementEyebrow": "Capability governance",
     "managementTitle": "Skill management",
     "metrics": {
-      "enabled": "Running",
+      "enabled": "Enabled",
       "total": "In catalog",
       "visible": "User visible"
     },

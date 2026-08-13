@@ -302,6 +302,7 @@ export function SkillsPanel({
         setIsFilterOpen={actions.setIsFilterOpen}
         availableTags={actions.availableTags}
         catalogEntries={filteredCatalogEntries}
+        metricsCatalogEntries={catalogEntries}
         paginatedCatalogEntries={catalogPage.entries}
         total={catalogPage.total}
         page={actions.page}
