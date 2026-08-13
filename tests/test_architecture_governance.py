@@ -1077,6 +1077,7 @@ def test_runs_lifecycle_persistence_bridge_authority_is_exact() -> None:
             "list_runs_requiring_tool_permission_terminalization",
             "mark_run_enqueue_failed",
             "progress_run_tool_permission_terminalization",
+            "reconcile_multi_agent_child_run_terminal_state",
             "request_admin_run_cancel",
             "request_run_cancel",
             "stage_stale_run_reconciliation",
