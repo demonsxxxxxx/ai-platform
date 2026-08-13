@@ -205,7 +205,7 @@ def _activate_agent_profile_bridge(repo: Path, *, source_suffix: str = "") -> No
         bridge["source_path"],
         f"import {bridge['target_module']} as {bridge['module_alias']}\n"
         "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
-        + _fixture_async_definitions(remaining_symbols)
+        + _fixture_bridge_definitions(remaining_symbols)
         + "\n"
         + "\n".join(
             f"{name} = {bridge['module_alias']}.{name}" for name in symbols
@@ -248,7 +248,7 @@ def _activate_conversation_bridges(repo: Path) -> None:
             if bridge["source_path"] == "app/repositories.py"
             else ""
         )
-        local_definitions = _fixture_async_definitions(remaining_symbols)
+        local_definitions = _fixture_bridge_definitions(remaining_symbols)
         if local_definitions:
             local_definitions += "\n"
         aliases = "\n".join(
@@ -289,7 +289,40 @@ def _activate_runs_bridge(repo: Path) -> None:
         bridge["source_path"],
         f"import {bridge['target_module']} as {bridge['module_alias']}\n"
         "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
-        + _fixture_async_definitions(remaining_symbols)
+        + _fixture_bridge_definitions(remaining_symbols)
+        + "\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n",
+    )
+
+
+def _activate_repository_authorization_error_bridge(repo: Path) -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.platform.postgres.errors",
+    )
+    remaining_symbols = sorted(
+        {
+            symbol
+            for other in _fixture_policy()["migration_bridges"]
+            if other["source_path"] == bridge["source_path"] and other != bridge
+            for symbol in other["symbols"]
+        }
+    )
+    _write(
+        repo,
+        "app/platform/postgres/errors.py",
+        _fixture_bridge_definitions(bridge["symbols"]) + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
+        + _fixture_bridge_definitions(remaining_symbols)
         + "\n"
         + "\n".join(
             f"{name} = {bridge['module_alias']}.{name}"
@@ -833,6 +866,19 @@ def test_exact_runs_migration_bridge_moves_symbols_as_identity_aliases(
     assert evaluation.findings == ()
 
 
+def test_exact_repository_authorization_error_bridge_moves_identity_alias(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_repository_authorization_error_bridge(repo)
+    head = _commit(repo, "activate exact repository authorization error bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
 def test_multiple_declared_bridges_can_share_one_legacy_source(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -976,11 +1022,68 @@ def test_runs_persistence_bridge_authority_is_exact() -> None:
     }
 
 
+def test_repository_authorization_error_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.platform.postgres.errors",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.platform.postgres.errors",
+        "module_alias": "postgres_errors",
+        "symbols": ["RepositoryAuthorizationError"],
+        "owner": "platform-architecture",
+        "reason": (
+            "The frozen global repository may preserve its existing authorization "
+            "error type only as an exact identity alias while the shared PostgreSQL "
+            "error contract moves to the platform adapter."
+        ),
+        "removal_condition": (
+            "After repository consumers import the platform PostgreSQL error contract, "
+            "inventory supported external imports and remove this bridge in an "
+            "authority-only change before deleting the repositories alias."
+        ),
+    }
+
+
+def test_skills_persistence_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.skills.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.skills.infrastructure.postgres",
+        "module_alias": "skill_persistence",
+        "symbols": [
+            "canonical_builtin_tool_identities",
+            "get_skill_version",
+            "run_skill_snapshot_source_json",
+            "validate_replay_skill_manifests",
+        ],
+        "owner": "skills",
+        "reason": (
+            "The frozen global repository may expose these existing Skill version, "
+            "replay-validation, and run-snapshot persistence symbols only as exact "
+            "identity aliases while their PostgreSQL implementation moves to the "
+            "Skills adapter."
+        ),
+        "removal_condition": (
+            "After the Skill persistence move, migrate supported internal callers to "
+            "the Skills API, inventory external imports, and remove this bridge in an "
+            "authority-only change before deleting the repositories aliases."
+        ),
+    }
+
+
 @pytest.mark.parametrize(
     "target_module",
     [
         "app.platform",
         "app.platform_evil.postgres.limits",
+        "app.platform.postgres.error",
         "app.platform.postgres.private",
     ],
 )
@@ -1039,7 +1142,9 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
+        "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.postgres",
     }
     bridges[1]["module_alias"] = bridges[0]["module_alias"]
     repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
@@ -1062,7 +1167,9 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
+        "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.postgres",
     }
     duplicate_symbol = bridges[0]["symbols"][0]
     bridges[1]["symbols"] = sorted([*bridges[1]["symbols"], duplicate_symbol])
