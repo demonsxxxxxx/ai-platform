@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -12,6 +12,22 @@ test("account metadata cannot replace the fixed Chinese UI language", () => {
 
   assert.doesNotMatch(auth, /i18n\.changeLanguage/);
   assert.doesNotMatch(auth, /localStorage\.setItem\("language"/);
+});
+
+test("Chinese is the only shipped locale and language switching is retired", () => {
+  assert.deepEqual(
+    readdirSync(join(root, "src/i18n/locales")).filter((name) =>
+      name.endsWith(".json"),
+    ),
+    ["zh.json"],
+  );
+  assert.equal(
+    existsSync(join(root, "src/components/common/LanguageToggle.tsx")),
+    false,
+  );
+  assert.doesNotMatch(read("components/common/index.ts"), /LanguageToggle/);
+  const i18n = read("i18n/index.ts");
+  assert.doesNotMatch(i18n, /locales\/(?:en|ja|ko|ru)\.json/);
 });
 
 test("product language controls are absent from authentication, landing, workbench, and shared surfaces", () => {

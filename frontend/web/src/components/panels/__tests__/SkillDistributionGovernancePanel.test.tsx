@@ -29,7 +29,7 @@ test("Skill distribution editor uses server-backed ACL controls and safe errors"
   assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
 });
 
-test("Skill access translations stay complete across supported locales", () => {
+test("Chinese Skill access translations stay complete", () => {
   const requiredPaths = [
     "departmentSelector.directory",
     "departmentSelector.remove",
@@ -67,22 +67,21 @@ test("Skill access translations stay complete across supported locales", () => {
     "visibleToUsers",
   ];
 
-  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
-    const catalog = JSON.parse(
-      readFileSync(join(process.cwd(), `src/i18n/locales/${locale}.json`), "utf8"),
-    ) as { skills?: { governance?: Record<string, unknown> } };
-    const governance = catalog.skills?.governance;
-    assert.ok(governance, `${locale} Skill access translations must exist`);
-    for (const path of requiredPaths) {
-      let value: unknown = governance;
-      for (const key of path.split(".")) {
-        value =
-          value && typeof value === "object"
-            ? (value as Record<string, unknown>)[key]
-            : undefined;
-      }
-      assert.equal(typeof value, "string", `${locale}.skills.governance.${path}`);
+  const locale = "zh";
+  const catalog = JSON.parse(
+    readFileSync(join(process.cwd(), "src/i18n/locales/zh.json"), "utf8"),
+  ) as { skills?: { governance?: Record<string, unknown> } };
+  const governance = catalog.skills?.governance;
+  assert.ok(governance, "Chinese Skill access translations must exist");
+  for (const path of requiredPaths) {
+    let value: unknown = governance;
+    for (const key of path.split(".")) {
+      value =
+        value && typeof value === "object"
+          ? (value as Record<string, unknown>)[key]
+          : undefined;
     }
+    assert.equal(typeof value, "string", `${locale}.skills.governance.${path}`);
   }
 });
 

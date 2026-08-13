@@ -127,7 +127,8 @@ async function extractI18nKeys() {
   // Load existing translations
   const localesDir = "src/i18n/locales";
 
-  // Auto-detect locale files from the directory
+  // Keep the shipped catalog Chinese-only. Unexpected bundles fail the tool
+  // instead of silently reintroducing a language into the production build.
   const localeFiles: Record<string, string> = {};
   if (fs.existsSync(localesDir)) {
     const files = fs.readdirSync(localesDir);
@@ -139,20 +140,17 @@ async function extractI18nKeys() {
     }
   }
 
-  if (Object.keys(localeFiles).length === 0) {
-    console.error("❌ No locale files found in", localesDir);
+  const localeNames = Object.keys(localeFiles);
+  if (localeNames.length !== 1 || localeNames[0] !== "zh") {
+    console.error(
+      "❌ The product ships exactly one locale file: src/i18n/locales/zh.json",
+    );
     process.exit(1);
   }
 
   console.log(
     `📚 Found locale files: ${Object.keys(localeFiles).join(", ")}\n`,
   );
-
-  // en.json is required as the base language
-  if (!("en" in localeFiles)) {
-    console.error("❌ en.json is required but not found in", localesDir);
-    process.exit(1);
-  }
 
   const translations: Record<string, Record<string, unknown>> = {};
   const existingKeys: Record<string, Set<string>> = {};
@@ -208,39 +206,16 @@ async function extractI18nKeys() {
   // Dynamic prefixes (e.g. "roles" from "roles.${label}") are NOT used
   // to suppress static keys — they only indicate that some keys under
   // that prefix may be resolved dynamically at runtime.
-  const newEnKeys = [...extractedKeys].filter((k) => !existingKeys.en.has(k));
-  const missingKeysByLang: Record<string, string[]> = {};
-  for (const lang of Object.keys(localeFiles)) {
-    if (lang !== "en") {
-      missingKeysByLang[lang] = [...extractedKeys].filter(
-        (k) => !existingKeys[lang].has(k),
-      );
-    }
-  }
+  const newZhKeys = [...extractedKeys].filter((k) => !existingKeys.zh.has(k));
 
-  const totalMissing = Object.values(missingKeysByLang).reduce(
-    (sum, keys) => sum + keys.length,
-    0,
-  );
-
-  if (newEnKeys.length === 0 && totalMissing === 0) {
+  if (newZhKeys.length === 0) {
     console.log("✅ All translation keys are up to date!");
     return;
   }
 
-  // Add new keys to en.json
-  for (const key of newEnKeys) {
-    setNestedValue(translations.en, key, key);
-    console.log(`➕ Added to en.json: ${key}`);
-  }
-
-  // Add missing keys to other languages (marked as needing translation)
-  for (const [lang, missingKeys] of Object.entries(missingKeysByLang)) {
-    const placeholder = lang === "zh" ? `【待翻译】` : `[TODO]`;
-    for (const key of missingKeys) {
-      setNestedValue(translations[lang], key, `${placeholder}${key}`);
-      console.log(`⚠️  Added to ${lang}.json (needs translation): ${key}`);
-    }
+  for (const key of newZhKeys) {
+    setNestedValue(translations.zh, key, `【待翻译】${key}`);
+    console.log(`⚠️  Added to zh.json (needs translation): ${key}`);
   }
 
   // Sort keys recursively
@@ -267,16 +242,7 @@ async function extractI18nKeys() {
   }
 
   console.log(`\n✅ Updated translation files:`);
-  console.log(`   - en.json: +${newEnKeys.length} keys`);
-  for (const [lang, missingKeys] of Object.entries(missingKeysByLang)) {
-    if (missingKeys.length > 0) {
-      console.log(
-        `   - ${lang}.json: +${missingKeys.length} keys (marked with ${
-          lang === "zh" ? "【待翻译】" : "[TODO]"
-        })`,
-      );
-    }
-  }
+  console.log(`   - zh.json: +${newZhKeys.length} keys (marked with 【待翻译】)`);
 }
 
 extractI18nKeys().catch(console.error);

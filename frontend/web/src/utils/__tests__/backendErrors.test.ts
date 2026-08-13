@@ -163,7 +163,7 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
   }
 });
 
-test("all shipped locales include fail-closed governance error copy", () => {
+test("the shipped Chinese catalog includes fail-closed governance error copy", () => {
   const requiredKeys = [
     "skillFileWriteNotBacked",
     "skillFileDeleteNotBacked",
@@ -186,22 +186,17 @@ test("all shipped locales include fail-closed governance error copy", () => {
     "skillVersionHasActiveReleasePolicy",
   ];
 
-  for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
-    const messages = JSON.parse(
-      readFileSync(join(process.cwd(), `src/i18n/locales/${locale}.json`), "utf8"),
-    );
-    for (const key of requiredKeys) {
-      assert.equal(
-        typeof messages.backendErrors[key],
-        "string",
-        `${locale}.${key}`,
-      );
-      assert.ok(messages.backendErrors[key].length > 12, `${locale}.${key}`);
-    }
-    for (const key of ["historyLoadFailed", "sendFailed"]) {
-      assert.equal(typeof messages.chat[key], "string", `${locale}.chat.${key}`);
-      assert.ok(messages.chat[key].length > 3, `${locale}.chat.${key}`);
-    }
+  const locale = "zh";
+  const messages = JSON.parse(
+    readFileSync(join(process.cwd(), "src/i18n/locales/zh.json"), "utf8"),
+  );
+  for (const key of requiredKeys) {
+    assert.equal(typeof messages.backendErrors[key], "string", `${locale}.${key}`);
+    assert.ok(messages.backendErrors[key].length > 12, `${locale}.${key}`);
+  }
+  for (const key of ["historyLoadFailed", "sendFailed"]) {
+    assert.equal(typeof messages.chat[key], "string", `${locale}.chat.${key}`);
+    assert.ok(messages.chat[key].length > 3, `${locale}.chat.${key}`);
   }
 });
 

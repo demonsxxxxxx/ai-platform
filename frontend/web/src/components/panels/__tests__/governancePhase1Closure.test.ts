@@ -62,7 +62,6 @@ test("skills and marketplace remain catalog shells when backend enablement is un
 test("marketplace no longer renders ordinary-user unavailable placeholders", () => {
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.doesNotMatch(marketplace, /data-marketplace-ordinary-user-copy/);
   assert.doesNotMatch(marketplace, /marketplacePlaceholderItems/);
@@ -72,9 +71,6 @@ test("marketplace no longer renders ordinary-user unavailable placeholders", () 
     JSON.stringify(zh.marketplace),
     JSON.stringify(zh.skillsHub),
     JSON.stringify(zh.skills.marketplace),
-    JSON.stringify(en.marketplace),
-    JSON.stringify(en.skillsHub),
-    JSON.stringify(en.skills.marketplace),
   ]) {
     assert.doesNotMatch(source, /backend authority/i);
     assert.doesNotMatch(source, /policy placeholders/i);
@@ -469,7 +465,6 @@ test("role plaza stays reachable without claiming missing backend projection", (
   const rolesPanel = read("src/components/panels/RolesPanel.tsx");
   const roleGovernanceApi = read("src/services/api/roleGovernance.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(rolesPanel, /data-role-plaza-shell/);
   assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
@@ -477,7 +472,6 @@ test("role plaza stays reachable without claiming missing backend projection", (
   for (const source of [
     rolesPanel,
     JSON.stringify(zh.roles?.plaza ?? {}),
-    JSON.stringify(en.roles?.plaza ?? {}),
   ]) {
     assert.doesNotMatch(source, /backendGap/);
     assert.doesNotMatch(source, /public projection/i);
