@@ -19,11 +19,11 @@ from starlette.responses import JSONResponse
 
 from app import repositories
 from app.agent_profiles import (
-    pin_profile_skill_set_for_admission,
     reauthorize_pinned_run_for_replay,
     resolve_bound_profile_for_submission,
     resolve_profile_for_admission,
 )
+from app.agent_apps.api import pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -2074,21 +2074,21 @@ async def chat_stream(
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
             )
-            if (
-                admitted_agent_profile is not None
-                and execution_kind == RUN_EXECUTION_KIND_SKILL
-            ):
-                (
-                    skill_manifests,
-                    skill_version,
-                    release_decision_payload,
-                ) = await pin_profile_skill_set_for_admission(
-                    conn,
-                    admission=admitted_agent_profile,
+            if admitted_agent_profile is not None and execution_kind == RUN_EXECUTION_KIND_SKILL:
+                skill_manifests, skill_version, release_decision_payload = await pin_agent_skill_set(
+                    admitted_agent_profile.skills,
+                    manifest_scope=conn,
                     input_payload=run_input,
                     tenant_id=principal.tenant_id,
                     rollout_key=principal.user_id,
+                    resolve_release_decision=resolve_rollout_skill_decision,
                     governed_manifest_pins=_governed_skill_manifest_pins,
+                    locked_skill_version=governed_locked_skill_version,
+                    decision_payload_for_version=release_decision_payload_for_locked_version,
+                    attach_snapshot_governance=attach_skill_snapshot_governance,
+                    pin_mcp_tool_ids=repositories.pin_primary_skill_mcp_tool_ids,
+                    mcp_tool_ids_for_skill=repositories.run_mcp_tool_ids_for_skill,
+                    conflict_error=RepositoryConflictError,
                 )
             elif admitted_agent_profile is not None:
                 skill_version = None

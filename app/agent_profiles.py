@@ -1,17 +1,10 @@
 """Compatibility seam for callers migrated to :mod:`app.agent_apps`."""
 
-from app import repositories
-from app.agent_apps.api import pin_agent_skill_set
 from app.agent_apps.authority import (
     AgentProfileAdmission,
     AgentProfileAuthority,
     profile_public_projection,
     reject_profile_selector_conflicts,
-)
-from app.skills.pinning import attach_skill_snapshot_governance, governed_locked_skill_version
-from app.skills.release_policy import (
-    release_decision_payload_for_locked_version,
-    resolve_rollout_skill_decision,
 )
 
 
@@ -22,7 +15,6 @@ __all__ = [
     "get_public_profile",
     "list_admin_profiles",
     "list_public_profiles",
-    "pin_profile_skill_set_for_admission",
     "profile_public_projection",
     "publish_draft",
     "reauthorize_bound_profile_for_worker_dispatch",
@@ -67,28 +59,6 @@ async def get_public_profile(conn, *, principal, agent_id):
     """Get one current public profile through the authoritative authorization path."""
 
     return await _authority.get_public(conn, principal=principal, agent_id=agent_id)
-
-
-async def pin_profile_skill_set_for_admission(
-    conn, *, admission, input_payload, tenant_id, rollout_key, governed_manifest_pins
-):
-    """Bridge legacy Chat admission to the Agent Apps Skill Set use case."""
-
-    return await pin_agent_skill_set(
-        admission.skills,
-        manifest_scope=conn,
-        input_payload=input_payload,
-        tenant_id=tenant_id,
-        rollout_key=rollout_key,
-        resolve_release_decision=resolve_rollout_skill_decision,
-        governed_manifest_pins=governed_manifest_pins,
-        locked_skill_version=governed_locked_skill_version,
-        decision_payload_for_version=release_decision_payload_for_locked_version,
-        attach_snapshot_governance=attach_skill_snapshot_governance,
-        pin_mcp_tool_ids=repositories.pin_primary_skill_mcp_tool_ids,
-        mcp_tool_ids_for_skill=repositories.run_mcp_tool_ids_for_skill,
-        conflict_error=repositories.RepositoryConflictError,
-    )
 
 
 async def resolve_profile_for_admission(
