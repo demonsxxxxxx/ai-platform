@@ -14,6 +14,7 @@ import pytest
 from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
+from app.conversations.infrastructure import postgres as conversation_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.streaming import redis as streaming_redis
@@ -5262,10 +5263,9 @@ async def test_create_session_validates_workspace_tenant_before_insert(monkeypat
         calls.append(("ensure_workspace", tenant_id, workspace_id, len(conn.calls)))
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
-        raising=False,
     )
     conn = RecordingConnection()
 
@@ -5288,7 +5288,7 @@ async def test_create_session_conflict_is_atomic_and_requires_exact_binding(monk
         assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
     )
@@ -5324,7 +5324,7 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
         assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
     )
@@ -5363,7 +5363,7 @@ async def test_create_session_reports_whether_an_exact_operation_created_the_row
         assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
     )
