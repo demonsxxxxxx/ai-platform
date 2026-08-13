@@ -11,7 +11,6 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -27,11 +26,6 @@ from app.models import (
     SelectedSkillRequest,
 )
 from app.settings import get_settings
-from app.skills.pinning import attach_skill_snapshot_governance, governed_locked_skill_version
-from app.skills.release_policy import (
-    release_decision_payload_for_locked_version,
-    resolve_rollout_skill_decision,
-)
 
 
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
@@ -91,32 +85,6 @@ class AgentProfileAdmission:
         normalized = self.skills or (self.skill,)
         object.__setattr__(self, "skills", normalized)
         object.__setattr__(self, "skill", normalized[0])
-
-
-async def pin_profile_skill_set_for_admission(
-    conn,
-    *,
-    admission: AgentProfileAdmission,
-    input_payload: dict[str, Any],
-    tenant_id: str,
-    rollout_key: str,
-    governed_manifest_pins,
-) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
-    return await pin_agent_skill_set(
-        admission.skills,
-        manifest_scope=conn,
-        input_payload=input_payload,
-        tenant_id=tenant_id,
-        rollout_key=rollout_key,
-        resolve_release_decision=resolve_rollout_skill_decision,
-        governed_manifest_pins=governed_manifest_pins,
-        locked_skill_version=governed_locked_skill_version,
-        decision_payload_for_version=release_decision_payload_for_locked_version,
-        attach_snapshot_governance=attach_skill_snapshot_governance,
-        pin_mcp_tool_ids=repositories.pin_primary_skill_mcp_tool_ids,
-        mcp_tool_ids_for_skill=repositories.run_mcp_tool_ids_for_skill,
-        conflict_error=repositories.RepositoryConflictError,
-    )
 
 
 def _safe_avatar_ref(value: Any) -> str:
