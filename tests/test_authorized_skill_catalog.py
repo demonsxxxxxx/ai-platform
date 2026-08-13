@@ -537,7 +537,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     monkeypatch.setattr(catalog.repositories, "list_public_skill_catalog", list_catalog)
     monkeypatch.setattr(catalog.repositories, "list_capability_distribution_rows", list_distributions)
     monkeypatch.setattr(catalog.repositories, "validate_run_skill_snapshots_for_dispatch", validate_snapshots)
-    monkeypatch.setattr("app.worker.validate_replay_skill_manifests", validate_replay)
+    monkeypatch.setattr(catalog.repositories, "validate_replay_skill_manifests", validate_replay)
     monkeypatch.setattr(catalog.repositories, "resolve_selected_skill", resolve_selected)
     monkeypatch.setattr(catalog.repositories, "get_capability_distribution_row", get_distribution)
     monkeypatch.setattr(catalog.repositories, "run_mcp_tool_ids_for_skill", lambda *_args, **_kwargs: [])
@@ -789,7 +789,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
 
     monkeypatch.setattr("app.worker.resolve_current_principal", unavailable_current_principal)
     monkeypatch.setattr("app.worker.repositories.validate_run_skill_snapshots_for_dispatch", forbidden)
-    monkeypatch.setattr("app.worker.validate_replay_skill_manifests", forbidden)
+    monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", forbidden)
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
     monkeypatch.setattr("app.worker._ensure_worker_context_snapshot", forbidden)
@@ -867,7 +867,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
 
     monkeypatch.setattr("app.worker.resolve_current_principal", current_principal)
     monkeypatch.setattr("app.worker.repositories.validate_run_skill_snapshots_for_dispatch", validate_snapshots)
-    monkeypatch.setattr("app.worker.validate_replay_skill_manifests", validate_replay)
+    monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", validate_replay)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_selected)
     monkeypatch.setattr("app.worker.repositories.get_capability_distribution_row", get_distribution)
 

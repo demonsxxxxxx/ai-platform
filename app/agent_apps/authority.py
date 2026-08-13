@@ -26,7 +26,6 @@ from app.models import (
     SelectedSkillRequest,
 )
 from app.settings import get_settings
-from app.skills.api import validate_replay_skill_manifests
 
 
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
@@ -1156,7 +1155,7 @@ class AgentProfileAuthority:
                     skill_manifests=skill_manifests,
                 )
                 governed_mcp_tool_ids = tuple(
-                    await validate_replay_skill_manifests(
+                    await repositories.validate_replay_skill_manifests(
                         conn,
                         skill_id=authority_skill_id,
                         pinned_version=snapshot_skill_version,
