@@ -249,6 +249,17 @@
   ],
   "migration_bridges": [
     {
+      "source_path": "app/agent_conversation_repository.py",
+      "target_module": "app.conversations.infrastructure.postgres",
+      "module_alias": "conversation_persistence",
+      "symbols": [
+        "list_authorized_agent_conversations"
+      ],
+      "owner": "conversations",
+      "reason": "The root-level Agent Conversation repository may preserve its existing history-query symbol only as an exact identity alias while its PostgreSQL projection moves to the Conversations adapter.",
+      "removal_condition": "After the Conversation persistence move, migrate the Chat Sessions transport to the Conversations API, inventory supported external imports, and remove this bridge in an authority-only change before deleting the legacy alias."
+    },
+    {
       "source_path": "app/repositories.py",
       "target_module": "app.agent_apps.infrastructure.postgres",
       "module_alias": "agent_profile_persistence",
@@ -270,6 +281,27 @@
       "owner": "agent_apps",
       "reason": "The frozen global repository may expose these existing Agent Profile symbols only as exact identity aliases while their SQL and lifecycle locks move to the Agent Apps PostgreSQL adapter.",
       "removal_condition": "After the Agent Profile persistence move, inventory all supported imports of these repositories symbols; migrate internal callers to an Agent Apps boundary and remove this bridge in an authority-only change before deleting the aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.conversations.infrastructure.postgres",
+      "module_alias": "conversation_persistence",
+      "symbols": [
+        "append_message",
+        "create_session",
+        "get_authorized_lambchat_session",
+        "get_authorized_session_projection",
+        "get_session_for_action",
+        "list_authorized_messages",
+        "list_authorized_sessions",
+        "list_authorized_user_messages_for_runs",
+        "list_session_messages_for_fork",
+        "mark_session_deleted",
+        "update_session_title"
+      ],
+      "owner": "conversations",
+      "reason": "The frozen global repository may expose these existing session and message persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Conversations adapter.",
+      "removal_condition": "After the Conversation persistence move, migrate supported internal callers to the Conversations API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
     }
   ],
   "production_registries": [
