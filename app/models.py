@@ -21,9 +21,7 @@ from app.control_plane_contracts import (
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import (
-    normalize_agent_avatar_seed,
-    normalize_agent_profile_display_items,
-    normalize_agent_skill_set,
+    normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.file_type_validation import normalize_profile_file_type
 from app.skills.release_policy import (
@@ -300,9 +298,7 @@ class AgentProfileDraftRequest(BaseModel):
 
     @model_validator(mode="after")
     def normalize_skill_set(self):
-        self.skill_set, self.selected_skill = normalize_agent_skill_set(
-            self.skill_set, self.selected_skill
-        )
+        self.skill_set, self.selected_skill = normalize_agent_skill_set(self.skill_set, self.selected_skill)
         return self
 
     @field_validator("model_id")
