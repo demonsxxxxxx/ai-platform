@@ -152,7 +152,6 @@
     "app/redis_client.py",
     "app/release_evidence_export_acceptance.py",
     "app/release_evidence_readiness.py",
-    "app/release_evidence_runtime_acceptance.py",
     "app/repositories.py",
     "app/required_tool_contract.py",
     "app/run_admission_policy.py",

@@ -64,6 +64,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/frontend_release_traceability.py",
     "tools/release_evidence_export_acceptance.py",
     "tools/release_evidence_readiness.py",
+    "tools/release_evidence_runtime_acceptance.py",
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_poc_gate.py",
     "tools/verify_b1_memory_context_workflow.py",

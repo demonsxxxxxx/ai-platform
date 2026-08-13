@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.release_evidence_runtime_acceptance import build_release_evidence_runtime_acceptance
+from tools.release_evidence_runtime_acceptance import build_release_evidence_runtime_acceptance  # noqa: E402
 
 
 def render_release_evidence_runtime_acceptance_markdown(acceptance: dict[str, object]) -> str:
