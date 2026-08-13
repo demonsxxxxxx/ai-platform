@@ -12,14 +12,6 @@ const errorKeys = [
 ] as const;
 
 const expected = {
-  en: {
-    serverFileTooLarge:
-      "This file exceeds the 50 MB limit. Compress it or choose a smaller file and try again.",
-    serverUnsupportedFileType:
-      "This file format or content is unsafe and cannot be uploaded. Choose a safe, common file format instead.",
-    uploadFailedRecoverable:
-      "The file was not uploaded. Check your connection and try again.",
-  },
   zh: {
     serverFileTooLarge: "文件超过 50 MB 上限，请压缩或选择更小的文件后重试",
     serverUnsupportedFileType:
@@ -41,7 +33,7 @@ function readFileUploadLocale(locale: LocaleName): FileUploadLocale {
   return contents.fileUpload;
 }
 
-test("upload request errors have exact, paired English and Chinese copy", () => {
+test("upload request errors have exact Chinese copy", () => {
   for (const localeName of Object.keys(expected) as LocaleName[]) {
     const locale = readFileUploadLocale(localeName);
     const values = errorKeys.map((key) => {

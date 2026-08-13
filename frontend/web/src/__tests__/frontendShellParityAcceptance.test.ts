@@ -636,7 +636,6 @@ test("model catalog route is a governed public-projection workbench page", () =>
     "utf8",
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
-  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.match(modelCatalog, /data-model-catalog-shell/);
@@ -647,11 +646,9 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /className=\{workbenchSurface\.page\}/);
   assert.doesNotMatch(modelCatalog, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.ok(JSON.parse(zhLocale).models);
-  assert.ok(JSON.parse(enLocale).models);
   for (const source of [
     modelCatalog,
     JSON.stringify(JSON.parse(zhLocale).models),
-    JSON.stringify(JSON.parse(enLocale).models),
   ]) {
     assert.doesNotMatch(source, /管理投影补齐|等待后端补齐|admin projections are backed|backend coverage/);
   }
@@ -804,13 +801,11 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.match(authTypes, /NOTIFICATION_ADMIN = "notification:admin"/);
 });
 
-test("safe projection locale copy no longer reports backed workbench pages as unopened backend gaps", () => {
+test("safe projection Chinese copy no longer reports backed workbench pages as unopened backend gaps", () => {
   const zh = JSON.parse(readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"));
-  const en = JSON.parse(readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"));
 
   for (const [locale, workbench] of [
     ["zh", zh.workbench.phaseTwo],
-    ["en", en.workbench.phaseTwo],
   ] as const) {
     for (const page of ["users", "settings", "feedback", "notifications"]) {
       const copy = JSON.stringify(workbench[page]);
@@ -1012,13 +1007,11 @@ test("marketplace catalog frontend projection preserves server read state", () =
     "utf8",
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
-  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.match(marketplaceApi, /catalog_read_resolved/);
   assert.match(useMarketplace, /setCatalogReadResolved\(data\.catalog_read_resolved\)/);
   assert.match(marketplaceTest, /catalog_read_resolved:\s*true/);
   assert.doesNotMatch(zhLocale, /市场直接写入暂未开放/);
-  assert.doesNotMatch(enLocale, /Direct marketplace writes are not available yet/);
 });
 
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {

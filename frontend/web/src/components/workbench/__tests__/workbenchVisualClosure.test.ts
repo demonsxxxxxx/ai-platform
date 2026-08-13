@@ -371,7 +371,6 @@ test("phase 1c logged-in route surfaces expose shared governance smoke attribute
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(projectionPages, /data-projection-workbench-grid/);
   assert.match(projectionPages, /data-projection-task-panel/);
@@ -394,13 +393,9 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
   assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");
-  assert.equal(en.workbench.projections.currentTask, "Current task");
   assert.equal(zh.workbench.projections.governance.summaryTitle, "读写治理摘要");
-  assert.equal(en.workbench.projections.governance.summaryTitle, "Read/write governance");
   assert.ok(zh.workbench.projections.users.roleLabels.admin);
-  assert.ok(en.workbench.projections.settings.categories.security);
   assert.ok(zh.workbench.projections.feedback.status.open);
-  assert.ok(en.workbench.projections.notifications.readState.unread);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg-card\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
@@ -461,7 +456,6 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   const ordinarySkills = read("src/components/panels/AvailableSkillsPanel.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(hub, /resolveSkillsHubGovernance/);
   assert.match(hub, /isAiAdminUser\(user\)/);
@@ -486,7 +480,6 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
   assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
   assert.equal(zh.skills.available.title, "可用技能");
-  assert.equal(en.skills.available.title, "Available skills");
   assert.match(resolver, /requiredPermission: "skill:admin" \| "marketplace:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);

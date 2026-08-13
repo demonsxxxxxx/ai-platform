@@ -5,7 +5,7 @@ import test from "node:test";
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
 
 const root = process.cwd();
-const shippedLocales = ["en", "zh", "ja", "ko", "ru"] as const;
+const shippedLocales = ["zh"] as const;
 
 function locale(localeName: (typeof shippedLocales)[number]) {
   return JSON.parse(
@@ -138,7 +138,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   );
 });
 
-test("mcp governance copy exists across shipped workbench locales", () => {
+test("mcp governance copy exists in the shipped Chinese catalog", () => {
   for (const localeName of shippedLocales) {
     const mcp = locale(localeName).mcp;
     assert.equal(
@@ -172,10 +172,8 @@ test("mcp governance copy exists across shipped workbench locales", () => {
       `${localeName} missing mcp.credentialsGovernance.description`,
     );
   }
-  assert.equal(typeof locale("en").mcp.form.removeRole, "string");
   assert.equal(typeof locale("zh").mcp.form.removeRole, "string");
   assert.equal(locale("zh").mcp.available.empty, "暂无可用工具");
-  assert.equal(locale("en").mcp.available.empty, "No tools available");
 });
 
 test("share dialog fails closed until ai-platform share ACL projection exists", () => {

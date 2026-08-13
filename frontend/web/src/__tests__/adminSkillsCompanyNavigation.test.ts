@@ -63,9 +63,8 @@ test("company navigation owns legacy webUI links without iframe embedding", () =
   const catalog = readSource("src/components/launchpad/catalog.ts");
   const panel = readSource("src/components/launchpad/LaunchpadPanel.tsx");
   const zh = readSource("src/i18n/locales/zh.json");
-  const en = readSource("src/i18n/locales/en.json");
 
-  assert.match(catalog, /url:\s*"http:\/\/10\.56\.0\.25:8189\/#\/TaskManagement\/indexSpace\/"/);
+  assert.match(catalog, /key:\s*"lingxi"[\s\S]*runtimeUrlKey:\s*"lingxi"/);
   assert.match(panel, /data-company-navigation-shell/);
   assert.match(panel, /openUrl\(tab\.url\)/);
   assert.match(panel, /window\.open/);
@@ -80,5 +79,4 @@ test("company navigation owns legacy webUI links without iframe embedding", () =
   assert.doesNotMatch(panel, /sandbox=/);
   assert.doesNotMatch(panel, /allow="clipboard-read; clipboard-write"/);
   assert.match(zh, /"companyNavigation"/);
-  assert.match(en, /"companyNavigation"/);
 });

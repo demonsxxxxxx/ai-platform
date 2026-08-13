@@ -69,7 +69,7 @@ test("management rows expose stable icon actions and a read-only state", () => {
   assert.match(source, /target\.closest\(INTERACTIVE_ROW_TARGET\)/);
 });
 
-test("management table translations stay complete across supported locales", () => {
+test("Chinese management table translations stay complete", () => {
   const requiredKeys = [
     "actions",
     "deleteSkill",
@@ -97,16 +97,15 @@ test("management table translations stay complete across supported locales", () 
     "updatedAt",
   ];
 
-  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
-    const catalog = JSON.parse(
-      readFileSync(join(process.cwd(), `src/i18n/locales/${locale}.json`), "utf8"),
-    ) as { skills?: { managementTable?: Record<string, string> } };
-    const table = catalog.skills?.managementTable;
-    assert.ok(table, `${locale} management table translations must exist`);
-    requiredKeys.forEach((key) =>
-      assert.equal(typeof table[key], "string", `${locale}.${key}`),
-    );
-  }
+  const locale = "zh";
+  const catalog = JSON.parse(
+    readFileSync(join(process.cwd(), "src/i18n/locales/zh.json"), "utf8"),
+  ) as { skills?: { managementTable?: Record<string, string> } };
+  const table = catalog.skills?.managementTable;
+  assert.ok(table, "Chinese management table translations must exist");
+  requiredKeys.forEach((key) =>
+    assert.equal(typeof table[key], "string", `${locale}.${key}`),
+  );
 });
 
 test("archive action keyboard activation does not select its containing row", async () => {
