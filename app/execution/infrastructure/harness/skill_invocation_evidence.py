@@ -1,14 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
-from typing import Iterable, Mapping
-
-from app.required_tool_contract import (
-    RequiredCapabilityDeclaration,
-    RequiredCapabilityEvidence,
-    RequiredToolContractError,
-)
+from collections.abc import Callable, Iterable, Mapping
 
 
 class SkillInvocationEvidenceBinder:
@@ -18,10 +11,10 @@ class SkillInvocationEvidenceBinder:
         self,
         *,
         allowed_skill_names: Iterable[str],
-        binding: Mapping[str, str],
+        project_record: Callable[[Mapping[str, str]], dict[str, object]],
     ) -> None:
         self._allowed_skill_names = frozenset(allowed_skill_names)
-        self._binding = dict(binding)
+        self._project_record = project_record
         self._records: list[dict[str, object]] = []
         self._invocation_states: dict[tuple[str, str], str] = {}
         self._rejected = False
@@ -53,17 +46,6 @@ class SkillInvocationEvidenceBinder:
                     or not isinstance(lifecycle_phase, str)
                 ):
                     return self._reject()
-                declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-                    capability_kind="skill",
-                    canonical_identity=skill_name,
-                )
-                expected = RequiredCapabilityEvidence.sdk_hook_payload(
-                    declaration=declaration,
-                    tool_call_id=tool_call_id,
-                    lifecycle_phase=lifecycle_phase,
-                )
-                if raw != expected:
-                    return self._reject()
                 invocation_key = (skill_name, tool_call_id)
                 current_phase = self._invocation_states.get(invocation_key)
                 if lifecycle_phase == "invocation_requested":
@@ -71,15 +53,12 @@ class SkillInvocationEvidenceBinder:
                         return self._reject()
                 elif current_phase != "invocation_requested":
                     return self._reject()
-                evidence = RequiredCapabilityEvidence.from_sdk_hook(
-                    declaration=declaration,
-                    binding=self._binding,
-                    tool_call_id=tool_call_id,
-                    lifecycle_phase=lifecycle_phase,
-                )
-            except (AttributeError, RequiredToolContractError):
+                record = self._project_record(raw)
+                if not isinstance(record, dict):
+                    return self._reject()
+            except (AttributeError, ValueError):
                 return self._reject()
-            self._records.append(asdict(evidence))
+            self._records.append(dict(record))
             self._invocation_states[invocation_key] = (
                 "invocation_requested"
                 if lifecycle_phase == "invocation_requested"

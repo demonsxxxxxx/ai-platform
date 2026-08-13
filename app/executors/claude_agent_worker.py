@@ -2209,17 +2209,42 @@ class ClaudeAgentWorkerAdapter:
             and (staged_skill_names is None or payload.skill_id in staged_skill_names)
             else set()
         )
+
+        def project_skill_evidence(raw: dict[str, str]) -> dict[str, object]:
+            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind="skill",
+                canonical_identity=str(raw.get("canonical_identity") or ""),
+            )
+            tool_call_id = str(raw.get("tool_call_id") or "")
+            lifecycle_phase = str(raw.get("lifecycle_phase") or "")
+            if raw != RequiredCapabilityEvidence.sdk_hook_payload(
+                declaration=declaration,
+                tool_call_id=tool_call_id,
+                lifecycle_phase=lifecycle_phase,
+            ):
+                raise RequiredToolContractError(
+                    "required_tool_completion_evidence_mismatch"
+                )
+            return asdict(
+                RequiredCapabilityEvidence.from_sdk_hook(
+                    declaration=declaration,
+                    binding={
+                        "tenant_id": payload.tenant_id,
+                        "workspace_id": payload.workspace_id,
+                        "user_id": payload.user_id,
+                        "session_id": payload.session_id,
+                        "run_id": payload.run_id,
+                        "attempt_id": payload.attempt_id,
+                    },
+                    tool_call_id=tool_call_id,
+                    lifecycle_phase=lifecycle_phase,
+                )
+            )
+
         skill_evidence_binder = (
             SkillInvocationEvidenceBinder(
                 allowed_skill_names=evidence_skill_names,
-                binding={
-                    "tenant_id": payload.tenant_id,
-                    "workspace_id": payload.workspace_id,
-                    "user_id": payload.user_id,
-                    "session_id": payload.session_id,
-                    "run_id": payload.run_id,
-                    "attempt_id": payload.attempt_id,
-                },
+                project_record=project_skill_evidence,
             )
             if evidence_skill_names
             else None
