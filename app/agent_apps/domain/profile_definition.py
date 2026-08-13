@@ -33,3 +33,24 @@ def normalize_agent_avatar_seed(value: str) -> str:
     if "\x00" in normalized or any(ord(character) < 32 for character in normalized):
         raise ValueError("avatar_seed contains control characters")
     return normalized
+
+
+def normalize_agent_profile_display_items(
+    values: Sequence[str],
+    field_name: str,
+    *,
+    item_limit: int,
+) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        candidate = value.strip()
+        if not candidate:
+            raise ValueError(f"{field_name} contains an empty item")
+        if len(candidate) > item_limit:
+            raise ValueError(f"{field_name} item exceeds {item_limit} characters")
+        if any(ord(character) < 32 for character in candidate):
+            raise ValueError(f"{field_name} contains control characters")
+        if candidate in normalized:
+            raise ValueError(f"{field_name} contains duplicates")
+        normalized.append(candidate)
+    return normalized

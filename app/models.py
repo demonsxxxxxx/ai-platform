@@ -21,9 +21,8 @@ from app.control_plane_contracts import (
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import (
-    AgentConversationIdentity,
-    AgentProfilePublicProjection,
     normalize_agent_avatar_seed,
+    normalize_agent_profile_display_items,
     normalize_agent_skill_set,
 )
 from app.file_type_validation import normalize_profile_file_type
@@ -66,27 +65,6 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         candidate = assert_safe_principal_user_id(value.strip(), field_name)
         if candidate not in normalized:
             normalized.append(candidate)
-    return normalized
-
-
-def _normalize_profile_display_items(
-    values: list[str],
-    field_name: str,
-    *,
-    item_limit: int,
-) -> list[str]:
-    normalized: list[str] = []
-    for value in values:
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError(f"{field_name} contains an empty item")
-        if len(candidate) > item_limit:
-            raise ValueError(f"{field_name} item exceeds {item_limit} characters")
-        if any(ord(char) < 32 for char in candidate):
-            raise ValueError(f"{field_name} contains control characters")
-        if candidate in normalized:
-            raise ValueError(f"{field_name} contains duplicates")
-        normalized.append(candidate)
     return normalized
 
 
@@ -282,12 +260,12 @@ class AgentProfileDraftRequest(BaseModel):
     @field_validator("starter_prompts")
     @classmethod
     def normalize_starter_prompts(cls, value: list[str], info):
-        return _normalize_profile_display_items(value, info.field_name, item_limit=500)
+        return normalize_agent_profile_display_items(value, info.field_name, item_limit=500)
 
     @field_validator("recommended_tasks", "expected_outputs")
     @classmethod
     def normalize_profile_display_lists(cls, value: list[str], info):
-        return _normalize_profile_display_items(value, info.field_name, item_limit=240)
+        return normalize_agent_profile_display_items(value, info.field_name, item_limit=240)
 
     @field_validator("supported_input_types")
     @classmethod
@@ -434,6 +412,29 @@ class AgentAppRunRequest(BaseModel):
         return normalized
 
 
+class AgentProfilePublicProjection(BaseModel):
+    """Ordinary-user market projection without executable configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    expected_revision: int
+    name: str
+    description: str = ""
+    welcome_message: str = ""
+    starter_prompts: list[str] = Field(default_factory=list)
+    capability_summary: str = ""
+    recommended_tasks: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_file_types: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    permissions_and_data_access_notice: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_seed: str = ""
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    published_at: Any | None = None
+
+
 class AgentProfileCatalogResponse(BaseModel):
     """Ordinary-user catalog response containing only safe profile cards."""
 
@@ -533,6 +534,29 @@ class CreateAgentConversationRequest(BaseModel):
         if value.int == 0 or value.version != 4 or value.variant != RFC_4122:
             raise ValueError("operation_id must be an RFC 4122 UUID v4")
         return value
+
+
+class AgentConversationIdentity(BaseModel):
+    """Only safe immutable Agent identity retained in public conversation recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    revision: int = Field(ge=1)
+    name: str
+    description: str = ""
+    welcome_message: str = ""
+    starter_prompts: list[str] = Field(default_factory=list)
+    capability_summary: str = ""
+    recommended_tasks: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_file_types: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    permissions_and_data_access_notice: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_seed: str = ""
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    published_at: Any | None = None
 
 
 class CreateRunRequest(BaseModel):
