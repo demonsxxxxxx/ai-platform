@@ -16,7 +16,11 @@ from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
+from app.platform.postgres.errors import (
+    RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
+)
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
+from app.skills.infrastructure import postgres as skill_persistence
 from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
@@ -85,6 +89,20 @@ def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
         assert getattr(repositories, name) is getattr(agent_profile_persistence, name)
 
     assert RepositoryConflictError is PlatformRepositoryConflictError
+
+
+def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
+    canonical_names = (
+        "canonical_builtin_tool_identities",
+        "get_skill_version",
+        "run_skill_snapshot_source_json",
+        "validate_replay_skill_manifests",
+    )
+
+    for name in canonical_names:
+        assert getattr(repositories, name) is getattr(skill_persistence, name)
+
+    assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
 
 
 @pytest.fixture(autouse=True)
@@ -1477,7 +1495,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
 
     monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
     monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     skill = await repositories.authorize_replay_run_capabilities(
         object(),
@@ -1537,7 +1555,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
 
     monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
     monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_replay_run_capabilities(
@@ -1587,7 +1605,7 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
         }
 
     monkeypatch.setattr(repositories, "_authorize_run_capabilities", shared_authorizer)
-    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     await repositories.authorize_replay_run_capabilities(
         object(),
@@ -10517,7 +10535,7 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
     async def get_version(_conn, *, skill_id, version):
         return {"version": version, "content_hash": version, "status": "released"}
 
-    monkeypatch.setattr(repositories, "get_skill_version", get_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", get_version)
     manifests = [
         {
             "skill_id": "skill-a",

@@ -5,7 +5,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from app.control_plane_contracts import sanitize_public_payload
+from psycopg import AsyncConnection
+
+from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
+from app.platform.public_payload import sanitize_public_payload
 from app.skills.execution_profiles import (
     SkillExecutionProfileError,
     canonical_skill_execution_profile,
@@ -14,6 +17,9 @@ from app.skills.pinning import (
     SkillVersionMaterializationError,
     build_skill_snapshot_governance,
 )
+
+_ALLOWED_EXECUTOR_TYPES = frozenset({"claude-agent-worker"})
+_TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
 
 
 class SkillRunSnapshotError(ValueError):
@@ -48,7 +54,7 @@ def _release_decision_sha256(release_decision: dict[str, Any] | None) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
+def _canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
     try:
         profile = canonical_skill_execution_profile(skill_manifest)
     except SkillExecutionProfileError as exc:
@@ -68,11 +74,22 @@ def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[st
     return canonical
 
 
+def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
+    """Return the exact server-owned builtin capability declaration for a pin."""
+
+    try:
+        return _canonical_builtin_tool_identities(skill_manifest)
+    except SkillRunSnapshotError as exc:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
+
+
 def run_skill_snapshot_source_json(
     skill_manifest: dict[str, Any],
     *,
     release_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Project immutable, non-secret Skill source identity for run provenance."""
+
     source = sanitize_public_payload(
         skill_manifest.get("source") if isinstance(skill_manifest.get("source"), dict) else {}
     )
@@ -81,7 +98,7 @@ def run_skill_snapshot_source_json(
     manifest_release_decision = skill_manifest.get("release_decision")
     if manifest_release_decision is not None:
         if not isinstance(manifest_release_decision, dict):
-            raise SkillRunSnapshotError("run_skill_snapshot_identity_mismatch")
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
         effective_release_decision = manifest_release_decision
     else:
         effective_release_decision = release_decision
@@ -91,11 +108,16 @@ def run_skill_snapshot_source_json(
             release_decision=effective_release_decision,
         )
         execution_profile = canonical_skill_execution_profile(skill_manifest)
-    except (SkillVersionMaterializationError, SkillExecutionProfileError) as exc:
-        raise SkillRunSnapshotError("run_skill_snapshot_identity_mismatch") from exc
+        builtin_tool_identities = _canonical_builtin_tool_identities(skill_manifest)
+    except (
+        SkillVersionMaterializationError,
+        SkillExecutionProfileError,
+        SkillRunSnapshotError,
+    ) as exc:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
     projected["snapshot_governance"] = _without_private_material(governance)
     projected["release_decision_sha256"] = _release_decision_sha256(effective_release_decision)
-    projected["builtin_tool_identities"] = canonical_builtin_tool_identities(skill_manifest)
+    projected["builtin_tool_identities"] = builtin_tool_identities
     projected["execution_profile"] = execution_profile
     raw_mcp_tool_ids = skill_manifest.get("mcp_tool_ids")
     if raw_mcp_tool_ids is None:
@@ -103,22 +125,24 @@ def run_skill_snapshot_source_json(
     if not isinstance(raw_mcp_tool_ids, list) or any(
         not isinstance(item, str) or not item for item in raw_mcp_tool_ids
     ):
-        raise SkillRunSnapshotError("run_skill_snapshot_identity_mismatch")
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
     projected["mcp_tool_ids"] = list(dict.fromkeys(raw_mcp_tool_ids))
     return projected
 
 
-def build_replay_skill_manifest_plan(
+def _build_replay_skill_manifest_plan(
     *,
     skill_id: str,
     pinned_version: str,
     pinned_executor_type: str,
     skill_manifests: list[dict[str, Any]],
     skill_set: list[dict[str, Any]] | None,
-    allowed_executor_types: set[str],
-    trusted_builtin_mcp_tool_id: str,
 ) -> ReplaySkillManifestPlan:
-    if pinned_executor_type not in allowed_executor_types or not skill_id or not pinned_version:
+    if (
+        pinned_executor_type not in _ALLOWED_EXECUTOR_TYPES
+        or not skill_id
+        or not pinned_version
+    ):
         raise SkillRunSnapshotError("capability_not_authorized")
     requested_skill_versions: dict[str, str] = {skill_id: pinned_version}
     if skill_set is not None:
@@ -145,7 +169,7 @@ def build_replay_skill_manifest_plan(
     for manifest in skill_manifests:
         if not isinstance(manifest, dict):
             raise SkillRunSnapshotError("capability_not_authorized")
-        canonical_builtin_tool_identities(manifest)
+        _canonical_builtin_tool_identities(manifest)
         manifest_skill_id = str(manifest.get("skill_id") or "")
         version = str(manifest.get("version") or manifest.get("skill_version") or "")
         content_hash = str(manifest.get("content_hash") or "")
@@ -171,9 +195,102 @@ def build_replay_skill_manifest_plan(
             not isinstance(item, str) or not item for item in raw_tool_ids
         ):
             raise SkillRunSnapshotError("capability_not_authorized")
-        if selected_skill_id == trusted_builtin_mcp_tool_id and trusted_builtin_mcp_tool_id not in raw_tool_ids:
+        if (
+            selected_skill_id == _TRUSTED_BUILTIN_MCP_TOOL_ID
+            and _TRUSTED_BUILTIN_MCP_TOOL_ID not in raw_tool_ids
+        ):
             raise SkillRunSnapshotError("capability_not_authorized")
         for tool_id in raw_tool_ids:
             if tool_id not in mcp_tool_ids:
                 mcp_tool_ids.append(tool_id)
     return ReplaySkillManifestPlan(tuple(normalized_manifests), tuple(mcp_tool_ids))
+
+
+def _project_skill_version(row: dict[str, Any]) -> dict[str, Any]:
+    source = row.get("source_json")
+    dependency_ids = row.get("dependency_ids")
+    return {
+        "skill_id": row["skill_id"],
+        "version": row["version"],
+        "content_hash": row["content_hash"],
+        "description": row.get("description") or "",
+        "source": source if isinstance(source, dict) else {},
+        "dependency_ids": (
+            [str(item) for item in dependency_ids] if isinstance(dependency_ids, list) else []
+        ),
+        "status": row.get("status") or "active",
+        "created_by": row.get("created_by"),
+        "created_at": row.get("created_at"),
+    }
+
+
+async def get_skill_version(
+    conn: AsyncConnection,
+    *,
+    skill_id: str,
+    version: str,
+) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        """
+        select
+          skill_id,
+          version,
+          content_hash,
+          description,
+          source_json,
+          dependency_ids,
+          status,
+          created_by,
+          created_at
+        from skill_versions
+        where skill_id = %s and version = %s
+        """,
+        (skill_id, version),
+    )
+    row = await cursor.fetchone()
+    return _project_skill_version(row) if row is not None else None
+
+
+async def validate_replay_skill_manifests(
+    conn: AsyncConnection,
+    *,
+    skill_id: str,
+    pinned_version: str,
+    pinned_executor_type: str,
+    skill_manifests: list[dict[str, Any]],
+    skill_set: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Validate an exact historical package while allowing ordinary deprecation."""
+
+    try:
+        plan = _build_replay_skill_manifest_plan(
+            skill_id=skill_id,
+            pinned_version=pinned_version,
+            pinned_executor_type=pinned_executor_type,
+            skill_manifests=skill_manifests,
+            skill_set=skill_set,
+        )
+    except SkillRunSnapshotError as exc:
+        raise RepositoryAuthorizationError("capability_not_authorized") from exc
+    for manifest in plan.manifests:
+        manifest_skill_id = str(manifest.get("skill_id") or "")
+        version = str(manifest.get("version") or manifest.get("skill_version") or "")
+        content_hash = str(manifest.get("content_hash") or "")
+        exact_version = await get_skill_version(
+            conn,
+            skill_id=manifest_skill_id,
+            version=version,
+        )
+        if exact_version is None:
+            source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+            if str(source.get("kind") or "") != "builtin":
+                raise RepositoryAuthorizationError("capability_not_authorized")
+            continue
+        if (
+            str(exact_version.get("version") or "") != version
+            or str(exact_version.get("content_hash") or "") != content_hash
+            or str(exact_version.get("status") or "").lower()
+            not in {"active", "released", "deprecated"}
+        ):
+            raise RepositoryAuthorizationError("capability_not_authorized")
+    return list(plan.mcp_tool_ids)

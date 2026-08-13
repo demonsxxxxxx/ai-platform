@@ -60,7 +60,9 @@ from app.persistence import (
 )
 import app.agent_apps.infrastructure.postgres as agent_profile_persistence
 import app.conversations.infrastructure.postgres as conversation_persistence
+import app.platform.postgres.errors as postgres_errors
 import app.runs.infrastructure.postgres as run_persistence
+import app.skills.infrastructure.postgres as skill_persistence
 from app.platform.postgres.errors import RepositoryConflictError
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
@@ -86,16 +88,11 @@ from app.skills.pinning import (
     SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2,
     SkillVersionMaterializationError,
     build_skill_manifest_refs,
+    build_skill_snapshot_governance,  # noqa: F401 - migration bridge AST compatibility
     skill_manifest_materialization_sha256,
     validate_skill_manifest_refs,
 )
 from app.skills.release_policy import resolve_rollout_skill_decision
-from app.skills.run_snapshot import (
-    SkillRunSnapshotError,
-    build_replay_skill_manifest_plan,
-    canonical_builtin_tool_identities as _canonical_builtin_tool_identities,
-    run_skill_snapshot_source_json as _run_skill_snapshot_source_json,
-)
 from app.tool_policy import evaluate_tool_policy, max_risk
 from app.validation import SAFE_ID_PATTERN
 from app.tool_permission_lifecycle import (
@@ -174,6 +171,11 @@ get_active_resume_for_source_run = run_persistence.get_active_resume_for_source_
 get_active_retry_for_source_run = run_persistence.get_active_retry_for_source_run
 get_run = run_persistence.get_run
 get_run_identity = run_persistence.get_run_identity
+RepositoryAuthorizationError = postgres_errors.RepositoryAuthorizationError
+canonical_builtin_tool_identities = skill_persistence.canonical_builtin_tool_identities
+get_skill_version = skill_persistence.get_skill_version
+run_skill_snapshot_source_json = skill_persistence.run_skill_snapshot_source_json
+validate_replay_skill_manifests = skill_persistence.validate_replay_skill_manifests
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
@@ -212,19 +214,6 @@ def _require_text_size(value: str, *, max_bytes: int, code: str) -> None:
         ensure_text_size(value, max_bytes=max_bytes, code=code)
     except PersistenceSizeLimitError as exc:
         raise RepositoryConflictError(exc.code) from exc
-
-
-class RepositoryAuthorizationError(ValueError):
-    """Signal a fail-closed enqueue capability authorization denial."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        denial: CapabilityAuthorizationDenial | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.denial = denial
 
 
 async def tenant_exists(conn: AsyncConnection, *, tenant_id: str) -> bool:
@@ -2945,48 +2934,6 @@ def pinned_replay_mcp_tool_ids(
     ):
         raise _capability_not_authorized()
     return pinned_mcp_tool_ids
-
-
-async def validate_replay_skill_manifests(
-    conn: AsyncConnection,
-    *,
-    skill_id: str,
-    pinned_version: str,
-    pinned_executor_type: str,
-    skill_manifests: list[dict[str, Any]],
-    skill_set: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    """Validate an exact historical package while allowing ordinary deprecation."""
-
-    try:
-        plan = build_replay_skill_manifest_plan(
-            skill_id=skill_id,
-            pinned_version=pinned_version,
-            pinned_executor_type=pinned_executor_type,
-            skill_manifests=skill_manifests,
-            skill_set=skill_set,
-            allowed_executor_types=DEFAULT_RUN_EXECUTOR_TYPES,
-            trusted_builtin_mcp_tool_id=_mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID,
-        )
-    except SkillRunSnapshotError as exc:
-        raise _capability_not_authorized() from exc
-    for manifest in plan.manifests:
-        manifest_skill_id = str(manifest.get("skill_id") or "")
-        version = str(manifest.get("version") or manifest.get("skill_version") or "")
-        content_hash = str(manifest.get("content_hash") or "")
-        exact_version = await get_skill_version(conn, skill_id=manifest_skill_id, version=version)
-        if exact_version is None:
-            source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
-            if str(source.get("kind") or "") != "builtin":
-                raise _capability_not_authorized()
-            continue
-        if (
-            str(exact_version.get("version") or "") != version
-            or str(exact_version.get("content_hash") or "") != content_hash
-            or str(exact_version.get("status") or "").lower() not in {"active", "released", "deprecated"}
-        ):
-            raise _capability_not_authorized()
-    return list(plan.mcp_tool_ids)
 
 
 def require_replay_source_identity(
@@ -7084,30 +7031,6 @@ def pin_primary_skill_mcp_tool_ids(
     return pinned
 
 
-def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
-    """Return the exact server-owned builtin capability declaration for a pin."""
-    try:
-        return _canonical_builtin_tool_identities(skill_manifest)
-    except SkillRunSnapshotError as exc:
-        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
-
-
-def run_skill_snapshot_source_json(
-    skill_manifest: dict[str, Any],
-    *,
-    release_decision: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Project immutable, non-secret Skill source identity for run provenance."""
-
-    try:
-        return _run_skill_snapshot_source_json(
-            skill_manifest,
-            release_decision=release_decision,
-        )
-    except SkillRunSnapshotError as exc:
-        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
-
-
 async def insert_run_skill_snapshots_at_creation(
     conn: AsyncConnection,
     *,
@@ -7650,28 +7573,6 @@ async def backfill_builtin_skill_version_snapshot(
             serialized_source_json,
         ),
     )
-
-
-async def get_skill_version(conn: AsyncConnection, *, skill_id: str, version: str) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select
-          skill_id,
-          version,
-          content_hash,
-          description,
-          source_json,
-          dependency_ids,
-          status,
-          created_by,
-          created_at
-        from skill_versions
-        where skill_id = %s and version = %s
-        """,
-        (skill_id, version),
-    )
-    row = await cursor.fetchone()
-    return _project_skill_version(row) if row is not None else None
 
 
 async def update_skill_version_status(
