@@ -667,20 +667,30 @@ async def prepare_copied_run_for_queue(
     elif execution_kind == RUN_EXECUTION_KIND_SKILL:
         if not isinstance(copied_skill_id, str) or not copied_skill_id.strip():
             raise RepositoryConflictError("run_execution_skill_identity_mismatch")
-        await repositories.authorize_replay_run_capabilities(
-            conn,
-            tenant_id=effective_principal.tenant_id,
-            agent_id=str(copied["agent_id"]),
-            skill_id=copied_skill_id,
-            pinned_version=copied_skill_version,
-            pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
-            skill_manifests=skill_manifests,
-            normalized_input=copied_input,
-            principal_department_id=effective_principal.department_id,
-            principal_roles=effective_principal.roles,
-            is_admin=is_ai_admin(effective_principal),
-            permissions=effective_principal.permissions,
-        )
+        profile_snapshot = copied_snapshot.get("agent_profile")
+        if isinstance(profile_snapshot, dict) and isinstance(
+            profile_snapshot.get("skill_set"), list
+        ):
+            await reauthorize_pinned_run_for_replay(
+                conn,
+                principal=effective_principal,
+                run_id=str(copied["run_id"]),
+            )
+        else:
+            await repositories.authorize_replay_run_capabilities(
+                conn,
+                tenant_id=effective_principal.tenant_id,
+                agent_id=str(copied["agent_id"]),
+                skill_id=copied_skill_id,
+                pinned_version=copied_skill_version,
+                pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
+                skill_manifests=skill_manifests,
+                normalized_input=copied_input,
+                principal_department_id=effective_principal.department_id,
+                principal_roles=effective_principal.roles,
+                is_admin=is_ai_admin(effective_principal),
+                permissions=effective_principal.permissions,
+            )
     else:
         raise RepositoryConflictError("run_execution_skill_identity_mismatch")
     copied["skill_version"] = copied_skill_version

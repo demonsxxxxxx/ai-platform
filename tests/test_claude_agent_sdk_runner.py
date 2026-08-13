@@ -119,7 +119,8 @@ def _fake_sdk(captured, *, hook_invocations):
                 tool_name = str(hook_input.get("tool_name") or "")
                 matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
                 matcher = next(item for item in matchers if item.matcher == matcher_name)
-            await matcher.hooks[0](hook_input, tool_call_id, {})
+            hook_result = await matcher.hooks[0](hook_input, tool_call_id, {})
+            captured.setdefault("hook_results", []).append((hook_name, hook_result))
         yield ResultMessage()
 
     return types.SimpleNamespace(
@@ -232,6 +233,72 @@ def _stream_steps(text, *, index=0):
 
 async def _acknowledge_capability_evidence(_evidence):
     return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability_kind", ["skill", "mcp"])
+@pytest.mark.parametrize("callback_outcome", ["missing", "false", "exception"])
+async def test_sdk_pretool_denies_when_invocation_evidence_is_not_acknowledged(
+    monkeypatch,
+    tmp_path,
+    capability_kind,
+    callback_outcome,
+):
+    captured = {}
+    if capability_kind == "skill":
+        hook_input = {
+            "tool_name": "Skill",
+            "tool_use_id": "skill-call-1",
+            "tool_input": {"skill": "qa-review"},
+        }
+        subjects = [_skill_subject()]
+        skill_id = "qa-review"
+        skills = ["qa-review"]
+    else:
+        hook_input = {
+            "tool_name": "mcp__tenant-server__search",
+            "tool_use_id": "mcp-call-1",
+            "tool_input": {},
+        }
+        subjects = [_subject()]
+        skill_id = "general-chat"
+        skills = None
+
+    async def acknowledge(_evidence):
+        if callback_outcome == "exception":
+            raise RuntimeError("private callback failure")
+        return callback_outcome != "false"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="use the configured capability",
+        cwd=tmp_path,
+        skill_id=skill_id,
+        skills=skills,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=subjects,
+        on_capability_evidence=None if callback_outcome == "missing" else acknowledge,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "deny"
+    assert (
+        pretool_output["permissionDecisionReason"]
+        == "required_tool_completion_evidence_mismatch"
+    )
+    assert result.error == "required_tool_completion_evidence_mismatch"
 
 
 @pytest.mark.asyncio
