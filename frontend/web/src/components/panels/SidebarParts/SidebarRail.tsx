@@ -40,6 +40,8 @@ interface SidebarRailProps {
   onOpenMcp: () => void;
   onOpenModels: () => void;
   hideSessionDiscovery?: boolean;
+  navigationOnly?: boolean;
+  agentWorkspace?: boolean;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
 }
 
@@ -58,6 +60,8 @@ export function SidebarRail({
   onOpenMcp,
   onOpenModels,
   hideSessionDiscovery = false,
+  navigationOnly = false,
+  agentWorkspace = false,
   recentChatsBtnRef,
 }: SidebarRailProps) {
   const { t } = useTranslation();
@@ -130,16 +134,16 @@ export function SidebarRail({
         className="mt-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col items-center w-full gap-0.5 py-1"
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
-        <LibreChatRailButton
+        {!navigationOnly ? <LibreChatRailButton
           type="button"
           onClick={onNewSession}
           className={railBtn}
-          title={t("sidebar.newChat")}
-          aria-label={t("sidebar.newChat")}
+          title={agentWorkspace ? "开始新任务" : t("sidebar.newChat")}
+          aria-label={agentWorkspace ? "开始新任务" : t("sidebar.newChat")}
         >
           <MessageSquarePlus size={20} />
-        </LibreChatRailButton>
-        {!hideSessionDiscovery ? (
+        </LibreChatRailButton> : null}
+        {!navigationOnly && !hideSessionDiscovery ? (
           <LibreChatRailButton
             type="button"
             onClick={onOpenSearch}
@@ -226,7 +230,7 @@ export function SidebarRail({
             <Cpu size={20} />
           </LibreChatRailButton>
         )}
-        {!hideSessionDiscovery ? (
+        {!navigationOnly && !hideSessionDiscovery ? (
           <LibreChatRailButton
             type="button"
             ref={recentChatsBtnRef}

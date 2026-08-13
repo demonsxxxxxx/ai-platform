@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
+import { buildSkillCatalogEntries } from "../SkillsPanel/skillCatalogEntries.ts";
+
+const dom = installTestDom();
+
 test("Skill workbench separates runtime and catalog visibility without a public writer", () => {
   const table = readFileSync(
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),
@@ -28,8 +33,11 @@ test("Skill workbench separates runtime and catalog visibility without a public 
   assert.match(list, /<SkillManagementTable/);
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
   assert.match(list, /skills\.adminReleaseZipTitle/);
+  assert.match(list, /aria-label=\{t\("skills\.importFromGitHub"\)\}/);
+  assert.match(list, /resolveSkillCatalogMetrics\(metricsCatalogEntries\)/);
   assert.match(list, /canExport=\{canExport && !governedUnavailable\}/);
   assert.match(panel, /const canExportSkills = canEditSkills;/);
+  assert.match(panel, /metricsCatalogEntries=\{catalogEntries\}/);
   assert.doesNotMatch(
     panel,
     /canExportSkills\s*=.*canAdminUploadSkills/,
@@ -57,6 +65,8 @@ test("management rows expose stable icon actions and a read-only state", () => {
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
   assert.match(source, /role="table"/);
   assert.match(source, /role="columnheader"/);
+  assert.match(source, /isInteractiveRowTarget\(event\.target, event\.currentTarget\)/);
+  assert.match(source, /target\.closest\(INTERACTIVE_ROW_TARGET\)/);
 });
 
 test("management table translations stay complete across supported locales", () => {
@@ -96,5 +106,93 @@ test("management table translations stay complete across supported locales", () 
     requiredKeys.forEach((key) =>
       assert.equal(typeof table[key], "string", `${locale}.${key}`),
     );
+  }
+});
+
+test("archive action keyboard activation does not select its containing row", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { SkillManagementTable } = await import(
+    "../SkillsPanel/SkillManagementTable.tsx"
+  );
+  const [entry] = buildSkillCatalogEntries(
+    [
+      {
+        name: "review-skill",
+        expected_version: "version-1",
+        input_modes: ["chat"],
+        requires_file: false,
+        description: "Review documents",
+        tags: [],
+        enabled: true,
+        source: "marketplace",
+        files: {},
+        file_count: 1,
+        installed_from: "marketplace",
+        is_published: true,
+        marketplace_is_active: true,
+      },
+    ],
+    [],
+  );
+  const container = dom.document.createElement("div");
+  const root = createRoot(container as never);
+  let archiveCalls = 0;
+  let detailSelectionCalls = 0;
+
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(SkillManagementTable, {
+          canBatch: true,
+          canDelete: true,
+          canEdit: false,
+          canExport: false,
+          canToggle: false,
+          entries: [entry!],
+          onDelete: () => {
+            archiveCalls += 1;
+          },
+          onEdit: () => {},
+          onExportZip: () => {},
+          onSelectDetail: () => {
+            detailSelectionCalls += 1;
+          },
+          onSelectSkill: () => {},
+          onToggle: () => {},
+          selectedNames: new Set<string>(),
+          selectedSkillId: null,
+        }),
+      );
+    });
+
+    const archiveButton = container
+      .querySelectorAll("button")
+      .find((button) =>
+        `${button.className} ${button.getAttribute("class") ?? ""}`.includes(
+          "skill-management-table__archive-action",
+        ),
+      );
+    assert.ok(archiveButton, "archive action must render");
+
+    for (const key of ["Enter", " "]) {
+      const keydown: {
+        type: string;
+        key: string;
+        bubbles: boolean;
+        defaultPrevented?: boolean;
+      } = { type: "keydown", key, bubbles: true };
+      await React.act(async () => {
+        archiveButton.dispatchEvent(keydown);
+        if (keydown.defaultPrevented !== true) {
+          archiveButton.dispatchEvent({ type: "click", bubbles: true });
+        }
+      });
+    }
+
+    assert.equal(archiveCalls, 2);
+    assert.equal(detailSelectionCalls, 0);
+  } finally {
+    await React.act(async () => root.unmount());
   }
 });

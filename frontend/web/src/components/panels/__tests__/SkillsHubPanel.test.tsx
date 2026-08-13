@@ -97,7 +97,7 @@ test("Skill master-detail selection moves deterministically when the selected Sk
   });
 });
 
-test("Skill deletion refreshes both catalogs and announces the synchronized detail selection", () => {
+test("Skill archiving removes local catalog rows and announces the synchronized detail selection", () => {
   const panel = readFileSync(
     new URL("../SkillsPanel/index.tsx", import.meta.url),
     "utf8",
@@ -113,7 +113,8 @@ test("Skill deletion refreshes both catalogs and announces the synchronized deta
 
   assert.match(panel, /onSkillsArchived: setArchivedSkills/);
   assert.match(panel, /data-skill-selection-status/);
-  assert.match(panel, /selectionNotice \|\| selectedCatalogEntry/);
+  assert.match(panel, /selectionNotice \?/);
+  assert.match(panel, /className="sr-only"/);
   assert.match(panel, /else if \(!selectedSkillId && nextEntry\)/);
   assert.match(panel, /resolveSkillCatalogSelection/);
   assert.match(actions, /setAdminCatalogItems\(\(current\) =>/);
@@ -122,8 +123,13 @@ test("Skill deletion refreshes both catalogs and announces the synchronized deta
   assert.match(actions, /removeArchivedActionSelections/);
   assert.match(actions, /resolveArchivedSkillCatalogEntries/);
   assert.match(actions, /skills\.batchDeletePartial/);
+  assert.match(actions, /isDeleting/);
   assert.match(skillsHook, /Promise<string\[\]>/);
   assert.match(skillsHook, /return result\.deleted/);
+  assert.match(skillsHook, /current\.filter\(\(skill\) => skill\.name !== name\)/);
+  assert.match(skillsHook, /catalogMutationRevisionRef/);
+  assert.match(skillsHook, /pendingCatalogMutationsRef/);
+  assert.match(skillsHook, /if \(finishCatalogMutation\(\)\) \{\s*await fetchSkills\(\);/);
 });
 
 test("Skill selection synchronization copy exists in every supported locale", () => {
@@ -150,6 +156,27 @@ test("Skill selection synchronization copy exists in every supported locale", ()
         `${locale}.skills.managementTable.${key}`,
       );
     }
+  }
+});
+
+test("Skill management enabled metrics use enabled-state wording in every locale", () => {
+  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
+    const catalog = JSON.parse(
+      readFileSync(
+        new URL(`../../../i18n/locales/${locale}.json`, import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      skills?: {
+        managementTable?: { enabled?: string };
+        metrics?: { enabled?: string };
+      };
+    };
+    assert.equal(
+      catalog.skills?.metrics?.enabled,
+      catalog.skills?.managementTable?.enabled,
+      `${locale}.skills.metrics.enabled`,
+    );
   }
 });
 

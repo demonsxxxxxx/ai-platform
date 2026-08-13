@@ -12,6 +12,9 @@ does not represent deployed runtime state.
   closure evidence.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
   single business authority and defines the Harness replacement seam.
+- `architecture/expert-agent-service-workbench.md` defines the Agent-first
+  authenticated product, Agent.md Builder language, progressive configuration,
+  task-oriented Market/Workspace UX, and truthful Skill archive semantics.
 - `architecture/source-code-architecture.md` defines the normative backend
   package tree, dependency direction, naming, compatibility, deletion proof,
   and strangler migration contract. ADR 0006 records the decision and rejected

@@ -165,7 +165,7 @@ export function SkillDistributionGovernancePanel({
   return (
     <section
       aria-label={t("skills.governance.title")}
-      className="border-t border-[var(--theme-border)] px-4 py-4"
+      className="px-4 py-4 sm:p-5"
       data-skill-distribution-governance
     >
       <div className="flex flex-wrap items-start justify-between gap-3">

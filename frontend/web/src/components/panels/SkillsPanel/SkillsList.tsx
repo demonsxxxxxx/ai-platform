@@ -2,6 +2,9 @@ import { useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Package,
+  Archive,
+  CheckCircle2,
+  Eye,
   FolderOpen,
   Check,
   Search,
@@ -16,7 +19,10 @@ import { SkillsPanelSkeleton } from "../../skeletons";
 import { Pagination } from "../../common/Pagination";
 import { SkillManagementTable } from "./SkillManagementTable";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
-import type { SkillCatalogEntry } from "./skillCatalogEntries";
+import {
+  resolveSkillCatalogMetrics,
+  type SkillCatalogEntry,
+} from "./skillCatalogEntries";
 
 interface SkillsListProps {
   embedded?: boolean;
@@ -28,6 +34,7 @@ interface SkillsListProps {
   setIsFilterOpen: React.Dispatch<React.SetStateAction<boolean>>;
   availableTags: string[];
   catalogEntries: SkillCatalogEntry[];
+  metricsCatalogEntries: SkillCatalogEntry[];
   paginatedCatalogEntries: SkillCatalogEntry[];
   total: number;
   page: number;
@@ -69,6 +76,7 @@ export function SkillsList({
   setIsFilterOpen,
   availableTags,
   catalogEntries,
+  metricsCatalogEntries,
   paginatedCatalogEntries,
   total,
   page,
@@ -151,6 +159,7 @@ export function SkillsList({
   const allSelectableSelected =
     selectableNames.length > 0 &&
     selectableNames.every((name) => selectedNames.has(name));
+  const catalogMetrics = resolveSkillCatalogMetrics(metricsCatalogEntries);
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -204,6 +213,7 @@ export function SkillsList({
             {availableTags.map((tag) => (
               <button
                 key={tag}
+                aria-pressed={selectedTags.includes(tag)}
                 type="button"
                 onClick={() => toggleTag(tag)}
                 className={`skill-tag-chip ${
@@ -223,8 +233,14 @@ export function SkillsList({
     <div className="flex items-center gap-2">
       {canBatchSkills && selectableNames.length > 0 && (
         <button
+          aria-label={
+            allSelectableSelected
+              ? t("common.deselectAll")
+              : t("common.selectAll")
+          }
           onClick={onSelectAll}
           className="btn-secondary h-10"
+          type="button"
         >
           <Check size={16} />
           <span className="hidden sm:inline">
@@ -236,7 +252,12 @@ export function SkillsList({
       )}
       {canImportSkills && (
         <>
-          <button onClick={onGithubClick} className="btn-secondary h-10">
+          <button
+            aria-label={t("skills.importFromGitHub")}
+            onClick={onGithubClick}
+            className="btn-secondary h-10"
+            type="button"
+          >
             <Github size={16} />
             <span className="hidden sm:inline">GitHub</span>
           </button>
@@ -248,6 +269,7 @@ export function SkillsList({
                 ? t("skills.adminReleaseZipSubtitle")
                 : t("skills.uploadZipTitle")
             }
+            type="button"
           >
             <Upload size={16} />
             <span>
@@ -266,41 +288,95 @@ export function SkillsList({
   return (
     <>
       {embedded && (
-        <div
-          data-skills-catalog-toolbar
-          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar} px-0`}
-        >
-          <div
-            className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell}`}
+        <>
+          <section
+            className="mb-3 grid gap-4 overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4 shadow-[0_8px_24px_rgba(18,38,63,0.05)] sm:p-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)] lg:items-center"
+            data-skill-management-overview
           >
             <div
-              className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
+              className="min-w-0"
             >
-              <div className="relative min-w-0 flex-1">
-                <Search
-                  size={18}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                />
-                <input
-                  aria-label={t("skills.searchPlaceholder")}
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="panel-search h-10"
-                  placeholder={t("skills.searchPlaceholder")}
-                />
+              <div className="flex items-start gap-3">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-primary-light)] text-[var(--theme-primary)] ring-1 ring-[var(--theme-border)]">
+                  <Package aria-hidden="true" size={20} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-tertiary)]">
+                    {t("skills.managementEyebrow")}
+                  </p>
+                  <h1 className="mt-1 text-xl font-semibold tracking-tight text-[var(--theme-text)]">
+                    {t("skills.managementTitle")}
+                  </h1>
+                  <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--theme-text-secondary)]">
+                    {t("skills.managementDescription")}
+                  </p>
+                </div>
               </div>
-              {filterMenu}
+              <div className="mt-4 inline-flex max-w-full items-start gap-2 rounded-lg bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-5 text-[var(--theme-warning)] ring-1 ring-[var(--theme-warning-ring)]">
+                <Archive aria-hidden="true" className="mt-0.5 shrink-0" size={15} />
+                <span>{t("skills.archivePolicyDescription")}</span>
+              </div>
             </div>
-            {headerActions && (
-              <div
-                className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
-              >
-                {headerActions}
+            <dl className="grid grid-cols-3 gap-2" data-skill-management-metrics>
+              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+                <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
+                  <Package aria-hidden="true" size={14} />
+                  {t("skills.metrics.total")}
+                </dt>
+                <dd className="mt-2 text-xl font-semibold text-[var(--theme-text)]">{catalogMetrics.total}</dd>
               </div>
-            )}
+              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+                <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
+                  <CheckCircle2 aria-hidden="true" size={14} />
+                  {t("skills.metrics.enabled")}
+                </dt>
+                <dd className="mt-2 text-xl font-semibold text-[var(--theme-success)]">{catalogMetrics.enabled}</dd>
+              </div>
+              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+                <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
+                  <Eye aria-hidden="true" size={14} />
+                  {t("skills.metrics.visible")}
+                </dt>
+                <dd className="mt-2 text-xl font-semibold text-[var(--theme-info)]">{catalogMetrics.visible}</dd>
+              </div>
+            </dl>
+          </section>
+          <div
+            data-skills-catalog-toolbar
+            className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar} px-0`}
+          >
+            <div
+              className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell} rounded-xl`}
+            >
+              <div
+                className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
+              >
+                <div className="relative min-w-0 flex-1">
+                  <Search
+                    size={18}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
+                  />
+                  <input
+                    aria-label={t("skills.searchPlaceholder")}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="panel-search h-10"
+                    placeholder={t("skills.searchPlaceholder")}
+                  />
+                </div>
+                {filterMenu}
+              </div>
+              {headerActions && (
+                <div
+                  className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
+                >
+                  {headerActions}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        </>
       )}
       {!embedded && (
         <PanelHeader
@@ -368,7 +444,7 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(30rem,1.1fr)_minmax(24rem,0.9fr)] xl:items-start">
+          <div className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(34rem,1.15fr)_minmax(24rem,0.85fr)] 2xl:items-start">
             <SkillManagementTable
               canBatch={canBatchSkills}
               canDelete={canDelete}
@@ -386,7 +462,7 @@ export function SkillsList({
               entries={paginatedCatalogEntries}
             />
             <div
-              className="min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]"
+              className="min-w-0 overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_8px_24px_rgba(18,38,63,0.05)] 2xl:sticky 2xl:top-0"
               data-selected-skill-detail-shell
             >
               {selectedDetail}

@@ -407,11 +407,18 @@ export function AgentBuilderWorkbench({
                   <span>{catalog.error}</span>
                 </div>
               ) : null}
-              <section aria-labelledby="agent-basic-heading" className="border-b border-[var(--theme-border)] py-6">
+              <section
+                aria-labelledby="agent-basic-heading"
+                className="border-b border-[var(--theme-border)] py-6"
+                data-agent-builder-core-settings
+              >
                 <div className="mb-4 flex items-center gap-2">
                   <Bot size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                  <h3 id="agent-basic-heading" className="text-sm font-semibold">基本信息</h3>
+                  <h3 id="agent-basic-heading" className="text-sm font-semibold">创建专家</h3>
                 </div>
+                <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                  完成下面 4 项即可保存：名称、Agent.md 初始指令、模型和主 Skill。
+                </p>
                 <div className="grid grid-cols-1 gap-4">
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-medium">名称</span>
@@ -424,37 +431,20 @@ export function AgentBuilderWorkbench({
                       value={activeEditor.name}
                     />
                   </label>
-                  <label className="flex flex-col gap-2">
-                    <span className="text-sm font-medium">简介</span>
-                    <textarea
-                      aria-label="智能体简介"
-                      className="min-h-20 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
-                      disabled={interactionBusy}
-                      onChange={(event) => updateEditor((editor) => ({ ...editor, description: event.target.value }))}
-                      value={activeEditor.description}
-                    />
-                  </label>
                 </div>
               </section>
-
-              <AgentBuilderEnterpriseFields
-                disabled={interactionBusy}
-                editor={activeEditor}
-                onChange={(patch) =>
-                  updateEditor((editor) => ({
-                    ...editor,
-                    ...patch,
-                  }))
-                }
-              />
 
               <section aria-labelledby="agent-instructions-heading" className="border-b border-[var(--theme-border)] py-6">
                 <div className="mb-4 flex items-center gap-2">
                   <FileText size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                  <h3 id="agent-instructions-heading" className="text-sm font-semibold">系统说明</h3>
+                  <h3 id="agent-instructions-heading" className="text-sm font-semibold">Agent.md 初始指令</h3>
                 </div>
+                <p className="mb-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                  定义专家的角色、工作方法和边界。系统会在每次任务开始时私有注入，不会作为用户消息展示。
+                </p>
                 <textarea
-                    aria-label="智能体系统说明"
+                  aria-label="Agent.md 初始指令"
+                  data-agent-builder-agent-md
                   className="min-h-48 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
                   disabled={interactionBusy}
                   onChange={(event) => updateEditor((editor) => ({ ...editor, instructions: event.target.value }))}
@@ -466,7 +456,7 @@ export function AgentBuilderWorkbench({
               <section aria-labelledby="agent-model-heading" className="border-b border-[var(--theme-border)] py-6">
                 <div className="mb-4 flex items-center gap-2">
                   <Cpu size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                  <h3 id="agent-model-heading" className="text-sm font-semibold">模型</h3>
+                  <h3 id="agent-model-heading" className="text-sm font-semibold">运行模型</h3>
                 </div>
                 <label className="flex max-w-xl flex-col gap-2">
                   <span className="text-sm font-medium">当前模型</span>
@@ -535,8 +525,29 @@ export function AgentBuilderWorkbench({
                 </p>
               </section>
 
+              <AgentBuilderEnterpriseFields
+                disabled={interactionBusy}
+                editor={activeEditor}
+                onChange={(patch) =>
+                  updateEditor((editor) => ({
+                    ...editor,
+                    ...patch,
+                  }))
+                }
+              />
+
               <section aria-labelledby="agent-mcp-heading" className="border-b border-[var(--theme-border)] py-6">
-                <div className="mb-4 flex items-center justify-between gap-3">
+                <details
+                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
+                  data-agent-builder-mcp-settings
+                >
+                  <summary className="cursor-pointer text-sm font-medium">
+                    MCP 工具（可选） · 已选择 {activeEditor.selectedMcpToolIds.length} 项
+                  </summary>
+                  <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                    主 Skill 无法覆盖的外部能力才需要额外选择 MCP 工具。
+                  </p>
+                <div className="mb-4 mt-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <Wrench size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
                     <h3 id="agent-mcp-heading" className="text-sm font-semibold">MCP 工具</h3>
@@ -586,6 +597,7 @@ export function AgentBuilderWorkbench({
                     {unavailableMcpToolIds.length} 项已选工具需要明确移除或重新授权。
                   </p>
                 ) : null}
+                </details>
               </section>
 
               <section aria-labelledby="agent-version-heading" className="py-6">

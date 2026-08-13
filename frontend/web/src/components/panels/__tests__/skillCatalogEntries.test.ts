@@ -8,6 +8,7 @@ import {
   filterSkillCatalogEntries,
   removeArchivedActionSelections,
   resolveArchivedSkillCatalogEntries,
+  resolveSkillCatalogMetrics,
   resolveSkillCatalogPage,
 } from "../SkillsPanel/skillCatalogEntries.ts";
 
@@ -158,4 +159,23 @@ test("the complete authorized catalog is paginated locally", () => {
     ["skill-21", "skill-22"],
   );
   assert.equal(page.total, 22);
+});
+
+test("management metrics stay catalog-wide when the visible list is filtered", () => {
+  const entries = buildSkillCatalogEntries(
+    [runtimeSkill("enabled-visible"), runtimeSkill("disabled-hidden")],
+    [],
+  );
+  entries[1] = {
+    ...entries[1]!,
+    runtimeEnabled: false,
+    catalogStatus: "hidden",
+  };
+
+  assert.equal(filterSkillCatalogEntries(entries, "enabled", []).length, 1);
+  assert.deepEqual(resolveSkillCatalogMetrics(entries), {
+    total: 2,
+    enabled: 1,
+    visible: 1,
+  });
 });

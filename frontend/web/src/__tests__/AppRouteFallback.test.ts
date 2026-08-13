@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
+import { installTestDom } from "../hooks/useAgent/__tests__/testDom.ts";
+
+const routeDom = installTestDom();
 
 const src = resolve(import.meta.dirname, "..");
 const read = (relativePath: string) =>
@@ -23,7 +26,7 @@ test("admin routes redirect ordinary users before mounting management pages", ()
     assert.match(
       app,
       new RegExp(
-        `path="/${route}"[\\s\\S]{0,220}<ProtectedRoute[\\s\\S]{0,120}requireAdmin[\\s\\S]{0,120}redirectTo="/chat"`,
+        `path="/${route}"[\\s\\S]{0,220}<ProtectedRoute[\\s\\S]{0,120}requireAdmin[\\s\\S]{0,160}redirectTo=\\{APP_ROUTE_PATHS\\.agentMarket\\}`,
       ),
       route,
     );
@@ -75,4 +78,90 @@ test("product UI is fixed to Chinese regardless of historical language storage",
   assert.match(i18n, /export const PRODUCT_LANGUAGE = "zh"/);
   assert.match(i18n, /lng:\s*PRODUCT_LANGUAGE/);
   assert.match(i18n, /fallbackLng:\s*PRODUCT_LANGUAGE/);
+});
+
+test("generic Chat deep links remain readable without exposing generic creation or history", () => {
+  const chat = read("components/layout/AppContent/ChatAppContent.tsx");
+  const header = read("components/layout/AppContent/Header.tsx");
+
+  assert.match(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
+  assert.match(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
+  assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
+  assert.match(header, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
+});
+
+test("bare Chat redirects to Agent Market while session deep links remain readable", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import(
+    "react-router-dom"
+  );
+  const { ChatRouteBoundary } = await import(
+    "../components/common/ChatRouteBoundary.tsx"
+  );
+
+  async function renderRoute(initialEntry: string) {
+    let pathname = initialEntry;
+    let sessionReadable = false;
+    const container = routeDom.document.createElement("div");
+    const root = createRoot(container as never);
+
+    function LocationProbe() {
+      pathname = useLocation().pathname;
+      return null;
+    }
+
+    function SessionProbe() {
+      sessionReadable = true;
+      return null;
+    }
+
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: [initialEntry] },
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(LocationProbe),
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: APP_ROUTE_PATHS.chat,
+                element: React.createElement(
+                  ChatRouteBoundary,
+                  null,
+                  React.createElement(SessionProbe),
+                ),
+              }),
+              React.createElement(Route, {
+                path: APP_ROUTE_PATHS.agentMarket,
+                element: React.createElement("span", null, "Agent Market"),
+              }),
+            ),
+          ),
+        ),
+      );
+    });
+
+    return {
+      pathname,
+      sessionReadable,
+      unmount: async () => {
+        await React.act(async () => root.unmount());
+      },
+    };
+  }
+
+  const bareChat = await renderRoute("/chat");
+  assert.equal(bareChat.pathname, APP_ROUTE_PATHS.agentMarket);
+  assert.equal(bareChat.sessionReadable, false);
+  await bareChat.unmount();
+
+  const historicalSession = await renderRoute("/chat/session-123");
+  assert.equal(historicalSession.pathname, "/chat/session-123");
+  assert.equal(historicalSession.sessionReadable, true);
+  await historicalSession.unmount();
 });

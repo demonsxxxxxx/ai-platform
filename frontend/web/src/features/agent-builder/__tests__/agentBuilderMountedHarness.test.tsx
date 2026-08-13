@@ -465,7 +465,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.match(container.textContent, /支持助手/);
     const nameInput = container.querySelector('[aria-label="智能体名称"]');
     const descriptionInput = container.querySelector('[aria-label="智能体简介"]');
-    const instructionsInput = container.querySelector('[aria-label="智能体系统说明"]');
+    const instructionsInput = container.querySelector('[aria-label="Agent.md 初始指令"]');
     assert.equal(nameInput?.value, "支持助手");
     assert.ok(descriptionInput);
     assert.ok(instructionsInput);

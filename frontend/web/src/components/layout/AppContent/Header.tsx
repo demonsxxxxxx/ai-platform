@@ -40,6 +40,8 @@ interface HeaderProps {
   onOpenRunPlayback?: () => void;
   onToggleOutline?: () => void;
   showOutlineButton?: boolean;
+  allowNewSessionAction?: boolean;
+  newSessionActionLabel?: string;
 }
 
 export function Header({
@@ -53,6 +55,8 @@ export function Header({
   onOpenRunPlayback,
   onToggleOutline,
   showOutlineButton,
+  allowNewSessionAction = true,
+  newSessionActionLabel,
 }: HeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -227,7 +231,7 @@ export function Header({
                         </span>
                       </button>
                     )}
-                    {activeTab === "chat" && (
+                    {activeTab === "chat" && allowNewSessionAction && (
                       <button
                         onClick={() => {
                           onNewSession();
@@ -238,7 +242,9 @@ export function Header({
                         <span className="flex items-center justify-center w-5 shrink-0">
                           <MessageSquarePlus size={16} />
                         </span>
-                        <span className="truncate">{t("sidebar.newChat")}</span>
+                        <span className="truncate">
+                          {newSessionActionLabel ?? t("sidebar.newChat")}
+                        </span>
                       </button>
                     )}
                     <button

@@ -8,6 +8,13 @@ import {
 } from "../appRouteManifest.ts";
 
 const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+const chatRouteBoundarySource = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../components/common/ChatRouteBoundary.tsx",
+  ),
+  "utf8",
+);
 const typesSource = readFileSync(
   resolve(import.meta.dirname, "../components/layout/AppContent/types.ts"),
   "utf8",
@@ -54,10 +61,16 @@ test("launchpad tab is registered in layout and sidebar", () => {
   assert.match(sidebarPartsSource, /nav\.apps/);
 });
 
-test("chat workbench is the default authenticated landing destination", () => {
-  assert.match(authRedirectSource, /return redirectPath \|\| "\/chat"/);
-  assert.match(appSource, /navigate\(redirectPath \?\? "\/chat"/);
-  assert.match(oauthCallbackSource, /getRedirectPath\(\) \|\| "\/chat"/);
+test("Agent market is the default authenticated landing destination", () => {
+  assert.match(authRedirectSource, /return redirectPath \|\| "\/agent-market"/);
+  assert.match(
+    appSource,
+    /navigate\(redirectPath \?\? APP_ROUTE_PATHS\.agentMarket/,
+  );
+  assert.match(
+    oauthCallbackSource,
+    /getRedirectPath\(\) \|\| "\/agent-market"/,
+  );
 });
 
 test("root path routes by auth state instead of rendering the marketing landing page", () => {
@@ -65,7 +78,14 @@ test("root path routes by auth state instead of rendering the marketing landing 
   assert.equal(resolveAppRoute("/"), "root");
   assert.doesNotMatch(appSource, /LandingPage/);
   assert.match(appSource, /function RootRedirect\(\)/);
-  assert.match(appSource, /<Navigate to="\/chat" replace \/>/);
+  assert.match(
+    appSource,
+    /<Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
+  );
+  assert.match(
+    chatRouteBoundarySource,
+    /sessionId \? children : <Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
+  );
   assert.match(appSource, /<Navigate to="\/auth\/login" replace \/>/);
   assert.match(
     appSource,

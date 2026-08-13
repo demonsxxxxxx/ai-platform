@@ -231,20 +231,26 @@ export function SkillsPanel({
 
   const selectedDetail = (
     <div className="min-h-0">
-      {selectionNotice || selectedCatalogEntry ? (
+      {selectionNotice ? (
         <div
           aria-live="polite"
-          className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-4 py-2.5 text-xs text-[var(--theme-text-secondary)]"
+          className="border-b border-[var(--theme-border)] bg-[var(--theme-primary-light)] px-4 py-2.5 text-xs text-[var(--theme-text-secondary)]"
           data-skill-selection-status
           role="status"
         >
-          {selectionNotice ??
-            (selectedCatalogEntry
-              ? t("skills.managementTable.selectionCurrent", {
-                  name: selectedCatalogEntry.displayName,
-                })
-              : null)}
+          {selectionNotice}
         </div>
+      ) : selectedCatalogEntry ? (
+        <span
+          aria-live="polite"
+          className="sr-only"
+          data-skill-selection-status
+          role="status"
+        >
+          {t("skills.managementTable.selectionCurrent", {
+            name: selectedCatalogEntry.displayName,
+          })}
+        </span>
       ) : null}
       {selectedDetailContent}
     </div>
@@ -296,6 +302,7 @@ export function SkillsPanel({
         setIsFilterOpen={actions.setIsFilterOpen}
         availableTags={actions.availableTags}
         catalogEntries={filteredCatalogEntries}
+        metricsCatalogEntries={catalogEntries}
         paginatedCatalogEntries={catalogPage.entries}
         total={catalogPage.total}
         page={actions.page}
@@ -399,11 +406,12 @@ export function SkillsPanel({
         message={t("skills.confirmDeleteMessage", {
           name: actions.deleteConfirmData?.name || "",
         })}
-        confirmText={t("common.delete")}
+        confirmText={t("skills.archiveAction")}
         cancelText={t("common.cancel")}
         onConfirm={actions.confirmDelete}
         onCancel={actions.cancelDelete}
-        variant="danger"
+        variant="warning"
+        loading={actions.isDeleting}
       />
     </div>
   );

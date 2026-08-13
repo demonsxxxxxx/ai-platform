@@ -142,12 +142,34 @@ export function useSkills(options?: {
   // Only the newest catalog request may update visible state. Search, filters,
   // and pagination can otherwise resolve out of order and restore stale rows.
   const catalogRequestSequenceRef = useRef(0);
+  // Archive mutations own the catalog while they are pending. Reads that
+  // started before or during an archive must not restore retained history to
+  // the active catalog; the final mutation refresh supplies one authoritative
+  // rows-and-total snapshot.
+  const catalogMutationRevisionRef = useRef(0);
+  const pendingCatalogMutationsRef = useRef(0);
+
+  const beginCatalogMutation = useCallback(() => {
+    pendingCatalogMutationsRef.current += 1;
+    catalogMutationRevisionRef.current += 1;
+    catalogRequestSequenceRef.current += 1;
+  }, []);
+
+  const finishCatalogMutation = useCallback(() => {
+    pendingCatalogMutationsRef.current = Math.max(
+      0,
+      pendingCatalogMutationsRef.current - 1,
+    );
+    catalogMutationRevisionRef.current += 1;
+    return pendingCatalogMutationsRef.current === 0;
+  }, []);
 
   // Fetch all skills (basic info only)
   const fetchSkills = useCallback(
     async (params?: SkillListParams): Promise<boolean> => {
       if (!enabled) return false;
       const requestSequence = ++catalogRequestSequenceRef.current;
+      const mutationRevision = catalogMutationRevisionRef.current;
       setIsLoading(true);
       setError(null);
       setListError(null);
@@ -159,7 +181,11 @@ export function useSkills(options?: {
           ? await skillApi.listAllAuthorized()
           : await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
-        if (requestSequence !== catalogRequestSequenceRef.current) {
+        if (
+          requestSequence !== catalogRequestSequenceRef.current ||
+          mutationRevision !== catalogMutationRevisionRef.current ||
+          pendingCatalogMutationsRef.current > 0
+        ) {
           return false;
         }
         // For list view, we don't fetch full details immediately
@@ -188,7 +214,11 @@ export function useSkills(options?: {
         }
         return true;
       } catch (err) {
-        if (requestSequence !== catalogRequestSequenceRef.current) {
+        if (
+          requestSequence !== catalogRequestSequenceRef.current ||
+          mutationRevision !== catalogMutationRevisionRef.current ||
+          pendingCatalogMutationsRef.current > 0
+        ) {
           return false;
         }
         const message = resolveSkillOperationError(err, "skills.loadFailed");
@@ -394,20 +424,47 @@ export function useSkills(options?: {
   const deleteSkill = useCallback(
     async (name: string): Promise<boolean> => {
       if (!enabled) return false;
+      const archivedSkill = skills.find((skill) => skill.name === name);
+      const archivedIndex = skills.findIndex((skill) => skill.name === name);
+      let archiveError: string | null = null;
+      beginCatalogMutation();
       setIsDeleting(true);
       setError(null);
+      if (archivedSkill) {
+        setSkills((current) =>
+          current.filter((skill) => skill.name !== name),
+        );
+        setTotal((current) => Math.max(0, current - 1));
+      }
       try {
         await skillApi.delete(name);
-        await fetchSkills();
         return true;
       } catch (err) {
-        setError(resolveSkillOperationError(err, "skills.deleteFailed"));
+        if (archivedSkill) {
+          setSkills((current) => {
+            if (current.some((skill) => skill.name === name)) return current;
+            const restored = [...current];
+            restored.splice(
+              Math.min(Math.max(archivedIndex, 0), restored.length),
+              0,
+              archivedSkill,
+            );
+            return restored;
+          });
+          setTotal((current) => current + 1);
+        }
+        archiveError = resolveSkillOperationError(err, "skills.deleteFailed");
+        setError(archiveError);
         return false;
       } finally {
+        if (finishCatalogMutation()) {
+          await fetchSkills();
+        }
+        if (archiveError) setError(archiveError);
         setIsDeleting(false);
       }
     },
-    [enabled, fetchSkills],
+    [beginCatalogMutation, enabled, fetchSkills, finishCatalogMutation, skills],
   );
 
   // Toggle skill
@@ -457,6 +514,8 @@ export function useSkills(options?: {
   const batchDeleteSkills = useCallback(
     async (names: string[]): Promise<string[]> => {
       if (!enabled) return [];
+      let archiveError: string | null = null;
+      beginCatalogMutation();
       setError(null);
       try {
         const result = await skillApi.batchDelete(names);
@@ -465,19 +524,24 @@ export function useSkills(options?: {
           setSkills((prev) =>
             prev.filter((s) => !result.deleted.includes(s.name)),
           );
+          setTotal((current) =>
+            Math.max(0, current - result.deleted.length),
+          );
         }
-        // Full refresh for consistency
-        await fetchSkills();
         return result.deleted;
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to delete skills",
-        );
-        await fetchSkills(); // rollback
+        archiveError =
+          err instanceof Error ? err.message : "Failed to delete skills";
+        setError(archiveError);
         return [];
+      } finally {
+        if (finishCatalogMutation()) {
+          await fetchSkills();
+        }
+        if (archiveError) setError(archiveError);
       }
     },
-    [enabled, fetchSkills],
+    [beginCatalogMutation, enabled, fetchSkills, finishCatalogMutation],
   );
 
   // Batch toggle skills

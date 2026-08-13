@@ -1,10 +1,10 @@
 import {
   Download,
+  Archive,
   FileArchive,
   Pencil,
   Power,
   Store,
-  Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -12,6 +12,20 @@ import type {
   SkillCatalogEntry,
   SkillCatalogStatus,
 } from "./skillCatalogEntries";
+
+const INTERACTIVE_ROW_TARGET =
+  'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [contenteditable="true"]';
+
+function isInteractiveRowTarget(
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean {
+  return (
+    target !== currentTarget &&
+    target instanceof Element &&
+    target.closest(INTERACTIVE_ROW_TARGET) !== null
+  );
+}
 
 interface SkillManagementTableProps {
   canBatch: boolean;
@@ -99,6 +113,9 @@ export function SkillManagementTable({
             key={entry.id}
             onClick={() => onSelectDetail(entry.id)}
             onKeyDown={(event) => {
+              if (isInteractiveRowTarget(event.target, event.currentTarget)) {
+                return;
+              }
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
                 onSelectDetail(entry.id);
@@ -280,7 +297,7 @@ export function SkillManagementTable({
               {rowCanDelete ? (
                 <button
                   aria-label={t("skills.managementTable.deleteSkill", { name: entry.displayName })}
-                  className="btn-icon text-[var(--theme-danger)]"
+                  className="btn-icon skill-management-table__archive-action"
                   onClick={(event) => {
                     event.stopPropagation();
                     onDelete(actionName);
@@ -288,7 +305,7 @@ export function SkillManagementTable({
                   title={t("skills.managementTable.delete")}
                   type="button"
                 >
-                  <Trash2 aria-hidden="true" size={16} />
+                  <Archive aria-hidden="true" size={16} />
                 </button>
               ) : null}
               {!hasActions ? (

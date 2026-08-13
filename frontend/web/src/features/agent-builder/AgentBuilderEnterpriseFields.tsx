@@ -118,16 +118,22 @@ export function AgentBuilderEnterpriseFields({
             size={17}
           />
           <h3 className="text-sm font-semibold" id="agent-enterprise-heading">
-            市场展示（可选）
+            可选配置
           </h3>
         </div>
         <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
-          这些内容只影响智能体市场卡片和开场体验，不影响执行能力，也不要求填写。
+          首次创建只需要完成名称、Agent.md、模型和主 Skill；展示、文件与访问范围可稍后补充。
         </p>
-        <details className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+        <details
+          className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
+          data-agent-builder-market-settings
+        >
           <summary className="cursor-pointer text-sm font-medium">
-            编辑市场卡片与开场内容
+            市场展示与开场内容
           </summary>
+          <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+            这些字段只影响市场卡片、详情和开场体验，不改变执行能力。
+          </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">头像</span>
@@ -169,6 +175,16 @@ export function AgentBuilderEnterpriseFields({
             </label>
           </div>
           <div className="mt-4 grid gap-4">
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">简介</span>
+              <textarea
+                aria-label="智能体简介"
+                className={`${INPUT_CLASS} min-h-20 resize-y`}
+                disabled={disabled}
+                onChange={(event) => onChange({ description: event.target.value })}
+                value={editor.description}
+              />
+            </label>
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">能力摘要</span>
               <textarea
@@ -212,48 +228,62 @@ export function AgentBuilderEnterpriseFields({
           </div>
         </details>
 
-        <fieldset className="mt-5 min-w-0">
-          <legend className="text-sm font-medium">输入能力</legend>
-          <div className="mt-2 flex flex-wrap gap-4 text-sm">
-            {(["text", "file"] as const).map((inputType) => (
-              <label className="inline-flex items-center gap-2" key={inputType}>
-                <input
-                  checked={editor.supportedInputTypes.includes(inputType)}
-                  disabled={disabled || inputType === "text"}
-                  onChange={(event) =>
-                    onChange({
-                      supportedInputTypes: event.target.checked
-                        ? [...editor.supportedInputTypes, inputType]
-                        : editor.supportedInputTypes.filter(
-                            (item) => item !== inputType,
-                          ),
-                    })
-                  }
-                  type="checkbox"
-                />
-                {inputType === "text" ? "文本" : "文件"}
-              </label>
-            ))}
-          </div>
-          {editor.supportedInputTypes.includes("file") ? (
-            <div className="mt-3 max-w-xl">
-              <ListField
-                className="min-h-20"
-                disabled={disabled}
-                label="支持的文件类型"
-                onChange={(supportedFileTypes) => onChange({ supportedFileTypes })}
-                values={editor.supportedFileTypes}
-              />
+        <details
+          className="mt-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
+          data-agent-builder-input-settings
+        >
+          <summary className="cursor-pointer text-sm font-medium">
+            文件输入（可选）
+          </summary>
+          <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+            文本输入始终可用；只有专家确实需要读取文件时才启用文件输入并声明类型。
+          </p>
+          <fieldset className="mt-4 min-w-0">
+            <legend className="sr-only">输入能力</legend>
+            <div className="mt-2 flex flex-wrap gap-4 text-sm">
+              {(["text", "file"] as const).map((inputType) => (
+                <label className="inline-flex items-center gap-2" key={inputType}>
+                  <input
+                    checked={editor.supportedInputTypes.includes(inputType)}
+                    disabled={disabled || inputType === "text"}
+                    onChange={(event) =>
+                      onChange({
+                        supportedInputTypes: event.target.checked
+                          ? [...editor.supportedInputTypes, inputType]
+                          : editor.supportedInputTypes.filter(
+                              (item) => item !== inputType,
+                            ),
+                      })
+                    }
+                    type="checkbox"
+                  />
+                  {inputType === "text" ? "文本" : "文件"}
+                </label>
+              ))}
             </div>
-          ) : null}
-        </fieldset>
+            {editor.supportedInputTypes.includes("file") ? (
+              <div className="mt-3 max-w-xl">
+                <ListField
+                  className="min-h-20"
+                  disabled={disabled}
+                  label="支持的文件类型"
+                  onChange={(supportedFileTypes) => onChange({ supportedFileTypes })}
+                  values={editor.supportedFileTypes}
+                />
+              </div>
+            ) : null}
+          </fieldset>
+        </details>
       </section>
 
       <section
         aria-label="访问范围与数据说明（高级）"
         className="border-b border-[var(--theme-border)] py-6"
       >
-        <details className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+        <details
+          className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
+          data-agent-builder-access-settings
+        >
           <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium">
             <ShieldCheck
               aria-hidden="true"
