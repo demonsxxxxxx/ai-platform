@@ -1004,6 +1004,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             },
             model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=("profile-tool", "profile-tool-secondary"),
+            configured_mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 4,

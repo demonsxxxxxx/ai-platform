@@ -141,6 +141,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "input_files": ["file-a"],
         "materialized_file_names": ["z.docx", "a.docx"],
         "system_prompt": "Private profile instruction",
+        "require_selected_skill_invocation": True,
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
