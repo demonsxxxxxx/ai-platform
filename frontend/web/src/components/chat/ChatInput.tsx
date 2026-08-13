@@ -75,6 +75,7 @@ export const ChatInput = memo(function ChatInput({
   canSend = true,
   placeholder,
   acceptedFileTypes,
+  disableSlashCommands = false,
   tools = [],
   onToggleTool,
   onToggleCategory,
@@ -223,7 +224,7 @@ export const ChatInput = memo(function ChatInput({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSend) return;
-    if (handleComposerCommandSubmit(input)) return;
+    if (!disableSlashCommands && handleComposerCommandSubmit(input)) return;
     if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
       const selectedSkillSubmission = selectedSkillState
@@ -263,7 +264,7 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (slashMenuOpen) {
+    if (!disableSlashCommands && slashMenuOpen) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
         setSlashMenuHighlight((index) =>
@@ -420,6 +421,7 @@ export const ChatInput = memo(function ChatInput({
 
   const openCommandPanel = useCallback(
     (nextValue: string): boolean => {
+      if (disableSlashCommands) return false;
       const draft = resolveComposerCommandDraft(
         nextValue,
         commandPanelAvailability,
@@ -455,6 +457,7 @@ export const ChatInput = memo(function ChatInput({
     [
       closeSlashMenu,
       commandPanelAvailability,
+      disableSlashCommands,
       scheduleTextareaResize,
       upsertUnavailableCommandChip,
     ],
@@ -462,10 +465,10 @@ export const ChatInput = memo(function ChatInput({
 
   const slashCommandItems = useMemo(
     () =>
-      slashMenuOpen
+      !disableSlashCommands && slashMenuOpen
         ? resolveSlashCommandMenu(input, commandPanelAvailability)
         : [],
-    [commandPanelAvailability, input, slashMenuOpen],
+    [commandPanelAvailability, disableSlashCommands, input, slashMenuOpen],
   );
 
   useEffect(() => {
@@ -787,7 +790,7 @@ export const ChatInput = memo(function ChatInput({
           className="relative"
           data-composer-command-menu-anchor
         >
-          {slashMenuOpen && (
+          {!disableSlashCommands && slashMenuOpen && (
             <SlashCommandMenu
               items={slashCommandItems}
               highlightedIndex={slashMenuHighlight}

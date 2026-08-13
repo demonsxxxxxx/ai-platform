@@ -13,6 +13,7 @@ import {
   createUnsavedAgentEditor,
   getAgentProfilePublishBlock,
   getAgentProfileSaveBlock,
+  hasUnsavedAgentProfileEdits,
   hydrateAgentProfileEditor,
   isAgentProfileEditorDirty,
   mapAuthorizedBuilderSkills,
@@ -20,6 +21,12 @@ import {
   validateAgentProfileEditor,
   type AgentBuilderCurrentCatalog,
 } from "../agentBuilderAdapter";
+
+test("a pristine unsaved editor does not trigger a discard warning", () => {
+  const editor = createUnsavedAgentEditor();
+  assert.equal(editor.avatarSeed, "");
+  assert.equal(hasUnsavedAgentProfileEdits(editor), false);
+});
 
 function skill(overrides: Partial<PublicSkillResponse> = {}): PublicSkillResponse {
   return {
@@ -147,16 +154,16 @@ test("hydrates every exact server identity without catalog fallback", () => {
   assert.equal(editor.revision, 7);
   assert.equal(editor.status, "draft");
   assert.equal(editor.modelId, "removed-model");
-  assert.deepEqual(editor.selectedSkill, {
+  assert.deepEqual(editor.selectedSkills, [{
     skill_id: "removed-skill",
     expected_version: "sha256:removed",
-  });
+  }]);
   assert.deepEqual(editor.selectedMcpToolIds, ["mcp:removed"]);
   assert.equal(isAgentProfileEditorDirty(editor), false);
 
   serverProfile.selected_skill.skill_id = "mutated-after-hydration";
   serverProfile.mcp_tool_ids.push("mutated-after-hydration");
-  assert.equal(editor.selectedSkill?.skill_id, "removed-skill");
+  assert.equal(editor.selectedSkills[0]?.skill_id, "removed-skill");
   assert.deepEqual(editor.selectedMcpToolIds, ["mcp:removed"]);
 });
 
@@ -173,10 +180,10 @@ test("materializes create and update requests with the exact optimistic revision
     permissionsAndDataAccessNotice: " 仅访问授权数据 ",
     instructions: "Keep trailing space. ",
     modelId: model.id,
-    selectedSkill: {
+    selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
-    },
+    }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
@@ -196,8 +203,13 @@ test("materializes create and update requests with the exact optimistic revision
       skill_id: "document-review",
       expected_version: "2026.07.28",
     },
+    skill_set: [{
+      skill_id: "document-review",
+      expected_version: "2026.07.28",
+    }],
     mcp_tool_ids: ["mcp:knowledge:search"],
     avatar_ref: "builtin:agent",
+    avatar_seed: "新智能体",
     avatar_asset_id: null,
     category: "general",
     visibility: "tenant",
@@ -232,15 +244,15 @@ test("reports precise missing data and revision reasons", () => {
   assert.equal(validateAgentProfileEditor(withoutSkill, catalog())?.code, "skill_required");
   const coreOnly = {
     ...withoutSkill,
-    selectedSkill: {
+    selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
-    },
+    }],
   };
   assert.equal(
     validateAgentProfileEditor(coreOnly, catalog()),
     null,
-    "name, Agent.md, model, and primary Skill are sufficient to save",
+    "name, Agent.md, model, and one Skill are sufficient to save",
   );
   const withoutRevision = {
     ...hydrateAgentProfileEditor(profile()),
@@ -270,8 +282,27 @@ test("preserves and blocks stale model, Skill version, and MCP identities", () =
   assert.equal(mcpIssue?.code, "selected_mcp_tool_unavailable");
   assert.deepEqual(mcpIssue?.unavailableMcpToolIds, ["mcp:knowledge:search"]);
   assert.deepEqual(editor.selectedMcpToolIds, ["mcp:knowledge:search"]);
-  assert.equal(editor.selectedSkill?.expected_version, "2026.07.28");
+  assert.equal(editor.selectedSkills[0]?.expected_version, "2026.07.28");
   assert.equal(editor.modelId, "model-id");
+});
+
+test("persists an exact multi-Skill set while keeping the primary compatibility shadow", () => {
+  const secondSkill = skill({ name: "fact-extraction", expected_version: "sha256:facts" });
+  const editor = {
+    ...hydrateAgentProfileEditor(profile()),
+    selectedSkills: [
+      { skill_id: "document-review", expected_version: "2026.07.28" },
+      { skill_id: "fact-extraction", expected_version: "sha256:facts" },
+    ],
+  };
+
+  assert.equal(
+    validateAgentProfileEditor(editor, catalog({ skills: [skill(), secondSkill] })),
+    null,
+  );
+  const request = buildAgentProfileDraftRequest(editor);
+  assert.deepEqual(request.selected_skill, request.skill_set[0]);
+  assert.deepEqual(request.skill_set, editor.selectedSkills);
 });
 
 test("fails closed while selected catalogs are unresolved", () => {
@@ -296,10 +327,10 @@ test("publish requires one clean successfully saved draft", () => {
     name: "Agent",
     instructions: "System",
     modelId: model.id,
-    selectedSkill: {
+    selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
-    },
+    }],
   };
   assert.equal(getAgentProfilePublishBlock(unsaved, catalog())?.code, "save_required");
 

@@ -738,6 +738,7 @@ export function ChatView({
     canSend: canSendMessage,
     placeholder: composerPlaceholder,
     acceptedFileTypes: agentAcceptedFileTypes,
+    disableSlashCommands: Boolean(agentEmptyProfile),
     tools,
     onToggleTool,
     onToggleCategory,

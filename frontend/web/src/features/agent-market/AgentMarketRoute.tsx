@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, Bot, FileText, Headphones, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { ArrowLeft, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
@@ -12,7 +12,6 @@ import type { AgentProfilePublicProjection } from "../../types";
 import {
   AGENT_PROFILE_CATEGORIES,
   AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentProfileAvatarRef,
   type AgentProfileCategory,
 } from "../../types/agentProfile";
 import {
@@ -21,6 +20,7 @@ import {
   filterPublishedMarketProfiles,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
+import { AgentIdentityAvatar } from "./AgentIdentityAvatar";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -44,12 +44,6 @@ const MARKET_CATEGORIES: ReadonlyArray<{ value: AgentProfileCategory | "all"; la
     label: AGENT_PROFILE_CATEGORY_LABELS[value],
   })),
 ];
-const FALLBACK_IDENTITY_STYLES = [
-  "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300",
-  "bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300",
-  "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300",
-  "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300",
-] as const;
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -99,42 +93,6 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
     >
       {children}
     </AppShell>
-  );
-}
-
-function getFallbackIdentityStyle(agentId: string): string {
-  let hash = 0;
-  for (const character of agentId) {
-    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  }
-  return FALLBACK_IDENTITY_STYLES[hash % FALLBACK_IDENTITY_STYLES.length];
-}
-
-function AgentAvatarIcon({ avatarRef, size }: { avatarRef: AgentProfileAvatarRef; size: number }) {
-  if (avatarRef === "builtin:document") return <FileText size={size} aria-hidden="true" />;
-  if (avatarRef === "builtin:assistant") return <Headphones size={size} aria-hidden="true" />;
-  if (avatarRef === "builtin:research") return <Search size={size} aria-hidden="true" />;
-  return <Bot size={size} aria-hidden="true" />;
-}
-
-function AgentIdentityAvatar({
-  profile,
-  large = false,
-}: {
-  profile: AgentProfilePublicProjection;
-  large?: boolean;
-}) {
-  return (
-    <span
-      aria-label={`${profile.name} 头像`}
-      data-agent-avatar-ref={profile.avatar_ref}
-      className={`inline-flex shrink-0 items-center justify-center rounded-lg ${
-        large ? "h-16 w-16" : "h-11 w-11"
-      } ${getFallbackIdentityStyle(profile.agent_id)}`}
-      role="img"
-    >
-      <AgentAvatarIcon avatarRef={profile.avatar_ref} size={large ? 30 : 22} />
-    </span>
   );
 }
 
@@ -244,16 +202,16 @@ function AgentMarketCard({
   return (
     <article
       data-agent-market-card
-      className="flex min-h-40 min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] transition-colors hover:border-[var(--theme-primary)]"
+      className="flex min-h-64 min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_2px_12px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-[var(--theme-primary)] hover:shadow-[0_8px_24px_rgba(15,23,42,0.09)]"
     >
       <button
         data-agent-market-open-workspace
         aria-label={`使用 ${profile.name} 开始任务`}
-        className="group flex w-full flex-1 gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
+        className="group flex w-full flex-1 flex-col items-start gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
         onClick={() => onOpenWorkspace(profile)}
         type="button"
       >
-        <AgentIdentityAvatar profile={profile} />
+        <AgentIdentityAvatar agentId={profile.agent_id} avatarSeed={profile.avatar_seed} name={profile.name} size="lg" />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex flex-wrap items-start justify-between gap-2">
             <span className="text-base font-semibold text-[var(--theme-text)]">{profile.name}</span>
@@ -459,7 +417,7 @@ function AgentMarketCatalog({
             </p>
             <section
               aria-label="已发布智能体"
-              className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,22rem),1fr))] gap-4"
+              className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-5"
             >
               {visibleProfiles.map((profile) => (
                 <AgentMarketCard
@@ -520,7 +478,7 @@ function AgentMarketDetail({
 
         <section className="mt-7 border-y border-[var(--theme-border)] py-8 sm:py-10">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
-            <AgentIdentityAvatar profile={profile} large />
+            <AgentIdentityAvatar agentId={profile.agent_id} avatarSeed={profile.avatar_seed} name={profile.name} size="lg" />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
                 <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>
@@ -546,7 +504,7 @@ function AgentMarketDetail({
                 </p>
               ) : null}
               <p className="mt-4 rounded-lg bg-[var(--theme-primary-light)] px-3 py-2 text-sm leading-6 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                无需选择模型或 Skill。进入后描述任务，专家会按已发布配置执行。
+                进入后直接描述任务；Agent SDK 会根据上下文在已发布的 Skill Set 中自主选择能力。
               </p>
             </div>
           </div>
@@ -579,9 +537,9 @@ function AgentMarketDetail({
             <h2 className="text-sm font-semibold">输入与输出</h2>
             <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
               <dt className="text-[var(--theme-text-secondary)]">输入</dt>
-              <dd>{profile.supported_input_types.join(" / ")}</dd>
+              <dd>文本，可按任务附加文件</dd>
               <dt className="text-[var(--theme-text-secondary)]">文件</dt>
-              <dd>{profile.supported_file_types.join("、") || "不接收文件"}</dd>
+              <dd>附件可选，不由智能体限定格式</dd>
               <dt className="text-[var(--theme-text-secondary)]">输出</dt>
               <dd>{profile.expected_outputs.join("、") || "对话答复"}</dd>
             </dl>
