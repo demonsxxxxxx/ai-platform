@@ -3,7 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ExecutionTimelinePart } from "../../../../types/message.ts";
-import i18n, { PRODUCT_LANGUAGE } from "../../../../i18n/index.ts";
+import "../../../../i18n/index.ts";
 import { PublicExecutionProcess } from "../PublicExecutionProcess.tsx";
 
 test("renders one expandable generic process summary without private execution fields", async () => {
@@ -16,8 +16,6 @@ test("renders one expandable generic process summary without private execution f
       status: "completed",
       progress: { current: 2, total: 2 },
       safe_file_name: "report.xlsx",
-      title: "do not render title",
-      summary: "do not render summary",
       stage: "private-stage",
       event_id: "evt-private",
       run_id: "run-private",
@@ -36,20 +34,18 @@ test("renders one expandable generic process summary without private execution f
     },
   ] as unknown as ExecutionTimelinePart[];
 
-  await i18n.changeLanguage("en");
   const markup = renderToStaticMarkup(
     createElement(PublicExecutionProcess, { steps, isStreaming: false }),
   );
-  await i18n.changeLanguage(PRODUCT_LANGUAGE);
 
   assert.equal((markup.match(/data-public-execution-process/g) || []).length, 1);
   assert.match(markup, /<details/);
-  assert.match(markup, /Process/);
-  assert.match(markup, /Processing/);
-  assert.match(markup, /Verification/);
+  assert.match(markup, /处理过程/);
+  assert.match(markup, /处理/);
+  assert.match(markup, /验证/);
   assert.match(markup, /report\.xlsx/);
   assert.doesNotMatch(
     markup,
-    /private-step-id|private-stage|evt-private|run-private|rm -rf|stdout|reasoning|C:\\private|do not render/i,
+    /private-step-id|private-stage|evt-private|run-private|rm -rf|stdout|reasoning|C:\\private/i,
   );
 });

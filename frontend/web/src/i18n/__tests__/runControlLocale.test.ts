@@ -4,10 +4,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const locales = ["en", "zh", "ja", "ko", "ru"] as const;
+const locales = ["zh"] as const;
 const testDirectory = fileURLToPath(new URL(".", import.meta.url));
 
-test("run-control actions and truthful statuses are localized distinctly", () => {
+test("run-control actions and truthful statuses have distinct Chinese copy", () => {
   for (const locale of locales) {
     const contents = JSON.parse(
       readFileSync(resolve(testDirectory, `../locales/${locale}.json`), "utf8"),

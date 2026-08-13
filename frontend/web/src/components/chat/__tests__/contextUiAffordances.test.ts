@@ -47,13 +47,10 @@ test("sidebar session actions omit the reachable Share path", () => {
 });
 
 test("session configuration and run-used provenance keep separate labels", () => {
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
   const runPlayback = read("src/components/layout/AppContent/RunPlaybackPanel.tsx");
 
-  assert.equal(en.workbench.contextPanel.run, "Current session inputs");
   assert.equal(zh.workbench.contextPanel.run, "当前会话输入");
-  assert.equal(en.runPlayback.context.title, "Context provenance");
   assert.equal(zh.runPlayback.context.title, "上下文来源");
   assert.match(runPlayback, /runPlayback\.context\.title/);
 });

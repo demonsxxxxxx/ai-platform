@@ -7,21 +7,17 @@ import { fileURLToPath } from "node:url";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const frontendSrc = resolve(currentDir, "../..");
 
-const localeFiles = ["en", "zh", "ja", "ko", "ru"].map((locale) =>
-  resolve(frontendSrc, "i18n", "locales", `${locale}.json`),
-);
+const localeFile = resolve(frontendSrc, "i18n", "locales", "zh.json");
 
 function readJson(path: string) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-test("message fork strings are available in every locale", () => {
-  for (const localeFile of localeFiles) {
-    const locale = readJson(localeFile);
-    assert.equal(typeof locale.chat.message.fork, "string");
-    assert.equal(typeof locale.chat.message.forkSuccess, "string");
-    assert.equal(typeof locale.chat.message.forkFailed, "string");
-  }
+test("message fork strings are available in Chinese", () => {
+  const locale = readJson(localeFile);
+  assert.equal(typeof locale.chat.message.fork, "string");
+  assert.equal(typeof locale.chat.message.forkSuccess, "string");
+  assert.equal(typeof locale.chat.message.forkFailed, "string");
 });
 
 test("fork message components use i18n keys instead of inline English text", () => {

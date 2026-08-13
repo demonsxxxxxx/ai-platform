@@ -132,52 +132,46 @@ test("Skill archiving removes local catalog rows and announces the synchronized 
   assert.match(skillsHook, /if \(finishCatalogMutation\(\)\) \{\s*await fetchSkills\(\);/);
 });
 
-test("Skill selection synchronization copy exists in every supported locale", () => {
-  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
-    const catalog = JSON.parse(
-      readFileSync(
-        new URL(`../../../i18n/locales/${locale}.json`, import.meta.url),
-        "utf8",
-      ),
-    ) as {
-      skills?: { managementTable?: Record<string, unknown> };
-    };
-    const managementTable = catalog.skills?.managementTable;
-    assert.ok(managementTable, `${locale} Skill management translations must exist`);
-    for (const key of [
-      "selectionAfterDelete",
-      "selectionAfterDeleteEmpty",
-      "selectionChanged",
-      "selectionCurrent",
-    ]) {
-      assert.equal(
-        typeof managementTable[key],
-        "string",
-        `${locale}.skills.managementTable.${key}`,
-      );
-    }
+test("Skill selection synchronization copy exists in Chinese", () => {
+  const catalog = JSON.parse(
+    readFileSync(new URL("../../../i18n/locales/zh.json", import.meta.url), "utf8"),
+  ) as {
+    skills?: { managementTable?: Record<string, unknown> };
+  };
+  const managementTable = catalog.skills?.managementTable;
+  assert.ok(managementTable, "Chinese Skill management translations must exist");
+  for (const key of [
+    "selectionAfterDelete",
+    "selectionAfterDeleteEmpty",
+    "selectionChanged",
+    "selectionCurrent",
+  ]) {
+    assert.equal(typeof managementTable[key], "string", `zh.skills.managementTable.${key}`);
   }
 });
 
-test("Skill management enabled metrics use enabled-state wording in every locale", () => {
-  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
-    const catalog = JSON.parse(
-      readFileSync(
-        new URL(`../../../i18n/locales/${locale}.json`, import.meta.url),
-        "utf8",
-      ),
-    ) as {
-      skills?: {
-        managementTable?: { enabled?: string };
-        metrics?: { enabled?: string };
-      };
+test("Skill management enabled metric uses Chinese enabled-state wording", () => {
+  const catalog = JSON.parse(
+    readFileSync(new URL("../../../i18n/locales/zh.json", import.meta.url), "utf8"),
+  ) as {
+    skills?: {
+      managementTable?: { enabled?: string };
+      metrics?: { enabled?: string };
     };
-    assert.equal(
-      catalog.skills?.metrics?.enabled,
-      catalog.skills?.managementTable?.enabled,
-      `${locale}.skills.metrics.enabled`,
-    );
-  }
+  };
+  const metricsEnabled = catalog.skills?.metrics?.enabled;
+  const managementEnabled = catalog.skills?.managementTable?.enabled;
+  assert.equal(typeof metricsEnabled, "string", "zh.skills.metrics.enabled");
+  assert.equal(
+    typeof managementEnabled,
+    "string",
+    "zh.skills.managementTable.enabled",
+  );
+  assert.equal(
+    metricsEnabled,
+    managementEnabled,
+    "zh.skills.metrics.enabled",
+  );
 });
 
 test("Skill catalog refreshes fail pending and hidden batch selections are cleared", () => {

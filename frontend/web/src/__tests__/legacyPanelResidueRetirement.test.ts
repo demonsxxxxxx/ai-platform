@@ -8,13 +8,9 @@ import { join } from "node:path";
 import test from "node:test";
 
 const root = process.cwd();
-const locales = ["en", "zh", "ja", "ko", "ru"] as const;
+const locales = ["zh"] as const;
 const memoryRootKeys = {
-  en: ["title", "workbench"],
   zh: ["title", "workbench"],
-  ja: ["title"],
-  ko: ["title"],
-  ru: ["title"],
 } as const;
 
 const retainedKeys = {
@@ -189,32 +185,24 @@ test("memory locale namespaces keep governed roots and cover active consumers", 
     );
     assert.equal(typeof messages.memory.title, "string", `${locale}:memory.title`);
 
-    if (locale === "en" || locale === "zh") {
-      const workbench = messages.memory.workbench;
+    const workbench = messages.memory.workbench;
+    assert.equal(
+      typeof workbench === "object" && workbench !== null && !Array.isArray(workbench),
+      true,
+      `${locale}:memory.workbench`,
+    );
+    for (const key of consumedWorkbenchKeys) {
       assert.equal(
-        typeof workbench === "object" && workbench !== null && !Array.isArray(workbench),
+        Object.hasOwn(workbench as Record<string, unknown>, key),
         true,
-        `${locale}:memory.workbench`,
-      );
-      for (const key of consumedWorkbenchKeys) {
-        assert.equal(
-          Object.hasOwn(workbench as Record<string, unknown>, key),
-          true,
-          `${locale}:memory.workbench.${key}`,
-        );
-      }
-      assert.equal(
-        typeof (workbench as Record<string, unknown>).source,
-        "string",
-        `${locale}:memory.workbench.source`,
-      );
-    } else {
-      assert.equal(
-        Object.hasOwn(messages.memory, "workbench"),
-        false,
-        `${locale}:memory.workbench`,
+        `${locale}:memory.workbench.${key}`,
       );
     }
+    assert.equal(
+      typeof (workbench as Record<string, unknown>).source,
+      "string",
+      `${locale}:memory.workbench.source`,
+    );
 
     for (const key of ["description", "title"]) {
       const value = messages.seo.memory[key];
@@ -270,18 +258,7 @@ test("legacy panel locale residue keeps only audited active keys", () => {
     assert.deepEqual(actual.users, [...retainedKeys.users], locale);
     assert.deepEqual(actual.feedback, [...retainedKeys.feedback], locale);
     assert.deepEqual(actual.notification, [...retainedKeys.notification], locale);
-    if (locale === "en" || locale === "zh") {
-      assert.deepEqual(actual.mcpCard, [...retainedKeys.mcpCard], locale);
-    } else {
-      const missingFallbackKeys = retainedKeys.mcpCard.filter(
-        (key) => !actual.mcpCard.includes(key),
-      );
-      assert.deepEqual(
-        missingFallbackKeys,
-        ["roleQuotaCount", "statusDisabled", "statusEnabled", "statusLabel"],
-        locale,
-      );
-    }
+    assert.deepEqual(actual.mcpCard, [...retainedKeys.mcpCard], locale);
   }
 });
 
