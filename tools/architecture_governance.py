@@ -1231,6 +1231,7 @@ def _validate_legacy_api_cutovers(
             {
                 "source_path",
                 "public_module",
+                "canonical_module",
                 "module_alias",
                 "removed_imports",
                 "rewrites",
@@ -1277,6 +1278,22 @@ def _validate_legacy_api_cutovers(
             raise ArchitectureError(
                 "invalid_policy",
                 f"{label}.public_module must name one bounded-context api.py or events.py",
+            )
+        canonical_module = entry["canonical_module"]
+        if not isinstance(canonical_module, str):
+            raise ArchitectureError(
+                "invalid_policy", f"{label}.canonical_module must be an exact app module"
+            )
+        canonical_parts = canonical_module.split(".")
+        if (
+            len(canonical_parts) < 4
+            or canonical_parts[:2] != public_parts[:2]
+            or canonical_parts[2] not in {"application", "domain"}
+            or any(MODULE_NAME.fullmatch(part) is None for part in canonical_parts[1:])
+        ):
+            raise ArchitectureError(
+                "invalid_policy",
+                f"{label}.canonical_module must name application/domain code in the public module owner",
             )
         module_alias = entry["module_alias"]
         if not isinstance(module_alias, str) or re.fullmatch(
@@ -1371,11 +1388,11 @@ def _validate_legacy_api_cutovers(
                     f"{label} consumed public module is absent from authority",
                 )
             target_tree = _parse_python(target_source, target_path, candidate=False)
-            missing = sorted(new_symbols - _top_level_bound_names(target_tree))
-            if missing:
+            target_issues = _public_cutover_target_issues(target_tree, entry)
+            if target_issues:
                 raise ArchitectureError(
                     "invalid_policy",
-                    f"{label} consumed public module is missing declared symbols: {', '.join(missing)}",
+                    f"{label} consumed public module violates the identity boundary: {', '.join(target_issues)}",
                 )
         identities.append((source_path, public_module))
     if identities != sorted(set(identities)):
@@ -1647,6 +1664,7 @@ def _legacy_api_cutover_state(tree: ast.Module, entry: dict[str, Any]) -> str:
     )
     if (
         import_count == 0
+        and _exact_legacy_definition_symbols(tree, old_symbols) == old_symbols
         and all(bindings[symbol] == 1 for symbol in old_symbols)
         and removed_imports == expected_removed
     ):
@@ -1659,6 +1677,21 @@ def _legacy_api_cutover_state(tree: ast.Module, entry: dict[str, Any]) -> str:
     ):
         return "consumed"
     return "invalid"
+
+
+def _exact_legacy_definition_symbols(
+    tree: ast.Module,
+    old_symbols: set[str],
+) -> set[str]:
+    exact: set[str] = set()
+    for node in tree.body:
+        bindings = _top_level_node_binding_names(node)
+        overlap = bindings & old_symbols
+        if not overlap:
+            continue
+        if len(bindings) == 1 and len(overlap) == 1:
+            exact.update(overlap)
+    return exact
 
 
 def _legacy_api_cutover_attempted(
@@ -1730,6 +1763,40 @@ def _legacy_api_cutover_reference_issues(
     if alias in assignments:
         issues.append("public module alias is rebound")
     return issues
+
+
+def _public_cutover_target_issues(
+    tree: ast.Module,
+    entry: dict[str, Any],
+) -> list[str]:
+    expected = {rewrite["new_symbol"] for rewrite in entry["rewrites"]}
+    imported: list[str] = []
+    issues: list[str] = []
+    for index, node in enumerate(tree.body):
+        if (
+            index == 0
+            and isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == entry["canonical_module"]
+            and all(
+                alias.name != "*" and alias.asname == alias.name
+                for alias in node.names
+            )
+        ):
+            imported.extend(alias.name for alias in node.names)
+            continue
+        issues.append(f"unexpected top-level {type(node).__name__}")
+    if imported != sorted(expected) or len(imported) != len(set(imported)):
+        issues.append(
+            "public boundary imports must be exact same-name re-exports of sorted declared symbols"
+        )
+    return sorted(set(issues))
 
 
 def _python_modules(paths: Sequence[str]) -> set[str]:
@@ -2077,6 +2144,7 @@ def _legacy_api_cutover_findings(
     details = {
         "source_path": entry["source_path"],
         "public_module": entry["public_module"],
+        "canonical_module": entry["canonical_module"],
     }
     if old_path != path or base_source is None or head_source is None:
         return [
@@ -2146,19 +2214,18 @@ def _legacy_api_cutover_findings(
 
     target_path = _module_python_path(entry["public_module"])
     target_source = git.text(head, target_path, required=False)
-    missing_target_symbols: list[str] = []
+    target_issues: list[str] = []
     if target_source is not None:
         target_tree = _parse_python(target_source, target_path, candidate=True)
-        required = {rewrite["new_symbol"] for rewrite in entry["rewrites"]}
-        missing_target_symbols = sorted(required - _top_level_bound_names(target_tree))
-    if target_source is None or missing_target_symbols:
+        target_issues = _public_cutover_target_issues(target_tree, entry)
+    if target_source is None or target_issues:
         findings.append(
             Finding(
                 "legacy_api_cutover_target_contract",
-                "the public cutover module must exist and bind every declared target symbol",
+                "the public cutover module must be an exact identity boundary to the canonical owner",
                 target_path,
                 exemptible=False,
-                details={**details, "missing_symbols": missing_target_symbols},
+                details={**details, "issues": target_issues},
             )
         )
 
@@ -2222,13 +2289,14 @@ def _legacy_api_cutover_canonical_nodes(
     entry: dict[str, Any],
     *,
     baseline: bool,
-) -> Counter[str]:
+) -> tuple[str, ...]:
     old_symbols = {rewrite["old_symbol"] for rewrite in entry["rewrites"]}
     normalizer = _LegacyApiCutoverNormalizer(entry)
     nodes: list[str] = []
     for node in tree.body:
         if baseline:
-            if _top_level_node_binding_names(node) & old_symbols:
+            bindings = _top_level_node_binding_names(node)
+            if len(bindings) == 1 and bindings <= old_symbols:
                 continue
             if _is_declared_removed_import(node, entry):
                 continue
@@ -2239,7 +2307,7 @@ def _legacy_api_cutover_canonical_nodes(
             candidate = normalizer.visit(copy.deepcopy(node))
             ast.fix_missing_locations(candidate)
         nodes.append(ast.dump(candidate, include_attributes=False))
-    return Counter(nodes)
+    return tuple(nodes)
 
 
 def _bridge_import_count(tree: ast.Module, bridge: dict[str, Any]) -> int:
@@ -2493,7 +2561,7 @@ def _migration_bridge_findings(
             )
 
         base_nodes = (
-            _legacy_api_cutover_canonical_nodes(base_tree, cutover, baseline=True)
+            Counter(_legacy_api_cutover_canonical_nodes(base_tree, cutover, baseline=True))
             if cutover_attempted and base_tree is not None and cutover is not None
             else Counter(
                 ast.dump(node, include_attributes=False)

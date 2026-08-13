@@ -298,6 +298,7 @@
       "required": [
         "source_path",
         "public_module",
+        "canonical_module",
         "module_alias",
         "removed_imports",
         "rewrites",
@@ -310,6 +311,10 @@
           "$ref": "#/$defs/repositoryPath"
         },
         "public_module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "canonical_module": {
           "type": "string",
           "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
         },

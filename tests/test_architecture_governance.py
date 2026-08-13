@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import io
 import json
@@ -424,11 +425,14 @@ def _activate_legacy_api_cutover(repo: Path) -> None:
     )
     domain_module = "app/runs/domain/terminalization.py"
     _write(repo, domain_module, target_definitions + "\n")
-    imported = ", ".join(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    imported = ", ".join(
+        f"{name} as {name}"
+        for name in sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    )
     _write(
         repo,
         "app/runs/api.py",
-        f"from app.runs.domain.terminalization import {imported}\n",
+        f"from {cutover['canonical_module']} import {imported}\n",
     )
     uses = ", ".join(
         f"{cutover['module_alias']}.{rewrite['new_symbol']}"
@@ -1071,6 +1075,92 @@ def test_legacy_api_cutover_rejects_missing_public_target(
     assert finding.exemptible is False
 
 
+def test_legacy_api_cutover_public_target_must_be_identity_only(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    target = repo / "app/runs/api.py"
+    target.write_text(
+        target.read_text(encoding="utf-8")
+        + "\n\ndef progress_for_requested_status(value):\n    return 'replacement'\n",
+        encoding="utf-8",
+    )
+    head = _commit(repo, "reject public API implementation during cutover")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item for item in evaluation.findings if item.code == "legacy_api_cutover_target_contract"
+    )
+    assert finding.exemptible is False
+
+
+def test_legacy_api_cutover_rejects_retained_statement_reordering(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    source_path = repo / "app/repositories.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    tree.body[0], tree.body[1] = tree.body[1], tree.body[0]
+    source_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+    head = _commit(repo, "reject top-level initialization reorder")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "legacy_api_cutover_source_logic" in _codes(evaluation)
+
+
+def test_legacy_api_cutover_rejects_multi_binding_definition_deletion(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    suffix = _fixture_cutover_suffix("app/repositories.py")
+    source_path = repo / "app/repositories.py"
+    current = source_path.read_text(encoding="utf-8")
+    mutated_suffix = suffix.replace(
+        "TERMINAL_RUN_STATUSES = 1",
+        "TERMINAL_RUN_STATUSES = UNRELATED_STATE = 1",
+    )
+    assert mutated_suffix != suffix
+    source_path.write_text(
+        current[: -len(suffix)] + mutated_suffix,
+        encoding="utf-8",
+    )
+    base = _commit(repo, "introduce unsafe combined legacy binding")
+    prefix = source_path.read_text(encoding="utf-8")[: -len(mutated_suffix)]
+    cutover = _legacy_api_cutover()
+    target_symbols = sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    _write(
+        repo,
+        "app/runs/domain/terminalization.py",
+        _fixture_bridge_definitions(target_symbols) + "\n",
+    )
+    _write(
+        repo,
+        "app/runs/api.py",
+        f"from {cutover['canonical_module']} import "
+        + ", ".join(f"{name} as {name}" for name in target_symbols)
+        + "\n",
+    )
+    uses = ", ".join(
+        f"{cutover['module_alias']}.{rewrite['new_symbol']}"
+        for rewrite in cutover["rewrites"]
+    )
+    source_path.write_text(
+        prefix
+        + f"import {cutover['public_module']} as {cutover['module_alias']}\n\n"
+        + f"def cutover_usage():\n    return ({uses})\n",
+        encoding="utf-8",
+    )
+    head = _commit(repo, "try to delete unrelated combined binding")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert "legacy_api_cutover_contract" in _codes(evaluation)
+
+
 def test_legacy_api_cutover_rejects_source_deletion(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -1145,6 +1235,7 @@ def test_runs_legacy_api_cutover_authority_is_exact() -> None:
     assert _legacy_api_cutover() == {
         "source_path": "app/repositories.py",
         "public_module": "app.runs.api",
+        "canonical_module": "app.runs.domain.terminalization",
         "module_alias": "runs_api",
         "removed_imports": [{"module": "dataclasses", "name": "dataclass"}],
         "rewrites": [

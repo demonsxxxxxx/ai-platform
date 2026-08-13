@@ -116,7 +116,13 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
         _write(
             repo,
             source_path,
-            imports + source + "\n\n" + "\n\n".join(definitions) + "\n",
+            imports
+            + source
+            + "\n\n"
+            + "\n\n".join(definitions)
+            + "\n\ndef fixture_cutover_use():\n    return ("
+            + ", ".join(item["old_symbol"] for item in cutover["rewrites"])
+            + ")\n",
         )
     policy["approved_root_modules"] = sorted(
         {
@@ -1074,6 +1080,73 @@ def test_trusted_architecture_rejects_a_new_app_root_before_candidate_tests(
     assert architecture["exception"]["status"] == "absent"
     assert architecture["exempted_findings"] == []
     assert all(stage["name"] != "responsibility_tests" for stage in payload["stages"])
+
+
+def test_pre_push_accepts_exact_one_shot_legacy_api_cutover(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, base = readiness_repo
+    policy = json.loads(_git(repo, "show", f"{base}:architecture-policy.json"))
+    cutover = policy["legacy_api_cutovers"][0]
+    source_path = repo / cutover["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    for removed in cutover["removed_imports"]:
+        source = source.replace(
+            f"from {removed['module']} import {removed['name']}\n",
+            "",
+            1,
+        )
+    for rewrite in cutover["rewrites"]:
+        old = rewrite["old_symbol"]
+        if old.isupper():
+            definition = f"{old} = {{'succeeded'}}\n\n"
+        elif old[:1].isupper():
+            definition = f"class {old}:\n    pass\n\n"
+        else:
+            definition = f"def {old}(value=None):\n    return value\n\n"
+        source = source.replace(definition, "", 1)
+        source = source.replace(
+            old,
+            f"{cutover['module_alias']}.{rewrite['new_symbol']}",
+        )
+    source_path.write_text(
+        f"import {cutover['public_module']} as {cutover['module_alias']}\n" + source,
+        encoding="utf-8",
+    )
+    target_symbols = sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    _write(
+        repo,
+        f"{cutover['canonical_module'].replace('.', '/')}.py",
+        "\n\n".join(
+            f"def {name}(value=None):\n    return value"
+            if not name.isupper() and not name[:1].isupper()
+            else (
+                f"{name} = {{'succeeded'}}"
+                if name.isupper()
+                else f"class {name}:\n    pass"
+            )
+            for name in target_symbols
+        )
+        + "\n",
+    )
+    _write(
+        repo,
+        f"{cutover['public_module'].replace('.', '/')}.py",
+        f"from {cutover['canonical_module']} import "
+        + ", ".join(f"{name} as {name}" for name in target_symbols)
+        + "\n",
+    )
+    _write(repo, "tests/test_runs_cutover.py", "def test_runs_cutover():\n    assert True\n")
+    head = _commit(repo, "exact public API hard cut")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    assert architecture["status"] == "pass"
 
 
 def test_authority_architecture_snapshot_never_executes_a_candidate_replacement(

@@ -376,6 +376,7 @@
     {
       "source_path": "app/repositories.py",
       "public_module": "app.runs.api",
+      "canonical_module": "app.runs.domain.terminalization",
       "module_alias": "runs_api",
       "removed_imports": [
         {
