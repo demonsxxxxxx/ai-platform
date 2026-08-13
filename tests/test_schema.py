@@ -37,10 +37,23 @@ def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_histor
 
     assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
     assert "fk_agent_profiles_current_publication" in schema
+
+
+def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "raise exception 'agent_profile_skill_set_invalid'" in schema
+    assert "new.skill_set->0->>'skill_id' is distinct from new.skill_id" in schema
+    assert "new.skill_set->0->>'expected_version' is distinct from new.skill_version" in schema
+    assert "having count(*) > 1" in schema
     assert "published_hash text" in schema
     assert "published_status text" in schema
     assert "unique (tenant_id, agent_id, revision, content_hash, revision_status)" in schema
     assert "withdrawn_from_revision bigint" in schema
+    first_repair = schema.index("update agent_profile_revisions\nset skill_set")
+    second_repair = schema.index("update agent_profile_revisions\nset skill_set", first_repair + 1)
+    assert "where legacy_compatibility_write\n  and (" in schema[first_repair:second_repair]
+    assert "where legacy_compatibility_write\n  and (" in schema[second_repair:]
 
 
 def test_schema_declares_capability_distribution_authority_constraints():

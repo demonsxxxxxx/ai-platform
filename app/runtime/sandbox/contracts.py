@@ -170,6 +170,7 @@ class SandboxRuntimeRequest(BaseModel):
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
     governed_permission_wait: bool = False
+    require_selected_skill_invocation: bool = True
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "attempt_id", "agent_id", "callback_token_id")
     @classmethod

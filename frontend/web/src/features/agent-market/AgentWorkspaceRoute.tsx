@@ -56,6 +56,7 @@ function historicalProfile(
     permissions_and_data_access_notice:
       identity.permissions_and_data_access_notice,
     avatar_ref: identity.avatar_ref,
+    avatar_seed: identity.avatar_seed ?? identity.agent_id,
     category: identity.category,
     published_at: identity.published_at,
   };

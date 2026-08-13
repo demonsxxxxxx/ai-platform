@@ -20,6 +20,9 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
+from app.agent_apps.api import (
+    normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
+)
 from app.file_type_validation import normalize_profile_file_type
 from app.skills.release_policy import (
     validate_release_decision_lock,
@@ -60,27 +63,6 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         candidate = assert_safe_principal_user_id(value.strip(), field_name)
         if candidate not in normalized:
             normalized.append(candidate)
-    return normalized
-
-
-def _normalize_profile_display_items(
-    values: list[str],
-    field_name: str,
-    *,
-    item_limit: int,
-) -> list[str]:
-    normalized: list[str] = []
-    for value in values:
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError(f"{field_name} contains an empty item")
-        if len(candidate) > item_limit:
-            raise ValueError(f"{field_name} item exceeds {item_limit} characters")
-        if any(ord(char) < 32 for char in candidate):
-            raise ValueError(f"{field_name} contains control characters")
-        if candidate in normalized:
-            raise ValueError(f"{field_name} contains duplicates")
-        normalized.append(candidate)
     return normalized
 
 
@@ -253,10 +235,12 @@ class AgentProfileDraftRequest(BaseModel):
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     model_id: str
-    selected_skill: SelectedSkillRequest
+    skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
+    selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_asset_id: str | None = None
+    avatar_seed: str = Field(default="", max_length=128)
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
@@ -274,12 +258,12 @@ class AgentProfileDraftRequest(BaseModel):
     @field_validator("starter_prompts")
     @classmethod
     def normalize_starter_prompts(cls, value: list[str], info):
-        return _normalize_profile_display_items(value, info.field_name, item_limit=500)
+        return normalize_agent_profile_display_items(value, info.field_name, item_limit=500)
 
     @field_validator("recommended_tasks", "expected_outputs")
     @classmethod
     def normalize_profile_display_lists(cls, value: list[str], info):
-        return _normalize_profile_display_items(value, info.field_name, item_limit=240)
+        return normalize_agent_profile_display_items(value, info.field_name, item_limit=240)
 
     @field_validator("supported_input_types")
     @classmethod
@@ -306,6 +290,16 @@ class AgentProfileDraftRequest(BaseModel):
     @classmethod
     def validate_avatar_asset_id(cls, value: str | None):
         return assert_safe_id(value, "avatar_asset_id") if value else None
+
+    @field_validator("avatar_seed")
+    @classmethod
+    def normalize_avatar_seed(cls, value: str):
+        return normalize_agent_avatar_seed(value)
+
+    @model_validator(mode="after")
+    def normalize_skill_set(self):
+        self.skill_set, self.selected_skill = normalize_agent_skill_set(self.skill_set, self.selected_skill)
+        return self
 
     @field_validator("model_id")
     @classmethod
@@ -432,6 +426,7 @@ class AgentProfilePublicProjection(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
 
@@ -464,10 +459,12 @@ class AgentProfileAdminProjection(BaseModel):
     permissions_and_data_access_notice: str = ""
     instructions: str
     model_id: str
+    skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_asset_id: str | None = None
+    avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
@@ -553,6 +550,7 @@ class AgentConversationIdentity(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
 

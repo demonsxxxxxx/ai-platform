@@ -30,20 +30,20 @@ test("unsupported Agent files do not consume the accepted upload count", () => {
   assert.deepEqual(result.rejected, [script]);
 });
 
-test("Agent drag-and-drop and composer share one accepted-file policy", () => {
+test("Agent attachments are optional context and profile hints never become an upload allowlist", () => {
   assert.equal(resolveAgentAcceptedFileTypes(undefined), undefined);
-  assert.deepEqual(
+  assert.equal(
     resolveAgentAcceptedFileTypes({
       supported_input_types: ["text"],
       supported_file_types: ["application/pdf"],
     }),
-    [],
+    undefined,
   );
-  assert.deepEqual(
+  assert.equal(
     resolveAgentAcceptedFileTypes({
       supported_input_types: ["text", "file"],
       supported_file_types: ["application/pdf"],
     }),
-    ["application/pdf"],
+    undefined,
   );
 });

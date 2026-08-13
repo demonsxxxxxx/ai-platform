@@ -144,6 +144,7 @@ async def _resolve(
     binding: AuthorizedSkillCatalogBinding | None = None,
     roles: list[str] | None = None,
     pinned_manifests: list[dict[str, Any]] | None = None,
+    skill_set: list[dict[str, Any]] | None = None,
 ):
     observed: dict[str, Any] = {}
 
@@ -164,6 +165,7 @@ async def _resolve(
         roles=roles or ["employee"],
         permissions=["skill:read"],
         pinned_manifests=pinned_manifests,
+        skill_set=skill_set,
     )
     return resolution, observed
 
@@ -311,6 +313,53 @@ async def test_catalog_truncation_is_deterministic_bounded_and_explicit(monkeypa
     assert len(json.dumps(first.snapshot.prompt_payload()).encode("utf-8")) <= (
         catalog.MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_truncation_preserves_every_agent_skill_set_root(monkeypatch):
+    monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 2)
+    rows = [_skill_row(skill_id) for skill_id in ("skill-a", "skill-y", "skill-z")]
+    rows_by_id = {str(row["skill_id"]): row for row in rows}
+    skill_set = [
+        {"skill_id": "skill-z", "expected_version": rows_by_id["skill-z"]["version"]},
+        {"skill_id": "skill-y", "expected_version": rows_by_id["skill-y"]["version"]},
+    ]
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=[_distribution(str(row["skill_id"])) for row in rows],
+        binding=_binding(selected_skill_id="skill-z"),
+        pinned_manifests=[
+            _manifest_from_row(rows_by_id["skill-z"]),
+            _manifest_from_row(rows_by_id["skill-y"]),
+        ],
+        skill_set=skill_set,
+    )
+
+    assert resolution.snapshot.available_skill_ids == ("skill-z", "skill-y")
+    assert resolution.snapshot.truncated is True
+    assert resolution.snapshot.omitted_count == 1
+    assert resolution.snapshot.materialized_skill_ids == ("skill-z", "skill-y")
+
+
+@pytest.mark.asyncio
+async def test_catalog_fails_closed_when_agent_skill_set_exceeds_catalog_bound(monkeypatch):
+    monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 1)
+    rows = [_skill_row(skill_id) for skill_id in ("skill-y", "skill-z")]
+
+    with pytest.raises(AuthorizedSkillCatalogError, match="required_set_too_large"):
+        await _resolve(
+            monkeypatch,
+            rows=rows,
+            distributions=[_distribution(str(row["skill_id"])) for row in rows],
+            binding=_binding(selected_skill_id="skill-z"),
+            pinned_manifests=[_manifest_from_row(row) for row in rows],
+            skill_set=[
+                {"skill_id": str(row["skill_id"]), "expected_version": row["version"]}
+                for row in reversed(rows)
+            ],
+        )
 
 
 @pytest.mark.asyncio

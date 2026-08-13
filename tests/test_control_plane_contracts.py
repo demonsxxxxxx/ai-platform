@@ -20,6 +20,12 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
+from app.platform import public_payload
+
+
+def test_control_plane_public_sanitizers_are_platform_identity_aliases():
+    assert sanitize_public_payload is public_payload.sanitize_public_payload
+    assert sanitize_public_text is public_payload.sanitize_public_text
 
 
 def test_control_plane_versions_are_stable():
@@ -162,10 +168,18 @@ def test_public_payload_sanitizer_removes_runtime_private_aliases():
                 "var_path": "/var/lib/ai-platform/private.log",
                 "message": "failed in /home/xinlin.jiang/qa-review-queue-runtime",
             },
+            "tuple_payload": (
+                {"runtime_private_payload": {"token": "hidden"}, "safe": "done"},
+                "/app/runtime/private.py",
+            ),
         }
     )
 
-    assert payload == {"message": "done", "nested": {}}
+    assert payload == {
+        "message": "done",
+        "nested": {},
+        "tuple_payload": ({"safe": "done"},),
+    }
 
 
 def test_public_payload_sanitizer_redacts_secret_like_executor_values():

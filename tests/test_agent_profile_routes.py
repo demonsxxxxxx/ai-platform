@@ -98,6 +98,7 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "",
         "category": "support",
     }
 

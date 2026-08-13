@@ -23,6 +23,7 @@ from app.agent_profiles import (
     resolve_bound_profile_for_submission,
     resolve_profile_for_admission,
 )
+from app.agent_apps.api import pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -30,7 +31,7 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
-from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
+from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
@@ -2051,33 +2052,45 @@ async def chat_stream(
                         capability_id=repositories.extract_run_mcp_tool_ids(run_input)[0],
                     ),
                 )
-            reusable_file_rows = []
-            if request.session_id and not requested_file_ids and has_file_input_mode(input_modes):
-                reusable_file_rows = await repositories.list_authorized_session_input_files(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    workspace_id=effective_workspace_id,
-                    user_id=principal.user_id,
-                    session_id=request.session_id,
-                )
-            primary_file_ids = primary_file_ids_for_run(
+            file_selection = await select_authorized_run_file_snapshot(
+                conn=conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=effective_workspace_id,
+                user_id=principal.user_id,
+                session_id=request.session_id,
                 requested_file_ids=requested_file_ids,
-                reusable_rows=[dict(row) for row in reusable_file_rows],
                 input_modes=input_modes,
+                preserve_agent_history=admitted_agent_profile is not None,
+                load_session_files=repositories.list_authorized_session_input_files,
             )
-            reusable_primary_file_ids = [
-                file_id
-                for file_id in primary_file_ids
-                if file_id in {str(row.get("id") or "") for row in reusable_file_rows}
-            ]
-            if has_file_input_mode(input_modes) and not primary_file_ids:
+            primary_file_ids = list(file_selection.primary_file_ids)
+            reusable_primary_file_ids = list(file_selection.reusable_primary_file_ids)
+            if file_selection.file_required:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
             )
-            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+            if admitted_agent_profile is not None and execution_kind == RUN_EXECUTION_KIND_SKILL:
+                skill_manifests, skill_version, release_decision_payload = await pin_agent_skill_set(
+                    admitted_agent_profile.skills,
+                    manifest_scope=conn,
+                    input_payload=run_input,
+                    tenant_id=principal.tenant_id,
+                    rollout_key=principal.user_id,
+                    resolve_release_decision=resolve_rollout_skill_decision,
+                    governed_manifest_pins=_governed_skill_manifest_pins,
+                    locked_skill_version=governed_locked_skill_version,
+                    decision_payload_for_version=release_decision_payload_for_locked_version,
+                    attach_snapshot_governance=attach_skill_snapshot_governance,
+                    pin_mcp_tool_ids=repositories.pin_primary_skill_mcp_tool_ids,
+                    mcp_tool_ids_for_skill=repositories.run_mcp_tool_ids_for_skill,
+                    conflict_error=RepositoryConflictError,
+                )
+            elif admitted_agent_profile is not None:
+                skill_version, release_decision_payload, skill_manifests = None, {}, []
+            elif execution_kind == RUN_EXECUTION_KIND_SKILL:
                 assert skill is not None and resolved_skill_id is not None
                 release_decision = resolve_rollout_skill_decision(
                     skill,
@@ -2127,13 +2140,6 @@ async def chat_stream(
                 agent_profile_execution_input = {
                     **admitted_agent_profile.private_execution_input,
                 }
-                if execution_kind == RUN_EXECUTION_KIND_SKILL:
-                    agent_profile_execution_input.update(
-                        {
-                            "required_skill_id": resolved_skill_id,
-                            "required_skill_version": skill_version,
-                        }
-                    )
             if (
                 required_tool_declaration is not None
                 and required_tool_declaration.capability_kind == "builtin"
@@ -2211,17 +2217,7 @@ async def chat_stream(
                 run_id=run_id,
                 file_ids=primary_file_ids,
                 reusable_file_ids=reusable_primary_file_ids,
-                input_modes=input_modes,
-                agent_profile_supported_input_types=(
-                    list(admitted_agent_profile.public_identity.supported_input_types)
-                    if admitted_agent_profile is not None
-                    else None
-                ),
-                agent_profile_supported_file_types=(
-                    list(admitted_agent_profile.public_identity.supported_file_types)
-                    if admitted_agent_profile is not None
-                    else None
-                ),
+                input_modes=(None if admitted_agent_profile is not None else input_modes),
             )
             if admitted_agent_profile is not None:
                 # Canonical clients supply their own key; a legacy unkeyed
@@ -2454,6 +2450,9 @@ async def chat_stream(
                 }
             )
     except HTTPException as exc:
+        authorization_error = exc.__cause__
+        if isinstance(authorization_error, repositories.RepositoryAuthorizationError):
+            await _audit_capability_denial(principal, authorization_error, source="chat_stream")
         code = _submission_code(exc.detail)
         rejected_before_persist = 400 <= exc.status_code < 500 or code == _QUEUE_PAYLOAD_INVALID_CODE
         if rejected_before_persist:

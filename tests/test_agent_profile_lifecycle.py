@@ -67,6 +67,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "agt_support",
         "category": "support",
         "visibility": "restricted",
         "allowed_department_ids": ["support"],
@@ -99,6 +100,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "agt_support",
         "category": "support",
     }
 
@@ -711,6 +713,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
             "permissions_and_data_access_notice": "",
             "published_at": None,
             "avatar_ref": "builtin:assistant",
+            "avatar_seed": "agt_support",
             "category": "support",
         },
         "created_at": None,
@@ -1053,11 +1056,55 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         "revision": 7,
         "content_hash": row["content_hash"],
         "instructions": "private instruction",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [
+            {"skill_id": "general-chat", "expected_version": "version-a"}
+        ],
     }
     assert [name for name, _ in calls] == ["bound", "validate"]
     assert calls[0][1]["for_update"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _legacy_revision_hash
+
+    row = _profile_row()
+    row["content_hash"] = _legacy_revision_hash(_draft_from_row(row))
+
+    async def get_bound(*_args, **_kwargs):
+        return row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        get_bound,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    admission = await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(row["content_hash"]),
+    )
+    assert admission is not None
+
+    row["instructions"] = "tampered"
+    assert await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(row["content_hash"]),
+    ) is None
 
 
 @pytest.mark.parametrize("denial", ["withdrawn", "hash_mismatch", "acl", "capability"])
@@ -1153,8 +1200,9 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
                 "revision": 7,
                 "content_hash": "a" * 64,
                 "instructions": "private",
-                "required_skill_id": "general-chat",
-                "required_skill_version": "version-a",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -1191,6 +1239,34 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
         harness_calls.append(kwargs)
         return {"id": "agt_support", "agent_type": "chat"}
 
+    async def lock_profile_skills(*_args, **_kwargs):
+        return (
+            [
+                {
+                    "skill_id": "general-chat",
+                    "version": "version-a",
+                    "content_hash": "version-a",
+                    "source": {"kind": "builtin", "asset_dir": "general-chat"},
+                    "files": [
+                        {
+                            "relative_path": "SKILL.md",
+                            "content_base64": "c2tpbGw=",
+                            "size_bytes": 5,
+                        }
+                    ],
+                    "dependency_ids": [],
+                    "mcp_tool_ids": [],
+                }
+            ],
+            "version-a",
+            {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "version-a",
+                "selected_track": "manifest_pin",
+            },
+        )
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
     monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
     monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
@@ -1200,8 +1276,14 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     monkeypatch.setattr(repositories, "get_agent", harness_agent)
     monkeypatch.setattr(repositories, "enforce_user_active_run_admission_under_lock", noop)
     monkeypatch.setattr(repositories, "ensure_workspace_belongs_to_tenant", noop)
+    monkeypatch.setattr(
+        repositories,
+        "list_authorized_session_input_files",
+        AsyncMock(return_value=[]),
+    )
     monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr("app.routes.chat.pin_agent_skill_set", lock_profile_skills)
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
         "app.routes.chat.resolve_profile_for_admission",
@@ -1386,7 +1468,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
             "model_id": "model-a",
         },
         "disabled_skills": [],
-        "selected_mcp_tool_ids": ["profile-tool"] if bound else [],
+        "selected_mcp_tool_ids": [],
         "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         "user_timezone": "Asia/Shanghai",
     }
@@ -1426,6 +1508,131 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     assert admission.agent_id == "agt_support"
     assert admission.revision == 7
     assert observed == [("bound" if bound else "current", True)]
+
+
+@pytest.mark.asyncio
+async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_configured(
+    monkeypatch,
+):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+
+    profile_row = _profile_row()
+    profile_row["mcp_tool_ids"] = ["profile-tool"]
+
+    async def get_current(*_args, **_kwargs):
+        return profile_row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    request = ChatStreamRequest.model_validate(
+        {
+            "message": "attempt to override the published expert",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 7,
+            },
+            "selected_mcp_tool_ids": ["profile-tool"],
+            "submission_id": "8eb026d4-2839-44db-83dd-5196ed80d9e8",
+        }
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.resolve_for_admission(
+            object(),
+            principal=_principal(),
+            selection=SelectedAgentProfileRequest(
+                agent_id="agt_support",
+                expected_revision=7,
+            ),
+            submitted_request=request,
+            query_agent_id="general-agent",
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        400,
+        "agent_profile_selector_conflict",
+    )
+
+
+@pytest.mark.asyncio
+async def test_profile_admission_adds_authorized_skill_backing_mcp_without_client_redeclaration(
+    monkeypatch,
+):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+
+    profile_row = _profile_row()
+    profile_row["skill_id"] = "skill-a"
+    profile_row["skill_version"] = "version-a"
+    profile_row["skill_set"] = [
+        {"skill_id": "skill-a", "expected_version": "version-a"},
+        {"skill_id": "skill-b", "expected_version": "version-b"},
+    ]
+
+    async def get_current(*_args, **_kwargs):
+        return profile_row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            (
+                {
+                    "skill_id": "skill-a",
+                    "skill_version": "version-a",
+                    "executor_type": "claude-agent-worker",
+                    "backing_mcp_tool_id": "skill-a-search",
+                },
+                {
+                    "skill_id": "skill-b",
+                    "skill_version": "version-b",
+                    "executor_type": "claude-agent-worker",
+                    "backing_mcp_tool_id": "skill-b-search",
+                },
+            ),
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    request = ChatStreamRequest.model_validate(
+        {
+            "message": "use the published expert",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 7,
+            },
+            "selected_mcp_tool_ids": [],
+            "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        }
+    )
+
+    admission = await authority.resolve_for_admission(
+        object(),
+        principal=_principal(),
+        selection=SelectedAgentProfileRequest(
+            agent_id="agt_support",
+            expected_revision=7,
+        ),
+        submitted_request=request,
+        query_agent_id="general-agent",
+    )
+
+    assert admission.configured_mcp_tool_ids == ()
+    assert admission.mcp_tool_ids == ("skill-a-search", "skill-b-search")
 
 
 @pytest.mark.parametrize("bound", [False, True], ids=["new", "continued"])
@@ -1605,6 +1812,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "",
         "category": "support",
     }
     serialized = str(response)

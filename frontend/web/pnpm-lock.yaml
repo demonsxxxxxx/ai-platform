@@ -47,6 +47,12 @@ importers:
       '@codesandbox/sandpack-themes':
         specifier: ^2.0.21
         version: 2.0.21
+      '@dicebear/core':
+        specifier: ^10.5.0
+        version: 10.5.0
+      '@dicebear/styles':
+        specifier: ^10.4.0
+        version: 10.4.0
       '@excalidraw/excalidraw':
         specifier: ^0.18.0
         version: 0.18.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(immer@11.1.7)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -941,6 +947,13 @@ packages:
 
   '@codesandbox/sandpack-themes@2.0.21':
     resolution: {integrity: sha512-CMH/MO/dh6foPYb/3eSn2Cu/J3+1+/81Fsaj7VggICkCrmRk0qG5dmgjGAearPTnRkOGORIPHuRqwNXgw0E6YQ==}
+
+  '@dicebear/core@10.5.0':
+    resolution: {integrity: sha512-FaBohsNT+/8z2C2jowlzNVbx4B+x6wVLK4HeQT35bJTV4LeV6xXl4zyPvxCm4HvG6PoN+100hNBbnj7Bumo18Q==}
+    engines: {node: '>=22.0.0'}
+
+  '@dicebear/styles@10.4.0':
+    resolution: {integrity: sha512-Bx3HLdbUqAXhu6JqU9YaQoQwN+3g3l8uHmlOw2aI07cOtfoH1Z/Nlfok1r7zzdujJvvTBTPJSH568/bzns4MoQ==}
 
   '@dnd-kit/accessibility@3.1.1':
     resolution: {integrity: sha512-2P+YgaXF+gRsIihwwY1gCsQSYnu9Zyj2py8kY5fFvUM1qm2WA2u639R6YNVfU4GWr+ZM5mqEsfHZZLoRONbemw==}
@@ -7402,6 +7415,10 @@ snapshots:
       react-is: 17.0.2
 
   '@codesandbox/sandpack-themes@2.0.21': {}
+
+  '@dicebear/core@10.5.0': {}
+
+  '@dicebear/styles@10.4.0': {}
 
   '@dnd-kit/accessibility@3.1.1(react@19.2.5)':
     dependencies:

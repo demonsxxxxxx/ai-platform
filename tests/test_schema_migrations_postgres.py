@@ -314,6 +314,22 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "drop index idx_runs_input_json_gin",
         "drop index idx_object_deletion_outbox_artifact_storage_live",
         "drop index uq_object_deletion_outbox_file",
+        "drop trigger trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions",
+        "drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions",
+        "alter table agent_profile_revisions enable always trigger trg_agent_profile_legacy_insert_compatibility",
+        """
+        create or replace function agent_profile_legacy_insert_reconcile()
+        returns trigger language plpgsql as $$ begin return null; end $$
+        """,
+        """
+        drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
+        create trigger trg_agent_profile_legacy_insert_reconcile
+          after insert on agent_profile_revisions
+          for each row when (false)
+          execute function agent_profile_legacy_insert_reconcile()
+        """,
+        "alter function agent_profile_legacy_insert_reconcile() set search_path to pg_catalog",
+        "alter function agent_profile_legacy_insert_reconcile() security definer",
     ],
 )
 async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_sql):

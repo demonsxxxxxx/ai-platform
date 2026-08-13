@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 import hashlib
@@ -36,6 +36,13 @@ class ContextFileMaterialization:
     materialized_file_names: tuple[str, ...]
     attachment_facts: tuple[MaterializedAttachmentFact, ...]
     attachment_metadata: tuple[ContextFileMetadata, ...]
+
+
+@dataclass(frozen=True)
+class RunFileSelection:
+    primary_file_ids: tuple[str, ...]
+    reusable_primary_file_ids: tuple[str, ...]
+    file_required: bool
 
 
 def has_file_input_mode(input_modes: list[object]) -> bool:
@@ -146,6 +153,71 @@ def primary_file_ids_for_run(
         reverse=True,
     )
     return compatible_reusable_file_ids(newest_first, input_modes=input_modes)[: max(0, int(limit))]
+
+
+def select_run_file_snapshot(
+    *,
+    requested_file_ids: list[str],
+    reusable_rows: list[dict[str, Any]],
+    input_modes: list[object],
+    preserve_agent_history: bool,
+) -> RunFileSelection:
+    """Select immutable run files without treating Agent Skill capabilities as requirements."""
+
+    if preserve_agent_history:
+        primary = snapshot_file_ids(
+            current_file_ids=requested_file_ids,
+            historical_file_ids=[str(row.get("id") or "") for row in reversed(reusable_rows)],
+        )
+    else:
+        primary = primary_file_ids_for_run(
+            requested_file_ids=requested_file_ids,
+            reusable_rows=reusable_rows,
+            input_modes=input_modes,
+        )
+    reusable_ids = {str(row.get("id") or "") for row in reusable_rows}
+    return RunFileSelection(
+        primary_file_ids=tuple(primary),
+        reusable_primary_file_ids=tuple(file_id for file_id in primary if file_id in reusable_ids),
+        file_required=not preserve_agent_history and has_file_input_mode(input_modes) and not primary,
+    )
+
+
+async def select_authorized_run_file_snapshot(
+    *,
+    conn: Any,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str | None,
+    requested_file_ids: list[str],
+    input_modes: list[object],
+    preserve_agent_history: bool,
+    load_session_files: Callable[..., Awaitable[list[dict[str, Any]]]],
+) -> RunFileSelection:
+    """Load history only when it can participate in the immutable run snapshot."""
+
+    rows: list[dict[str, Any]] = []
+    should_load = session_id and (
+        preserve_agent_history or (not requested_file_ids and has_file_input_mode(input_modes))
+    )
+    if should_load:
+        rows = [
+            dict(row)
+            for row in await load_session_files(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        ]
+    return select_run_file_snapshot(
+        requested_file_ids=requested_file_ids,
+        reusable_rows=rows,
+        input_modes=input_modes,
+        preserve_agent_history=preserve_agent_history,
+    )
 
 
 async def list_authorized_session_input_files(

@@ -4210,6 +4210,90 @@ async def test_prepare_copied_direct_ragflow_without_explicit_selector_uses_unif
 
 
 @pytest.mark.asyncio
+async def test_prepare_copied_agent_profile_reauthorizes_complete_skill_set(monkeypatch):
+    calls = []
+    replay_principal = principal(department_id="qa", roles=["user"])
+    primary_version = "hash-primary"
+    secondary_version = "hash-secondary"
+    manifests = [
+        replay_manifest("primary-review", primary_version),
+        replay_manifest("reference-search", secondary_version),
+    ]
+
+    async def materialize(*_args, **_kwargs):
+        return manifests
+
+    async def reauthorize(*_args, **kwargs):
+        calls.append(kwargs)
+
+    async def forbid_single_skill_authorizer(*_args, **_kwargs):
+        raise AssertionError("Agent Profile replay must authorize its complete skill_set")
+
+    async def no_write(*_args, **_kwargs):
+        return None
+
+    async def record_context(*_args, **_kwargs):
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-copy",
+            "source": "copy_run",
+            "message_count": 0,
+            "file_count": 0,
+            "memory_record_count": 0,
+        }
+
+    monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", forbid_single_skill_authorizer)
+    monkeypatch.setattr(repository_module, "update_run_auth_snapshot", no_write)
+    monkeypatch.setattr(repository_module, "append_event", no_write)
+    monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", no_write)
+    monkeypatch.setattr(runs_module, "reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
+
+    queue_payload = await runs_module.prepare_copied_run_for_queue(
+        object(),
+        copied={
+            "run_id": "run-agent-copy",
+            "session_id": "ses-agent-copy",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "agent_id": "quality-agent",
+            "skill_id": "primary-review",
+            "file_ids": [],
+            "input": {"message": "continue review"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": primary_version,
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": primary_version,
+                "selected_track": "manifest_pin",
+            },
+            "skill_manifests": repository_module.skill_manifest_refs(manifests),
+            "agent_profile": {
+                "agent_id": "quality-agent",
+                "revision": 2,
+                "content_hash": "a" * 64,
+                "instructions": "Review the supplied material.",
+                "skill_set": [
+                    {"skill_id": "primary-review", "expected_version": primary_version},
+                    {"skill_id": "reference-search", "expected_version": secondary_version},
+                ],
+            },
+        },
+        principal=replay_principal,
+        source="copy_run",
+        authorized_source_run_id="run-agent-source",
+    )
+
+    assert calls == [{"principal": replay_principal, "run_id": "run-agent-copy"}]
+    assert [item["skill_id"] for item in queue_payload["skill_manifests"]] == [
+        "primary-review",
+        "reference-search",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("route", "repository_method"),
     [

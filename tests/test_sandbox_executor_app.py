@@ -338,6 +338,41 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_value", "expected"),
+    [(None, True), (0, True), ("false", True), (False, False), (True, True)],
+)
+async def test_executor_only_disables_required_skill_invocation_for_explicit_false(
+    monkeypatch,
+    tmp_path,
+    configured_value,
+    expected,
+):
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["require_selected_skill_invocation"] = configured_value
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert captured["require_selected_skill_invocation"] is expected
+
+
 def test_executor_health_returns_ready(tmp_path):
     client = create_test_client(tmp_path)
 

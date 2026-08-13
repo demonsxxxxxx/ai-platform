@@ -475,7 +475,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.ok(modelSelect);
     assert.equal((reactProps(modelSelect) as unknown as { value: string }).value, "model-id");
     assert.match(container.textContent, /support-skill/);
-    assert.match(container.textContent, /固定版本 2026\.07\.28/);
+    assert.match(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /支持知识检索/);
     assert.match(container.textContent, /revision 4/);
 
@@ -678,7 +678,7 @@ test("mounted unresolved catalogs preserve server pins without stale or empty cl
     });
 
     assert.match(container.textContent, /已保留服务端模型 model-id/);
-    assert.match(container.textContent, /已保留服务端固定版本/);
+    assert.match(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /已保留服务端工具身份/);
     assert.doesNotMatch(container.textContent, /当前不可用|没有这一精确版本|需要明确移除/);
 
@@ -690,7 +690,7 @@ test("mounted unresolved catalogs preserve server pins without stale or empty cl
       await Promise.resolve();
     });
     assert.match(container.textContent, /所选模型已不在当前目录|当前不可用/);
-    assert.match(container.textContent, /没有这一精确版本/);
+    assert.match(container.textContent, /当前授权目录中不可用/);
     assert.match(container.textContent, /需要明确移除/);
     const saveButton = findButton(container, "保存草稿");
     const publishButton = findButton(container, "发布");

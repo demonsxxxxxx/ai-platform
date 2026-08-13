@@ -30,6 +30,16 @@ not describe storage, routes, frameworks, or current runtime state.
   retry, resume, or copy must reauthorize the current principal and the pinned
   capabilities before any work is dispatched.
 
+**Agent Skill Set**
+: The immutable set of exact governed Skill versions an Agent Profile Revision
+  is authorized to make available to its execution SDK. Membership grants
+  availability, not an obligation to invoke a Skill.
+
+**Attachment Context**
+: The user-owned files currently authorized and available to an Agent
+  Conversation. A Skill's ability to process a file type does not by itself
+  make an attachment mandatory for every Agent Run.
+
 **Builder Test Conversation**
 : An administrator-owned Agent Conversation created only for a controlled test.
   Its runs use the normal governed execution path and its records remain
@@ -49,6 +59,12 @@ not describe storage, routes, frameworks, or current runtime state.
 : The execution adapter registered the staged capability with the model SDK.
   Registration is not invocation.
 
+**Capability Invocation Decision**
+: The execution SDK's decision whether to invoke an SDK-registered capability,
+  which capability to invoke, and in what order for the current user request.
+  Authorization, selection, staging, or accepted input types cannot establish
+  or require this decision.
+
 **Capability Actually Invoked**
 : The server verified an exact SDK hook for a capability in the fixed staged set.
   Inference, platform-runner activity, executor-native activity, text, paths, or
@@ -56,8 +72,8 @@ not describe storage, routes, frameworks, or current runtime state.
 
 **Capability Completed**
 : An actually invoked capability reached its verified terminal outcome. A
-  required capability must reach the required verified outcome before the Agent
-  Run may succeed; an optional capability may remain truthfully uninvoked.
+  capability may remain truthfully uninvoked when the execution SDK determines
+  that the current request does not need it.
 
 **Artifact Ready**
 : A durable artifact record exists and an authorized download contract can

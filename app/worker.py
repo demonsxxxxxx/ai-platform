@@ -914,25 +914,9 @@ def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
 
 
 def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
-    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-        return None
-    profile = payload.agent_profile
-    if not isinstance(profile, dict):
-        return None
-    required_skill_id = str(profile.get("required_skill_id") or payload.skill_id).strip()
-    raw_required_skill_version = (
-        profile["required_skill_version"]
-        if "required_skill_version" in profile
-        else payload.skill_version or ""
-    )
-    if not isinstance(raw_required_skill_version, str):
-        return ""
-    required_skill_version = raw_required_skill_version.strip()
-    if required_skill_id != payload.skill_id:
-        return ""
-    if required_skill_version and required_skill_version != str(payload.skill_version or ""):
-        return ""
-    return required_skill_id
+    # Agent Profiles register an authorized Skill Set. Invocation is an SDK
+    # decision; exact hook evidence is still validated for every actual call.
+    return None
 
 
 def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
@@ -1211,12 +1195,6 @@ def _agent_profile_snapshot_matches_authority(
             or not payload.skill_version
         ):
             return False
-        expected.update(
-            {
-                "required_skill_id": payload.skill_id,
-                "required_skill_version": payload.skill_version,
-            }
-        )
     return payload.agent_profile == expected
 
 
@@ -1664,12 +1642,18 @@ async def _reauthorize_worker_capabilities(
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
     try:
+        profile_skill_set = (
+            payload.agent_profile.get("skill_set")
+            if isinstance(payload.agent_profile, dict)
+            else None
+        )
         pinned_mcp_tool_ids = await repositories.validate_replay_skill_manifests(
             conn,
             skill_id=run_identity["skill_id"],
             pinned_version=str(payload.skill_version or ""),
             pinned_executor_type=payload.executor_type,
             skill_manifests=payload.skill_manifests,
+            skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
         )
     except (repositories.RepositoryAuthorizationError, repositories.RepositoryConflictError):
         denial = _worker_capability_record(
@@ -1736,6 +1720,7 @@ async def _reauthorize_worker_capabilities(
                 roles=principal.roles,
                 permissions=principal.permissions,
                 pinned_manifests=payload.skill_manifests,
+                skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
             )
         except (AuthorizedSkillCatalogError, repositories.RepositoryConflictError):
             denial = _worker_capability_record(

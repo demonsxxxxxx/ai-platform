@@ -2815,6 +2815,68 @@ def test_worker_capability_execution_plan_validates_required_and_observed_calls(
     assert claude_agent_worker._capability_execution_error(current_payload, evidence) == expected_error
 
 
+def test_agent_profile_capability_plan_accepts_only_server_authorized_skill_evidence():
+    manifest = _test_skill_manifest("qa-review")
+    current_payload = payload(
+        agent_id="agt-review",
+        skill_id="qa-review",
+        skill_manifests=[manifest],
+        agent_profile={
+            "agent_id": "agt-review",
+            "revision": 1,
+            "content_hash": "a" * 64,
+            "instructions": "Review documents.",
+            "skill_set": [
+                {
+                    "skill_id": "qa-review",
+                    "expected_version": manifest["content_hash"],
+                }
+            ],
+        },
+    )
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="qa-review",
+    )
+    binding = {
+        key: getattr(current_payload, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    evidence = [
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=binding,
+            tool_call_id="profile-skill-call",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("invocation_requested", "completed")
+    ]
+
+    assert (
+        claude_agent_worker._capability_execution_error(
+            current_payload,
+            evidence,
+            available_skill_identities=["qa-review"],
+        )
+        is None
+    )
+    assert (
+        claude_agent_worker._capability_execution_error(
+            current_payload,
+            evidence,
+            available_skill_identities=["other-skill"],
+        )
+        == "required_tool_completion_evidence_mismatch"
+    )
+
+
 @pytest.mark.asyncio
 async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatch_raises(
     monkeypatch,
@@ -5565,9 +5627,11 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         on_skill_use,
         public_skill_metadata,
         tool_policy_subjects,
+        require_selected_skill_invocation,
     ):
         captured["model_id"] = model_id
         captured["public_skill_metadata"] = public_skill_metadata
+        captured["require_selected_skill_invocation"] = require_selected_skill_invocation
         return FakeQueryResult()
 
     adapter = ClaudeAgentWorkerAdapter()
@@ -5590,6 +5654,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
     assert result.error is None
     assert captured["model_id"] == "deepseek-v4-pro"
     assert captured["public_skill_metadata"] is None
+    assert captured["require_selected_skill_invocation"] is True
 
 
 @pytest.mark.asyncio

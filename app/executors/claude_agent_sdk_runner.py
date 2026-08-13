@@ -866,6 +866,7 @@ async def run_claude_agent_sdk(
     execution_profile: str = "",
     attachment_contexts: list[ParsedAttachmentContext] | None = None,
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
+    require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
@@ -1089,7 +1090,10 @@ async def run_claude_agent_sdk(
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
-        required_skill_identity=selected_sdk_skill,
+        required_skill_identity=(selected_sdk_skill if require_selected_skill_invocation else None),
+        available_skill_identities=(
+            allowed_skill_names if not require_selected_skill_invocation else ()
+        ),
         registered_mcp_servers=mcp_servers,
     )
     required_capability_declarations = {
@@ -1119,7 +1123,11 @@ async def run_claude_agent_sdk(
     )
     if required_answer_gate:
         answer_stream_gate.seal()
-    sdk_prompt = _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
+    sdk_prompt = (
+        _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
+        if require_selected_skill_invocation
+        else prompt
+    )
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
         sandbox_brokered=sandbox_brokered,
@@ -1232,6 +1240,8 @@ async def run_claude_agent_sdk(
             return
 
     def selected_skill_hook_error() -> str | None:
+        if not require_selected_skill_invocation:
+            return None
         if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
             return None
         if selected_sdk_skill in failed_skill_names:
@@ -1368,6 +1378,7 @@ async def run_claude_agent_sdk(
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
             resolved_tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            capability_evidence_acknowledged = True
             if tool_name.lower() != "skill" and not identity.startswith("mcp__"):
                 await record_tool_lifecycle(
                     tool_name=tool_name,
@@ -1379,18 +1390,26 @@ async def run_claude_agent_sdk(
                     hook_input.get("tool_input"),
                     allowed_skill_names,
                 ):
-                    await record_capability_evidence(
+                    capability_evidence_acknowledged = await record_capability_evidence(
                         capability_kind="skill",
                         canonical_identity=skill_name,
                         tool_call_id=resolved_tool_call_id,
                         lifecycle_phase="invocation_requested",
                     )
+                    if capability_evidence_acknowledged is not True:
+                        break
             elif identity in authorized_subjects and identity.startswith("mcp__"):
-                await record_capability_evidence(
+                capability_evidence_acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
                     canonical_identity=identity,
                     tool_call_id=resolved_tool_call_id,
                     lifecycle_phase="invocation_requested",
+                )
+            if capability_evidence_acknowledged is not True:
+                diagnostic_counters["tool_admission_denials"] += 1
+                output["permissionDecision"] = "deny"
+                output["permissionDecisionReason"] = (
+                    "required_tool_completion_evidence_mismatch"
                 )
         return {"hookSpecificOutput": output}
     def skill_tool_hook(lifecycle_phase: str):

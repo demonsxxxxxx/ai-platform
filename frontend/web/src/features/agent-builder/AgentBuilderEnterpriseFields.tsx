@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Building2, ShieldCheck } from "lucide-react";
+import { Building2, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
 import {
@@ -7,21 +7,15 @@ import {
   type DepartmentDirectoryNode,
 } from "../../services/api/capabilityDistribution";
 import {
-  AGENT_PROFILE_AVATAR_REFS,
   AGENT_PROFILE_CATEGORIES,
   AGENT_PROFILE_CATEGORY_LABELS,
 } from "../../types/agentProfile";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
+import { AgentIdentityAvatar } from "../agent-market/AgentIdentityAvatar";
+import { uuid } from "../../utils/uuid";
 
 const INPUT_CLASS =
   "w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60";
-
-const AVATAR_LABELS = {
-  "builtin:agent": "智能体",
-  "builtin:assistant": "服务支持",
-  "builtin:document": "文档专家",
-  "builtin:research": "研究分析",
-} as const;
 
 function lines(value: string): string[] {
   return value
@@ -122,7 +116,7 @@ export function AgentBuilderEnterpriseFields({
           </h3>
         </div>
         <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
-          首次创建只需要完成名称、Agent.md、模型和主 Skill；展示、文件与访问范围可稍后补充。
+          首次创建只需要完成名称、Agent.md、模型和 Skill Set；展示与访问范围可稍后补充。
         </p>
         <details
           className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
@@ -135,25 +129,37 @@ export function AgentBuilderEnterpriseFields({
             这些字段只影响市场卡片、详情和开场体验，不改变执行能力。
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">头像</span>
-              <select
-                className={INPUT_CLASS}
-                disabled={disabled}
-                onChange={(event) =>
-                  onChange({
-                    avatarRef: event.target.value as AgentBuilderEditor["avatarRef"],
-                  })
-                }
-                value={editor.avatarRef}
-              >
-                {AGENT_PROFILE_AVATAR_REFS.map((avatar) => (
-                  <option key={avatar} value={avatar}>
-                    {AVATAR_LABELS[avatar]}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium">DiceBear 头像</span>
+              <div className="flex items-center gap-3">
+                <AgentIdentityAvatar
+                  agentId={(editor.agentId ?? editor.name) || "new-agent"}
+                  avatarSeed={editor.avatarSeed}
+                  name={editor.name || "未命名智能体"}
+                />
+                <label className="min-w-0 flex-1">
+                  <span className="sr-only">头像种子</span>
+                  <input
+                    aria-label="头像种子"
+                    className={INPUT_CLASS}
+                    disabled={disabled}
+                    onChange={(event) => onChange({ avatarSeed: event.target.value })}
+                    placeholder="输入稳定种子"
+                    value={editor.avatarSeed}
+                  />
+                </label>
+                <button
+                  aria-label="生成另一张头像"
+                  className="btn-secondary inline-flex h-10 w-10 shrink-0 items-center justify-center p-0"
+                  disabled={disabled}
+                  onClick={() => onChange({ avatarSeed: `agent-${uuid().slice(0, 8)}` })}
+                  title="生成另一张头像"
+                  type="button"
+                >
+                  <RefreshCw aria-hidden="true" size={16} />
+                </button>
+              </div>
+            </div>
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">分类</span>
               <select
@@ -228,52 +234,6 @@ export function AgentBuilderEnterpriseFields({
           </div>
         </details>
 
-        <details
-          className="mt-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
-          data-agent-builder-input-settings
-        >
-          <summary className="cursor-pointer text-sm font-medium">
-            文件输入（可选）
-          </summary>
-          <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            文本输入始终可用；只有专家确实需要读取文件时才启用文件输入并声明类型。
-          </p>
-          <fieldset className="mt-4 min-w-0">
-            <legend className="sr-only">输入能力</legend>
-            <div className="mt-2 flex flex-wrap gap-4 text-sm">
-              {(["text", "file"] as const).map((inputType) => (
-                <label className="inline-flex items-center gap-2" key={inputType}>
-                  <input
-                    checked={editor.supportedInputTypes.includes(inputType)}
-                    disabled={disabled || inputType === "text"}
-                    onChange={(event) =>
-                      onChange({
-                        supportedInputTypes: event.target.checked
-                          ? [...editor.supportedInputTypes, inputType]
-                          : editor.supportedInputTypes.filter(
-                              (item) => item !== inputType,
-                            ),
-                      })
-                    }
-                    type="checkbox"
-                  />
-                  {inputType === "text" ? "文本" : "文件"}
-                </label>
-              ))}
-            </div>
-            {editor.supportedInputTypes.includes("file") ? (
-              <div className="mt-3 max-w-xl">
-                <ListField
-                  className="min-h-20"
-                  disabled={disabled}
-                  label="支持的文件类型"
-                  onChange={(supportedFileTypes) => onChange({ supportedFileTypes })}
-                  values={editor.supportedFileTypes}
-                />
-              </div>
-            ) : null}
-          </fieldset>
-        </details>
       </section>
 
       <section

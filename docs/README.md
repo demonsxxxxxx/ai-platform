@@ -34,6 +34,10 @@ does not represent deployed runtime state.
   backend source by bounded context rather than global technical layers.
 - `adr/0007-fixed-browser-authentication-day.md` records the fixed, non-sliding
   24-hour browser authentication lifetime and its revocation tradeoff.
+- `adr/0008-agent-sdk-autonomous-skill-dispatch.md` records that an Agent owns a
+  governed Skill Set while its Agent SDK autonomously decides whether and which
+  registered Skill to invoke; Skill file capability is not a per-run upload
+  requirement.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/redis-streams-sse-event-channel.md` indexes the current v2.1

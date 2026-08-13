@@ -423,11 +423,13 @@ create table if not exists agent_profile_revisions (
   model_id text not null,
   skill_id text not null references skills(id),
   skill_version text not null,
+  skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
   avatar_asset_id text,
+  avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   visibility text not null,
@@ -628,6 +630,8 @@ alter table agent_profile_revisions add column if not exists withdrawn_from_revi
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
+alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
+alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
@@ -701,6 +705,41 @@ where allowed_roles is null or jsonb_typeof(allowed_roles) <> 'array';
 update agent_profile_revisions
 set allowed_user_ids = '[]'::jsonb
 where allowed_user_ids is null or jsonb_typeof(allowed_user_ids) <> 'array';
+
+-- Legacy single-Skill revisions become one-member Agent Skill Sets. The first
+-- item remains shadowed in skill_id/skill_version for rollback compatibility.
+update agent_profile_revisions
+set skill_set = jsonb_build_array(
+  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
+)
+where legacy_compatibility_write
+  and (
+    jsonb_typeof(skill_set) <> 'array'
+    or jsonb_array_length(skill_set) = 0
+  );
+
+update agent_profile_revisions
+set skill_set = jsonb_build_array(
+  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
+)
+where legacy_compatibility_write
+  and (
+  exists (
+    select 1
+    from jsonb_array_elements(skill_set) item
+    where jsonb_typeof(item) <> 'object'
+       or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+       or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  )
+   or exists (
+    select 1
+    from jsonb_array_elements(skill_set) item
+    group by item->>'skill_id'
+    having count(*) > 1
+  )
+   or skill_set->0->>'skill_id' is distinct from skill_id
+   or skill_set->0->>'expected_version' is distinct from skill_version
+  );
 
 -- No metadata defaults: omission is how the compatibility trigger recognizes
 -- an old writer and inherits the existing ACL without broadening it.
@@ -1008,6 +1047,29 @@ declare
   next_revision bigint;
   legacy_publication_allowed boolean := false;
 begin
+  if new.revision_status is null
+     and (jsonb_typeof(new.skill_set) <> 'array' or jsonb_array_length(new.skill_set) = 0) then
+    new.skill_set := jsonb_build_array(
+      jsonb_build_object('skill_id', new.skill_id, 'expected_version', new.skill_version)
+    );
+  end if;
+  if exists (
+      select 1
+      from jsonb_array_elements(new.skill_set) item
+      where jsonb_typeof(item) <> 'object'
+         or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+         or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+    )
+     or exists (
+      select 1
+      from jsonb_array_elements(new.skill_set) item
+      group by item->>'skill_id'
+      having count(*) > 1
+    )
+     or new.skill_set->0->>'skill_id' is distinct from new.skill_id
+     or new.skill_set->0->>'expected_version' is distinct from new.skill_version then
+    raise exception 'agent_profile_skill_set_invalid' using errcode = '23514';
+  end if;
   if new.revision_status is not null then
     return new;
   end if;

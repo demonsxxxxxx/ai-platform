@@ -130,13 +130,21 @@ export function AgentBuilderWorkbench({
   const selectedModel = activeEditor && modelCatalogResolved
     ? catalog.models.find((model) => model.id === activeEditor.modelId)
     : undefined;
-  const selectedSkill = activeEditor?.selectedSkill && skillCatalogResolved
-    ? catalog.skills.find(
-        (skill) =>
-          skill.name === activeEditor.selectedSkill?.skill_id &&
-          skill.expected_version === activeEditor.selectedSkill.expected_version,
+  const selectedSkillKeys = new Set(
+    (activeEditor?.selectedSkills ?? []).map(
+      (skill) => `${skill.skill_id}:${skill.expected_version}`,
+    ),
+  );
+  const unavailableSelectedSkills = activeEditor && skillCatalogResolved
+    ? activeEditor.selectedSkills.filter(
+        (selection) =>
+          !catalog.skills.some(
+            (skill) =>
+              skill.name === selection.skill_id &&
+              skill.expected_version === selection.expected_version,
+          ),
       )
-    : undefined;
+    : [];
   const unavailableMcpToolIds = activeEditor && mcpCatalogResolved
     ? activeEditor.selectedMcpToolIds.filter(
         (toolId) => !catalog.tools.some((tool) => tool.id === toolId),
@@ -196,6 +204,29 @@ export function AgentBuilderWorkbench({
           (selectedId) => selectedId !== toolId,
         ),
       }));
+    },
+    [updateEditor],
+  );
+  const toggleSkill = useCallback(
+    (skill: PublicSkillResponse) => {
+      updateEditor((editor) => {
+        const selected = editor.selectedSkills.some(
+          (entry) =>
+            entry.skill_id === skill.name && entry.expected_version === skill.expected_version,
+        );
+        const withoutSameSkill = editor.selectedSkills.filter(
+          (entry) => entry.skill_id !== skill.name,
+        );
+        return {
+          ...editor,
+          selectedSkills: selected
+            ? withoutSameSkill
+            : [
+                ...withoutSameSkill,
+                { skill_id: skill.name, expected_version: skill.expected_version },
+              ],
+        };
+      });
     },
     [updateEditor],
   );
@@ -417,7 +448,7 @@ export function AgentBuilderWorkbench({
                   <h3 id="agent-basic-heading" className="text-sm font-semibold">创建专家</h3>
                 </div>
                 <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                  完成下面 4 项即可保存：名称、Agent.md 初始指令、模型和主 Skill。
+                  完成下面 4 项即可保存：名称、Agent.md 初始指令、模型和至少一个 Skill。
                 </p>
                 <div className="grid grid-cols-1 gap-4">
                   <label className="flex flex-col gap-2">
@@ -495,33 +526,58 @@ export function AgentBuilderWorkbench({
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <BadgeCheck size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                    <h3 id="agent-skill-heading" className="text-sm font-semibold">主 Skill</h3>
+                    <h3 id="agent-skill-heading" className="text-sm font-semibold">Skill Set</h3>
                   </div>
                   <button className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("skills")} type="button">
-                    选择主 Skill
+                    配置 Skill
                   </button>
                 </div>
-                {activeEditor.selectedSkill ? (
-                  <div className={`border-l-2 py-1 pl-3 ${!skillCatalogResolved ? "border-l-[var(--theme-border-strong)]" : selectedSkill ? "border-l-[var(--theme-primary)]" : "border-l-[var(--theme-danger)]"}`}>
-                    <p className="text-sm font-medium">{activeEditor.selectedSkill.skill_id}</p>
-                    <p className="mt-1 break-all text-xs text-[var(--theme-text-secondary)]">
-                      固定版本 {activeEditor.selectedSkill.expected_version}
-                    </p>
-                    {!skillCatalogResolved ? (
-                      <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">
-                        授权 Skill 目录尚未完整加载，已保留服务端固定版本。
-                      </p>
-                    ) : !selectedSkill ? (
-                      <p className="mt-2 text-sm text-[var(--theme-danger)]">
-                        当前授权目录中没有这一精确版本，未自动回退。
-                      </p>
-                    ) : null}
+                {activeEditor.selectedSkills.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {activeEditor.selectedSkills.map((selection) => {
+                      const key = `${selection.skill_id}:${selection.expected_version}`;
+                      const unavailable = unavailableSelectedSkills.some(
+                        (entry) =>
+                          entry.skill_id === selection.skill_id &&
+                          entry.expected_version === selection.expected_version,
+                      );
+                      return (
+                        <span
+                          className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${unavailable ? "border-[var(--theme-danger)] text-[var(--theme-danger)]" : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]"}`}
+                          key={key}
+                        >
+                          <span>
+                            <span className="block font-medium">{selection.skill_id}</span>
+                            <span className="block text-xs text-[var(--theme-text-secondary)]">{selection.expected_version}</span>
+                          </span>
+                          <button
+                            aria-label={`移除 Skill ${selection.skill_id}`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--theme-hover)] disabled:opacity-60"
+                            disabled={interactionBusy}
+                            onClick={() => {
+                              updateEditor((editor) => ({
+                                ...editor,
+                                selectedSkills: editor.selectedSkills.filter(
+                                  (entry) =>
+                                    entry.skill_id !== selection.skill_id ||
+                                    entry.expected_version !== selection.expected_version,
+                                ),
+                              }));
+                            }}
+                            title={`移除 ${selection.skill_id}`}
+                            type="button"
+                          >
+                            <X aria-hidden="true" size={15} />
+                          </button>
+                        </span>
+                      );
+                    })}
                   </div>
                 ) : (
-                  <p className="text-sm text-[var(--theme-text-secondary)]">未选择主 Skill</p>
+                  <p className="text-sm text-[var(--theme-text-secondary)]">尚未配置 Skill</p>
                 )}
                 <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  一个智能体固定一个主 Skill；该 Skill 声明的依赖会由系统自动装载。
+                  智能体固定一组精确版本的 Skill；Agent SDK 根据任务上下文自主决定不调用、调用一个或调用多个。
                 </p>
               </section>
 
@@ -545,7 +601,7 @@ export function AgentBuilderWorkbench({
                     MCP 工具（可选） · 已选择 {activeEditor.selectedMcpToolIds.length} 项
                   </summary>
                   <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                    主 Skill 无法覆盖的外部能力才需要额外选择 MCP 工具。
+                    Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具。
                   </p>
                 <div className="mb-4 mt-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
@@ -684,7 +740,7 @@ export function AgentBuilderWorkbench({
         </section>
       </div>
 
-      <AgentBuilderDialog isOpen={dialog === "skills"} onClose={closeDialog} title="选择主 Skill">
+      <AgentBuilderDialog isOpen={dialog === "skills"} onClose={closeDialog} title="配置 Skill Set">
         {!skillCatalogResolved ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">授权 Skill 目录尚未完整加载。</p>
         ) : catalog.skills.length === 0 ? (
@@ -692,30 +748,24 @@ export function AgentBuilderWorkbench({
         ) : (
           <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
             {catalog.skills.map((skill) => (
-              <button
+              <label
                 key={`${skill.name}:${skill.expected_version}`}
-                className="flex w-full flex-col items-start justify-between gap-2 px-1 py-3 text-left hover:bg-[var(--theme-hover)] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-row sm:gap-4"
-                disabled={interactionBusy}
-                onClick={() => {
-                  updateEditor((editor) => ({
-                    ...editor,
-                    selectedSkill: {
-                      skill_id: skill.name,
-                      expected_version: skill.expected_version,
-                    },
-                  }));
-                  closeDialog();
-                }}
-                type="button"
+                className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]"
               >
-                <span className="min-w-0">
+                <input
+                  checked={selectedSkillKeys.has(`${skill.name}:${skill.expected_version}`)}
+                  disabled={interactionBusy}
+                  onChange={() => toggleSkill(skill)}
+                  type="checkbox"
+                />
+                <span className="min-w-0 flex-1">
                   <span className="block font-medium">{skill.name}</span>
                   <span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{skill.description}</span>
                 </span>
                 <span className="break-all text-xs text-[var(--theme-text-secondary)] sm:shrink-0">
                   {skill.expected_version}
                 </span>
-              </button>
+              </label>
             ))}
           </div>
         )}

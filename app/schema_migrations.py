@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.12.4"
+TARGET_SCHEMA_VERSION = "2026.08.13.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -30,6 +31,8 @@ CRITICAL_RELATIONS = (
     "audit_logs",
 )
 CRITICAL_COLUMNS = (
+    ("agent_profile_revisions", "skill_set", "jsonb", True),
+    ("agent_profile_revisions", "avatar_seed", "text", True),
     ("runs", "execution_kind", "text", True),
     ("runs", "skill_id", "text", False),
     ("runs", "authz_policy_version", "int4", True),
@@ -64,6 +67,20 @@ CRITICAL_CONSTRAINTS = (
     ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target_state"),
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
+)
+CRITICAL_TRIGGERS = (
+    (
+        "agent_profile_revisions",
+        "trg_agent_profile_legacy_insert_compatibility",
+        "agent_profile_legacy_insert_compatibility",
+        7,
+    ),
+    (
+        "agent_profile_revisions",
+        "trg_agent_profile_legacy_insert_reconcile",
+        "agent_profile_legacy_insert_reconcile",
+        5,
+    ),
 )
 CRITICAL_CONSTRAINT_DEFINITIONS = (
     (
@@ -265,6 +282,30 @@ def schema_checksum(sql: str | None = None) -> str:
         f"{migration.name}:{migration.checksum_sha256}" for migration in CONCURRENT_INDEX_MIGRATIONS
     )
     return hashlib.sha256(f"{core_sql}\n-- concurrent-index-contract\n{index_contract}".encode()).hexdigest()
+
+
+def _critical_trigger_contract() -> tuple[tuple[Any, ...], ...]:
+    sql = schema_sql()
+    contracts: list[tuple[Any, ...]] = []
+    for relation_name, trigger_name, function_name, trigger_type in CRITICAL_TRIGGERS:
+        match = re.search(
+            rf"create\s+or\s+replace\s+function\s+{re.escape(function_name)}\(\)"
+            rf"\s+returns\s+trigger\s+language\s+plpgsql\s+as\s+\$\$(.*?)\$\$;",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match is None:
+            raise SchemaMigrationError(f"schema_trigger_function_missing:{function_name}")
+        contracts.append(
+            (
+                relation_name,
+                trigger_name,
+                function_name,
+                trigger_type,
+                match.group(1),
+            )
+        )
+    return tuple(contracts)
 
 
 async def _ensure_ledger(conn: Any) -> None:
@@ -584,6 +625,59 @@ async def schema_status(conn: Any) -> dict[str, object]:
             ),
         ),
     )
+    trigger_cursor = await conn.execute(
+        """
+        select coalesce(bool_and(
+          triggers.oid is not null
+          and not triggers.tgisinternal
+          and triggers.tgenabled = 'O'
+          and triggers.tgtype::integer = expected.trigger_type
+          and triggers.tgqual is null
+          and triggers.tgconstraint = 0
+          and not triggers.tgdeferrable
+          and not triggers.tginitdeferred
+          and triggers.tgnargs = 0
+          and procedures.proname = expected.function_name
+          and procedures.pronamespace = to_regnamespace(current_schema())
+          and procedures.prokind = 'f'
+          and procedures.pronargs = 0
+          and procedures.prorettype = 'trigger'::regtype
+          and not procedures.prosecdef
+          and not procedures.proleakproof
+          and not procedures.proisstrict
+          and procedures.provolatile = 'v'
+          and procedures.proparallel = 'u'
+          and procedures.proconfig is null
+          and languages.lanname = 'plpgsql'
+          and procedures.prosrc = expected.function_body
+        ), false) as current
+        from jsonb_to_recordset(%s::jsonb)
+          as expected(
+            relation_name text,
+            trigger_name text,
+            function_name text,
+            trigger_type integer,
+            function_body text
+          )
+        left join pg_trigger triggers
+          on triggers.tgrelid = to_regclass(expected.relation_name)
+         and triggers.tgname = expected.trigger_name
+        left join pg_proc procedures on procedures.oid = triggers.tgfoid
+        left join pg_language languages on languages.oid = procedures.prolang
+        """,
+        (
+            _json_contract(
+                _critical_trigger_contract(),
+                (
+                    "relation_name",
+                    "trigger_name",
+                    "function_name",
+                    "trigger_type",
+                    "function_body",
+                ),
+            ),
+        ),
+    )
     index_cursor = await conn.execute(
         """
         select coalesce(bool_and(
@@ -642,12 +736,14 @@ async def schema_status(conn: Any) -> dict[str, object]:
     column_row = await column_cursor.fetchone() or {}
     constraint_row = await constraint_cursor.fetchone() or {}
     constraint_definition_row = await constraint_definition_cursor.fetchone() or {}
+    trigger_row = await trigger_cursor.fetchone() or {}
     index_row = await index_cursor.fetchone() or {}
     ledger_row = await ledger_cursor.fetchone() or {}
     relations_current = bool(relation_row.get("current"))
     columns_current = bool(column_row.get("current"))
     constraints_current = bool(constraint_row.get("current"))
     constraint_definitions_current = bool(constraint_definition_row.get("current"))
+    triggers_current = bool(trigger_row.get("current"))
     indexes_current = bool(index_row.get("current"))
     concurrent_index_definitions_current = all(
         [await _index_is_ready(conn, migration) for migration in CONCURRENT_INDEX_MIGRATIONS]
@@ -658,6 +754,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
             columns_current,
             constraints_current,
             constraint_definitions_current,
+            triggers_current,
             indexes_current,
             concurrent_index_definitions_current,
         )
@@ -678,6 +775,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "columns_current": columns_current,
         "constraints_current": constraints_current,
         "constraint_definitions_current": constraint_definitions_current,
+        "triggers_current": triggers_current,
         "indexes_current": indexes_current,
         "concurrent_index_definitions_current": concurrent_index_definitions_current,
     }

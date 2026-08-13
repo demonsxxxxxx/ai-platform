@@ -23,8 +23,9 @@ ordinary-user acceptance.
   private `instructions` field. It is system-level initialization owned by the
   published Agent Profile; it is not a user message and is never returned in a
   public projection.
-- **Primary Skill** is the exact required professional capability pinned by the
-  Agent Profile. It is not ordinary chat and it is not an optional prompt hint.
+- **Agent Skill Set** is the exact set of professional capabilities pinned by
+  the Agent Profile and made available to the Agent SDK. It is not ordinary
+  chat, and membership does not require invocation on every task.
 - **Task** is the user-facing name for work created inside an Agent Workspace.
   The UI should use task-oriented labels instead of generic Chat labels.
 - **Archive Skill** means disabling and removing the tenant distribution from
@@ -73,13 +74,15 @@ The initial editing surface contains only these core fields:
 | `name` | Expert name | Public identity |
 | `instructions` | Agent.md initial instructions | Private system initialization |
 | `model_id` | Runtime model | Exact server-authorized model selection |
-| `selected_skill` | Primary Skill | Exact required Skill/version binding |
+| `skill_set` | Skill Set | One or more exact governed Skill/version bindings |
 
 All other fields remain supported but are progressive configuration:
 
 - **Market presentation:** description, avatar, category, capability summary,
   welcome message, recommended tasks, starter prompts, expected outputs.
-- **Inputs and tools:** file input, supported file types, MCP tool selection.
+- **Inputs and tools:** optional attachment guidance and MCP tool selection.
+  Attachment formats are governed by the platform upload and content-safety
+  boundary, not configured as an Agent or Skill dispatch requirement.
 - **Access governance:** visibility, departments, roles, users, permission and
   data-access notice.
 
@@ -111,9 +114,11 @@ the browser.
   ACL, revision hash, or execution identity.
 - Agent Profile `instructions` stay in private execution input and the executor
   system prompt. They never become user content or a safe public field.
-- Expert Agents continue to require their exact Primary Skill. Ordinary Harness
-  chat remains `execution_kind=harness_chat` with `skill_id=null`; historical
-  `general-chat` is compatibility data, not a new product Skill.
+- Expert Agents continue to require at least one exact governed Skill in their
+  immutable Skill Set. The Agent SDK autonomously decides whether and which
+  registered Skill to invoke for each task. Ordinary Harness chat remains
+  `execution_kind=harness_chat` with `skill_id=null`; historical `general-chat`
+  is compatibility data, not a new product Skill.
 - Admin Skill release remains the only global immutable version/review/promote/
   rollback authority. Public Skill and Marketplace routes remain projections
   and tenant-distribution controls.
@@ -141,7 +146,7 @@ the browser.
 - Opening a Workspace does not create a conversation; first explicit send uses
   `agentProfileApi.createConversation` with `selected_agent_profile` and one
   operation identity.
-- Builder can save a draft with the four core fields and safe defaults for
+- Builder can save a draft with the four core field groups and safe defaults for
   presentation fields. Missing any core field still blocks save.
 - Public Agent payloads contain no `instructions`, raw Skill identity, MCP IDs,
   model ID, ACL details, or content hash.
@@ -171,11 +176,13 @@ and artifact download remain bound to
 
 ## Rollout and Rollback
 
-This slice is additive UI behavior over existing API and persistence contracts.
-Rollback may restore the former labels and disclosure layout without deleting
-Agent revisions, conversations, Skill distributions, Runs, or historical
-compatibility rows. Do not use rollback to reintroduce `general-chat` as a
-published Skill or to weaken server-owned Agent admission.
+This slice adds a version-pinned Agent Skill Set and autonomous SDK dispatch to
+the API, persistence, and execution contracts, alongside the UI changes.
+Rollback requires application and schema compatibility with legacy singleton
+Skill revisions; it must not delete Agent revisions, conversations, Skill
+distributions, Runs, or historical compatibility rows. Do not use rollback to
+reintroduce mandatory Skill invocation, per-Agent file-type gates,
+`general-chat` as a published Skill, or weaker server-owned Agent admission.
 
 ## Rejected Alternatives
 
