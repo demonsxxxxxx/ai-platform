@@ -329,6 +329,17 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.platform.postgres.errors",
+      "module_alias": "postgres_errors",
+      "symbols": [
+        "RepositoryAuthorizationError"
+      ],
+      "owner": "platform-architecture",
+      "reason": "The frozen global repository may preserve its existing authorization error type only as an exact identity alias while the shared PostgreSQL error contract moves to the platform adapter.",
+      "removal_condition": "After repository consumers import the platform PostgreSQL error contract, inventory supported external imports and remove this bridge in an authority-only change before deleting the repositories alias."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.runs.infrastructure.postgres",
       "module_alias": "run_persistence",
       "symbols": [
