@@ -48,7 +48,10 @@ SUPPORTED_SCHEMA_PATTERNS = frozenset(
     }
 )
 ALLOWED_PLATFORM_MIGRATION_TARGETS = frozenset(
-    {"app.platform.postgres.limits"}
+    {
+        "app.platform.postgres.errors",
+        "app.platform.postgres.limits",
+    }
 )
 
 POLICY_KEYS = {

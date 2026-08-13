@@ -1037,6 +1037,7 @@ def test_skills_persistence_bridge_authority_is_exact() -> None:
     [
         "app.platform",
         "app.platform_evil.postgres.limits",
+        "app.platform.postgres.error",
         "app.platform.postgres.private",
     ],
 )
