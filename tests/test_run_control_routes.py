@@ -10,6 +10,7 @@ from app.auth import AuthPrincipal
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, ToolPermissionTerminalizationProgress
+from app.skills.pinning import build_skill_manifest_ref
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +28,20 @@ def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
 
     monkeypatch.setattr(repository_module, "_stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repository_module, "progress_run_tool_permission_terminalization", progress)
+
+
+@pytest.fixture(autouse=True)
+def _stub_run_skill_materialization_for_route_fakes(monkeypatch):
+    async def materialize(*_args, skill_manifest_refs, **_kwargs):
+        manifests = []
+        for reference in skill_manifest_refs:
+            manifest = replay_manifest(str(reference["skill_id"]), str(reference["version"]))
+            if build_skill_manifest_ref(manifest) != reference:
+                raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
+            manifests.append(manifest)
+        return manifests
+
+    monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
 
 
 def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
@@ -49,6 +64,10 @@ def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
     }
 
 
+def replay_manifest_ref(skill_id: str, version: str = "hash-v1") -> dict:
+    return build_skill_manifest_ref(replay_manifest(skill_id, version))
+
+
 def replay_provenance(skill_id: str, version: str = "hash-v1", *, selected_track: str = "current") -> dict:
     return {
         "executor_type": "claude-agent-worker",
@@ -59,7 +78,7 @@ def replay_provenance(skill_id: str, version: str = "hash-v1", *, selected_track
             "selected_version": version,
             "selected_track": selected_track,
         },
-        "skill_manifests": [replay_manifest(skill_id, version)],
+        "skill_manifests": [replay_manifest_ref(skill_id, version)],
     }
 
 
@@ -521,6 +540,103 @@ def test_copy_run_profile_reauthorization_denials_have_no_child_side_effect(
     assert calls == ["user_lock", "profile_authority"]
 
 
+def test_copy_run_audits_wrapped_capability_denial_after_transaction_rollback(monkeypatch):
+    active = False
+    calls: list[object] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal active
+        active = True
+        try:
+            yield EmptyPropagationConnection()
+        finally:
+            active = False
+
+    async def admit(*_args, **_kwargs):
+        return None
+
+    async def deny(*_args, **_kwargs):
+        cause = RepositoryAuthorizationError("capability_not_authorized")
+        raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from cause
+
+    async def audit(_principal, error, *, source):
+        assert active is False
+        calls.append((str(error), source))
+
+    async def forbidden_copy(*_args, **_kwargs):
+        raise AssertionError("denied profile must not create a child")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", deny)
+    monkeypatch.setattr("app.routes.runs._audit_capability_denial", audit)
+    monkeypatch.setattr(repository_module, "copy_run_as_new_task", forbidden_copy)
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/runs/run-source/copy",
+        headers=headers(),
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (
+        403,
+        "agent_profile_capability_not_available",
+    )
+    assert calls == [("capability_not_authorized", "copy_run")]
+
+
+@pytest.mark.parametrize("action", ["retry", "resume"])
+def test_run_control_audits_wrapped_capability_denial_after_transaction_rollback(
+    monkeypatch,
+    action,
+):
+    active = False
+    calls: list[object] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal active
+        active = True
+        try:
+            yield EmptyPropagationConnection()
+        finally:
+            active = False
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def absent(*_args, **_kwargs):
+        return None
+
+    async def deny(*_args, **_kwargs):
+        cause = RepositoryAuthorizationError("capability_not_authorized")
+        raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from cause
+
+    async def audit(_principal, error, *, source):
+        assert active is False
+        calls.append((str(error), source))
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", noop)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", absent)
+    monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", noop)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", deny)
+    monkeypatch.setattr("app.routes.runs._audit_capability_denial", audit)
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        run_control_url("run-source", action),
+        headers=headers(),
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (
+        403,
+        "agent_profile_capability_not_available",
+    )
+    assert calls == [("capability_not_authorized", f"{action}_run")]
+
+
 def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(monkeypatch):
     calls: list[object] = []
 
@@ -611,7 +727,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
                 "selected_version": "hash-old",
                 "selected_track": "manifest_pin",
             },
-            "skill_manifests": [replay_manifest("general-chat", "hash-old")],
+            "skill_manifests": [replay_manifest_ref("general-chat", "hash-old")],
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
         }
@@ -710,17 +826,13 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     queued_payload = calls[-1][1]
     assert queued_payload["run_id"] == "run_new"
     assert queued_payload["skill_version"] == "hash-old"
-    assert queued_payload["skill_manifests"][0]["source"]["kind"] == "uploaded"
-    governance = queued_payload["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
-    assert governance["snapshot_source"] == "platform_release_lock"
-    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
-    serialized_governance = json.dumps(governance, ensure_ascii=False)
-    assert "release_decision" not in serialized_governance
-    assert "content_base64" not in serialized_governance
-    assert "hash-old" not in serialized_governance
-    assert "track" not in serialized_governance
-    assert "rollout" not in serialized_governance
+    assert queued_payload["skill_manifests"] == [
+        replay_manifest_ref("general-chat", "hash-old")
+    ]
+    serialized_refs = json.dumps(queued_payload["skill_manifests"], ensure_ascii=False)
+    assert "source" not in serialized_refs
+    assert "content_base64" not in serialized_refs
+    assert "snapshot_governance" not in serialized_refs
     assert queued_payload["context_snapshot_id"] == "ctx_copy_route"
     assert queued_payload["context_snapshot"]["source"] == "copy_run"
     assert queued_payload["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
@@ -826,7 +938,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
                 "selected_version": "hash-a",
                 "selected_track": "manifest_pin",
             },
-            "skill_manifests": [replay_manifest("general-chat", "hash-a")],
+            "skill_manifests": [replay_manifest_ref("general-chat", "hash-a")],
             "model_id": "model-catalog-retry",
             "model_value": "provider-model-retry",
         }
@@ -1591,7 +1703,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
                 "selected_version": "hash-a",
                 "selected_track": "manifest_pin",
             },
-            "skill_manifests": [replay_manifest("general-chat", "hash-a")],
+            "skill_manifests": [replay_manifest_ref("general-chat", "hash-a")],
             "model_id": "model-catalog-resume",
             "model_value": "provider-model-resume",
         }

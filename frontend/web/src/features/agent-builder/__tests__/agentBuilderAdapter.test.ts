@@ -305,6 +305,30 @@ test("persists an exact multi-Skill set while keeping the primary compatibility 
   assert.deepEqual(request.skill_set, editor.selectedSkills);
 });
 
+test("rejects more than 32 Skills and duplicate Skill identities across versions", () => {
+  const base = hydrateAgentProfileEditor(profile());
+  const tooMany = {
+    ...base,
+    selectedSkills: Array.from({ length: 33 }, (_, index) => ({
+      skill_id: `skill-${index}`,
+      expected_version: `version-${index}`,
+    })),
+  };
+  assert.equal(validateAgentProfileEditor(tooMany, catalog())?.code, "skill_limit_exceeded");
+
+  const duplicateIdentity = {
+    ...base,
+    selectedSkills: [
+      { skill_id: "document-review", expected_version: "2026.07.28" },
+      { skill_id: "document-review", expected_version: "2026.08.01" },
+    ],
+  };
+  assert.equal(
+    validateAgentProfileEditor(duplicateIdentity, catalog())?.code,
+    "selected_skill_stale",
+  );
+});
+
 test("fails closed while selected catalogs are unresolved", () => {
   const editor = hydrateAgentProfileEditor(profile());
   assert.equal(

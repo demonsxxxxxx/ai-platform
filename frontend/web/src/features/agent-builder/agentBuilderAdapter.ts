@@ -58,6 +58,7 @@ export type AgentBuilderBlockCode =
   | "instructions_required"
   | "model_required"
   | "skill_required"
+  | "skill_limit_exceeded"
   | "profile_revision_missing"
   | "catalog_unavailable"
   | "selected_model_stale"
@@ -305,6 +306,7 @@ export function validateAgentProfileEditor(
   if (!editor.instructions.trim()) return { code: "instructions_required" };
   if (!editor.modelId.trim()) return { code: "model_required" };
   if (editor.selectedSkills.length === 0) return { code: "skill_required" };
+  if (editor.selectedSkills.length > 32) return { code: "skill_limit_exceeded" };
 
   if (!catalog.modelsResolved) return { code: "catalog_unavailable" };
   if (!catalog.models.some((model) => model.id === editor.modelId)) {
@@ -314,11 +316,10 @@ export function validateAgentProfileEditor(
   if (!catalog.skillsResolved || !catalog.effectivePermissionsKnown) {
     return { code: "catalog_unavailable" };
   }
-  const selectedSkillKeys = new Set<string>();
+  const selectedSkillIds = new Set<string>();
   const selectedSkillsAreCurrent = editor.selectedSkills.every((selection) => {
-    const key = `${selection.skill_id}:${selection.expected_version}`;
-    if (selectedSkillKeys.has(key)) return false;
-    selectedSkillKeys.add(key);
+    if (selectedSkillIds.has(selection.skill_id)) return false;
+    selectedSkillIds.add(selection.skill_id);
     return catalog.skills.some(
       (skill) =>
         skill.enabled &&
@@ -415,6 +416,8 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "缺少模型，请选择当前可用模型。";
     case "skill_required":
       return "缺少 Skill，请至少选择一个已授权版本。";
+    case "skill_limit_exceeded":
+      return "一个智能体最多可选择 32 个 Skill，请移除多余项。";
     case "profile_revision_missing":
       return "当前智能体缺少可用于版本锁定的服务端 revision，请刷新列表。";
     case "catalog_unavailable":

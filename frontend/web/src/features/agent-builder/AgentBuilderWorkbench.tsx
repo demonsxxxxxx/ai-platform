@@ -210,18 +210,19 @@ export function AgentBuilderWorkbench({
   const toggleSkill = useCallback(
     (skill: PublicSkillResponse) => {
       updateEditor((editor) => {
-        const key = `${skill.name}:${skill.expected_version}`;
         const selected = editor.selectedSkills.some(
-          (entry) => `${entry.skill_id}:${entry.expected_version}` === key,
+          (entry) =>
+            entry.skill_id === skill.name && entry.expected_version === skill.expected_version,
+        );
+        const withoutSameSkill = editor.selectedSkills.filter(
+          (entry) => entry.skill_id !== skill.name,
         );
         return {
           ...editor,
           selectedSkills: selected
-            ? editor.selectedSkills.filter(
-                (entry) => `${entry.skill_id}:${entry.expected_version}` !== key,
-              )
+            ? withoutSameSkill
             : [
-                ...editor.selectedSkills,
+                ...withoutSameSkill,
                 { skill_id: skill.name, expected_version: skill.expected_version },
               ],
         };

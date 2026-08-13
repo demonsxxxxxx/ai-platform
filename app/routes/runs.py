@@ -127,6 +127,17 @@ async def _audit_capability_denial(
         )
 
 
+async def _audit_wrapped_capability_denial(
+    principal: AuthPrincipal,
+    error: HTTPException,
+    *,
+    source: str,
+) -> None:
+    cause = error.__cause__
+    if isinstance(cause, repositories.RepositoryAuthorizationError):
+        await _audit_capability_denial(principal, cause, source=source)
+
+
 def _lease_ids_by_run_id(leases: list[dict[str, Any]]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for lease in leases:
@@ -1138,6 +1149,9 @@ async def copy_run(
                     source="copy_run",
                     authorized_source_run_id=run_id,
                 )
+    except HTTPException as exc:
+        await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
+        raise
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="copy_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
@@ -1170,7 +1184,8 @@ async def copy_run(
     except RepositoryConflictError as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except HTTPException:
+    except HTTPException as exc:
+        await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
     except Exception as exc:
         await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
@@ -1348,6 +1363,9 @@ async def _mutate_run_control_child(
                         operation_id=normalized_operation_id,
                     )
                     created = True
+    except HTTPException as exc:
+        await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
+        raise
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source=f"{action}_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
@@ -1374,6 +1392,9 @@ async def _mutate_run_control_child(
                 check_existing=not created,
                 principal=principal,
             )
+        except HTTPException as exc:
+            await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
+            raise
         except repositories.RepositoryAuthorizationError as exc:
             await _audit_capability_denial(principal, exc, source=f"{action}_run")
             raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
