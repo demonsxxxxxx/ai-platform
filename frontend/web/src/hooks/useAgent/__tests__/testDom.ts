@@ -15,9 +15,35 @@ class TestEventTarget {
     this.listeners.get(type)?.delete(listener);
   }
 
+  getListeners(type: string) {
+    return this.listeners.get(type);
+  }
+
   dispatchEvent(event: { type: string; [key: string]: unknown }) {
-    this.listeners.get(event.type)?.forEach((listener) => listener(event));
+    event.bubbles ??= true;
+    event.target ??= this;
+    event.defaultPrevented ??= false;
+    event.preventDefault ??= () => {
+      event.defaultPrevented = true;
+    };
+    event.stopPropagation ??= () => {
+      event.cancelBubble = true;
+    };
+    dispatchEventFromTarget(this, event);
     return true;
+  }
+}
+
+function dispatchEventFromTarget(
+  target: TestEventTarget,
+  event: { type: string; [key: string]: unknown },
+) {
+  let current: TestEventTarget | null = target;
+  while (current) {
+    event.currentTarget = current;
+    current.getListeners(event.type)?.forEach((listener) => listener(event));
+    if (event.cancelBubble || event.bubbles !== true) break;
+    current = current instanceof TestNode ? current.parentNode : null;
   }
 }
 
@@ -108,6 +134,52 @@ class TestElement extends TestNode {
 
   hasAttribute(name: string) {
     return this.attributes.has(name);
+  }
+
+  private matchesSelector(selector: string): boolean {
+    const normalized = selector.trim();
+    if (/^[a-z]+$/i.test(normalized)) {
+      return this.tagName.toLowerCase() === normalized.toLowerCase();
+    }
+    const attribute = normalized.match(
+      /^\[([^=\]]+)(?:=["']?([^"'\]]+)["']?)?\]$/,
+    );
+    return attribute
+      ? this.hasAttribute(attribute[1]) &&
+          (attribute[2] === undefined ||
+            this.getAttribute(attribute[1]) === attribute[2])
+      : false;
+  }
+
+  closest(selectors: string): TestElement | null {
+    const candidates = selectors.split(",");
+    if (candidates.some((selector) => this.matchesSelector(selector))) {
+      return this;
+    }
+    let current: TestNode | null = this.parentNode;
+    while (current) {
+      if (current instanceof TestElement) {
+        const element = current;
+        if (candidates.some((selector) => element.matchesSelector(selector))) {
+          return element;
+        }
+      }
+      current = current.parentNode;
+    }
+    return null;
+  }
+
+  querySelectorAll(selector: string): TestElement[] {
+    const matches: TestElement[] = [];
+    const visit = (node: TestNode) => {
+      node.childNodes.forEach((child) => {
+        if (!(child instanceof TestElement)) return;
+        if (child.matchesSelector(selector)) matches.push(child);
+        visit(child);
+      });
+    };
+    visit(this);
+    return matches;
   }
 }
 
