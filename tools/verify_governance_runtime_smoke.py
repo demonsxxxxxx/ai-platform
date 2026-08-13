@@ -32,7 +32,7 @@ SKILL_DEPENDENCY_RUNTIME_GAP = "skill_dependency_review_policy_runtime_acceptanc
 ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 GOVERNANCE_SCHEMA_VERSION = "ai-platform.governance-readiness.v1"
 REQUIRED_GOVERNANCE_DOMAINS = (
-    "tool_permission",
+    "tool_policy",
     "skill_governance",
     "memory_governance",
 )
@@ -164,7 +164,7 @@ def _contains_forbidden_governance_projection_term(payload: Any) -> bool:
     return _contains_forbidden_projection_term(payload) or _has_additional_forbidden_marker(payload)
 
 
-def _tool_permission_summary(domain: dict[str, Any]) -> dict[str, object]:
+def _tool_policy_summary(domain: dict[str, Any]) -> dict[str, object]:
     evidence = _as_dict(domain.get("evidence"))
     return {
         "domain_status": str(domain.get("status") or ""),
@@ -241,7 +241,7 @@ def _admin_governance_summary(payload: Any, *, expected_tenant_id: str) -> dict[
     governance = _as_dict(body.get("governance"))
     domains = _as_dict(governance.get("domains"))
     missing_domains = [name for name in REQUIRED_GOVERNANCE_DOMAINS if name not in domains]
-    tool_permission = _tool_permission_summary(_as_dict(domains.get("tool_permission")))
+    tool_policy = _tool_policy_summary(_as_dict(domains.get("tool_policy")))
     skill_governance = _skill_governance_summary(_as_dict(domains.get("skill_governance")))
     memory_governance = _memory_governance_summary(_as_dict(domains.get("memory_governance")))
     governance_status = str(governance.get("status") or "")
@@ -253,7 +253,7 @@ def _admin_governance_summary(payload: Any, *, expected_tenant_id: str) -> dict[
         "governance_status_allowed": governance_status in ALLOWED_GOVERNANCE_STATUSES,
         "required_domains_present": not missing_domains,
         "missing_domains": missing_domains,
-        "tool_permission": tool_permission,
+        "tool_policy": tool_policy,
         "skill_governance": skill_governance,
         "memory_governance": memory_governance,
         "open_gap_count": len(_as_list(governance.get("open_gaps"))),
@@ -262,7 +262,7 @@ def _admin_governance_summary(payload: Any, *, expected_tenant_id: str) -> dict[
 
 
 def _governance_summary_ok(summary: dict[str, object]) -> bool:
-    tool_permission = _as_dict(summary.get("tool_permission"))
+    tool_policy = _as_dict(summary.get("tool_policy"))
     skill_governance = _as_dict(summary.get("skill_governance"))
     memory_governance = _as_dict(summary.get("memory_governance"))
     return (
@@ -270,10 +270,10 @@ def _governance_summary_ok(summary: dict[str, object]) -> bool:
         and summary.get("governance_schema_version") == GOVERNANCE_SCHEMA_VERSION
         and bool(summary.get("governance_status_allowed"))
         and bool(summary.get("required_domains_present"))
-        and bool(tool_permission.get("taxonomy_present"))
-        and bool(tool_permission.get("bulk_review_present"))
-        and bool(tool_permission.get("implemented_policy_taxonomy"))
-        and bool(tool_permission.get("implemented_bulk_review_dashboard"))
+        and bool(tool_policy.get("taxonomy_present"))
+        and bool(tool_policy.get("bulk_review_present"))
+        and bool(tool_policy.get("implemented_policy_taxonomy"))
+        and bool(tool_policy.get("implemented_bulk_review_dashboard"))
         and bool(skill_governance.get("release_readiness_present"))
         and bool(skill_governance.get("dependency_review_policy_present"))
         and bool(skill_governance.get("runtime_acceptance_contract_present"))

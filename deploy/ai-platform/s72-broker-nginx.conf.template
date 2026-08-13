@@ -11,7 +11,7 @@ server {
         return 200 "ok\n";
     }
 
-    location ~ ^/api/ai/runtime/callbacks/(executor|context-retrieval|tool-permission)$ {
+    location ~ ^/api/ai/runtime/callbacks/(executor|context-retrieval)$ {
         limit_except POST {
             deny all;
         }

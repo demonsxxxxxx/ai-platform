@@ -115,12 +115,8 @@ def test_mcp_identity_uses_authoritative_registry_id_grammar_without_prefix_auth
     assert malformed.reason == "tool_identity_malformed"
 
 
-def test_runtime_approval_write_routes_fail_closed_before_any_repository_mutation(monkeypatch):
-    async def fail_create(*args, **kwargs):
-        raise AssertionError("removed route must not create a permission row")
-
+def test_runtime_approval_write_routes_do_not_exist(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.create_tool_permission_request", fail_create)
     client = TestClient(create_app())
     headers = {
         "X-AI-User-ID": "user-a",
@@ -140,19 +136,18 @@ def test_runtime_approval_write_routes_fail_closed_before_any_repository_mutatio
         json={"decision": "deny"},
     )
 
-    assert requested.status_code == decided.status_code == 410
-    assert requested.json()["detail"] == decided.json()["detail"] == "tool_permission_runtime_approval_removed"
+    assert requested.status_code == decided.status_code == 404
 
 
 def test_no_active_production_permission_request_producer_or_sandbox_callback_sender_remains():
     root = Path(__file__).resolve().parents[1]
     production_files = [
         root / "app/executors/claude_agent_worker.py",
-        root / "app/routes/tool_permissions.py",
         root / "app/runtime/sandbox/executor_app.py",
     ]
     combined = "\n".join(path.read_text(encoding="utf-8") for path in production_files)
 
+    assert not (root / "app/routes/tool_permissions.py").exists()
     assert ".create_tool_permission_request(" not in combined
     assert "/runtime/callbacks/tool-permission" not in (root / "app/runtime/sandbox/executor_app.py").read_text(encoding="utf-8")
     runner_sources = "\n".join(

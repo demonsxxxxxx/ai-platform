@@ -113,7 +113,6 @@ CREATE_KEYS = {
 }
 CALLBACK_PATHS = {
     "/api/ai/runtime/callbacks/executor",
-    "/api/ai/runtime/callbacks/tool-permission",
     "/api/ai/runtime/callbacks/context-retrieval",
 }
 EXECD_ALLOWED = {

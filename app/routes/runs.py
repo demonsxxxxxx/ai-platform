@@ -85,7 +85,7 @@ from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
+from app.runs.terminalization import drain_run_terminalization, reconcile_terminalized_run
 from app.skills.pinning import (
     SkillVersionMaterializationError,
     attach_skill_snapshot_governance,
@@ -1612,15 +1612,15 @@ async def cancel_run(
             run_id=run_id,
         )
     if result is not None:
-        initial_progress = result.pop("_permission_terminalization_progress", None)
+        initial_progress = result.pop("_terminalization_progress", None)
         if initial_progress is not None:
-            await reconcile_terminalized_permission_run(
+            await reconcile_terminalized_run(
                 tenant_id=principal.tenant_id,
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
             )
-        progress = await drain_run_tool_permission_terminalization(
+        progress = await drain_run_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             transaction_factory=transaction,
@@ -1632,7 +1632,7 @@ async def cancel_run(
                 "cancelled",
             }:
                 result["status"] = progressed_status
-        await reconcile_terminalized_permission_run(
+        await reconcile_terminalized_run(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             progress=progress,

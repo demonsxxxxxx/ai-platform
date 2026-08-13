@@ -9,24 +9,24 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
-from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, ToolPermissionTerminalizationProgress
+from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, RunTerminalizationProgress
 
 
 @pytest.fixture(autouse=True)
-def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
+def _stub_terminalization_for_run_control_mocks(monkeypatch):
     """Keep legacy route fakes focused on route-side cancel effects, not batch SQL internals."""
 
     async def stage(conn, **kwargs):
-        return {"id": kwargs["run_id"], "permission_terminalization_target": kwargs["target_status"]}
+        return {"id": kwargs["run_id"], "terminalization_target": kwargs["target_status"]}
 
     async def progress(conn, *, tenant_id, run_id):
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return repository_module.RunTerminalizationProgress(
             completed=True,
             status="cancelled" if "queued" in run_id else "cancel_requested",
         )
 
-    monkeypatch.setattr(repository_module, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr(repository_module, "progress_run_tool_permission_terminalization", progress)
+    monkeypatch.setattr(repository_module, "_stage_run_terminalization", stage)
+    monkeypatch.setattr(repository_module, "progress_run_terminalization", progress)
 
 
 def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
@@ -4843,7 +4843,7 @@ async def test_finalize_multi_agent_parent_run_failure_and_cancel_statuses(monke
         if len(statuses_seen) == 3:
             # This represents a parent whose first 50 permission rows drained
             # but whose final row still keeps the durable finalizer partial.
-            return repositories.ToolPermissionTerminalizationProgress(False, "failed")
+            return repositories.RunTerminalizationProgress(False, "failed")
         return True
 
     async def cancel_parent(conn, **kwargs):
@@ -5502,8 +5502,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
-            ToolPermissionTerminalizationProgress(True, "cancelled", True, True),
-            ToolPermissionTerminalizationProgress(True, "cancelled"),
+            RunTerminalizationProgress(True, "cancelled", True, True),
+            RunTerminalizationProgress(True, "cancelled"),
             "cancelled",
             1,
         ),
@@ -5512,8 +5512,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
-            ToolPermissionTerminalizationProgress(True, "cancelled", True, True),
-            ToolPermissionTerminalizationProgress(True, "cancelled"),
+            RunTerminalizationProgress(True, "cancelled", True, True),
+            RunTerminalizationProgress(True, "cancelled"),
             "cancelled",
             1,
         ),
@@ -5522,8 +5522,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
             "cancel_requested",
             0,
         ),
@@ -5532,8 +5532,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
             "cancel_requested",
             0,
         ),
@@ -5542,8 +5542,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
-            ToolPermissionTerminalizationProgress(False, "cancel_requested"),
-            ToolPermissionTerminalizationProgress(True, "cancel_requested"),
+            RunTerminalizationProgress(False, "cancel_requested"),
+            RunTerminalizationProgress(True, "cancel_requested"),
             "cancel_requested",
             0,
         ),
@@ -5552,8 +5552,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
-            ToolPermissionTerminalizationProgress(False, "cancel_requested"),
-            ToolPermissionTerminalizationProgress(True, "cancel_requested"),
+            RunTerminalizationProgress(False, "cancel_requested"),
+            RunTerminalizationProgress(True, "cancel_requested"),
             "cancel_requested",
             0,
         ),
@@ -5579,7 +5579,7 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
         return {
             "run_id": "run_active",
             "status": "cancel_requested",
-            "_permission_terminalization_progress": initial_progress,
+            "_terminalization_progress": initial_progress,
         }
 
     async def drain(**_kwargs):
@@ -5596,8 +5596,8 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)
     monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
-    monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
-    monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr(f"{module_path}.drain_run_terminalization", drain)
+    monkeypatch.setattr(f"{module_path}.reconcile_terminalized_run", reconcile)
     monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
 
     response = TestClient(create_app()).post(path, headers=admin_headers() if is_admin else headers())

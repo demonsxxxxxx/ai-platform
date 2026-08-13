@@ -997,7 +997,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
       setSandboxError(null);
-      options?.onClearApprovals?.();
       const productCard = (): MessagePart | null => {
         if (outcome === "failed") {
           return {
@@ -1175,7 +1174,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           let hydratedMessages = reconstructMessagesFromEvents(
             events,
             processedEventIdsRef.current,
-            { options, activeSubagentStack: activeSubagentStackRef.current },
+            { activeSubagentStack: activeSubagentStackRef.current },
           );
           let hydratedAssistant = [...hydratedMessages]
             .reverse()
@@ -1437,9 +1436,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         .markRead(targetSessionId)
         .catch(() => {});
 
-      // Clear approvals before loading new session
-      options?.onClearApprovals?.();
-
       let historyFailurePhase: HistoryLoadFailurePhase = "session_projection";
       try {
         await markReadPromise;
@@ -1603,7 +1599,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ? reconstructMessagesFromEvents(
                 eventsData.events as HistoryEvent[],
                 processedEventIdsRef.current,
-                { options, activeSubagentStack: activeSubagentStackRef.current },
+                { activeSubagentStack: activeSubagentStackRef.current },
               )
             : [];
           if (targetRunId) {

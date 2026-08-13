@@ -13,10 +13,7 @@ from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
 )
-from app.runtime.sandbox.contracts import (
-    ExecutorCallbackEvent,
-    ExecutorToolPermissionRequest,
-)
+from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt:run-a:attempt-a") -> str:
@@ -472,14 +469,6 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert recorded[0].attempt_id == "attempt-a"
     assert recorded[0].callback_token_id == "cbt:run-a:attempt-a"
 
-
-def test_runtime_tool_permission_callback_is_retired_without_resolver_access():
-    client = TestClient(create_app())
-    response = client.post("/api/ai/runtime/callbacks/tool-permission", json={"tool_name": "Bash"})
-
-    assert response.status_code == 410
-    assert response.json()["detail"] == "tool_permission_runtime_approval_removed"
-    assert ExecutorToolPermissionRequest.model_fields["attempt_id"].is_required()
 
 def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))

@@ -542,7 +542,6 @@ class SandboxRuntime:
                 callback_base_url=trusted_callback_target.base_url,
                 sdk_session_id=request.sdk_session_id,
                 permission_mode="default",
-                governed_permission_wait=request.governed_permission_wait,
                 config=task_config,
             )
             validation_started = True

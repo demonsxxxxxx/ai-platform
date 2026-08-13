@@ -548,11 +548,11 @@ create table if not exists runs (
   copied_from_run_id text references runs(id),
   cancel_requested_at timestamptz,
   cancel_requested_by text,
-  permission_terminalization_target text,
-  permission_terminalization_reason text not null default '',
-  permission_terminalization_result_json jsonb not null default '{}'::jsonb,
-  permission_terminalization_error_code text,
-  permission_terminalization_error_message text,
+  terminalization_target text,
+  terminalization_reason text not null default '',
+  terminalization_result_json jsonb not null default '{}'::jsonb,
+  terminalization_error_code text,
+  terminalization_error_message text,
   constraint fk_runs_tenant_agent foreign key (tenant_id, agent_id)
     references agents(tenant_id, id),
   constraint fk_runs_agent_profile_pin foreign key (
@@ -1281,11 +1281,11 @@ alter table runs add column if not exists session_generation bigint;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;
 alter table runs add column if not exists cancel_requested_by text;
-alter table runs add column if not exists permission_terminalization_target text;
-alter table runs add column if not exists permission_terminalization_reason text not null default '';
-alter table runs add column if not exists permission_terminalization_result_json jsonb not null default '{}'::jsonb;
-alter table runs add column if not exists permission_terminalization_error_code text;
-alter table runs add column if not exists permission_terminalization_error_message text;
+alter table runs add column if not exists terminalization_target text;
+alter table runs add column if not exists terminalization_reason text not null default '';
+alter table runs add column if not exists terminalization_result_json jsonb not null default '{}'::jsonb;
+alter table runs add column if not exists terminalization_error_code text;
+alter table runs add column if not exists terminalization_error_message text;
 alter table runs add column if not exists latency_ms integer;
 alter table runs add column if not exists input_token_count integer not null default 0;
 alter table runs add column if not exists output_token_count integer not null default 0;
@@ -2028,39 +2028,64 @@ select tenant_id, run_id, coalesce(max(sequence), 0) + 1 from run_events group b
 on conflict (tenant_id, run_id) do update set next_sequence = excluded.next_sequence, updated_at = now()
 where run_event_cursors.next_sequence < excluded.next_sequence;
 
-create table if not exists run_tool_permission_requests (
-  id text primary key,
-  tenant_id text not null references tenants(id),
-  workspace_id text not null references workspaces(id),
-  user_id text not null references users(id),
-  session_id text not null references sessions(id),
-  run_id text not null references runs(id),
-  trace_id text not null default '',
-  tool_id text not null,
-  tool_call_id text not null,
-  action text not null default 'execute',
-  risk_level text not null default 'low',
-  write_capable boolean not null default false,
-  status text not null default 'pending',
-  decision text,
-  reason text not null default '',
-  request_payload_json jsonb not null default '{}'::jsonb,
-  decision_payload_json jsonb not null default '{}'::jsonb,
-  expires_at timestamptz,
-  decided_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique(tenant_id, run_id, tool_call_id)
-);
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = current_schema()
+      and table_name = 'runs'
+      and column_name = 'permission_terminalization_target'
+  ) then
+    execute $migration$
+      update runs
+      set terminalization_target = coalesce(terminalization_target, permission_terminalization_target),
+          terminalization_reason = case
+            when terminalization_target is null then permission_terminalization_reason
+            else terminalization_reason
+          end,
+          terminalization_result_json = case
+            when terminalization_target is null then permission_terminalization_result_json
+            else terminalization_result_json
+          end,
+          terminalization_error_code = case
+            when terminalization_target is null then permission_terminalization_error_code
+            else terminalization_error_code
+          end,
+          terminalization_error_message = case
+            when terminalization_target is null then permission_terminalization_error_message
+            else terminalization_error_message
+          end
+      where permission_terminalization_target is not null
+    $migration$;
+  end if;
 
-create index if not exists idx_run_tool_permission_requests_run
-  on run_tool_permission_requests(tenant_id, run_id, created_at desc);
-create index if not exists idx_run_tool_permission_requests_inbox
-  on run_tool_permission_requests(tenant_id, user_id, status, created_at desc);
-alter table run_tool_permission_requests add column if not exists expires_at timestamptz;
-create index if not exists idx_run_tool_permission_requests_pending_expiry
-  on run_tool_permission_requests(tenant_id, expires_at asc, created_at asc, id)
-  where status = 'pending';
+  if to_regclass('run_tool_permission_requests') is not null then
+    update runs
+    set terminalization_target = 'failed',
+        terminalization_reason = 'runtime_tool_approval_retired',
+        terminalization_result_json = jsonb_build_object(
+          'message', 'Runtime tool approval was retired before this run completed.',
+          'retryable', false
+        ),
+        terminalization_error_code = 'runtime_tool_approval_retired',
+        terminalization_error_message = 'Runtime tool approval is no longer supported.'
+    where status not in ('succeeded', 'failed', 'cancelled')
+      and terminalization_target is null
+      and exists (
+        select 1 from run_tool_permission_requests as permission_request
+        where permission_request.tenant_id = runs.tenant_id
+          and permission_request.run_id = runs.id
+          and permission_request.status in ('pending', 'decided')
+      );
+  end if;
+end $$;
+
+drop table if exists run_tool_permission_requests;
+alter table runs drop column if exists permission_terminalization_target;
+alter table runs drop column if exists permission_terminalization_reason;
+alter table runs drop column if exists permission_terminalization_result_json;
+alter table runs drop column if exists permission_terminalization_error_code;
+alter table runs drop column if exists permission_terminalization_error_message;
 
 create table if not exists sandbox_leases (
   id text primary key,

@@ -78,8 +78,8 @@ Current platform-facing contract areas:
   `/api/sessions/*`.
 - Uploads: `/api/upload/*`.
 - Playback: `/api/ai/runs/{run_id}/playback`.
-- Tool permission decisions:
-  `/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`.
+- Tool governance: MCP catalog and administrator policy projections are
+  evaluated synchronously; chat runs do not expose runtime approval routes.
 - Artifacts:
   `/api/ai/artifacts/{artifact_id}/download` and
   `/api/ai/artifacts/{artifact_id}/preview`.

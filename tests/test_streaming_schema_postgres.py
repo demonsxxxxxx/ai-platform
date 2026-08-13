@@ -51,7 +51,7 @@ async def _seed_run(conn: psycopg.AsyncConnection) -> None:
 def _run_event_repair_statements(schema_sql: str) -> tuple[str, str]:
     repair_start = schema_sql.index("do $$\ndeclare\n  unique_index_present boolean;")
     index_start = schema_sql.index("create unique index if not exists uq_run_events_tenant_run_sequence", repair_start)
-    section_end = schema_sql.index("\n\ncreate table if not exists run_tool_permission_requests", index_start)
+    section_end = schema_sql.index("\n\ncreate table if not exists sandbox_leases", index_start)
     return schema_sql[repair_start:index_start], schema_sql[index_start:section_end]
 
 

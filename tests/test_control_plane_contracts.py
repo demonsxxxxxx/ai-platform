@@ -45,9 +45,7 @@ def test_standard_event_taxonomy_covers_g2_lifecycle_events():
     assert "artifact_created" in STANDARD_EVENT_TYPES
     assert "mcp_tool_call_completed" in STANDARD_EVENT_TYPES
     assert "context_snapshot_created" in STANDARD_EVENT_TYPES
-    assert "tool_permission_requested" in STANDARD_EVENT_TYPES
-    assert "tool_permission_authorized" in STANDARD_EVENT_TYPES
-    assert "tool_permission_terminalized" in STANDARD_EVENT_TYPES
+    assert not any(event.startswith("tool_permission_") for event in STANDARD_EVENT_TYPES)
     assert "sandbox_lease_created" in STANDARD_EVENT_TYPES
     assert "checkpoint_created" in STANDARD_EVENT_TYPES
     assert "subagent_started" in STANDARD_EVENT_TYPES

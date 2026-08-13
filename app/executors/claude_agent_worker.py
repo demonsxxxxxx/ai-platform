@@ -114,7 +114,6 @@ _SDK_ACTIONABLE_FAILURE_CODES = {
     "claude_agent_sdk_tool_admission_failed",
     "claude_agent_sdk_upstream_error",
 }
-_TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
 _REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 32 * 1024 * 1024
 _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
@@ -1476,7 +1475,6 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),
-            governed_permission_wait=False,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None

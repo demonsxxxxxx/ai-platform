@@ -197,14 +197,12 @@ def build_governance_readiness(
         ]
     )
     domains = {
-        "tool_permission": _domain(
+        "tool_policy": _domain(
             implemented=[
                 "admin_tool_policy_inventory",
                 "tenant_scoped_tool_policy_update_audit",
                 "zero_click_model_tool_policy",
                 "risk_write_fail_closed_policy_evaluation",
-                "public_tool_permission_card_projection",
-                "audit_visible_legacy_frontend_route_policy_mapping",
                 "allow_deny_tool_policy_taxonomy_evidence",
                 "platform_registered_mcp_only_policy",
                 "ordinary_user_custom_mcp_disabled",
@@ -219,7 +217,6 @@ def build_governance_readiness(
             ],
             next_checks=[
                 "enforce or remap every remaining legacy frontend envvar/roles/channel/admin route or source to ai-platform projections",
-                "keep historical permission records read-only and redacted",
                 "keep risky or write-capable tools denied unless their exact capability subject is declared, active, and distributed",
             ],
             evidence={

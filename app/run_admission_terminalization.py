@@ -16,7 +16,7 @@ async def terminalize_retired_platform_multi_agent_run(
     *,
     tenant_id: str,
     run_id: str,
-) -> repositories.ToolPermissionTerminalizationProgress:
+) -> repositories.RunTerminalizationProgress:
     """Stage a retired-control failure through the durable terminalization lifecycle."""
 
     error_message = "Platform multi-agent orchestration is no longer supported."

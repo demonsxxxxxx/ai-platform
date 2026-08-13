@@ -123,7 +123,7 @@ def test_persistence_limit_facade_binds_each_symbol_to_one_canonical_module():
 
 def test_run_repository_facade_binds_each_primitive_to_one_canonical_adapter():
     symbols = (
-        "_stage_run_tool_permission_terminalization",
+        "_stage_run_terminalization",
         "acquire_user_active_run_admission_lock",
         "count_active_runs_for_user",
         "enforce_user_active_run_admission",

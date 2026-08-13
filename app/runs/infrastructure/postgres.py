@@ -176,7 +176,7 @@ async def get_run_identity(
     return await cursor.fetchone()
 
 
-async def _stage_run_tool_permission_terminalization(
+async def _stage_run_terminalization(
     conn: AsyncConnection,
     *,
     tenant_id: str,
@@ -190,41 +190,41 @@ async def _stage_run_tool_permission_terminalization(
     """Persist the first terminal intent while holding the owning run row first."""
 
     if target_status not in {"failed", "cancel_requested", "cancelled"}:
-        raise ValueError("invalid_run_tool_permission_terminal_target")
+        raise ValueError("invalid_run_terminal_target")
     cursor = await conn.execute(
         """
         update runs
-        set permission_terminalization_target = case
-              when permission_terminalization_target = 'cancel_requested'
+        set terminalization_target = case
+              when terminalization_target = 'cancel_requested'
                    and %s = 'cancelled' then 'cancelled'
-              else coalesce(permission_terminalization_target, %s)
+              else coalesce(terminalization_target, %s)
             end,
-            permission_terminalization_reason = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_reason
+            terminalization_reason = case
+              when terminalization_target is null
+                   or (terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
+              else terminalization_reason
             end,
-            permission_terminalization_result_json = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s::jsonb
-              else permission_terminalization_result_json
+            terminalization_result_json = case
+              when terminalization_target is null
+                   or (terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s::jsonb
+              else terminalization_result_json
             end,
-            permission_terminalization_error_code = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_error_code
+            terminalization_error_code = case
+              when terminalization_target is null
+                   or (terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
+              else terminalization_error_code
             end,
-            permission_terminalization_error_message = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_error_message
+            terminalization_error_message = case
+              when terminalization_target is null
+                   or (terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
+              else terminalization_error_message
             end
         where tenant_id = %s
           and id = %s
           and status not in ('succeeded', 'failed', 'cancelled')
-        returning id, trace_id, permission_terminalization_target,
-                  permission_terminalization_reason, permission_terminalization_result_json,
-                  permission_terminalization_error_code, permission_terminalization_error_message
+        returning id, trace_id, terminalization_target,
+                  terminalization_reason, terminalization_result_json,
+                  terminalization_error_code, terminalization_error_message
         """,
         (
             target_status,

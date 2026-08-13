@@ -692,7 +692,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         "app.worker.repositories.materialize_run_skill_manifests",
         materialize_run_skill_manifests,
     )
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_run", reconcile)
 
 
 @pytest.mark.parametrize(

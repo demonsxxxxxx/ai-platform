@@ -39,7 +39,7 @@ DEFAULT_REDIS_CONTAINER = "ai-platform-redis"
 DEFAULT_QUEUE_PREFIX = "ai-platform:runs"
 DEFAULT_TEST_TENANT_PREFIX = "frc-test-"
 DOWNLOAD_RE = re.compile(r"/api/ai/artifacts/(?P<artifact_id>art_[A-Za-z0-9_]+)/download")
-DEFAULT_FIXTURE_TOOL_ID = "frc-test-tool-permission-probe"
+DEFAULT_FIXTURE_TOOL_ID = "frc-test-tool-policy-probe"
 PSQL_COMMAND_TAG_RE = re.compile(
     r"^(?:"
     r"DO|"
@@ -377,9 +377,6 @@ deleted_run_events as (
 ),
 deleted_run_context_snapshots as (
   delete from run_context_snapshots where tenant_id in (select tenant_id from target_tenants)
-),
-deleted_run_tool_permission_requests as (
-  delete from run_tool_permission_requests where tenant_id in (select tenant_id from target_tenants)
 ),
 deleted_sandbox_leases as (
   delete from sandbox_leases where tenant_id in (select tenant_id from target_tenants)
@@ -1887,40 +1884,6 @@ def _queue_probe_from_run_detail(run_payload: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
-def _tool_permission_summary(run_payload: dict[str, Any]) -> dict[str, int | str]:
-    decided_ids: set[str] = set()
-    decision_sample_count = 0
-    reused_violations = 0
-    wrong_decision_reuse_violations = 0
-    tool_call_id_mismatch_violations = 0
-    events = run_payload.get("events")
-    if isinstance(events, list):
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            if event.get("type") == "tool_permission_decided" or event.get("event_type") == "tool_permission_decided":
-                decision_sample_count += 1
-                request_id = str(payload.get("request_id") or payload.get("permission_request_id") or "")
-                tool_call_id = str(payload.get("tool_call_id") or "")
-                decision = str(payload.get("decision") or "")
-                decision_key = f"{request_id}:{tool_call_id}:{decision}"
-                if decision_key in decided_ids:
-                    reused_violations += 1
-                decided_ids.add(decision_key)
-            if payload.get("wrong_decision_reuse") is True:
-                wrong_decision_reuse_violations += 1
-            if payload.get("tool_call_id_mismatch") is True:
-                tool_call_id_mismatch_violations += 1
-    return {
-        "status": "passed",
-        "decision_sample_count": decision_sample_count,
-        "allow_once_reuse_violations": reused_violations,
-        "wrong_decision_reuse_violations": wrong_decision_reuse_violations,
-        "tool_call_id_mismatch_violations": tool_call_id_mismatch_violations,
-    }
-
-
 def _skill_snapshot_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
     snapshots = run_payload.get("skill_snapshots")
     if not isinstance(snapshots, list):
@@ -2259,57 +2222,12 @@ def attach_run_detail_probe_results(
             detail_sandbox_lease_id = _sandbox_lease_id(run_payload)
             if detail_sandbox_lease_id:
                 item["sandbox_lease_id"] = detail_sandbox_lease_id
-            item["tool_permission"] = _tool_permission_summary(run_payload)
             item["skill_snapshot"] = _skill_snapshot_summary(run_payload)
         playback_status, playback_payload = json_request("GET", f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/playback", headers=headers, timeout=30)
         item["playback"] = {
             "status": playback_status,
             "event_order_violations": event_order_violations(playback_payload),
             "private_payload_leak_count": playback_private_payload_leak_count(playback_payload),
-        }
-
-
-def attach_tool_permission_probe_results(
-    api_url: str,
-    results: list[dict[str, Any]],
-    accounts: list[Account],
-    *,
-    auth_mode: str = "login",
-    trusted_header_role: str = "user",
-) -> None:
-    """Verify retired permission writes remain compatibility-only and side-effect free."""
-
-    by_label = _account_by_label(accounts)
-    for item in results:
-        account = by_label.get(str(item.get("account") or ""))
-        run_id = str(item.get("run_id") or "")
-        if account is None or not run_id:
-            item["tool_permission_probe"] = {"status": "skipped"}
-            continue
-        headers = auth_headers(
-            api_url,
-            account,
-            auth_mode=auth_mode,
-            trusted_header_role=trusted_header_role,
-        )
-        request_status, _request_payload = json_request(
-            "POST",
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/request",
-            {"tool_id": DEFAULT_FIXTURE_TOOL_ID},
-            headers=headers,
-            timeout=30,
-        )
-        decision_status, _decision_payload = json_request(
-            "POST",
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/compatibility-probe/decision",
-            {"decision": "allow_once"},
-            headers=headers,
-            timeout=30,
-        )
-        item["tool_permission_probe"] = {
-            "request_status": request_status,
-            "decision_status": decision_status,
-            "no_side_effect": request_status == 410 and decision_status == 410,
         }
 
 
@@ -2403,28 +2321,6 @@ def _sum_nested_int(results: list[dict[str, Any]], key: str, nested_key: str) ->
         if isinstance(nested, dict) and type(nested.get(nested_key)) is int:
             total += nested[nested_key]
     return total
-
-
-def _zero_click_write_probe_counts(results: list[dict[str, Any]]) -> tuple[int, int, int]:
-    """Return observed compatibility-write probes, 410 confirmations, and unexpected statuses."""
-
-    probe_count = 0
-    gone_count = 0
-    unexpected_count = 0
-    for item in results:
-        probe = item.get("tool_permission_probe")
-        if not isinstance(probe, dict):
-            continue
-        request_status = probe.get("request_status")
-        decision_status = probe.get("decision_status")
-        if type(request_status) is not int or type(decision_status) is not int:
-            continue
-        probe_count += 1
-        if request_status == 410 and decision_status == 410:
-            gone_count += 1
-        else:
-            unexpected_count += 1
-    return probe_count, gone_count, unexpected_count
 
 
 def _any_nested_true(results: list[dict[str, Any]], key: str, nested_key: str) -> bool:
@@ -2641,7 +2537,6 @@ def build_foundation_runtime_concurrency_evidence(
     scenario_counts = _scenario_counts(results)
     concurrency_summary = _foundation_runtime_concurrency_summary(results)
     terminal_run_failures = _foundation_runtime_terminal_run_failures(results)
-    zero_click_probe_count, zero_click_410_count, zero_click_unexpected_status_count = _zero_click_write_probe_counts(results)
     evidence = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
@@ -2685,12 +2580,6 @@ def build_foundation_runtime_concurrency_evidence(
                 "cross_tenant_statuses": _all_values(results, "cross_tenant_download_statuses"),
                 "preview_cross_user_statuses": _all_values(results, "cross_user_preview_statuses"),
                 "preview_cross_tenant_statuses": _all_values(results, "cross_tenant_preview_statuses"),
-            },
-            "tool_permission": {
-                "status": "passed",
-                "zero_click_write_probe_count": zero_click_probe_count,
-                "zero_click_write_410_count": zero_click_410_count,
-                "zero_click_write_unexpected_status_count": zero_click_unexpected_status_count,
             },
             "skill_snapshots": skill_snapshots,
             "run_playback": {
@@ -2833,13 +2722,6 @@ def main() -> int:
             trusted_header_role="user",
         )
         attach_context_scope_probe_results(
-            args.api_url,
-            results,
-            accounts,
-            auth_mode=args.auth_mode,
-            trusted_header_role="user",
-        )
-        attach_tool_permission_probe_results(
             args.api_url,
             results,
             accounts,

@@ -66,7 +66,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "execution_service_unavailable": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
     "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
-    "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
+    "tool_not_authorized": "任务所需工具未获授权。请调整请求或联系管理员。",
     "required_capability_unavailable": required_tool_public_detail("unavailable")["message"],
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
     "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
@@ -89,9 +89,8 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "ragflow_api_error": "dependent_service_unavailable",
     "capability_not_authorized": "capability_not_authorized",
     "model_not_allowed": "capability_not_authorized",
-    "tool_denied": "tool_permission_denied",
-    "mcp_tool_denied": "tool_permission_denied",
-    "tool_permission_denied": "tool_permission_denied",
+    "tool_denied": "tool_not_authorized",
+    "mcp_tool_denied": "tool_not_authorized",
     "required_tool_unavailable": "required_capability_unavailable",
     "required_tool_declaration_mismatch": "required_capability_unavailable",
     "required_tool_scope_mismatch": "required_capability_unavailable",
@@ -355,9 +354,6 @@ PUBLIC_EVENT_TYPE_ALIASES = {
     "mcp_tool_denied": "tool_denied",
     "run_multi_agent_child_created": "run_child_created",
     "skill_selected": "capability_selected",
-    "tool_permission_decided": "tool_permission_card",
-    "tool_permission_requested": "tool_permission_card",
-    "tool_permission_terminalized": "tool_permission_card",
     "worker_started": "run_started",
 }
 
@@ -491,34 +487,15 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
-        ("mcp_tool_denied", "tool_denied", "tool_permission_denied"),
+        ("mcp_tool_denied", "tool_denied"),
         stage="policy",
-        message="当前处理步骤未获授权，正在等待权限调整。",
+        message="当前处理步骤未获授权。",
         status="blocked",
         severity="warning",
         event_type="tool_denied",
-        error_code="tool_permission_denied",
+        error_code="tool_not_authorized",
     )
 )
-PUBLIC_ORDINARY_EVENT_DETAILS.update(
-    _ordinary_event_details(
-        ("tool_permission_requested", "tool_permission_decided", "tool_permission_terminalized"),
-        stage="policy",
-        message="权限决策状态已更新。",
-        status="waiting",
-        event_type="tool_permission_card",
-    )
-)
-PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_decided"] = {
-    **PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_decided"],
-    "message": "权限决策已记录。",
-    "status": "completed",
-}
-PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_terminalized"] = {
-    **PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_terminalized"],
-    "message": "权限请求已结束。",
-    "status": "completed",
-}
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
         ("capability_selected", "skill_selected"),

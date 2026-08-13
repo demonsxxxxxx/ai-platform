@@ -1289,7 +1289,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert "database_url" not in str(body["capacity"]).lower()
     assert body["governance"]["schema_version"] == "ai-platform.governance-readiness.v1"
     assert body["governance"]["status"] == "partial_blocked"
-    assert "tool_permission" in body["governance"]["domains"]
+    assert "tool_policy" in body["governance"]["domains"]
     assert "evidence" not in body["governance"]["domains"]["frontend_projection"]
     skill_dashboard = body["governance"]["domains"]["skill_governance"]["evidence"][
         "admin_skill_release_dashboard"

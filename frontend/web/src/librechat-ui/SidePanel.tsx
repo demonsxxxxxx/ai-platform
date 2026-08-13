@@ -4,13 +4,11 @@ import {
   FileText,
   Package,
   Server,
-  ShieldCheck,
 } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   MessageAttachment,
-  PendingApproval,
   SkillResponse,
   ToolState,
 } from "../types";
@@ -35,11 +33,10 @@ export interface LibreChatSidePanelProps {
   sessionFilesStatus?: SessionFilesProjectionStatus;
   onOpenSessionFile?: (file: SessionInputFile) => void;
   onDownloadSessionFile?: (file: SessionInputFile) => void;
-  approvals?: PendingApproval[];
 }
 
 interface ContextSectionProps {
-  section: "run" | "skills" | "mcp" | "files" | "permissions";
+  section: "run" | "skills" | "mcp" | "files";
   icon: ComponentType<{ size?: number }>;
   title: string;
   count: number | string;
@@ -196,7 +193,6 @@ export function LibreChatSidePanel({
   sessionFilesStatus = "idle",
   onOpenSessionFile,
   onDownloadSessionFile,
-  approvals = [],
 }: LibreChatSidePanelProps) {
   const { t } = useTranslation();
   const selectedSkillNames = skills
@@ -205,13 +201,9 @@ export function LibreChatSidePanel({
   const selectedToolNames = tools
     .filter((tool) => tool.enabled)
     .map((tool) => tool.name);
-  const pendingApprovals = approvals.filter(
-    (approval) => approval.status === "pending",
-  );
   const selectedSkillsCount = selectedSkillNames.length;
   const selectedToolsCount = selectedToolNames.length;
   const attachmentsCount = sessionFiles.length;
-  const approvalCount = pendingApprovals.length;
 
   return (
     <aside
@@ -303,20 +295,6 @@ export function LibreChatSidePanel({
             />
           </ContextSection>
 
-          <ContextSection
-            section="permissions"
-            icon={ShieldCheck}
-            title={t("workbench.contextPanel.permissions")}
-            count={approvalCount}
-          >
-            <p className="text-xs leading-5 text-[var(--theme-text-secondary)]">
-              {approvalCount > 0
-                ? t("workbench.contextPanel.pendingApprovals", {
-                    count: approvalCount,
-                  })
-                : t("workbench.contextPanel.noApprovals")}
-            </p>
-          </ContextSection>
         </div>
       </section>
     </aside>

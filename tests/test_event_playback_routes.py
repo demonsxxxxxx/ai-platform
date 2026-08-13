@@ -1161,7 +1161,7 @@ def test_run_provenance_snapshot_returns_not_found_for_unauthorized_run(monkeypa
     assert response.json() == {"detail": "run_not_found"}
 
 
-def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatch):
+def test_run_playback_redacts_legacy_tool_permission_event_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return run_row()
 
@@ -1209,10 +1209,10 @@ def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatc
 
     assert response.status_code == 200
     body = response.json()
-    assert body["events"][0]["event_type"] == "tool_permission_card"
-    assert body["events"][0]["stage"] == "policy"
-    assert body["events"][0]["message"] == "权限决策状态已更新。"
-    assert body["events"][0]["payload"] == {"activity": {"category": "policy", "status": "waiting"}}
+    assert body["events"][0]["event_type"] == "activity"
+    assert body["events"][0]["stage"] == "status"
+    assert body["events"][0]["message"] == "任务正在处理中。"
+    assert body["events"][0]["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(body)
     assert "write_business_system" not in public_dump
     assert "command_sha256" not in public_dump
@@ -1261,7 +1261,7 @@ def test_run_events_redacts_malformed_tool_permission_internal_payloads(monkeypa
     assert "smoke-secret-token" not in public_dump
 
 
-def test_run_events_projects_tool_permission_decision_card_for_ordinary_user(monkeypatch):
+def test_run_events_redacts_legacy_tool_permission_decision_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {
             "id": run_id,
@@ -1306,10 +1306,10 @@ def test_run_events_projects_tool_permission_decision_card_for_ordinary_user(mon
 
     assert response.status_code == 200
     body = response.json()
-    assert body["events"][0]["event_type"] == "tool_permission_card"
-    assert body["events"][0]["stage"] == "policy"
-    assert body["events"][0]["message"] == "权限决策已记录。"
-    assert body["events"][0]["payload"] == {"activity": {"category": "policy", "status": "completed"}}
+    assert body["events"][0]["event_type"] == "activity"
+    assert body["events"][0]["stage"] == "status"
+    assert body["events"][0]["message"] == "任务正在处理中。"
+    assert body["events"][0]["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(body)
     assert "write_business_system" not in public_dump
     assert "command_sha256" not in public_dump

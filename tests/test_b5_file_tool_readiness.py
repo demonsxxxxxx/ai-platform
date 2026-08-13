@@ -14,7 +14,7 @@ def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
     readiness = build_b5_file_tool_readiness()
 
     assert readiness["schema_version"] == "ai-platform.b5-file-tool-readiness.v1"
-    assert readiness["backend_stage"] == "B5 files/artifacts/tool permission governance"
+    assert readiness["backend_stage"] == "B5 files/artifacts/synchronous tool policy governance"
     assert readiness["status"] == "partial_blocked"
     assert readiness["status_label"] == "local partial"
     assert readiness["claim_boundary"]["does_not_claim_deployed_runtime_verified"] is True
@@ -29,8 +29,8 @@ def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
     assert "file_upload_namespace_retention_runtime_smoke" in file_authority["open_gaps"]
     assert "controlled_host_file_to_artifact_unauthorized_denial_smoke" in file_authority["open_gaps"]
 
-    tool_authority = readiness["domains"]["exact_tool_permission"]
-    assert tool_authority["gate_slice"] == "B5b exact tool permission"
+    tool_authority = readiness["domains"]["exact_tool_policy"]
+    assert tool_authority["gate_slice"] == "B5b exact synchronous tool policy"
     assert tool_authority["status"] == "local_contract_recorded"
     assert "run_scoped_authorized_capability_subject" in tool_authority["implemented_controls"]
     assert "immediate_allow_deny_policy_audit" in tool_authority["implemented_controls"]
@@ -52,7 +52,7 @@ def test_b5_file_tool_readiness_markdown_is_operator_readable():
     assert "Status: `partial_blocked`" in markdown
     assert "Status label: `local partial`" in markdown
     assert "## B5a File And Artifact Authority" in markdown
-    assert "## B5b Exact Tool Permission" in markdown
+    assert "## B5b Exact Synchronous Tool Policy" in markdown
     assert "file_upload_namespace_retention_runtime_smoke" in markdown
     assert "exact_tool_policy_runtime_denial_smoke" in markdown
     assert "does not claim deployed-runtime acceptance" in markdown

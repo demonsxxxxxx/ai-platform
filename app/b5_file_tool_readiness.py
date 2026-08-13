@@ -6,7 +6,7 @@ from app.tool_policy_readiness import build_tool_policy_readiness
 
 
 SCHEMA_VERSION = "ai-platform.b5-file-tool-readiness.v1"
-BACKEND_STAGE = "B5 files/artifacts/tool permission governance"
+BACKEND_STAGE = "B5 files/artifacts/synchronous tool policy governance"
 
 
 def _file_artifact_authority_domain() -> dict[str, Any]:
@@ -41,21 +41,19 @@ def _file_artifact_authority_domain() -> dict[str, Any]:
     }
 
 
-def _exact_tool_permission_domain() -> dict[str, Any]:
+def _exact_tool_policy_domain() -> dict[str, Any]:
     tool_policy = build_tool_policy_readiness()
     return {
-        "gate_slice": "B5b exact tool permission",
+        "gate_slice": "B5b exact synchronous tool policy",
         "status": "local_contract_recorded",
         "implemented_controls": [
             "run_scoped_authorized_capability_subject",
             "immediate_allow_deny_policy_audit",
-            "historical_permission_evidence_read_only",
             "disabled_or_unregistered_tool_denial_source_tests",
             "risk_write_fail_closed_policy_evaluation",
         ],
         "source_tests": [
             "tests/test_zero_click_tool_policy.py",
-            "tests/test_tool_permission_routes.py",
             "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
         ],
         "policy_evidence": {
@@ -67,12 +65,10 @@ def _exact_tool_permission_domain() -> dict[str, Any]:
         },
         "open_gaps": [
             "shell_network_filesystem_mcp_runtime_denial_smoke",
-            "historical_permission_projection_visual_acceptance",
             "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
         ],
         "evidence_policy": (
-            "Local source tests prove synchronous exact capability evaluation and "
-            "historical permission evidence is read-only. Runtime B5b closure still "
+            "Local source tests prove synchronous exact capability evaluation. Runtime B5b closure still "
             "requires shell, network, filesystem, and MCP denial evidence for a named run."
         ),
     }
@@ -82,7 +78,7 @@ def build_b5_file_tool_readiness() -> dict[str, Any]:
     """Build a B5 local readiness snapshot without claiming runtime closure."""
     domains = {
         "file_artifact_authority": _file_artifact_authority_domain(),
-        "exact_tool_permission": _exact_tool_permission_domain(),
+        "exact_tool_policy": _exact_tool_policy_domain(),
     }
     open_gaps = [
         "file_upload_namespace_retention_runtime_smoke",
@@ -127,7 +123,7 @@ def render_b5_file_tool_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render B5 readiness as operator-readable Markdown."""
     gaps = "\n".join(f"- {gap}" for gap in readiness["open_gaps"]) or "- none"
     file_domain = readiness["domains"]["file_artifact_authority"]
-    tool_domain = readiness["domains"]["exact_tool_permission"]
+    tool_domain = readiness["domains"]["exact_tool_policy"]
     file_controls = "\n".join(f"- {item}" for item in file_domain["implemented_controls"])
     file_gaps = "\n".join(f"- {item}" for item in file_domain["open_gaps"])
     tool_controls = "\n".join(f"- {item}" for item in tool_domain["implemented_controls"])
@@ -154,7 +150,7 @@ def render_b5_file_tool_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{file_controls}\n\n"
         "Open gaps:\n\n"
         f"{file_gaps}\n\n"
-        "## B5b Exact Tool Permission\n\n"
+        "## B5b Exact Synchronous Tool Policy\n\n"
         f"Status: `{tool_domain['status']}`\n\n"
         "Implemented controls:\n\n"
         f"{tool_controls}\n\n"

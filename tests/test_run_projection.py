@@ -196,7 +196,7 @@ def test_artifact_card_uses_stored_filename_for_xlsx_preview_eligibility():
     assert legacy["preview_url"] is None
 
 
-def test_projection_keeps_terminal_tool_permission_events_as_fixed_activity():
+def test_projection_redacts_legacy_tool_permission_events_to_generic_activity():
     event = run_event_response(
         "run-a",
         {
@@ -233,10 +233,10 @@ def test_projection_keeps_terminal_tool_permission_events_as_fixed_activity():
         principal=principal(),
     )
 
-    assert event["event_type"] == "tool_permission_card"
-    assert event["stage"] == "policy"
-    assert event["message"] == "权限请求已结束。"
-    assert event["payload"] == {"activity": {"category": "policy", "status": "completed"}}
+    assert event["event_type"] == "activity"
+    assert event["stage"] == "status"
+    assert event["message"] == "任务正在处理中。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     assert "tool_permission_card" not in str(event["payload"])
     assert "tpr-terminal" not in str(event)
     assert "decision_endpoint" not in str(event)

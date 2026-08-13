@@ -10,7 +10,7 @@ from app.queue import get_queue_insight, get_run_queue_position, remove_queued_r
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.control_plane_contracts import sanitize_public_text
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
+from app.runs.terminalization import drain_run_terminalization, reconcile_terminalized_run
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -133,15 +133,15 @@ async def admin_run_cancel(
             run_id=run_id,
         )
     if result is not None:
-        initial_progress = result.pop("_permission_terminalization_progress", None)
+        initial_progress = result.pop("_terminalization_progress", None)
         if initial_progress is not None:
-            await reconcile_terminalized_permission_run(
+            await reconcile_terminalized_run(
                 tenant_id=principal.tenant_id,
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
             )
-        progress = await drain_run_tool_permission_terminalization(
+        progress = await drain_run_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             transaction_factory=transaction,
@@ -153,7 +153,7 @@ async def admin_run_cancel(
                 "cancelled",
             }:
                 result["status"] = progressed_status
-        await reconcile_terminalized_permission_run(
+        await reconcile_terminalized_run(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             progress=progress,

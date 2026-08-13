@@ -42,7 +42,6 @@ export type MessagePart =
   | TokenUsagePart
   | CancelledPart
   | RunStatusPart
-  | ToolPermissionPart
   | ArtifactPart
   | ExecutionTimelinePart
   | ExecutionProcessPart
@@ -133,32 +132,6 @@ export interface ExecutionTimelinePart {
 export interface ExecutionProcessPart {
   type: "execution_process";
   steps: ExecutionTimelinePart[];
-}
-
-export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";
-export type ToolPermissionStatus =
-  | "pending"
-  | "decided"
-  | "expired"
-  | "cancelled"
-  | "failed"
-  | "invalidated";
-
-export interface ToolPermissionPart {
-  type: "tool_permission";
-  event_id: string;
-  decided_event_id?: string;
-  run_id: string;
-  permission_request_id: string;
-  tool_id: string;
-  tool_call_id: string;
-  risk_level: string;
-  write_capable: boolean;
-  status: ToolPermissionStatus;
-  decision?: ToolPermissionDecision;
-  sequence?: number;
-  created_at?: string;
-  decided_at?: string;
 }
 
 // Todo 任务列表块类型
@@ -275,39 +248,6 @@ export interface StreamEventData {
   content: string;
   metadata: Record<string, unknown>;
   session_id?: string;
-}
-
-// ============================================
-// Form Field Types (Human Tool)
-// ============================================
-
-export type FormFieldType =
-  | "text"
-  | "textarea"
-  | "number"
-  | "checkbox"
-  | "select"
-  | "multi_select";
-
-export interface FormField {
-  name: string;
-  label: string;
-  type: FormFieldType;
-  placeholder?: string;
-  default?: unknown;
-  required: boolean;
-  options?: string[];
-}
-
-export interface PendingApproval {
-  id: string;
-  message: string;
-  type: "form";
-  fields: FormField[];
-  status: "pending" | "approved" | "rejected";
-  session_id?: string | null;
-  expires_at?: string | null;
-  timeout?: number;
 }
 
 export interface StreamEvent {

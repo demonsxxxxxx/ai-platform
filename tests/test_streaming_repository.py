@@ -406,7 +406,7 @@ def test_run_event_schema_locks_for_missing_current_schema_unique_index_before_r
     )
     migration = schema[
         schema.index("declare\n  unique_index_present boolean;") : schema.index(
-            "create table if not exists run_tool_permission_requests"
+            "create table if not exists sandbox_leases"
         )
     ]
 

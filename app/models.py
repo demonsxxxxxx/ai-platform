@@ -25,8 +25,6 @@ from app.skills.release_policy import (
     validate_release_decision_lock,
     validate_release_decision_payload,
 )
-from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
-
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_safe_id,
@@ -797,32 +795,6 @@ class MemoryRedactionPreviewRequest(BaseModel):
     @classmethod
     def validate_preview_agent_id(cls, value: str | None):
         return assert_safe_id(value, "agent_id") if value else value
-
-
-class ToolPermissionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tool_id: str
-    tool_call_id: str
-    action: str = Field(default="execute", min_length=1, max_length=80)
-    risk_level: Literal["low", "medium", "high"] = "low"
-    write_capable: bool = False
-    reason: str = Field(default="", max_length=2000)
-    request_payload: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("tool_id", "tool_call_id")
-    @classmethod
-    def validate_tool_permission_ids(cls, value: str, info):
-        return assert_safe_id(value, info.field_name)
-
-
-class ToolPermissionDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    decision: Literal["allow_once", "deny", "allow_for_run"]
-    reason: str = Field(default="", max_length=2000)
-    decision_payload: dict[str, Any] = Field(default_factory=dict)
-    expires_in_seconds: int = Field(default=int(TOOL_PERMISSION_REQUEST_TTL_SECONDS), ge=30, le=86400)
 
 
 class AdminToolPolicyUpdateRequest(BaseModel):

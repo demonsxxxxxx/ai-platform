@@ -63,7 +63,6 @@ from app.streaming.redis import (
     mark_terminal_intent_published,
     publish_terminal_intent,
 )
-from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
 _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
@@ -259,21 +258,6 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "tool_denied": _ChatPublicRunEventProjection(
         "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
     ),
-    "tool_permission_authorized": _ChatPublicRunEventProjection(
-        "agent_step_started", "activity", "处理步骤已获授权，正在继续执行", "active"
-    ),
-    "tool_permission_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
-    ),
-    "tool_permission_requested": _ChatPublicRunEventProjection(
-        "tool_permission_card", "policy", "正在等待权限决策", "waiting", "permission"
-    ),
-    "tool_permission_decided": _ChatPublicRunEventProjection(
-        "tool_permission_card", "policy", "权限决策已记录", "completed"
-    ),
-    "tool_permission_terminalized": _ChatPublicRunEventProjection(
-        "tool_permission_card", "policy", "权限请求已结束", "completed"
-    ),
     "cancel_requested": _ChatPublicRunEventProjection(
         "cancel_requested", "status", "正在取消任务", "waiting", "cancellation"
     ),
@@ -310,7 +294,7 @@ def _strict_typed_chat_event_product(
     event: dict[str, Any],
     principal: AuthPrincipal,
 ) -> _StrictChatEventProduct | None:
-    """Retain only exact answer deltas or reconstructed permission cards for Chat.
+    """Retain only exact answer deltas and capability products for Chat.
 
     Generic run events remain owned by ``run_event_response``.  This seam is
     deliberately narrower: it reads raw persisted data only to construct two
@@ -324,9 +308,6 @@ def _strict_typed_chat_event_product(
         return capability_product
     if raw_event_type not in {
         "assistant_delta",
-        "tool_permission_requested",
-        "tool_permission_decided",
-        "tool_permission_terminalized",
     }:
         return None
     if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
@@ -358,21 +339,7 @@ def _strict_typed_chat_event_product(
                 "content": content,
             },
         )
-    generic_envelope = run_event_response(run_id, event, principal=principal)
-    card_source = raw_payload.get("tool_permission_card")
-    reconstructed = tool_permission_public_event_payload(
-        run_id=run_id,
-        event_type=raw_event_type,
-        payload=card_source if isinstance(card_source, dict) else raw_payload,
-    )
-    card = reconstructed.get("tool_permission_card")
-    if not isinstance(card, dict):
-        return None
-    return _StrictChatEventProduct(
-        kind="tool_permission_card",
-        generic_envelope=generic_envelope,
-        payload={"tool_permission_card": card},
-    )
+    return None
 
 
 def _strict_capability_chat_product(

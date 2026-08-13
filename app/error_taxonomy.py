@@ -10,7 +10,7 @@ UNKNOWN_ERROR_CATEGORY = "unknown"
 ERROR_CATEGORY_DEFINITIONS: dict[str, str] = {
     "executor": "Executor or worker runtime failed outside a narrower queue/tool/sandbox/model category.",
     "tool": "Tool or MCP invocation failed before or during execution.",
-    "tool_permission": "Tool permission, allow/deny/ask policy, or risky write-capable gate blocked execution.",
+    "tool_policy": "Synchronous tool allow/deny policy or a risky write-capable gate blocked execution.",
     "sandbox": "Sandbox lease, workspace, container, cleanup, or provider behavior failed.",
     "model_gateway": "Model gateway, upstream LLM provider, timeout, or retry behavior failed.",
     "queue": "Redis queue, lease, enqueue, dead-letter, or active worker capacity behavior failed.",
@@ -23,12 +23,12 @@ ERROR_CATEGORY_DEFINITIONS: dict[str, str] = {
 
 _CATEGORY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
-        "tool_permission",
+        "tool_policy",
         (
-            "tool_permission",
+            "tool_not_authorized",
             "permission_denied",
-            "permission_required",
             "mcp_tool_denied",
+            "capability_not_authorized",
             "write_policy",
             "tool_gate",
         ),

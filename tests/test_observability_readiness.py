@@ -235,7 +235,7 @@ def test_error_taxonomy_dashboard_readiness_contract_defines_safe_admin_dashboar
         "required_category_ids": [
             "executor",
             "tool",
-            "tool_permission",
+            "tool_policy",
             "sandbox",
             "model_gateway",
             "queue",

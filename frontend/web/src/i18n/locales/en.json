@@ -163,15 +163,6 @@
     "timeline": "Timeline",
     "title": "Run playback"
   },
-  "approvals": {
-    "approve": "Approve",
-    "cancel": "Cancel",
-    "enterResponse": "Enter your response...",
-    "needsConfirmation": "Needs Confirmation",
-    "reject": "Reject",
-    "send": "Send",
-    "submit": "Submit"
-  },
   "auth": {
     "account": "Account",
     "backToLogin": "Back to Login",
@@ -398,63 +389,6 @@
     "goodMorning": "Good morning, {{name}}",
     "helpDocs": "Help Docs",
     "keyboardShortcuts": "Keyboard Shortcuts",
-    "toolPermission": {
-      "adminTitle": "Tool permission governance",
-      "allowedForRun": {
-        "message": "An administrator granted the permission required for this run.",
-        "title": "Permission granted for this run"
-      },
-      "allowedOnce": {
-        "message": "An administrator granted one-time permission.",
-        "title": "Action authorized"
-      },
-      "decided": {
-        "message": "An administrator has handled this tool permission.",
-        "title": "Tool permission handled"
-      },
-      "decisionFailed": "Could not submit the permission decision. Please try again.",
-      "decisions": {
-        "allow_for_run": "Allow for this run",
-        "allow_once": "Allow once",
-        "deny": "Deny",
-        "pending": "Pending"
-      },
-      "denied": {
-        "message": "An administrator did not approve this action; it remains denied.",
-        "title": "Action not authorized"
-      },
-      "expired": {
-        "message": "This tool permission expired before it was decided.",
-        "title": "Tool permission expired"
-      },
-      "invalidated": {
-        "message": "The run finished before this tool permission could be used.",
-        "title": "Tool permission closed"
-      },
-      "pending": {
-        "message": "An administrator must handle this action before it can continue.",
-        "title": "Waiting for administrator review"
-      },
-      "cancelled": {
-        "message": "The run was cancelled before this tool permission could be used.",
-        "title": "Tool permission cancelled"
-      },
-      "readOnly": "Read-only action",
-      "recordedDecision": "Recorded decision: {{decision}}",
-      "risk": "{{level}} risk",
-      "riskLevels": {
-        "critical": "Critical",
-        "high": "High",
-        "low": "Low",
-        "medium": "Medium"
-      },
-      "submitting": "Submitting…",
-      "terminalFailed": {
-        "message": "This tool permission closed because the run could not continue.",
-        "title": "Tool permission closed"
-      },
-      "writeCapable": "Write-capable action"
-    },
     "message": {
       "allFiles": "All files",
       "args": "Args",
@@ -598,7 +532,7 @@
         "subagentStarted": "Collaborator started",
         "toolCallCompleted": "Action completed",
         "toolCallStarted": "Action started",
-        "toolPermissionDenied": "Action not authorized"
+        "toolNotAuthorized": "Action not authorized"
       },
       "status": {
         "completed": "Completed",
@@ -1447,7 +1381,6 @@
     "noRolesDescriptionReadOnly": "The role management entry is connected to the current backend projection, but your account has no role write permission and the backend returned no browsable roles.",
     "operationFailed": "Operation failed",
     "permissionCount": "{{count}} permissions",
-    "permissions": "Permissions",
     "plaza": {
       "capabilities": {
         "auditTrail": {
@@ -2688,12 +2621,9 @@
       "selectedSkills": "Selected Skills",
       "selectedTools": "Selected MCP tools",
       "files": "Files",
-      "permissions": "Permissions",
       "noSkills": "No Skill chip selected.",
       "noTools": "No MCP tool selected.",
-      "noFiles": "No file attached.",
-      "noApprovals": "No permission request is waiting.",
-      "pendingApprovals": "{{count}} permission request waiting."
+      "noFiles": "No file attached."
     },
     "phase2Unavailable": "Artifacts, selected context, and run details stay read-only until your workspace enables them."
   },

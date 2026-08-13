@@ -22,7 +22,6 @@ _REQUIRED_CHECKS = [
     "sandbox_workspace",
     "memory_context",
     "artifact_acl",
-    "tool_permission",
     "skill_snapshots",
     "run_playback",
 ]
@@ -291,16 +290,6 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("artifact_preview_cross_user_not_denied")
     if _safe_list(artifact_acl.get("preview_cross_tenant_statuses")) and not _all_denied(artifact_acl.get("preview_cross_tenant_statuses")):
         failures.append("artifact_preview_cross_tenant_not_denied")
-
-    tool_permission = checks["tool_permission"]
-    zero_click_probe_count = _safe_int(tool_permission.get("zero_click_write_probe_count"))
-    zero_click_410_count = _safe_int(tool_permission.get("zero_click_write_410_count"))
-    if zero_click_probe_count < summary["run_count"]:
-        failures.append("tool_permission_zero_click_probe_missing")
-    if zero_click_410_count < summary["run_count"]:
-        failures.append("tool_permission_zero_click_410_missing")
-    if _safe_int(tool_permission.get("zero_click_write_unexpected_status_count")) > 0:
-        failures.append("tool_permission_zero_click_write_unexpected_status")
 
     skill_snapshots = checks["skill_snapshots"]
     if _safe_int(skill_snapshots.get("run_skill_snapshot_count")) < summary["run_count"]:

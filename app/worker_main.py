@@ -26,7 +26,7 @@ from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_l
 from app.redis_client import close_redis_client
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
+from app.runs.terminalization import drain_run_terminalization, reconcile_terminalized_run
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 
 
@@ -236,15 +236,15 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
     return rows
 
 
-async def progress_pending_tool_permission_terminalizations_for_worker(
+async def progress_pending_run_terminalizations_for_worker(
     settings: object | None = None,
 ) -> list[dict[str, object]]:
-    """Use worker maintenance as the durable, bounded owner of staged permission drains."""
+    """Use worker maintenance as the durable owner of staged run terminalization."""
 
     settings = settings or get_settings()
-    limit = max(1, min(int(getattr(settings, "tool_permission_terminalization_maintenance_limit", 50)), 50))
+    limit = max(1, min(int(getattr(settings, "run_terminalization_maintenance_limit", 50)), 50))
     async with transaction() as conn:
-        candidates = await repositories.list_runs_requiring_tool_permission_terminalization(conn, limit=limit)
+        candidates = await repositories.list_runs_requiring_terminalization(conn, limit=limit)
 
     progress: list[dict[str, object]] = []
     for candidate in candidates:
@@ -252,14 +252,14 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
-        outcome = await drain_run_tool_permission_terminalization(
+        outcome = await drain_run_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
             transaction_factory=transaction,
             max_batches=4,
         )
         if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
-            await reconcile_terminalized_permission_run(
+            await reconcile_terminalized_run(
                 tenant_id=tenant_id, run_id=run_id, progress=outcome, transaction_factory=transaction
             )
         progress.append(
@@ -282,7 +282,7 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
-        await reconcile_terminalized_permission_run(
+        await reconcile_terminalized_run(
             tenant_id=tenant_id,
             run_id=run_id,
             transaction_factory=transaction,
@@ -390,7 +390,7 @@ async def reconcile_stale_runs_for_worker(
 
                 try:
                     await fence_guard.ensure_live()
-                    outcome = await drain_run_tool_permission_terminalization(
+                    outcome = await drain_run_terminalization(
                         tenant_id=tenant_id,
                         run_id=run_id,
                         transaction_factory=fenced_transaction,
@@ -399,7 +399,7 @@ async def reconcile_stale_runs_for_worker(
                     await fence_guard.ensure_live()
                     if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
                         await fence_guard.ensure_live()
-                        await reconcile_terminalized_permission_run(
+                        await reconcile_terminalized_run(
                             tenant_id=tenant_id,
                             run_id=run_id,
                             progress=outcome,
@@ -442,7 +442,7 @@ async def run_worker_maintenance(settings: object | None = None) -> None:
     await cleanup_expired_sandbox_leases()
     await cleanup_expired_memory_records_for_worker(settings)
     await run_data_retention_maintenance(settings)
-    await progress_pending_tool_permission_terminalizations_for_worker(settings)
+    await progress_pending_run_terminalizations_for_worker(settings)
     await queue.reclaim_expired_leases(
         visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
     )
@@ -540,7 +540,7 @@ async def _terminalize_escaped_process_exception(
                 sanitize_public_text(locked_run.get("error_message")) or None,
             )
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
-            locked_run.get("permission_terminalization_target") or ""
+            locked_run.get("terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
         if cancel_requested:
             progress = await repositories.cancel_run(
@@ -562,7 +562,7 @@ async def _terminalize_escaped_process_exception(
             raise _EscapedTerminalizationOwnershipLost(run_id)
 
     if progress is None or not progress.is_terminal():
-        progress = await drain_run_tool_permission_terminalization(
+        progress = await drain_run_terminalization(
             tenant_id=payload.tenant_id,
             run_id=run_id,
             transaction_factory=transaction,
@@ -570,7 +570,7 @@ async def _terminalize_escaped_process_exception(
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         try:
-            await reconcile_terminalized_permission_run(
+            await reconcile_terminalized_run(
                 tenant_id=payload.tenant_id,
                 run_id=run_id,
                 progress=progress,

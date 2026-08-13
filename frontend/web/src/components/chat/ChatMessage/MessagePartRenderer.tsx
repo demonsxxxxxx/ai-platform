@@ -8,7 +8,6 @@ import {
   Download,
   Eye,
   LoaderCircle,
-  ShieldAlert,
   XCircle,
 } from "lucide-react";
 import type { MessagePart } from "../../../types";
@@ -34,9 +33,6 @@ import { PublicExecutionProcess } from "./PublicExecutionProcess";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createToolPartAnchorId } from "./messagePartAnchors";
-import {
-  getOrdinaryUserToolPermissionPresentation,
-} from "./toolPermissionCardState";
 import { buildArtifactPreviewRequest } from "./items/artifactPreview";
 import { downloadArtifactFile } from "./items/artifactDownload";
 import {
@@ -299,10 +295,6 @@ export function MessagePartRenderer({
     return <RunStatusItem part={part} isStreaming={isStreaming === true} />;
   }
 
-  if (part.type === "tool_permission") {
-    return <ToolPermissionCardItem part={part} />;
-  }
-
   if (part.type === "artifact") {
     return (
       <ArtifactCardItem
@@ -379,7 +371,7 @@ const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
   dependent_service_unavailable:
     "chat.runStatus.event.dependentServiceUnavailable",
   capability_not_authorized: "chat.runStatus.event.capabilityNotAuthorized",
-  tool_permission_denied: "chat.runStatus.event.toolPermissionDenied",
+  tool_not_authorized: "chat.runStatus.event.toolNotAuthorized",
   skill_sandbox_admission_failed:
     "chat.runStatus.event.skillSandboxAdmissionFailed",
   context_file_too_large: "chat.runStatus.event.contextFileTooLarge",
@@ -498,7 +490,6 @@ function createMessagePartIdentity(part: MessagePart): string {
         ? `${part.type}:${part.id}`
         : `${part.type}:object:${getMessagePartObjectToken(part)}`;
     case "run_status":
-    case "tool_permission":
       return part.event_id
         ? `${part.type}:${part.event_id}`
         : `${part.type}:object:${getMessagePartObjectToken(part)}`;
@@ -681,41 +672,6 @@ function ArtifactCardItem({
           {ARTIFACT_DOWNLOAD_FAILURE_MESSAGE}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Render recorded permission history only; no model-tool action is available. */
-export function ToolPermissionCardItem({
-  part,
-}: {
-  part: Extract<MessagePart, { type: "tool_permission" }>;
-}) {
-  const { t } = useTranslation();
-  const presentation = getOrdinaryUserToolPermissionPresentation(part);
-
-  return (
-    <div
-      className={clsx(
-        "my-1 max-w-xl rounded-lg border px-3 py-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
-        "border-amber-200/80 bg-amber-50/80 text-stone-800",
-        "dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-stone-100",
-      )}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <ShieldAlert
-          size={18}
-          className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="break-words text-sm font-semibold">
-            {t(presentation.titleKey)}
-          </div>
-          <div className="mt-1 text-xs text-stone-600 dark:text-stone-300">
-            {t(presentation.messageKey)}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

@@ -455,7 +455,7 @@ def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
 
     ordinary_admin_runtime = _safe_runtime_check(runtime_checks.get("ordinary_admin_runtime"))
     admin_runtime_governance = _safe_runtime_check(runtime_checks.get("admin_runtime_governance"))
-    tool_permission = _safe_runtime_check(admin_runtime_governance.get("tool_permission"))
+    tool_policy = _safe_runtime_check(admin_runtime_governance.get("tool_policy"))
     skill_governance = _safe_runtime_check(admin_runtime_governance.get("skill_governance"))
     memory_governance = _safe_runtime_check(admin_runtime_governance.get("memory_governance"))
     missing_domains = admin_runtime_governance.get("missing_domains")
@@ -471,8 +471,8 @@ def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
         and admin_runtime_governance.get("required_domains_present") is True
         and admin_runtime_governance.get("forbidden_projection_terms_present") is False
         and missing_domains == []
-        and tool_permission.get("taxonomy_present") is True
-        and tool_permission.get("bulk_review_present") is True
+        and tool_policy.get("taxonomy_present") is True
+        and tool_policy.get("bulk_review_present") is True
         and skill_governance.get("release_readiness_present") is True
         and skill_governance.get("dashboard_present") is True
         and memory_governance.get("long_term_fail_closed_present") is True
@@ -1121,7 +1121,7 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
         "playback_contract_version": document_review.get("playback_contract_version"),
     }
 
-def _mcp_tool_permission_runtime_controls_summary(
+def _mcp_tool_policy_runtime_controls_summary(
     *,
     runtime_rollout_required_for_current_source: bool,
 ) -> dict[str, Any]:
@@ -1160,20 +1160,15 @@ def _mcp_tool_permission_runtime_controls_summary(
             and case_map.get("active_low_write_capable", {}).get("classification") == "allow"
         ),
         "outcomes": ["allow", "deny"],
-        "historical_permission_evidence": {
-            "projection": "read_only_redacted",
-            "legacy_pending": "terminalized_fail_closed",
-            "worker_policy_audit_actions": [
-                "mcp_tool_policy_allowed",
-                "mcp_tool_policy_denied",
-                "mcp_tool_call_completed",
-            ],
-        },
+        "worker_policy_audit_actions": [
+            "mcp_tool_policy_allowed",
+            "mcp_tool_policy_denied",
+            "mcp_tool_call_completed",
+        ],
         "covered_runtime_control_tests": [
             "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
             "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
             "tests/test_zero_click_tool_policy.py",
-            "tests/test_tool_permission_routes.py",
         ],
     }
 
@@ -2384,7 +2379,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "skill_snapshot_run_seen": governed_skill_runs_verified,
                 "governed_skill_runs": governed_skill_runs_summary,
                 "tool_policy_audit_required": True,
-                "mcp_tool_permission_runtime_controls": _mcp_tool_permission_runtime_controls_summary(
+                "mcp_tool_policy_runtime_controls": _mcp_tool_policy_runtime_controls_summary(
                     runtime_rollout_required_for_current_source=runtime_rollout_required_for_current_source
                 ),
                 "memory_long_term_default_fail_closed": True,

@@ -94,7 +94,6 @@ def build_tool_policy_readiness() -> dict[str, Any]:
             "single_allow_deny_runtime_tool_policy",
             "platform_registered_mcp_only_policy",
             "ordinary_user_custom_mcp_disabled",
-            "historical_permission_evidence_read_only",
         ],
         "open_gaps": [
             "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",

@@ -182,7 +182,6 @@ test("shared workbench support surfaces use enterprise tokens instead of legacy 
       read("src/components/skeletons/PanelSkeletons.tsx"),
     ],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
-    ["ApprovalPanel", read("src/components/panels/ApprovalPanel.tsx")],
   ]);
 
   const forbiddenPatterns = [

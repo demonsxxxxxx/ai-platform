@@ -7,7 +7,7 @@ import app.runtime.sandbox.executor_client as executor_client_module
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
-from app.tool_permission_lifecycle import tool_permission_budget
+from app.runtime.sandbox.executor_timeouts import executor_timeout_budget
 
 
 def lease() -> ContainerLease:
@@ -398,7 +398,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            tool_permission_budget(120.0).normal_outer_executor_timeout_seconds,
+            executor_timeout_budget(120.0).outer_timeout_seconds,
         )
     ]
 
@@ -566,7 +566,7 @@ def test_executor_failure_normalizer_drops_unknown_private_fields():
 
 
 @pytest.mark.asyncio
-async def test_executor_client_uses_normal_deadline_without_permission_wait(monkeypatch):
+async def test_executor_client_uses_execution_timeout_budget(monkeypatch):
     calls = []
 
     async def post_json(url, payload, timeout, headers=None):
@@ -586,12 +586,11 @@ async def test_executor_client_uses_normal_deadline_without_permission_wait(monk
         callback_token_id="cbt_run-a",
         callback_token="secret",
         callback_base_url="http://callback-base",
-        governed_permission_wait=False,
     )
 
     await SandboxExecutorClient(post_json=post_json).execute("http://executor.test", request)
 
-    assert calls == [tool_permission_budget(120.0).normal_outer_executor_timeout_seconds]
+    assert calls == [executor_timeout_budget(120.0).outer_timeout_seconds]
 
 
 @pytest.mark.asyncio

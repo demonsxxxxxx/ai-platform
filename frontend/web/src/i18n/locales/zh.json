@@ -163,15 +163,6 @@
     "timeline": "时间线",
     "title": "运行回放"
   },
-  "approvals": {
-    "approve": "批准",
-    "cancel": "取消",
-    "enterResponse": "请输入回复...",
-    "needsConfirmation": "需要确认",
-    "reject": "拒绝",
-    "send": "发送",
-    "submit": "提交"
-  },
   "auth": {
     "account": "账号",
     "backToLogin": "返回登录",
@@ -398,63 +389,6 @@
     "goodMorning": "早上好，{{name}}",
     "helpDocs": "帮助文档",
     "keyboardShortcuts": "键盘快捷键",
-    "toolPermission": {
-      "adminTitle": "工具权限治理",
-      "allowedForRun": {
-        "message": "管理员已授予本次运行所需的权限。",
-        "title": "本次运行已获授权"
-      },
-      "allowedOnce": {
-        "message": "管理员已授予一次性权限。",
-        "title": "操作已获授权"
-      },
-      "decided": {
-        "message": "该工具权限已由管理员处理。",
-        "title": "工具权限已处理"
-      },
-      "decisionFailed": "提交权限决策失败，请稍后重试。",
-      "decisions": {
-        "allow_for_run": "允许本次运行",
-        "allow_once": "允许一次",
-        "deny": "拒绝",
-        "pending": "待处理"
-      },
-      "denied": {
-        "message": "管理员未批准此操作；系统将保持拒绝状态。",
-        "title": "操作未获授权"
-      },
-      "expired": {
-        "message": "该工具权限在作出决策前已过期。",
-        "title": "工具权限已过期"
-      },
-      "invalidated": {
-        "message": "运行已结束，因此未使用此工具权限。",
-        "title": "工具权限已关闭"
-      },
-      "pending": {
-        "message": "该操作需要管理员处理后才能继续。",
-        "title": "正在等待管理员处理"
-      },
-      "cancelled": {
-        "message": "运行已取消，因此未使用此工具权限。",
-        "title": "工具权限已取消"
-      },
-      "readOnly": "只读操作",
-      "recordedDecision": "已记录决策：{{decision}}",
-      "risk": "{{level}}风险",
-      "riskLevels": {
-        "critical": "严重",
-        "high": "高",
-        "low": "低",
-        "medium": "中"
-      },
-      "submitting": "提交中…",
-      "terminalFailed": {
-        "message": "运行无法继续，因此该工具权限已终结。",
-        "title": "工具权限已终结"
-      },
-      "writeCapable": "可写操作"
-    },
     "message": {
       "allFiles": "全部文件",
       "args": "参数",
@@ -598,7 +532,7 @@
         "subagentStarted": "协作者已开始",
         "toolCallCompleted": "操作已完成",
         "toolCallStarted": "操作已开始",
-        "toolPermissionDenied": "操作未获授权"
+        "toolNotAuthorized": "操作未获授权"
       },
       "status": {
         "completed": "已完成",
@@ -1448,7 +1382,6 @@
     "noRolesDescriptionReadOnly": "角色管理入口已接入当前后端投影，但当前账号没有角色写权限，且后端没有返回可浏览的角色数据。",
     "operationFailed": "操作失败",
     "permissionCount": "{{count}} 个权限",
-    "permissions": "权限",
     "plaza": {
       "capabilities": {
         "auditTrail": {
@@ -2708,12 +2641,9 @@
       "selectedSkills": "已选 Skills",
       "selectedTools": "已选 MCP 工具",
       "files": "文件",
-      "permissions": "权限",
       "noSkills": "尚未选择 Skill chip。",
       "noTools": "尚未选择 MCP 工具。",
-      "noFiles": "尚未附加文件。",
-      "noApprovals": "暂无待处理权限请求。",
-      "pendingApprovals": "{{count}} 个权限请求待处理。"
+      "noFiles": "尚未附加文件。"
     },
     "phase2Unavailable": "产物、已选上下文和运行详情在当前工作区启用前保持只读。"
   },

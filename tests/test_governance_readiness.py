@@ -69,28 +69,27 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
 
     domains = readiness["domains"]
     assert set(domains) == {
-        "tool_permission",
+        "tool_policy",
         "skill_governance",
         "memory_governance",
         "frontend_projection",
     }
-    assert "admin_tool_policy_inventory" in domains["tool_permission"]["implemented"]
-    assert "zero_click_model_tool_policy" in domains["tool_permission"]["implemented"]
-    assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
-    assert "allow_deny_tool_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
-    assert "synchronous_capability_subject_source_tests" in domains["tool_permission"]["implemented"]
-    assert "admin_policy_change_history_projection" in domains["tool_permission"]["implemented"]
-    assert "admin_policy_bulk_review_dashboard_contract" in domains["tool_permission"]["implemented"]
-    assert "admin_policy_bulk_review_runtime_acceptance_source_route_tests" in domains["tool_permission"]["implemented"]
-    assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_and_dashboard_acceptance" not in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_runtime_acceptance" not in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_visual_acceptance" in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_controlled_host_acceptance" in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_and_change_history_view" not in domains["tool_permission"]["gaps"]
+    assert "admin_tool_policy_inventory" in domains["tool_policy"]["implemented"]
+    assert "zero_click_model_tool_policy" in domains["tool_policy"]["implemented"]
+    assert "allow_deny_tool_policy_taxonomy_evidence" in domains["tool_policy"]["implemented"]
+    assert "synchronous_capability_subject_source_tests" in domains["tool_policy"]["implemented"]
+    assert "admin_policy_change_history_projection" in domains["tool_policy"]["implemented"]
+    assert "admin_policy_bulk_review_dashboard_contract" in domains["tool_policy"]["implemented"]
+    assert "admin_policy_bulk_review_runtime_acceptance_source_route_tests" in domains["tool_policy"]["implemented"]
+    assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_policy"]["gaps"]
+    assert "admin_policy_bulk_review_and_dashboard_acceptance" not in domains["tool_policy"]["gaps"]
+    assert "admin_policy_bulk_review_runtime_acceptance" not in domains["tool_policy"]["gaps"]
+    assert "admin_policy_bulk_review_visual_acceptance" in domains["tool_policy"]["gaps"]
+    assert "admin_policy_bulk_review_controlled_host_acceptance" in domains["tool_policy"]["gaps"]
+    assert "admin_policy_bulk_review_and_change_history_view" not in domains["tool_policy"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
-    assert "allow_deny_policy_taxonomy_for_all_mcp_tools" not in domains["tool_permission"]["gaps"]
-    tool_evidence = domains["tool_permission"]["evidence"]["tool_policy_taxonomy"]
+    assert "allow_deny_policy_taxonomy_for_all_mcp_tools" not in domains["tool_policy"]["gaps"]
+    tool_evidence = domains["tool_policy"]["evidence"]["tool_policy_taxonomy"]
     assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v2"
     assert tool_evidence["status"] == "partial_blocked"
     assert tool_evidence["registry_contract"] == {
@@ -107,7 +106,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "immediate_allow_cases": 4,
         "deny_cases": 2,
     }
-    bulk_review_evidence = domains["tool_permission"]["evidence"]["admin_policy_bulk_review_dashboard"]
+    bulk_review_evidence = domains["tool_policy"]["evidence"]["admin_policy_bulk_review_dashboard"]
     assert bulk_review_evidence["schema_version"] == "ai-platform.tool-policy-bulk-review-readiness.v1"
     assert bulk_review_evidence["runtime_acceptance"]["status"] == "source_route_tests_recorded"
     assert bulk_review_evidence["runtime_acceptance"]["does_not_close_runtime_acceptance"] is True
@@ -650,7 +649,7 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.governance-readiness.v1"
     assert payload["status"] == "partial_blocked"
-    assert "tool_permission" in payload["domains"]
+    assert "tool_policy" in payload["domains"]
     assert "callback-secret" not in result.stdout
     assert "tenant-secret" not in result.stdout
     assert "211 verified" not in result.stdout.lower()

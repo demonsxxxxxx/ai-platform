@@ -71,9 +71,9 @@ test("keeps user-actionable run status cards visible", () => {
     {
       type: "run_status",
       event_id: "evt-warning",
-      event_type: "tool_permission_required",
+      event_type: "tool_not_authorized",
       stage: "policy",
-      message: "工具调用需要权限决策",
+      message: "工具策略拒绝了本次调用",
       severity: "warning",
     },
     {

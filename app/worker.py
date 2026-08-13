@@ -80,9 +80,9 @@ from app.skills.catalog import (
     resolve_authorized_skill_catalog,
 )
 from app.skills.execution_profiles import canonical_skill_execution_profile
-from app.tool_permission_lifecycle import (
-    drain_run_tool_permission_terminalization,
-    reconcile_terminalized_permission_run,
+from app.runs.terminalization import (
+    drain_run_terminalization,
+    reconcile_terminalized_run,
 )
 from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_canonical_sha256, assert_safe_id
@@ -356,7 +356,7 @@ async def _reconcile_multi_agent_child_terminal_state(
     error_code: str | None = None,
     error_message: str | None = None,
     is_multi_agent_child: bool | None = None,
-) -> repositories.ToolPermissionTerminalizationProgress | None:
+) -> repositories.RunTerminalizationProgress | None:
     """Carry one committed child transition to the shared post-commit lifecycle seam."""
 
     del conn, result_json, error_code, error_message
@@ -365,7 +365,7 @@ async def _reconcile_multi_agent_child_terminal_state(
         child_dispatch if is_multi_agent_child is None else is_multi_agent_child
     ):
         return None
-    return repositories.ToolPermissionTerminalizationProgress(
+    return repositories.RunTerminalizationProgress(
         completed=True,
         status=child_status,
         did_transition=True,
@@ -379,9 +379,9 @@ async def _finalize_multi_agent_parent_after_child_commit(
 ) -> Any | None:
     """Use the shared post-commit owner for worker child reconciliation and parent rollup."""
 
-    if not isinstance(reconciled, repositories.ToolPermissionTerminalizationProgress):
+    if not isinstance(reconciled, repositories.RunTerminalizationProgress):
         return None
-    return await reconcile_terminalized_permission_run(
+    return await reconcile_terminalized_run(
         tenant_id=payload.tenant_id,
         run_id=payload.run_id,
         progress=reconciled,
@@ -2976,14 +2976,6 @@ async def process_run_payload(
     reconciled_parent = None
     try:
         async with transaction() as conn:
-            pending_permission_blocks_success = (
-                result.status == "succeeded"
-                and await repositories.has_pending_tool_permission_requests(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                )
-            )
             # The selected platform Skill owns this contract.  Preserve an
             # adapter's additional declared requirements, but never let an
             # executor omit the capability requirement on resume or retry.
@@ -2995,17 +2987,9 @@ async def process_run_payload(
             produced_artifact_types = {artifact.artifact_type for artifact in result.artifacts}
             missing_required_artifact_types = required_artifact_types - produced_artifact_types
             missing_required_artifact = result.status == "succeeded" and bool(missing_required_artifact_types)
-            if pending_permission_blocks_success or missing_required_artifact:
-                error_code = (
-                    "tool_permission_pending"
-                    if pending_permission_blocks_success
-                    else "required_artifact_missing"
-                )
-                error_message = (
-                    "A pending tool-permission request blocks successful completion."
-                    if pending_permission_blocks_success
-                    else "The file-required Skill did not produce every required artifact type."
-                )
+            if missing_required_artifact:
+                error_code = "required_artifact_missing"
+                error_message = "The file-required Skill did not produce every required artifact type."
                 result = replace(
                     result,
                     status="failed",
@@ -3341,46 +3325,6 @@ async def process_run_payload(
                         "stale_terminal_state",
                         "Run already reached a terminal state",
                     )
-            elif blocked_reason == "tool_permission_pending":
-                blocked_result_payload = {
-                    **result_payload,
-                    "message": "A pending tool-permission request blocked successful completion.",
-                    "error_code": "tool_permission_pending",
-                    "artifacts": [],
-                }
-                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
-                    conn,
-                    payload=payload,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    error_code="tool_permission_pending",
-                    error_message="A pending tool-permission request blocked successful completion.",
-                    result_json=blocked_result_payload,
-                )
-                if not terminal_written:
-                    terminal_outcome = WorkerOutcome(
-                        "skipped",
-                        payload.run_id,
-                        "stale_terminal_state",
-                        "Run already reached a terminal state",
-                    )
-                else:
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="error",
-                        stage="worker",
-                        message="Run failed",
-                        payload={"artifact_count": 0, "visible_to_user": False},
-                    )
-                    await release_runtime_sandbox_lease(conn, reason="run_failed")
-                    terminal_outcome = WorkerOutcome(
-                        "failed",
-                        payload.run_id,
-                        "tool_permission_pending",
-                        "A pending tool-permission request blocked successful completion.",
-                    )
             else:
                 terminal_outcome = WorkerOutcome(
                     "skipped",
@@ -3391,7 +3335,7 @@ async def process_run_payload(
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
     if terminal_outcome.status == "skipped":
-        terminalization_progress = await drain_run_tool_permission_terminalization(
+        terminalization_progress = await drain_run_terminalization(
             tenant_id=payload.tenant_id,
             run_id=payload.run_id,
             transaction_factory=transaction,
@@ -3401,7 +3345,7 @@ async def process_run_payload(
             and terminalization_progress.get("did_transition")
             and terminalization_progress.get("needs_reconcile")
         ):
-            await reconcile_terminalized_permission_run(
+            await reconcile_terminalized_run(
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
                 progress=terminalization_progress,

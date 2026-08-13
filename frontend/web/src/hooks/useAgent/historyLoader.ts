@@ -4,10 +4,10 @@
  *
  * Message transformation logic is unified in processMessageEvent (messageParts.ts).
  * This file handles: event iteration, message reconstruction, and
- * user:message / user:cancel / approval_required which are history-specific.
+ * user:message / user:cancel which are history-specific.
  */
 
-import type { Message, MessagePart, FormField } from "../../types";
+import type { Message, MessagePart } from "../../types";
 import { uuid } from "../../utils/uuid";
 import i18n from "../../i18n";
 import type {
@@ -34,14 +34,6 @@ function resolveUserMessageId(
 }
 
 interface ProcessHistoryOptions {
-  options?: {
-    onApprovalRequired?: (approval: {
-      id: string;
-      message: string;
-      type: string;
-      fields?: FormField[];
-    }) => void;
-  };
   activeSubagentStack: SubagentStackItem[];
 }
 
@@ -101,7 +93,7 @@ const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
 /**
  * Persisted compatibility history intentionally exposes its production event
  * type at the outer level.  The message processor's durable status and tool
- * permission projection still uses the `run_event` envelope, so translate
+ * status projection still uses the `run_event` envelope, so translate
  * only sequenced persisted rows that have no dedicated visual processor.
  */
 function historyProcessorEventType(
@@ -144,11 +136,6 @@ function processHistoryEvent(
 
   // Skip events that don't contribute to message content
   if (eventType === "metadata" || eventType === "done") {
-    return currentAssistantMessage;
-  }
-
-  // Handle approval_required
-  if (eventType === "approval_required") {
     return currentAssistantMessage;
   }
 

@@ -6,8 +6,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
+from app.runtime.sandbox.executor_timeouts import executor_timeout_budget
 from app.settings import get_settings
-from app.tool_permission_lifecycle import tool_permission_budget
 
 
 PostJson = Callable[..., Awaitable[dict[str, Any]]]
@@ -276,9 +276,9 @@ class SandboxExecutorClient:
 
 
 def _default_timeout_seconds(request: ExecutorTaskRequest | None = None) -> float:
-    """Use the normal bounded executor timeout; runtime approval never extends it."""
+    """Use the bounded executor transport timeout."""
 
     settings = get_settings()
     sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
     _ = request
-    return tool_permission_budget(sdk_timeout).normal_outer_executor_timeout_seconds
+    return executor_timeout_budget(sdk_timeout).outer_timeout_seconds

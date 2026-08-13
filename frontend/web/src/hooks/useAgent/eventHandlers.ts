@@ -128,7 +128,6 @@ const SIDE_EFFECT_EVENTS = new Set<string>([
   "done",
   "end",
   "queue_update",
-  "approval_required",
   "skills:changed",
   "heartbeat",
 ]);
@@ -392,12 +391,6 @@ export function handleStreamEvent(
       return true;
     }
 
-    case "approval_required": {
-      handleApprovalRequired(data, ctx);
-      commitAcceptedEvent();
-      return true;
-    }
-
     case "skills:changed": {
       if (ctx.options?.onSkillAdded) {
         const action = (data.action as string) || "updated";
@@ -576,7 +569,6 @@ export function handleStreamEvent(
     dismissQueueToast(ctx);
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
-    ctx.options?.onClearApprovals?.();
   }
   return true;
 }
@@ -700,7 +692,6 @@ function handleError(
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
   }
-  ctx.options?.onClearApprovals?.();
 }
 
 function appendCancelledPart(parts: MessagePart[]): MessagePart[] {
@@ -708,12 +699,4 @@ function appendCancelledPart(parts: MessagePart[]): MessagePart[] {
     return parts;
   }
   return [...parts, { type: "cancelled" }];
-}
-
-function handleApprovalRequired(
-  data: EventData,
-  ctx: EventHandlerContext,
-): void {
-  void data;
-  void ctx;
 }

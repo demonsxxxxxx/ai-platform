@@ -16,7 +16,7 @@ def test_error_taxonomy_contract_defines_stable_g9_categories_without_secrets():
     assert set(contract["categories"]) >= {
         "executor",
         "tool",
-        "tool_permission",
+        "tool_policy",
         "sandbox",
         "model_gateway",
         "queue",
@@ -40,7 +40,7 @@ def test_classify_error_code_maps_platform_failures_to_taxonomy_categories():
         "executor_failure": "executor",
         "worker_process_exception": "executor",
         "mcp_tool_disabled": "tool",
-        "tool_permission_denied": "tool_permission",
+        "tool_permission_denied": "tool_policy",
         "sandbox_runtime_cleanup_failed": "sandbox",
         "model_gateway_timeout": "model_gateway",
         "queue_lease_timeout": "queue",

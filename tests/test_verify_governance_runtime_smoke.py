@@ -48,7 +48,7 @@ def governance_payload(tenant_id="default", *, overrides=None):
             "gate": "G6 Tool / Skill / Memory Governance",
             "status": "partial_blocked",
             "domains": {
-                "tool_permission": {
+                "tool_policy": {
                     "status": "partial_blocked",
                     "implemented": [
                         "tool_allow_deny_ask_policy_taxonomy_evidence",
@@ -229,7 +229,7 @@ class MissingImplementedControlHandler(GovernanceRuntimeHandler):
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
             payload = governance_payload(self.headers.get("X-AI-Tenant-ID", "default"))
-            payload["governance"]["domains"]["tool_permission"]["implemented"] = []
+            payload["governance"]["domains"]["tool_policy"]["implemented"] = []
             payload["governance"]["domains"]["skill_governance"]["implemented"] = []
             self._send_json(200, payload)
             return
@@ -363,10 +363,10 @@ def test_governance_runtime_smoke_checks_admin_only_governance_domains_and_redac
     assert admin["governance_schema_version"] == "ai-platform.governance-readiness.v1"
     assert admin["governance_status"] == "partial_blocked"
     assert admin["required_domains_present"] is True
-    assert admin["tool_permission"]["taxonomy_present"] is True
-    assert admin["tool_permission"]["bulk_review_present"] is True
-    assert admin["tool_permission"]["implemented_policy_taxonomy"] is True
-    assert admin["tool_permission"]["implemented_bulk_review_dashboard"] is True
+    assert admin["tool_policy"]["taxonomy_present"] is True
+    assert admin["tool_policy"]["bulk_review_present"] is True
+    assert admin["tool_policy"]["implemented_policy_taxonomy"] is True
+    assert admin["tool_policy"]["implemented_bulk_review_dashboard"] is True
     assert admin["skill_governance"]["release_readiness_present"] is True
     assert admin["skill_governance"]["dependency_review_policy_present"] is True
     assert admin["skill_governance"]["runtime_acceptance_contract_present"] is True
@@ -448,8 +448,8 @@ def test_governance_runtime_smoke_fails_closed_when_implemented_controls_missing
 
     assert payload["ok"] is False
     admin = payload["checks"]["admin_runtime_governance"]
-    assert admin["tool_permission"]["implemented_policy_taxonomy"] is False
-    assert admin["tool_permission"]["implemented_bulk_review_dashboard"] is False
+    assert admin["tool_policy"]["implemented_policy_taxonomy"] is False
+    assert admin["tool_policy"]["implemented_bulk_review_dashboard"] is False
     assert admin["skill_governance"]["implemented_version_registry"] is False
     assert admin["skill_governance"]["implemented_snapshot_lock"] is False
     acceptance = payload["checks"]["skill_dependency_review_policy_runtime_acceptance"]

@@ -477,11 +477,6 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                     "cross_tenant_queue_leak": False,
                     "admission_limit_violation": False,
                 },
-                "tool_permission_probe": {
-                    "request_status": 410,
-                    "decision_status": 410,
-                    "no_side_effect": True,
-                },
                 "skill_snapshot": {
                     "run_skill_snapshot_count": 1,
                     "used_count": 1,
@@ -544,9 +539,6 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert evidence["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
     assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "redis_metadata"
     assert evidence["checks"]["artifact_acl"]["cross_tenant_statuses"] == [404] * 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_probe_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] == 0
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
     assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
@@ -667,7 +659,6 @@ def test_foundation_runtime_cli_evidence_mode_fails_closed_without_public_contex
 
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         sys,
@@ -1362,12 +1353,7 @@ def test_attach_run_detail_probe_results_aggregates_safe_projection_and_context(
                     "input": {"context_snapshot_id": "ctx-a"},
                     "result": {"sandbox_lease_id": "lease-a"},
                 },
-                "events": [
-                    {
-                        "event_type": "tool_permission_decided",
-                        "payload": {"request_id": "perm-a", "tool_call_id": "tool-a", "decision": "allow_once"},
-                    }
-                ],
+                "events": [],
                 "skill_snapshots": [{"skill_id": "general-chat", "used": True}],
             }
         if url.endswith("/api/ai/runs/run-a/playback"):
@@ -1394,7 +1380,6 @@ def test_attach_run_detail_probe_results_aggregates_safe_projection_and_context(
     assert results[0]["status"] == "failed"
     assert results[0]["error_code"] == "claude_agent_sdk_runtime_error"
     assert results[0]["error_message"] == "API Error: 402 Insufficient Balance"
-    assert results[0]["tool_permission"]["decision_sample_count"] == 1
     assert results[0]["skill_snapshot"]["run_skill_snapshot_count"] == 1
     assert results[0]["playback"]["event_order_violations"] == 0
     assert results[0]["playback"]["private_payload_leak_count"] == 0
@@ -1542,70 +1527,6 @@ def test_attach_run_detail_probe_results_ignores_post_run_sandbox_probe_leases(m
     assert "sandbox_lease_samples_missing" in readiness["failures"]
 
 
-def test_foundation_runtime_evidence_counts_zero_click_probe_and_skill_snapshot_samples():
-    module = load_verify_multiuser_poc()
-    results = complete_foundation_runtime_results()
-    for item in results:
-        item["tool_permission_probe"] = {
-            "request_status": 410,
-            "decision_status": 410,
-            "no_side_effect": True,
-        }
-
-    evidence = module.build_foundation_runtime_concurrency_evidence(
-        results,
-        commit_sha="3843395b180324b165cbca7c59b6d7e1a934e290",
-        runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
-    )
-
-    assert evidence["checks"]["tool_permission"]["zero_click_write_probe_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] == 0
-    assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
-    readiness = build_foundation_runtime_concurrency_readiness(evidence)
-    assert "tool_permission_zero_click_probe_missing" not in readiness["failures"]
-    assert "skill_snapshots_missing_for_runs" not in readiness["failures"]
-
-
-def test_attach_tool_permission_probe_results_expects_no_side_effect_410_writes(monkeypatch):
-    module = load_verify_multiuser_poc()
-    account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
-    same_tenant_other_user = module.Account(label="tenant-a-user-2", username="a2", password="pw", tenant_id="tenant-a")
-    cross_tenant_user = module.Account(label="tenant-b-user-1", username="b1", password="pw", tenant_id="tenant-b")
-    results = [{"account": account.label, "tenant_id": account.tenant_id, "run_id": "run-a"}]
-    calls = []
-
-    monkeypatch.setattr(module, "login", lambda _api_url, user: {"X-AI-User-ID": user.username})
-
-    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
-        calls.append((method, url, payload, headers))
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/request"):
-            return 410, {"detail": "tool_permission_runtime_write_retired"}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision"):
-            return 410, {"detail": "tool_permission_runtime_write_retired"}
-        raise AssertionError(url)
-
-    monkeypatch.setattr(module, "json_request", fake_json_request)
-
-    module.attach_tool_permission_probe_results(
-        "http://api.test",
-        results,
-        [account, same_tenant_other_user, cross_tenant_user],
-    )
-
-    assert results[0]["tool_permission_probe"] == {
-        "request_status": 410,
-        "decision_status": 410,
-        "no_side_effect": True,
-    }
-    assert [call[0] for call in calls] == ["POST", "POST"]
-    assert [call[1] for call in calls] == [
-        "http://api.test/api/ai/runs/run-a/tool-permissions/request",
-        "http://api.test/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision",
-    ]
-    assert [call[3]["X-AI-User-ID"] for call in calls] == ["a1", "a1"]
-
-
 def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkeypatch, tmp_path, capsys):
     module = load_verify_multiuser_poc()
     sample_path = tmp_path / "sample.docx"
@@ -1630,9 +1551,6 @@ def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkey
     def fake_attach_context(api_url, results, accounts, **_kwargs):
         calls.append("context")
 
-    def fake_attach_tool(api_url, results, accounts, **_kwargs):
-        calls.append("tool")
-
     def fake_attach_sandbox(api_url, results, accounts, **_kwargs):
         calls.append("sandbox")
 
@@ -1642,7 +1560,6 @@ def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkey
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", fake_attach_context)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", fake_attach_sandbox)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
@@ -1669,7 +1586,7 @@ def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkey
     )
 
     assert module.main() == 0
-    assert calls == ["acl", "context", "tool", "sandbox", "details"]
+    assert calls == ["acl", "context", "sandbox", "details"]
     evidence = json.loads(capsys.readouterr().out)
     assert evidence["checks"]["memory_context"]["context_pack_version_sample_count"] == 12
 
@@ -1725,9 +1642,6 @@ def test_foundation_runtime_cli_trusted_header_mode_reaches_run_and_probe_calls(
     def fake_attach_context(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         observed_roles.append(("context", auth_mode, trusted_header_role))
 
-    def fake_attach_tool(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
-        observed_roles.append(("tool", auth_mode, trusted_header_role))
-
     def fake_attach_sandbox(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         observed_roles.append(("sandbox", auth_mode, trusted_header_role))
 
@@ -1737,7 +1651,6 @@ def test_foundation_runtime_cli_trusted_header_mode_reaches_run_and_probe_calls(
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", fake_attach_context)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", fake_attach_sandbox)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
@@ -1769,7 +1682,6 @@ def test_foundation_runtime_cli_trusted_header_mode_reaches_run_and_probe_calls(
     assert {item for item in observed_roles if item[0] != "run"} == {
         ("acl", "trusted-header", "user"),
         ("context", "trusted-header", "user"),
-        ("tool", "trusted-header", "user"),
         ("sandbox", "trusted-header", "user"),
         ("details", "trusted-header", "user"),
     }
@@ -1849,9 +1761,6 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     def fake_attach_context(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         probe_calls.append(("context", auth_mode, trusted_header_role))
 
-    def fake_attach_tool(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
-        probe_calls.append(("tool", auth_mode, trusted_header_role))
-
     def fake_attach_sandbox(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         probe_calls.append(("sandbox", auth_mode, trusted_header_role))
 
@@ -1863,7 +1772,6 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", fake_attach_context)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", fake_attach_sandbox)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
@@ -1921,7 +1829,6 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     assert all(call["workspace_id"] == module.fixture_workspace_id(call["account"].tenant_id) for call in run_calls)
     assert ("acl", "trusted-header", "user") in probe_calls
     assert ("context", "trusted-header", "user") in probe_calls
-    assert ("tool", "trusted-header", "user") in probe_calls
     assert ("sandbox", "trusted-header", "user") in probe_calls
     assert ("details", "trusted-header", "developer") in probe_calls
     assert evidence["role_provenance"]["run_creation_role"] == "developer"
@@ -2033,7 +1940,6 @@ def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out
     monkeypatch.setattr(module, "json_request", fake_json_request)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

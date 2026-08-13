@@ -447,11 +447,3 @@ async def executor_context_retrieval_callback(
             attempt_id=request.attempt_id,
         )
     return {"result": result}
-
-
-@router.post("/runtime/callbacks/tool-permission")
-async def executor_tool_permission_callback(
-) -> dict[str, object]:
-    """Retired callback endpoint: never deserialize or resolve a permission request."""
-
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="tool_permission_runtime_approval_removed")

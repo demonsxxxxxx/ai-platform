@@ -25,7 +25,6 @@ from app.routes.runtime_callbacks import router as runtime_callbacks_router
 from app.routes.runs import router as runs_router
 from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.skills_marketplace import router as skills_marketplace_router
-from app.routes.tool_permissions import router as tool_permissions_router
 from app.routes.workbench_projections import router as workbench_projections_router
 from app.db import close_pool
 from app.redis_client import close_redis_client
@@ -70,7 +69,6 @@ def create_app() -> FastAPI:
     app.include_router(context_router, prefix="/api/ai")
     app.include_router(files_router, prefix="/api/ai")
     app.include_router(runs_router, prefix="/api/ai")
-    app.include_router(tool_permissions_router, prefix="/api/ai")
     app.include_router(sandbox_leases_router, prefix="/api/ai")
     app.include_router(runtime_callbacks_router, prefix="/api/ai")
     app.include_router(admin_runtime_router, prefix="/api/ai")

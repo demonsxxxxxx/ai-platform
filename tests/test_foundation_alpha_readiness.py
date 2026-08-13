@@ -353,16 +353,6 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
                 "preview_cross_user_statuses": [404],
                 "preview_cross_tenant_statuses": [404],
             },
-            "tool_permission": {
-                "status": "passed",
-                "decision_sample_count": 12,
-                "negative_reuse_probe_count": 48,
-                "negative_reuse_denied_count": 48,
-                "negative_reuse_unexpected_successes": 0,
-                "allow_once_reuse_violations": 0,
-                "wrong_decision_reuse_violations": 0,
-                "tool_call_id_mismatch_violations": 0,
-            },
             "skill_snapshots": {
                 "status": "passed",
                 "run_skill_snapshot_count": 12,
@@ -438,7 +428,7 @@ def _minimal_governance_payload(
                     "required_domains_present": True,
                     "forbidden_projection_terms_present": False,
                     "missing_domains": [],
-                    "tool_permission": {
+                    "tool_policy": {
                         "taxonomy_present": True,
                         "bulk_review_present": True,
                     },
@@ -1693,7 +1683,7 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         not in readiness["operator_context"]["next_recommended_slices"]
     )
 
-def test_foundation_alpha_readiness_summarizes_mcp_tool_permission_runtime_controls(
+def test_foundation_alpha_readiness_summarizes_mcp_tool_policy_runtime_controls(
     monkeypatch,
     tmp_path,
 ):
@@ -1744,7 +1734,7 @@ def test_foundation_alpha_readiness_summarizes_mcp_tool_permission_runtime_contr
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
     controls = readiness["domains"]["g6_poc_governance"]["evidence"][
-        "mcp_tool_permission_runtime_controls"
+        "mcp_tool_policy_runtime_controls"
     ]
     assert controls == {
         "status": "source_verified_runtime_rollout_required",
@@ -1758,20 +1748,15 @@ def test_foundation_alpha_readiness_summarizes_mcp_tool_permission_runtime_contr
         "disabled_or_unregistered_deny": True,
         "declared_active_high_or_write_executes_immediately": True,
         "outcomes": ["allow", "deny"],
-        "historical_permission_evidence": {
-            "projection": "read_only_redacted",
-            "legacy_pending": "terminalized_fail_closed",
-            "worker_policy_audit_actions": [
-                "mcp_tool_policy_allowed",
-                "mcp_tool_policy_denied",
-                "mcp_tool_call_completed",
-            ],
-        },
+        "worker_policy_audit_actions": [
+            "mcp_tool_policy_allowed",
+            "mcp_tool_policy_denied",
+            "mcp_tool_call_completed",
+        ],
         "covered_runtime_control_tests": [
             "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
             "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
             "tests/test_zero_click_tool_policy.py",
-            "tests/test_tool_permission_routes.py",
         ],
     }
     assert controls["status"] != "211_verified"
@@ -3143,8 +3128,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "runtime_run_detail"
     assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
     assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
-    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
     assert "foundation_runtime_concurrency" in readiness["evidence_entries"]
     assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
@@ -4683,8 +4666,8 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
 
     assert readiness["domains"]["g6_poc_governance"]["status"] == "partial_followups_open"
     g6_evidence = readiness["domains"]["g6_poc_governance"]["evidence"]
-    assert g6_evidence["mcp_tool_permission_runtime_controls"]["policy_source"] == "app.tool_policy_readiness"
-    assert g6_evidence["mcp_tool_permission_runtime_controls"]["status"] != "211_verified"
+    assert g6_evidence["mcp_tool_policy_runtime_controls"]["policy_source"] == "app.tool_policy_readiness"
+    assert g6_evidence["mcp_tool_policy_runtime_controls"]["status"] != "211_verified"
     assert g6_evidence["governance_readiness_status"] == "dependency_unavailable"
     assert g6_evidence["ordinary_user_policy"] == "fail_closed_until_projection_mapping_and_acceptance_pass"
     assert g6_evidence["open_gap_count"] == 1

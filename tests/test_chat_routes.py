@@ -595,7 +595,6 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
             ("append_message", "msg-required-bash"),
             ("bind_files_to_run", None),
             ("append_event", None),
-            ("create_tool_permission_request", None),
         )
     }
     for name, mock in business.items():
@@ -669,7 +668,6 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
         return
     assert (await chat_stream(request, principal=principal(roles=roles))).status == "queued"
     business["create_run"].assert_awaited_once()
-    business["create_tool_permission_request"].assert_not_awaited()
     declaration = enqueue.await_args.args[0]["input"].get("_required_capability_declaration")
     assert (declaration or {}).get("canonical_identity") == ("Bash" if selector else None)
 
@@ -1495,7 +1493,7 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_only_fo
 
     async def mark_enqueue_failed(*_args, **kwargs):
         assert kwargs["run_id"] == "run-durable"
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return repository_module.RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -1660,7 +1658,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run", kwargs["run_id"]))
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return repository_module.RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -4522,7 +4520,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         conn.run["status"] = "failed"
         conn.run["error_code"] = "queue_enqueue_failed"
         calls.append("terminalize_run")
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return repository_module.RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,

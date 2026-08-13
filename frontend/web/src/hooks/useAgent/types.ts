@@ -1,7 +1,6 @@
 import type {
   Message,
   ConnectionStatus,
-  FormField,
   MessageAttachment,
   SelectedAgentProfileRequest,
   SelectedSkillRequest,
@@ -115,7 +114,6 @@ export type EventType =
   | "artifact_card"
   | "agent:call"
   | "agent:result"
-  | "approval_required"
   | "sandbox:starting"
   | "sandbox:ready"
   | "sandbox:error"
@@ -152,11 +150,7 @@ export interface EventData {
   step_id?: string;
   input?: string;
   depth?: number;
-  // approval_required event fields
-  id?: string;
   message?: string;
-  choices?: string[];
-  default?: string;
   // sandbox event fields
   sandbox_id?: string;
   work_dir?: string;
@@ -204,7 +198,6 @@ export interface EventData {
   stage?: string;
   severity?: "info" | "warning" | "error" | string;
   payload?: Record<string, unknown>;
-  tool_permission_card?: Record<string, unknown>;
   created_at?: string;
   // Strict ai-platform public execution timeline v1 fields
   schema_version?: string;
@@ -439,15 +432,6 @@ export function isSequencedPublicChatEvent(
 }
 
 export interface UseAgentOptions {
-  onApprovalRequired?: (approval: {
-    id: string;
-    message: string;
-    type: string;
-    fields?: FormField[];
-    expires_at?: string | null;
-    timeout?: number;
-  }) => void;
-  onClearApprovals?: () => void;
   getEnabledTools?: () => string[];
   getDisabledSkills?: () => string[];
   getDisabledMcpTools?: () => string[];
@@ -495,7 +479,6 @@ export interface HistoryEventData {
   wait_reason?: string | null;
   message?: string;
   payload?: Record<string, unknown>;
-  tool_permission_card?: Record<string, unknown>;
   created_at?: string;
   schema_version?: string;
   kind?: string;

@@ -18,7 +18,7 @@ class Cursor:
         return self.rows
 
 
-class DelayedPermissionDrainConnection:
+class TerminalizationConnection:
     def __init__(self):
         self.status = "queued"
         self.target = None
@@ -26,12 +26,11 @@ class DelayedPermissionDrainConnection:
         self.result = {}
         self.error_code = None
         self.error_message = None
-        self.remaining = [f"tpr-{index}" for index in range(51)]
 
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
         lowered = normalized.lower()
-        if "set permission_terminalization_target = case" in lowered:
+        if "set terminalization_target = case" in lowered:
             if self.status in {"succeeded", "failed", "cancelled"}:
                 return Cursor()
             self.target = params[1]
@@ -44,45 +43,25 @@ class DelayedPermissionDrainConnection:
                     "id": "run-retired",
                     "user_id": "user-a",
                     "trace_id": "trace-retired",
-                    "permission_terminalization_target": self.target,
+                    "terminalization_target": self.target,
                 }
             )
         if lowered.startswith("update runs") and "set latency_ms" in lowered:
             return Cursor()
-        if lowered.startswith("select id, trace_id, status, permission_terminalization_target"):
+        if lowered.startswith("select id, trace_id, status, terminalization_target"):
             return Cursor(
                 row={
                     "id": "run-retired",
                     "user_id": "user-a",
                     "trace_id": "trace-retired",
                     "status": self.status,
-                    "permission_terminalization_target": self.target,
-                    "permission_terminalization_reason": self.reason,
-                    "permission_terminalization_result_json": self.result,
-                    "permission_terminalization_error_code": self.error_code,
-                    "permission_terminalization_error_message": self.error_message,
+                    "terminalization_target": self.target,
+                    "terminalization_reason": self.reason,
+                    "terminalization_result_json": self.result,
+                    "terminalization_error_code": self.error_code,
+                    "terminalization_error_message": self.error_message,
                 }
             )
-        if lowered.startswith("with locked_run as materialized"):
-            batch, self.remaining = self.remaining[:50], self.remaining[50:]
-            return Cursor(
-                rows=[
-                    {
-                        "id": request_id,
-                        "user_id": "user-a",
-                        "trace_id": "trace-retired",
-                        "tool_id": "Bash",
-                        "tool_call_id": f"call-{request_id}",
-                        "action": "execute",
-                        "risk_level": "high",
-                        "write_capable": True,
-                        "decision": "allow_for_run",
-                    }
-                    for request_id in batch
-                ]
-            )
-        if "has_unterminalized" in lowered:
-            return Cursor(row={"has_unterminalized": bool(self.remaining)})
         if lowered.startswith("update runs") and "set status = 'failed'" in lowered:
             self.status = "failed"
             self.target = None
@@ -95,7 +74,7 @@ class DelayedPermissionDrainConnection:
 
 
 @pytest.mark.asyncio
-async def test_retired_admission_terminalization_emits_one_hidden_fact_after_delayed_drain(
+async def test_retired_admission_terminalization_emits_one_hidden_fact_exactly_once(
     monkeypatch,
 ):
     events: list[dict[str, object]] = []
@@ -109,26 +88,24 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         audits.append(kwargs)
         return "aud-terminal"
 
+    async def ensure_run_terminal_intent(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(repositories, "append_event", append_event)
     monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-    conn = DelayedPermissionDrainConnection()
+    monkeypatch.setattr(
+        "app.streaming.redis.ensure_run_terminal_intent",
+        ensure_run_terminal_intent,
+    )
+    conn = TerminalizationConnection()
 
     first = await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
     )
-    assert first.completed is False
+    assert first.completed is True and first.did_transition is True
     assert conn.reason == "retired_platform_multi_agent_control"
-    assert len(conn.remaining) == 1
-    assert not [event for event in events if event["event_type"] == "run_failed"]
-
-    second = await repositories.progress_run_tool_permission_terminalization(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-retired",
-    )
-    assert second.completed is True and second.did_transition is True
     assert len([event for event in events if event["event_type"] == "run_failed"]) == 1
     assert len([audit for audit in audits if audit["target_type"] == "run"]) == 1
     first_terminal_fact_counts = (len(events), len(audits))
@@ -138,7 +115,7 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         tenant_id="tenant-a",
         run_id="run-retired",
     )
-    await repositories.progress_run_tool_permission_terminalization(
+    await repositories.progress_run_terminalization(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
