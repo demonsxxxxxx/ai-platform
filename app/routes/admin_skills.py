@@ -105,11 +105,6 @@ async def _read_skill_package_upload(package: UploadFile) -> bytes:
     return b"".join(chunks)
 
 
-def _require_active_skill_version(version: dict[str, object]) -> None:
-    if str(version.get("status") or "") != "active":
-        raise HTTPException(status_code=409, detail="skill_version_inactive")
-
-
 def _require_releasable_skill_version(version: dict[str, object]) -> None:
     status = normalize_skill_version_status(version.get("status"))
     if is_releasable_status(status):

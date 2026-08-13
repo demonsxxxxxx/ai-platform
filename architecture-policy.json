@@ -340,6 +340,31 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.runs.infrastructure.lifecycle",
+      "module_alias": "run_lifecycle_persistence",
+      "symbols": [
+        "ToolPermissionTerminalizationProgress",
+        "cancel_run",
+        "classify_success_commit_block",
+        "complete_run",
+        "fail_run",
+        "finalize_multi_agent_parent_run_if_ready",
+        "list_multi_agent_parent_runs_requiring_finalization",
+        "list_multi_agent_terminal_children_requiring_reconciliation",
+        "list_runs_requiring_tool_permission_terminalization",
+        "mark_run_enqueue_failed",
+        "progress_run_tool_permission_terminalization",
+        "reconcile_multi_agent_child_run_terminal_state",
+        "request_admin_run_cancel",
+        "request_run_cancel",
+        "stage_stale_run_reconciliation"
+      ],
+      "owner": "runs",
+      "reason": "The frozen global repository may expose these existing Run lifecycle, cancellation, maintenance, and terminalization persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Runs adapter.",
+      "removal_condition": "After the Run lifecycle persistence move, migrate supported internal callers to the Runs API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.runs.infrastructure.postgres",
       "module_alias": "run_persistence",
       "symbols": [

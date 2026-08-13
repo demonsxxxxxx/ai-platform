@@ -379,10 +379,6 @@ def _direct_marketplace_write_not_backed(skill_name: str | None = None) -> NoRet
     raise HTTPException(status_code=409, detail="marketplace_direct_write_contract_not_backed")
 
 
-def _skill_import_not_backed() -> None:
-    raise HTTPException(status_code=409, detail="skill_import_contract_not_backed")
-
-
 async def _read_skill_package_upload(file: UploadFile) -> bytes:
     chunks: list[bytes] = []
     total_bytes = 0
