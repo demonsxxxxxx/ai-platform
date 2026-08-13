@@ -976,6 +976,37 @@ def test_runs_persistence_bridge_authority_is_exact() -> None:
     }
 
 
+def test_skills_persistence_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.skills.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.skills.infrastructure.postgres",
+        "module_alias": "skill_persistence",
+        "symbols": [
+            "canonical_builtin_tool_identities",
+            "get_skill_version",
+            "run_skill_snapshot_source_json",
+            "validate_replay_skill_manifests",
+        ],
+        "owner": "skills",
+        "reason": (
+            "The frozen global repository may expose these existing Skill version, "
+            "replay-validation, and run-snapshot persistence symbols only as exact "
+            "identity aliases while their PostgreSQL implementation moves to the "
+            "Skills adapter."
+        ),
+        "removal_condition": (
+            "After the Skill persistence move, migrate supported internal callers to "
+            "the Skills API, inventory external imports, and remove this bridge in an "
+            "authority-only change before deleting the repositories aliases."
+        ),
+    }
+
+
 @pytest.mark.parametrize(
     "target_module",
     [
@@ -1040,6 +1071,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.postgres",
     }
     bridges[1]["module_alias"] = bridges[0]["module_alias"]
     repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
@@ -1063,6 +1095,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.postgres",
     }
     duplicate_symbol = bridges[0]["symbols"][0]
     bridges[1]["symbols"] = sorted([*bridges[1]["symbols"], duplicate_symbol])
