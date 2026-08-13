@@ -1240,7 +1240,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     )
     monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
-    monkeypatch.setattr("app.routes.chat._agent_profile_skill_manifest_pins", lock_profile_skills)
+    monkeypatch.setattr("app.routes.chat.pin_agent_skill_set", lock_profile_skills)
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
         "app.routes.chat.resolve_profile_for_admission",
