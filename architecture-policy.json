@@ -260,6 +260,31 @@
       "removal_condition": "After the Conversation persistence move, migrate the Chat Sessions transport to the Conversations API, inventory supported external imports, and remove this bridge in an authority-only change before deleting the legacy alias."
     },
     {
+      "source_path": "app/persistence_limits.py",
+      "target_module": "app.platform.postgres.limits",
+      "module_alias": "postgres_limits",
+      "symbols": [
+        "ARTIFACT_MANIFEST_MAX_BYTES",
+        "AUDIT_PAYLOAD_MAX_BYTES",
+        "CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES",
+        "MESSAGE_CONTENT_MAX_BYTES",
+        "MESSAGE_METADATA_MAX_BYTES",
+        "PersistenceSizeLimitError",
+        "RUN_EVENT_MESSAGE_MAX_BYTES",
+        "RUN_EVENT_PAYLOAD_MAX_BYTES",
+        "RUN_INPUT_MAX_BYTES",
+        "RUN_RESULT_MAX_BYTES",
+        "RUN_STEP_PAYLOAD_MAX_BYTES",
+        "compact_json_dumps",
+        "ensure_json_size",
+        "ensure_text_size",
+        "json_size_bytes"
+      ],
+      "owner": "platform-architecture",
+      "reason": "The root-level persistence-limit module may preserve its existing byte-bound symbols only as exact identity aliases while the technical PostgreSQL implementation moves to the platform adapter.",
+      "removal_condition": "After the PostgreSQL limit move, inventory all supported imports, migrate internal callers to the platform boundary, and remove this bridge in an authority-only change before deleting the root-level aliases."
+    },
+    {
       "source_path": "app/repositories.py",
       "target_module": "app.agent_apps.infrastructure.postgres",
       "module_alias": "agent_profile_persistence",
@@ -289,6 +314,7 @@
       "symbols": [
         "append_message",
         "create_session",
+        "ensure_workspace_belongs_to_tenant",
         "get_authorized_lambchat_session",
         "get_authorized_session_projection",
         "get_session_for_action",

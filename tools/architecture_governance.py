@@ -10,6 +10,7 @@ import argparse
 import ast
 import hashlib
 import json
+import keyword
 import re
 import subprocess
 import sys
@@ -40,10 +41,14 @@ SUPPORTED_SCHEMA_PATTERNS = frozenset(
         r"^(?!/)(?!.*\\)(?!.*(?:^|/)\.\.(?:/|$)).+$",
         r"^[A-Z][A-Z0-9_]+$",
         r"^[A-Z][A-Za-z0-9]*$",
+        r"^_?[A-Za-z][A-Za-z0-9_]*$",
         r"^[a-z][a-z0-9_]*$",
         r"^_?[a-z][a-z0-9_]*$",
         r"^app(?:\.[a-z][a-z0-9_]*)+$",
     }
+)
+ALLOWED_PLATFORM_MIGRATION_TARGETS = frozenset(
+    {"app.platform.postgres.limits"}
 )
 
 POLICY_KEYS = {
@@ -1061,6 +1066,8 @@ def _validate_migration_bridges(
     if not isinstance(value, list):
         raise ArchitectureError("invalid_policy", "migration_bridges must be a list")
     identities: list[tuple[str, str]] = []
+    source_aliases: set[tuple[str, str]] = set()
+    source_symbols: set[tuple[str, str]] = set()
     for index, entry in enumerate(value):
         label = f"migration_bridges[{index}]"
         _require_exact_keys(
@@ -1102,14 +1109,16 @@ def _validate_migration_bridges(
                 f"{label}.target_module must be an exact app module",
             )
         target_parts = target_module.split(".")
-        if (
-            len(target_parts) < 4
-            or target_parts[1] not in bounded_contexts
-            or target_parts[2] != "infrastructure"
-        ):
+        bounded_context_infrastructure = (
+            len(target_parts) >= 4
+            and target_parts[1] in bounded_contexts
+            and target_parts[2] == "infrastructure"
+        )
+        platform_technical_module = target_module in ALLOWED_PLATFORM_MIGRATION_TARGETS
+        if not (bounded_context_infrastructure or platform_technical_module):
             raise ArchitectureError(
                 "invalid_policy",
-                f"{label}.target_module must name bounded-context infrastructure",
+                f"{label}.target_module must name bounded-context infrastructure or a platform technical module",
             )
         module_alias = entry["module_alias"]
         if not isinstance(module_alias, str) or re.fullmatch(
@@ -1120,21 +1129,38 @@ def _validate_migration_bridges(
                 "invalid_policy",
                 f"{label}.module_alias must be lower-snake-case",
             )
+        source_alias = (source_path, module_alias)
+        if source_alias in source_aliases:
+            raise ArchitectureError(
+                "invalid_policy",
+                f"{label}.module_alias must be unique within one source_path",
+            )
+        source_aliases.add(source_alias)
         symbols = entry["symbols"]
         if not isinstance(symbols, list) or not symbols or any(
             not isinstance(symbol, str)
-            or re.fullmatch(r"_?[a-z][a-z0-9_]*", symbol) is None
+            or re.fullmatch(r"_?[A-Za-z][A-Za-z0-9_]*", symbol) is None
+            or keyword.iskeyword(symbol)
             for symbol in symbols
         ):
             raise ArchitectureError(
                 "invalid_policy",
-                f"{label}.symbols must be non-empty lower-snake-case names",
+                f"{label}.symbols must be non-empty ASCII Python identifiers",
             )
         if symbols != sorted(set(symbols)):
             raise ArchitectureError(
                 "invalid_policy",
                 f"{label}.symbols must be sorted and unique",
             )
+        duplicate_source_symbols = {
+            symbol for symbol in symbols if (source_path, symbol) in source_symbols
+        }
+        if duplicate_source_symbols:
+            raise ArchitectureError(
+                "invalid_policy",
+                f"{label}.symbols must be unique across bridges sharing one source_path",
+            )
+        source_symbols.update((source_path, symbol) for symbol in symbols)
         identities.append((source_path, target_module))
     if identities != sorted(set(identities)):
         raise ArchitectureError(
@@ -1793,6 +1819,12 @@ def _migration_bridge_findings(
                 for node in target_tree.body
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
             }
+            for node in target_tree.body:
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        defined.update(_assignment_target_names(target))
+                elif isinstance(node, ast.AnnAssign):
+                    defined.update(_assignment_target_names(node.target))
             missing = sorted(set(bridge["symbols"]) - defined)
             if missing:
                 findings.append(
