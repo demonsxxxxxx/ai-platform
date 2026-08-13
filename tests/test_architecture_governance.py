@@ -1096,6 +1096,95 @@ def test_legacy_api_cutover_public_target_must_be_identity_only(
     assert finding.exemptible is False
 
 
+def test_legacy_api_cutover_requires_the_canonical_owner_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    (repo / "app/runs/domain/terminalization.py").unlink()
+    head = _commit(repo, "remove canonical cutover owner")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "legacy_api_cutover_target_contract"
+        and item.path == "app/runs/domain/terminalization.py"
+    )
+    assert finding.exemptible is False
+
+
+def test_legacy_api_cutover_canonical_symbols_cannot_be_re_exports(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    cutover = _legacy_api_cutover()
+    target_symbols = sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    _write(
+        repo,
+        "app/runs/domain/terminalization.py",
+        "from app.runs.infrastructure.postgres import "
+        + ", ".join(f"{name} as {name}" for name in target_symbols)
+        + "\n",
+    )
+    head = _commit(repo, "reject canonical re-export owner")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "legacy_api_cutover_target_contract"
+        and item.path == "app/runs/domain/terminalization.py"
+    )
+    assert finding.exemptible is False
+
+
+def test_authority_rejects_a_consumed_cutover_without_its_canonical_owner(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    (repo / "app/runs/domain/terminalization.py").unlink()
+    invalid_authority = _commit(repo, "consume cutover without canonical owner")
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, invalid_authority, invalid_authority, invalid_authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
+@pytest.mark.parametrize(
+    "legacy_import",
+    [
+        "from app.compat import TERMINAL_RUN_STATUSES\n",
+        (
+            "from app.compat import RunTerminalizationProgress "
+            "as ToolPermissionTerminalizationProgress\n"
+        ),
+    ],
+)
+def test_authority_rejects_consumed_cutover_with_legacy_import_bindings(
+    governance_repo: tuple[Path, str],
+    legacy_import: str,
+) -> None:
+    repo, _authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    source_path = repo / "app/repositories.py"
+    source_path.write_text(
+        legacy_import + source_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    invalid_authority = _commit(repo, "retain a legacy import binding")
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, invalid_authority, invalid_authority, invalid_authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
 def test_legacy_api_cutover_rejects_retained_statement_reordering(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -1112,10 +1201,10 @@ def test_legacy_api_cutover_rejects_retained_statement_reordering(
     assert "legacy_api_cutover_source_logic" in _codes(evaluation)
 
 
-def test_legacy_api_cutover_rejects_multi_binding_definition_deletion(
+def test_authority_rejects_a_multi_binding_legacy_definition(
     governance_repo: tuple[Path, str],
 ) -> None:
-    repo, authority = governance_repo
+    repo, _authority = governance_repo
     suffix = _fixture_cutover_suffix("app/repositories.py")
     source_path = repo / "app/repositories.py"
     current = source_path.read_text(encoding="utf-8")
@@ -1129,36 +1218,10 @@ def test_legacy_api_cutover_rejects_multi_binding_definition_deletion(
         encoding="utf-8",
     )
     base = _commit(repo, "introduce unsafe combined legacy binding")
-    prefix = source_path.read_text(encoding="utf-8")[: -len(mutated_suffix)]
-    cutover = _legacy_api_cutover()
-    target_symbols = sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
-    _write(
-        repo,
-        "app/runs/domain/terminalization.py",
-        _fixture_bridge_definitions(target_symbols) + "\n",
-    )
-    _write(
-        repo,
-        "app/runs/api.py",
-        f"from {cutover['canonical_module']} import "
-        + ", ".join(f"{name} as {name}" for name in target_symbols)
-        + "\n",
-    )
-    uses = ", ".join(
-        f"{cutover['module_alias']}.{rewrite['new_symbol']}"
-        for rewrite in cutover["rewrites"]
-    )
-    source_path.write_text(
-        prefix
-        + f"import {cutover['public_module']} as {cutover['module_alias']}\n\n"
-        + f"def cutover_usage():\n    return ({uses})\n",
-        encoding="utf-8",
-    )
-    head = _commit(repo, "try to delete unrelated combined binding")
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, base, base, base)
 
-    evaluation = _evaluate(repo, authority, base, head)
-
-    assert "legacy_api_cutover_contract" in _codes(evaluation)
+    assert caught.value.code == "invalid_policy"
 
 
 def test_legacy_api_cutover_rejects_source_deletion(

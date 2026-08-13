@@ -535,8 +535,10 @@ authority records a one-to-one old/new symbol map, one exact static module
 alias, and the exact owning domain/application module. The public boundary may
 only expose those symbols as explicit same-name static re-exports from that
 owner; it cannot implement or replace policy locally. The authority may also
-inventory exact now-unused
-standard-library imports removed with those definitions. The checker canonicalizes only those declared attribute
+inventory exact now-unused standard-library imports removed with those
+definitions. On activation, the owning module MUST exist and define each
+declared symbol locally exactly once; it cannot pass ownership through another
+import. The checker canonicalizes only those declared attribute
 replacements and requires the rest of the source AST to equal the baseline
 after the declared definitions and imports are removed. It rejects source deletion or rename, partial or extra
 rewrites, retained or rebound legacy symbols, wildcards, dynamic imports,

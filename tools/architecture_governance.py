@@ -1394,6 +1394,25 @@ def _validate_legacy_api_cutovers(
                     "invalid_policy",
                     f"{label} consumed public module violates the identity boundary: {', '.join(target_issues)}",
                 )
+            canonical_path = _module_python_path(canonical_module)
+            canonical_source = git.text(authority, canonical_path, required=False)
+            if canonical_source is None:
+                raise ArchitectureError(
+                    "invalid_policy",
+                    f"{label} consumed canonical module is absent from authority",
+                )
+            canonical_tree = _parse_python(
+                canonical_source,
+                canonical_path,
+                candidate=False,
+            )
+            canonical_issues = _canonical_cutover_owner_issues(canonical_tree, entry)
+            if canonical_issues:
+                raise ArchitectureError(
+                    "invalid_policy",
+                    f"{label} consumed canonical module does not own every declared symbol: "
+                    + ", ".join(canonical_issues),
+                )
         identities.append((source_path, public_module))
     if identities != sorted(set(identities)):
         raise ArchitectureError(
@@ -1611,6 +1630,16 @@ def _top_level_local_binding_counts(tree: ast.Module) -> Counter[str]:
     return counts
 
 
+def _top_level_import_bound_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
+    return names
+
+
 def _is_legacy_api_cutover_import(node: ast.stmt, entry: dict[str, Any]) -> bool:
     return (
         isinstance(node, ast.Import)
@@ -1656,6 +1685,7 @@ def _removed_import_identities(tree: ast.Module, entry: dict[str, Any]) -> Count
 def _legacy_api_cutover_state(tree: ast.Module, entry: dict[str, Any]) -> str:
     old_symbols = {rewrite["old_symbol"] for rewrite in entry["rewrites"]}
     bindings = _top_level_local_binding_counts(tree)
+    imported_names = _top_level_import_bound_names(tree)
     import_count = _legacy_api_cutover_import_count(tree, entry)
     removed_imports = _removed_import_identities(tree, entry)
     expected_removed = Counter(
@@ -1666,12 +1696,13 @@ def _legacy_api_cutover_state(tree: ast.Module, entry: dict[str, Any]) -> str:
         import_count == 0
         and _exact_legacy_definition_symbols(tree, old_symbols) == old_symbols
         and all(bindings[symbol] == 1 for symbol in old_symbols)
+        and not old_symbols & imported_names
         and removed_imports == expected_removed
     ):
         return "pending"
     if (
         import_count == 1
-        and all(bindings[symbol] == 0 for symbol in old_symbols)
+        and not old_symbols & _top_level_bound_names(tree)
         and not removed_imports
         and not _legacy_api_cutover_reference_issues(tree, entry)
     ):
@@ -1747,6 +1778,9 @@ def _legacy_api_cutover_reference_issues(
     )
     if old_uses:
         issues.append(f"legacy symbol uses remain: {', '.join(old_uses)}")
+    old_imports = sorted(old_symbols & _top_level_import_bound_names(tree))
+    if old_imports:
+        issues.append(f"legacy import bindings remain: {', '.join(old_imports)}")
     used_new = {node.attr for node in attributes}
     undeclared = sorted(used_new - allowed_new)
     missing = sorted(allowed_new - used_new)
@@ -1796,6 +1830,27 @@ def _public_cutover_target_issues(
         issues.append(
             "public boundary imports must be exact same-name re-exports of sorted declared symbols"
         )
+    return sorted(set(issues))
+
+
+def _canonical_cutover_owner_issues(
+    tree: ast.Module,
+    entry: dict[str, Any],
+) -> list[str]:
+    expected = {rewrite["new_symbol"] for rewrite in entry["rewrites"]}
+    local_counts = _top_level_local_binding_counts(tree)
+    exact_definitions = _exact_legacy_definition_symbols(tree, expected)
+    imported_names = _top_level_import_bound_names(tree)
+    issues: list[str] = []
+    missing = sorted(symbol for symbol in expected if local_counts[symbol] != 1)
+    if missing:
+        issues.append(f"canonical definitions must exist exactly once: {', '.join(missing)}")
+    non_exact = sorted(expected - exact_definitions)
+    if non_exact:
+        issues.append(f"canonical definitions must bind one declared symbol: {', '.join(non_exact)}")
+    imported = sorted(expected & imported_names)
+    if imported:
+        issues.append(f"canonical symbols cannot be imported aliases: {', '.join(imported)}")
     return sorted(set(issues))
 
 
@@ -2226,6 +2281,23 @@ def _legacy_api_cutover_findings(
                 target_path,
                 exemptible=False,
                 details={**details, "issues": target_issues},
+            )
+        )
+
+    canonical_path = _module_python_path(entry["canonical_module"])
+    canonical_source = git.text(head, canonical_path, required=False)
+    canonical_issues: list[str] = []
+    if canonical_source is not None:
+        canonical_tree = _parse_python(canonical_source, canonical_path, candidate=True)
+        canonical_issues = _canonical_cutover_owner_issues(canonical_tree, entry)
+    if canonical_source is None or canonical_issues:
+        findings.append(
+            Finding(
+                "legacy_api_cutover_target_contract",
+                "the canonical cutover module must locally define every declared symbol",
+                canonical_path,
+                exemptible=False,
+                details={**details, "issues": canonical_issues},
             )
         )
 
