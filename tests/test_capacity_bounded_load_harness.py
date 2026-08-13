@@ -2,17 +2,29 @@ import json
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.util import find_spec
 from threading import Thread
 
+from app import foundation_alpha_readiness
 from app.capacity_baseline import build_capacity_gate_readiness
 from app.capacity_baseline import LOAD_TEST_GATES
-from app.capacity_bounded_load_harness import (
+from tools.capacity.bounded_load import (
     CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA,
     OPERATOR_ACKNOWLEDGEMENT,
     build_capacity_bounded_load_harness_plan,
     render_capacity_bounded_load_harness_markdown,
     run_capacity_bounded_load_harness,
 )
+
+
+def test_capacity_bounded_load_harness_is_not_packaged_as_application_runtime():
+    assert find_spec("app.capacity_bounded_load_harness") is None
+
+
+def test_capacity_bounded_load_harness_paths_have_exact_source_runtime_classification():
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/capacity/__init__.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/capacity/bounded_load.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/capacity_bounded_load_harness.py") is False
 
 
 def test_capacity_bounded_load_harness_dry_run_is_safe_and_not_gate_evidence():
