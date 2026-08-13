@@ -641,6 +641,13 @@ async def prepare_copied_run_for_queue(
         skill_manifest_refs=skill_manifest_refs,
     )
     copied_skill_id = copied.get("skill_id")
+    copied_profile_snapshot = copied_snapshot.get("agent_profile")
+    copied_skill_set = (
+        copied_profile_snapshot.get("skill_set")
+        if isinstance(copied_profile_snapshot, dict)
+        and isinstance(copied_profile_snapshot.get("skill_set"), list)
+        else None
+    )
     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         if copied_skill_id is not None:
             raise RepositoryConflictError("run_execution_skill_identity_mismatch")
@@ -664,6 +671,7 @@ async def prepare_copied_run_for_queue(
             pinned_version=copied_skill_version,
             pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
             skill_manifests=skill_manifests,
+            skill_set=copied_skill_set,
             normalized_input=copied_input,
             principal_department_id=effective_principal.department_id,
             principal_roles=effective_principal.roles,

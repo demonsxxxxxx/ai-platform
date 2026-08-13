@@ -1441,7 +1441,7 @@ async def _default_executor_runner(
             "attachment_contexts": attachment_contexts,
             "require_selected_skill_invocation": request.config.get(
                 "require_selected_skill_invocation", True
-            ) is True,
+            ) is not False,
         }
         if system_prompt is not None:
             sdk_kwargs["system_prompt"] = system_prompt

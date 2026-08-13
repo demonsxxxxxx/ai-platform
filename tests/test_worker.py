@@ -1440,6 +1440,19 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         "instructions": "Use the fixed enterprise expert policy.",
         "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
     }
+    with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
+        parse_queue_payload(
+            {
+                **harness_payload,
+                "agent_profile": {
+                    **profile,
+                    "skill_set": [
+                        {"skill_id": "general-chat", "expected_version": "version-a"},
+                        {"skill_id": "qa-file-reviewer", "expected_version": "version-b"},
+                    ],
+                },
+            }
+        )
     for hostile_profile, expected_error in (
         ({**profile, "agent_id": "other-agent"}, "agent_profile_harness_identity_invalid"),
         (

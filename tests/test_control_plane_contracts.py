@@ -168,10 +168,18 @@ def test_public_payload_sanitizer_removes_runtime_private_aliases():
                 "var_path": "/var/lib/ai-platform/private.log",
                 "message": "failed in /home/xinlin.jiang/qa-review-queue-runtime",
             },
+            "tuple_payload": (
+                {"runtime_private_payload": {"token": "hidden"}, "safe": "done"},
+                "/app/runtime/private.py",
+            ),
         }
     )
 
-    assert payload == {"message": "done", "nested": {}}
+    assert payload == {
+        "message": "done",
+        "nested": {},
+        "tuple_payload": ({"safe": "done"},),
+    }
 
 
 def test_public_payload_sanitizer_redacts_secret_like_executor_values():

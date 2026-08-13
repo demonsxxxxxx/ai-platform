@@ -1720,6 +1720,7 @@ async def _reauthorize_worker_capabilities(
                 roles=principal.roles,
                 permissions=principal.permissions,
                 pinned_manifests=payload.skill_manifests,
+                skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
             )
         except (AuthorizedSkillCatalogError, repositories.RepositoryConflictError):
             denial = _worker_capability_record(

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from app import repositories
 from app.capability_distribution import (
@@ -703,8 +703,18 @@ def _exclude_unavailable_dependency_candidates(
     return available
 
 
-def _candidate_order(candidates: dict[str, _Candidate], selected_skill_id: str) -> list[str]:
+def _candidate_order(
+    candidates: dict[str, _Candidate],
+    selected_skill_id: str,
+    required_skill_ids: Sequence[str],
+) -> list[str]:
     ordered: list[str] = []
+    roots: list[str] = []
+
+    for skill_id in dict.fromkeys((selected_skill_id, *required_skill_ids)):
+        if skill_id in candidates:
+            ordered.append(skill_id)
+            roots.append(skill_id)
 
     def add(skill_id: str) -> None:
         if skill_id in ordered or skill_id not in candidates:
@@ -713,7 +723,9 @@ def _candidate_order(candidates: dict[str, _Candidate], selected_skill_id: str) 
         for dependency_id in sorted(candidates[skill_id].dependency_ids):
             add(dependency_id)
 
-    add(selected_skill_id)
+    for skill_id in roots:
+        for dependency_id in sorted(candidates[skill_id].dependency_ids):
+            add(dependency_id)
     for candidate in sorted(
         candidates.values(),
         key=lambda item: (item.entry.name.casefold(), item.entry.skill_id),
@@ -726,11 +738,15 @@ def _bounded_candidates(
     candidates: dict[str, _Candidate],
     *,
     selected_skill_id: str,
+    required_skill_ids: Sequence[str],
 ) -> tuple[list[_Candidate], int]:
-    order = _candidate_order(candidates, selected_skill_id)
+    order = _candidate_order(candidates, selected_skill_id, required_skill_ids)
+    required = set(required_skill_ids)
     selected: list[_Candidate] = []
     for skill_id in order:
         if len(selected) >= MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES:
+            if skill_id in required:
+                raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_set_too_large")
             break
         candidate = candidates[skill_id]
         proposed = selected + [candidate]
@@ -742,6 +758,8 @@ def _bounded_candidates(
             "omitted_count": omitted,
         }
         if len(_canonical_json(prompt_payload).encode("utf-8")) > MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES:
+            if skill_id in required:
+                raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_set_too_large")
             break
         selected = proposed
     return selected, len(order) - len(selected)
@@ -752,6 +770,7 @@ def _selected_materialization_candidates(
     *,
     selected_skill_id: str,
     pinned_by_id: dict[str, dict[str, Any]],
+    required_skill_ids: Sequence[str],
 ) -> list[_Candidate]:
     """Decode the Agent's exact pinned Skill Set and authorized dependencies."""
 
@@ -791,12 +810,7 @@ def _selected_materialization_candidates(
         materialized_ids.add(skill_id)
         return all(add(dependency_id) for dependency_id in candidate.dependency_ids)
 
-    root_ids = [selected_skill_id]
-    root_ids.extend(
-        skill_id
-        for skill_id in pinned_by_id
-        if skill_id != selected_skill_id and skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS
-    )
+    root_ids = list(dict.fromkeys((selected_skill_id, *required_skill_ids)))
     for root_id in root_ids:
         if not add(root_id):
             return []
@@ -811,6 +825,7 @@ async def resolve_authorized_skill_catalog(
     roles: list[str],
     permissions: list[str],
     pinned_manifests: list[dict[str, Any]] | None = None,
+    skill_set: list[dict[str, Any]] | None = None,
 ) -> AuthorizedSkillCatalogResolution:
     """Resolve one bounded catalog through the authoritative release/distribution seam."""
 
@@ -893,32 +908,32 @@ async def resolve_authorized_skill_catalog(
         for skill_id, candidate in candidates.items()
         if skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS
     }
+    required_skill_ids = tuple(
+        dict.fromkeys(
+            str(item.get("skill_id") or "")
+            for item in skill_set or []
+            if isinstance(item, dict)
+            and str(item.get("skill_id") or "") != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+            and str(item.get("skill_id") or "") not in INTERNAL_DEPENDENCY_SKILL_IDS
+        )
+    )
+    if not required_skill_ids and binding.selected_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+        required_skill_ids = (binding.selected_skill_id,)
+    if any(skill_id not in discoverable_candidates for skill_id in required_skill_ids):
+        raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_skill_unavailable")
 
     selected, omitted_count = _bounded_candidates(
         discoverable_candidates,
         selected_skill_id=binding.selected_skill_id,
+        required_skill_ids=required_skill_ids,
     )
-    while True:
-        prompt_payload = {
-            "schema_version": AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION,
-            "skills": [candidate.entry.to_payload() for candidate in selected],
-            "truncated": omitted_count > 0,
-            "omitted_count": omitted_count,
-        }
-        if (
-            len(_canonical_json(prompt_payload).encode("utf-8"))
-            <= MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES
-            or not selected
-        ):
-            break
-        selected = selected[:-1]
-        omitted_count += 1
     entries = tuple(candidate.entry for candidate in selected)
     truncated = omitted_count > 0
     materialized = _selected_materialization_candidates(
         candidates,
         selected_skill_id=binding.selected_skill_id,
         pinned_by_id=pinned_by_id,
+        required_skill_ids=required_skill_ids,
     )
     manifest_json = tuple(
         _canonical_json(candidate.manifest)

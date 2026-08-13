@@ -84,6 +84,11 @@ def validate_agent_profile_execution_input(
         skill_set.append({"skill_id": item_skill_id, "expected_version": item_version})
     if len({item["skill_id"] for item in skill_set}) != len(skill_set):
         raise ValueError("agent_profile_skill_set_invalid")
+    if (
+        any(item["skill_id"] == LEGACY_SYNTHETIC_CHAT_SKILL_ID for item in skill_set)
+        and len(skill_set) != 1
+    ):
+        raise ValueError("agent_profile_skill_set_invalid")
     if not isinstance(profile_agent_id, str):
         raise ValueError("agent_profile_agent_id_invalid")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:

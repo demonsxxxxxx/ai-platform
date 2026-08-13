@@ -50,6 +50,10 @@ def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
     assert "published_status text" in schema
     assert "unique (tenant_id, agent_id, revision, content_hash, revision_status)" in schema
     assert "withdrawn_from_revision bigint" in schema
+    first_repair = schema.index("update agent_profile_revisions\nset skill_set")
+    second_repair = schema.index("update agent_profile_revisions\nset skill_set", first_repair + 1)
+    assert "where legacy_compatibility_write\n  and (" in schema[first_repair:second_repair]
+    assert "where legacy_compatibility_write\n  and (" in schema[second_repair:]
 
 
 def test_schema_declares_capability_distribution_authority_constraints():

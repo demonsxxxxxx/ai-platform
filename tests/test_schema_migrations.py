@@ -238,6 +238,25 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "object_deletion_outbox_file_id_fkey",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert schema_migrations.CRITICAL_TRIGGERS == (
+        (
+            "agent_profile_revisions",
+            "trg_agent_profile_legacy_insert_compatibility",
+            "agent_profile_legacy_insert_compatibility",
+            7,
+        ),
+        (
+            "agent_profile_revisions",
+            "trg_agent_profile_legacy_insert_reconcile",
+            "agent_profile_legacy_insert_reconcile",
+            5,
+        ),
+    )
+    trigger_contract = schema_migrations._critical_trigger_contract()
+    assert [item[:4] for item in trigger_contract] == list(schema_migrations.CRITICAL_TRIGGERS)
+    assert all(item[4].startswith("\ndeclare") or item[4].startswith("\nbegin") for item in trigger_contract)
+    assert all(item[4].endswith("end ") for item in trigger_contract)
+    assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
         (
             "files",

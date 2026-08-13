@@ -712,13 +712,19 @@ update agent_profile_revisions
 set skill_set = jsonb_build_array(
   jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
 )
-where jsonb_typeof(skill_set) <> 'array' or jsonb_array_length(skill_set) = 0;
+where legacy_compatibility_write
+  and (
+    jsonb_typeof(skill_set) <> 'array'
+    or jsonb_array_length(skill_set) = 0
+  );
 
 update agent_profile_revisions
 set skill_set = jsonb_build_array(
   jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
 )
-where exists (
+where legacy_compatibility_write
+  and (
+  exists (
     select 1
     from jsonb_array_elements(skill_set) item
     where jsonb_typeof(item) <> 'object'
@@ -732,7 +738,8 @@ where exists (
     having count(*) > 1
   )
    or skill_set->0->>'skill_id' is distinct from skill_id
-   or skill_set->0->>'expected_version' is distinct from skill_version;
+   or skill_set->0->>'expected_version' is distinct from skill_version
+  );
 
 -- No metadata defaults: omission is how the compatibility trigger recognizes
 -- an old writer and inherits the existing ACL without broadening it.

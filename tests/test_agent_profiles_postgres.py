@@ -80,11 +80,13 @@ create table agent_profile_revisions (
   model_id text not null,
   skill_id text not null references skills(id),
   skill_version text not null,
+  skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
   avatar_asset_id text,
+  avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   visibility text not null,
@@ -310,14 +312,15 @@ async def _seed_profile_chat_storage(
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status,
           name, description, instructions, model_id, skill_id,
-          skill_version, mcp_tool_ids, content_hash, avatar_ref,
+          skill_version, skill_set, mcp_tool_ids, content_hash, avatar_ref,
           category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, legacy_compatibility_write, created_by,
           published_by, published_at, published_from_revision
         ) values (
           %s, %s, 1, 'published', 'published',
           %s, %s, %s, %s, %s,
-          %s, '[]'::jsonb, %s, 'builtin:agent',
+          %s, jsonb_build_array(jsonb_build_object('skill_id', %s::text, 'expected_version', %s::text)),
+          '[]'::jsonb, %s, 'builtin:agent',
           'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
           '[]'::jsonb, false, %s, %s, now(), 1
         )
@@ -329,6 +332,8 @@ async def _seed_profile_chat_storage(
             "Published profile for Chat locking",
             "private profile chat instructions",
             "model-a",
+            "profile-chat-skill",
+            skill_version,
             "profile-chat-skill",
             skill_version,
             "a" * 64,
@@ -836,14 +841,15 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             insert into agent_profile_revisions(
               tenant_id, agent_id, revision, status, revision_status,
               name, description, instructions, model_id, skill_id,
-              skill_version, mcp_tool_ids, content_hash, avatar_ref,
+              skill_version, skill_set, mcp_tool_ids, content_hash, avatar_ref,
               category, visibility, allowed_department_ids, allowed_roles,
               allowed_user_ids, legacy_compatibility_write, created_by,
               published_by, published_at, published_from_revision
             ) values (
               %s, %s, 1, 'published', 'published',
               %s, %s, %s, %s, %s,
-              %s, '[]'::jsonb, %s, 'builtin:agent',
+              %s, jsonb_build_array(jsonb_build_object('skill_id', %s::text, 'expected_version', %s::text)),
+              '[]'::jsonb, %s, 'builtin:agent',
               'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
               '[]'::jsonb, false, %s, %s, now(), 1
             )
@@ -855,6 +861,8 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "Published profile",
                 "private profile instructions",
                 "model-a",
+                "profile-skill",
+                locked_skill_version,
                 "profile-skill",
                 locked_skill_version,
                 "a" * 64,
@@ -902,8 +910,12 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "revision": 1,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instructions",
-                "required_skill_id": "profile-skill",
-                "required_skill_version": locked_skill_version,
+                "skill_set": [
+                    {
+                        "skill_id": "profile-skill",
+                        "expected_version": locked_skill_version,
+                    }
+                ],
             },
         }
         await admission_conn.execute(
@@ -1148,8 +1160,12 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
                 "revision": 1,
                 "content_hash": "a" * 64,
                 "instructions": "private profile chat instructions",
-                "required_skill_id": "profile-chat-skill",
-                "required_skill_version": str(manifest["content_hash"]),
+                "skill_set": [
+                    {
+                        "skill_id": "profile-chat-skill",
+                        "expected_version": str(manifest["content_hash"]),
+                    }
+                ],
             }
             queue_entered.set()
             await release_queue.wait()

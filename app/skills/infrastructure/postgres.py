@@ -165,6 +165,7 @@ def _build_replay_skill_manifest_plan(
             raise SkillRunSnapshotError("capability_not_authorized")
 
     root_manifests: dict[str, dict[str, Any]] = {}
+    manifests_by_skill_id: dict[str, dict[str, Any]] = {}
     normalized_manifests: list[dict[str, Any]] = []
     for manifest in skill_manifests:
         if not isinstance(manifest, dict):
@@ -173,19 +174,49 @@ def _build_replay_skill_manifest_plan(
         manifest_skill_id = str(manifest.get("skill_id") or "")
         version = str(manifest.get("version") or manifest.get("skill_version") or "")
         content_hash = str(manifest.get("content_hash") or "")
+        dependency_ids = manifest.get("dependency_ids")
         if (
             not manifest_skill_id
             or not version
             or version != content_hash
             or not isinstance(manifest.get("files"), list)
             or not manifest["files"]
-            or not isinstance(manifest.get("dependency_ids"), list)
+            or not isinstance(dependency_ids, list)
+            or any(not isinstance(item, str) or not item for item in dependency_ids)
+            or len(dependency_ids) != len(set(dependency_ids))
+            or manifest_skill_id in dependency_ids
+            or manifest_skill_id in manifests_by_skill_id
         ):
             raise SkillRunSnapshotError("capability_not_authorized")
+        manifests_by_skill_id[manifest_skill_id] = manifest
         if requested_skill_versions.get(manifest_skill_id) == version:
+            if manifest_skill_id in root_manifests:
+                raise SkillRunSnapshotError("capability_not_authorized")
             root_manifests[manifest_skill_id] = manifest
         normalized_manifests.append(manifest)
     if set(root_manifests) != set(requested_skill_versions):
+        raise SkillRunSnapshotError("capability_not_authorized")
+
+    reachable_skill_ids: set[str] = set()
+    visiting_skill_ids: set[str] = set()
+
+    def visit_manifest(reachable_skill_id: str) -> None:
+        if reachable_skill_id in visiting_skill_ids:
+            raise SkillRunSnapshotError("capability_not_authorized")
+        if reachable_skill_id in reachable_skill_ids:
+            return
+        reachable_manifest = manifests_by_skill_id.get(reachable_skill_id)
+        if reachable_manifest is None:
+            raise SkillRunSnapshotError("capability_not_authorized")
+        visiting_skill_ids.add(reachable_skill_id)
+        for dependency_id in reachable_manifest["dependency_ids"]:
+            visit_manifest(dependency_id)
+        visiting_skill_ids.remove(reachable_skill_id)
+        reachable_skill_ids.add(reachable_skill_id)
+
+    for root_skill_id in requested_skill_versions:
+        visit_manifest(root_skill_id)
+    if reachable_skill_ids != set(manifests_by_skill_id):
         raise SkillRunSnapshotError("capability_not_authorized")
 
     mcp_tool_ids: list[str] = []

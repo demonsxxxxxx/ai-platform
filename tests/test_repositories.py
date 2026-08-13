@@ -1635,6 +1635,64 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
     assert calls == [{"message": "search", "mcp_tool_ids": ["historical-search"]}]
 
 
+@pytest.mark.asyncio
+async def test_authorize_replay_run_capabilities_reauthorizes_full_agent_skill_set_mcp_union(
+    monkeypatch,
+):
+    observed = {}
+    skill_set = [
+        {"skill_id": "skill-a", "expected_version": "hash-a"},
+        {"skill_id": "skill-b", "expected_version": "hash-b"},
+    ]
+
+    async def validate(*_args, **kwargs):
+        observed["skill_set"] = kwargs["skill_set"]
+        return ["mcp:a", "mcp:b"]
+
+    async def authorize(*_args, **kwargs):
+        observed["normalized_input"] = kwargs["normalized_input"]
+        return {"skill_id": kwargs["skill_id"], "skill_version": "hash-current"}
+
+    monkeypatch.setattr(repositories, "validate_replay_skill_manifests", validate)
+    monkeypatch.setattr(repositories, "_authorize_run_capabilities", authorize)
+    manifests = [
+        {
+            "skill_id": "skill-a",
+            "version": "hash-a",
+            "mcp_tool_ids": ["mcp:a"],
+        },
+        {
+            "skill_id": "skill-b",
+            "version": "hash-b",
+            "mcp_tool_ids": ["mcp:b"],
+        },
+    ]
+
+    await repositories.authorize_replay_run_capabilities(
+        object(),
+        tenant_id="tenant-a",
+        agent_id="agent-a",
+        skill_id="skill-a",
+        pinned_version="hash-a",
+        pinned_executor_type="claude-agent-worker",
+        skill_manifests=manifests,
+        skill_set=skill_set,
+        normalized_input={"message": "retry"},
+        principal_department_id="qa",
+        principal_roles=["reviewer"],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert observed == {
+        "skill_set": skill_set,
+        "normalized_input": {
+            "message": "retry",
+            "mcp_tool_ids": ["mcp:a", "mcp:b"],
+        },
+    }
+
+
 def test_historical_direct_ragflow_replay_fails_closed():
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         repositories.pinned_replay_mcp_tool_ids(
@@ -10575,6 +10633,53 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
             pinned_executor_type="claude-agent-worker",
             skill_manifests=manifests,
             skill_set=[],
+        )
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=[manifests[0], dict(manifests[0])],
+            skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+        )
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=manifests,
+            skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+        )
+
+    dependency_manifests = [
+        {**manifests[0], "dependency_ids": ["skill-b"]},
+        manifests[1],
+    ]
+    assert await repositories.validate_replay_skill_manifests(
+        object(),
+        skill_id="skill-a",
+        pinned_version="hash-a",
+        pinned_executor_type="claude-agent-worker",
+        skill_manifests=dependency_manifests,
+        skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+    ) == ["mcp:a"]
+
+    cyclic_manifests = [
+        {**manifests[0], "dependency_ids": ["skill-b"]},
+        {**manifests[1], "dependency_ids": ["skill-a"]},
+    ]
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=cyclic_manifests,
+            skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
         )
 
 

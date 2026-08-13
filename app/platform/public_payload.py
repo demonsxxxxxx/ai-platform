@@ -127,6 +127,12 @@ def sanitize_public_payload(value: Any, *, preserve_sensitive_keys: bool = False
             for item in value
         ]
         return [item for item in cleaned_items if item is not None]
+    if isinstance(value, tuple):
+        cleaned_items = (
+            sanitize_public_payload(item, preserve_sensitive_keys=preserve_sensitive_keys)
+            for item in value
+        )
+        return tuple(item for item in cleaned_items if item is not None)
     if isinstance(value, str):
         if _has_forbidden_public_marker(value):
             return None

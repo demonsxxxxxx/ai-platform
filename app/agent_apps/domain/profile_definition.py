@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, TypeVar
 
+from app.skills.dependencies import INTERNAL_DEPENDENCY_SKILL_IDS
+
 
 class SkillSelection(Protocol):
     skill_id: str
@@ -21,6 +23,8 @@ def normalize_agent_skill_set(
     skill_ids = [skill.skill_id for skill in skills]
     if len(skill_ids) != len(set(skill_ids)):
         raise ValueError("skill_set contains duplicate skill_id values")
+    if any(skill_id in INTERNAL_DEPENDENCY_SKILL_IDS for skill_id in skill_ids):
+        raise ValueError("skill_set cannot contain internal dependency Skills")
     if "general-chat" in skill_ids and skill_ids != ["general-chat"]:
         raise ValueError("general-chat cannot be combined with executable Skills")
     if selected_skill is not None and selected_skill != skills[0]:

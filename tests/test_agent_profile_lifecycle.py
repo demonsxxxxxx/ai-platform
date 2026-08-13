@@ -1468,7 +1468,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
             "model_id": "model-a",
         },
         "disabled_skills": [],
-        "selected_mcp_tool_ids": ["profile-tool"] if bound else [],
+        "selected_mcp_tool_ids": [],
         "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         "user_timezone": "Asia/Shanghai",
     }
@@ -1508,6 +1508,131 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     assert admission.agent_id == "agt_support"
     assert admission.revision == 7
     assert observed == [("bound" if bound else "current", True)]
+
+
+@pytest.mark.asyncio
+async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_configured(
+    monkeypatch,
+):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+
+    profile_row = _profile_row()
+    profile_row["mcp_tool_ids"] = ["profile-tool"]
+
+    async def get_current(*_args, **_kwargs):
+        return profile_row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    request = ChatStreamRequest.model_validate(
+        {
+            "message": "attempt to override the published expert",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 7,
+            },
+            "selected_mcp_tool_ids": ["profile-tool"],
+            "submission_id": "8eb026d4-2839-44db-83dd-5196ed80d9e8",
+        }
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.resolve_for_admission(
+            object(),
+            principal=_principal(),
+            selection=SelectedAgentProfileRequest(
+                agent_id="agt_support",
+                expected_revision=7,
+            ),
+            submitted_request=request,
+            query_agent_id="general-agent",
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        400,
+        "agent_profile_selector_conflict",
+    )
+
+
+@pytest.mark.asyncio
+async def test_profile_admission_adds_authorized_skill_backing_mcp_without_client_redeclaration(
+    monkeypatch,
+):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+
+    profile_row = _profile_row()
+    profile_row["skill_id"] = "skill-a"
+    profile_row["skill_version"] = "version-a"
+    profile_row["skill_set"] = [
+        {"skill_id": "skill-a", "expected_version": "version-a"},
+        {"skill_id": "skill-b", "expected_version": "version-b"},
+    ]
+
+    async def get_current(*_args, **_kwargs):
+        return profile_row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            (
+                {
+                    "skill_id": "skill-a",
+                    "skill_version": "version-a",
+                    "executor_type": "claude-agent-worker",
+                    "backing_mcp_tool_id": "skill-a-search",
+                },
+                {
+                    "skill_id": "skill-b",
+                    "skill_version": "version-b",
+                    "executor_type": "claude-agent-worker",
+                    "backing_mcp_tool_id": "skill-b-search",
+                },
+            ),
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    request = ChatStreamRequest.model_validate(
+        {
+            "message": "use the published expert",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 7,
+            },
+            "selected_mcp_tool_ids": [],
+            "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        }
+    )
+
+    admission = await authority.resolve_for_admission(
+        object(),
+        principal=_principal(),
+        selection=SelectedAgentProfileRequest(
+            agent_id="agt_support",
+            expected_revision=7,
+        ),
+        submitted_request=request,
+        query_agent_id="general-agent",
+    )
+
+    assert admission.configured_mcp_tool_ids == ()
+    assert admission.mcp_tool_ids == ("skill-a-search", "skill-b-search")
 
 
 @pytest.mark.parametrize("bound", [False, True], ids=["new", "continued"])

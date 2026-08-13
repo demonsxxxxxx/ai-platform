@@ -152,8 +152,8 @@ def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shad
                     "expected_version": "sha256:review",
                 },
                 {
-                    "skill_id": "reference-fact-extraction",
-                    "expected_version": "sha256:facts",
+                    "skill_id": "workflow-automation",
+                    "expected_version": "sha256:workflow",
                 },
             ],
         }
@@ -161,9 +161,29 @@ def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shad
 
     assert [skill.skill_id for skill in definition.skill_set] == [
         "document-review",
-        "reference-fact-extraction",
+        "workflow-automation",
     ]
     assert definition.selected_skill == definition.skill_set[0]
+
+
+@pytest.mark.parametrize("skill_id", ["minimax-docx", "reference-fact-extraction"])
+def test_agent_profile_rejects_internal_dependency_skill_as_root(skill_id):
+    with pytest.raises(ValueError, match="internal dependency"):
+        AgentProfileDraftRequest.model_validate(
+            {
+                **profile_draft_payload("Private instruction"),
+                "selected_skill": {
+                    "skill_id": skill_id,
+                    "expected_version": "sha256:internal",
+                },
+                "skill_set": [
+                    {
+                        "skill_id": skill_id,
+                        "expected_version": "sha256:internal",
+                    }
+                ],
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -977,15 +997,13 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             "skill_manifests": manifest_refs,
             "model_id": "model-a",
             "model_value": "provider-model-a",
-            "agent_profile": {
-                "agent_id": "agt_support",
-                "revision": 4,
-                "content_hash": "a" * 64,
-                "instructions": "private profile instruction",
-                "required_skill_id": "profile-skill",
-                "required_skill_version": locked_version,
-                "skill_set": skill_set,
-            },
+                "agent_profile": {
+                    "agent_id": "agt_support",
+                    "revision": 4,
+                    "content_hash": "a" * 64,
+                    "instructions": "private profile instruction",
+                    "skill_set": skill_set,
+                },
         },
     }
 
@@ -1004,13 +1022,12 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             },
             model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=("profile-tool", "profile-tool-secondary"),
+            configured_mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 4,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instruction",
-                "required_skill_id": "profile-skill",
-                "required_skill_version": locked_version,
                 "skill_set": skill_set,
             },
             public_identity=AgentConversationIdentity(
@@ -1126,6 +1143,107 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             principal=principal,
             run_id="run-profile",
         )
+
+
+@pytest.mark.asyncio
+async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_canonical_skill_set(
+    monkeypatch,
+):
+    from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
+    from app.models import AgentConversationIdentity
+
+    version = "b" * 64
+    manifest = {
+        "skill_id": "profile-skill",
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "builtin", "asset_dir": "profile-skill"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": ["profile-tool"],
+    }
+    source = {
+        "id": "run-profile",
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "agent_id": "agt_support",
+        "skill_id": "profile-skill",
+        "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "a" * 64,
+        "input_json": {
+            "input": {"message": "retry", "mcp_tool_ids": ["profile-tool"]},
+            "executor_type": "claude-agent-worker",
+            "skill_version": version,
+            "release_decision": {"selected_version": version},
+            "skill_manifests": repository_module.skill_manifest_refs([manifest]),
+            "model_id": "model-a",
+            "model_value": "provider-model-a",
+            "agent_profile": {
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "required_skill_id": "profile-skill",
+                "required_skill_version": version,
+            },
+        },
+    }
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+
+    async def resolve_bound(*_args, **_kwargs):
+        skill = {
+            "skill_id": "profile-skill",
+            "skill_version": version,
+            "executor_type": "claude-agent-worker",
+        }
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=4,
+            content_hash="a" * 64,
+            skill=skill,
+            skills=(skill,),
+            model={"id": "model-a", "value": "provider-model-a"},
+            mcp_tool_ids=("profile-tool",),
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "skill_set": [{"skill_id": "profile-skill", "expected_version": version}],
+            },
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=4,
+                name="Support assistant",
+            ),
+        )
+
+    async def get_run(*_args, **_kwargs):
+        return source
+
+    async def materialize(*_args, **_kwargs):
+        return [manifest]
+
+    async def validate(*_args, **_kwargs):
+        return ["profile-tool"]
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.validate_replay_skill_manifests", validate)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.require_replay_source_identity", lambda **_kwargs: None)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+
+    await authority.reauthorize_pinned_run_for_replay(
+        object(),
+        principal=principal,
+        run_id="run-profile",
+    )
 
 
 def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():

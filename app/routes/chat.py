@@ -2454,6 +2454,13 @@ async def chat_stream(
                 }
             )
     except HTTPException as exc:
+        authorization_error = exc.__cause__
+        if isinstance(authorization_error, repositories.RepositoryAuthorizationError):
+            await _audit_capability_denial(
+                principal,
+                authorization_error,
+                source="chat_stream",
+            )
         code = _submission_code(exc.detail)
         rejected_before_persist = 400 <= exc.status_code < 500 or code == _QUEUE_PAYLOAD_INVALID_CODE
         if rejected_before_persist:

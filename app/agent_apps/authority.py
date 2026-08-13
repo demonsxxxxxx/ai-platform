@@ -78,6 +78,7 @@ class AgentProfileAdmission:
     private_execution_input: dict[str, Any]
     public_identity: AgentConversationIdentity
     skills: tuple[dict[str, Any], ...] = ()
+    configured_mcp_tool_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         """Normalize old one-Skill constructors into the governed Skill Set."""
@@ -85,6 +86,8 @@ class AgentProfileAdmission:
         normalized = self.skills or (self.skill,)
         object.__setattr__(self, "skills", normalized)
         object.__setattr__(self, "skill", normalized[0])
+        if self.configured_mcp_tool_ids is None:
+            object.__setattr__(self, "configured_mcp_tool_ids", self.mcp_tool_ids)
 
 
 def _safe_avatar_ref(value: Any) -> str:
@@ -120,6 +123,21 @@ def _mcp_tool_ids(row: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     return list(dict.fromkeys(raw))
+
+
+def _effective_mcp_tool_ids(
+    row: dict[str, Any],
+    *,
+    skills: tuple[dict[str, Any], ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    configured = tuple(_mcp_tool_ids(row))
+    effective: list[str] = []
+    normalized_input = {"mcp_tool_ids": list(configured)}
+    for skill in skills:
+        for tool_id in repositories.run_mcp_tool_ids_for_skill(skill, normalized_input):
+            if tool_id not in effective:
+                effective.append(tool_id)
+    return configured, tuple(effective)
 
 
 def _skill_set(row: dict[str, Any]) -> list[SelectedSkillRequest]:
@@ -996,6 +1014,10 @@ class AgentProfileAuthority:
         agent_id = str(row["agent_id"])
         revision = int(row["revision"])
         content_hash = str(row["content_hash"])
+        configured_mcp_tool_ids, effective_mcp_tool_ids = _effective_mcp_tool_ids(
+            row,
+            skills=skills,
+        )
         return AgentProfileAdmission(
             agent_id=agent_id,
             revision=revision,
@@ -1003,7 +1025,7 @@ class AgentProfileAuthority:
             skill=skills[0],
             skills=skills,
             model=model,
-            mcp_tool_ids=tuple(_mcp_tool_ids(row)),
+            mcp_tool_ids=effective_mcp_tool_ids,
             private_execution_input={
                 "agent_id": agent_id,
                 "revision": revision,
@@ -1012,6 +1034,7 @@ class AgentProfileAuthority:
                 "skill_set": [skill.model_dump(mode="json") for skill in _skill_set(row)],
             },
             public_identity=conversation_identity_projection(row),
+            configured_mcp_tool_ids=configured_mcp_tool_ids,
         )
 
     async def reauthorize_pinned_run_for_replay(
@@ -1081,6 +1104,7 @@ class AgentProfileAuthority:
                 "required_skill_id" in profile_snapshot
                 or "required_skill_version" in profile_snapshot
             ):
+                expected_profile_snapshot.pop("skill_set", None)
                 expected_profile_snapshot.update(
                     {
                         "required_skill_id": authority_skill_id,
@@ -1325,10 +1349,7 @@ class AgentProfileAuthority:
             or request.selected_agent_profile.expected_revision != admission.revision
         ):
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
-        if "selected_mcp_tool_ids" in submitted_fields and (
-            request.selected_mcp_tool_ids is None
-            or tuple(request.selected_mcp_tool_ids) != admission.mcp_tool_ids
-        ):
+        if "selected_mcp_tool_ids" in submitted_fields and request.selected_mcp_tool_ids:
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
 
 

@@ -4857,6 +4857,67 @@ async def test_concurrent_profile_submits_serialize_on_user_lock_before_profile_
 
 
 @pytest.mark.asyncio
+async def test_profile_secondary_skill_denial_is_audited_after_transaction_rollback(monkeypatch):
+    from app.models import SelectedAgentProfileRequest
+
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="skill",
+        capability_id="secondary-skill",
+        actor_department_id="quality",
+        actor_roles=("user",),
+        department_scope_ids=("finance",),
+        role_scope_ids=(),
+        scope_mode="allowlist",
+        decision_reason="department_scope_denied",
+        admin_bypass=False,
+    )
+    audited: list[tuple[str, str]] = []
+
+    async def admission_lock(*_args, **_kwargs):
+        return None
+
+    async def deny_profile(*_args, **_kwargs):
+        try:
+            raise repository_module.RepositoryAuthorizationError(
+                "capability_not_authorized",
+                denial=denial,
+            )
+        except repository_module.RepositoryAuthorizationError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="agent_profile_capability_not_available",
+            ) from exc
+
+    async def record_audit(_principal, error, *, source):
+        audited.append((source, error.denial.capability_id))
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", deny_profile)
+    monkeypatch.setattr("app.routes.chat._audit_capability_denial", record_audit)
+
+    with pytest.raises(HTTPException) as caught:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run the selected Agent",
+                selected_agent_profile=SelectedAgentProfileRequest(
+                    agent_id="agt_support",
+                    expected_revision=7,
+                ),
+            ),
+            principal=principal(department_id="quality", roles=["user"]),
+        )
+
+    assert caught.value.status_code == 403
+    assert caught.value.detail == "agent_profile_capability_not_available"
+    assert audited == [("chat_stream", "secondary-skill")]
+
+
+@pytest.mark.asyncio
 async def test_first_selector_free_profile_submit_keeps_the_persisted_non_general_skill(monkeypatch):
     from app.agent_apps import AgentProfileAdmission
     from app.models import AgentConversationIdentity
