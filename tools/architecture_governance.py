@@ -574,6 +574,7 @@ class ArchitectureEvaluator:
                     base_source=base_source,
                     head_source=head_source,
                     git=self._git,
+                    base=base,
                     head=head,
                 )
             )
@@ -1851,7 +1852,101 @@ def _canonical_cutover_owner_issues(
     imported = sorted(expected & imported_names)
     if imported:
         issues.append(f"canonical symbols cannot be imported aliases: {', '.join(imported)}")
+    for node in tree.body:
+        bindings = _top_level_node_binding_names(node)
+        if len(bindings) != 1 or not bindings <= expected:
+            continue
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+        if value is None:
+            continue
+        imported_dependencies = sorted(
+            {
+                candidate.id
+                for candidate in ast.walk(value)
+                if isinstance(candidate, ast.Name) and candidate.id in imported_names
+            }
+        )
+        if imported_dependencies:
+            symbol = next(iter(bindings))
+            issues.append(
+                f"canonical assignment {symbol} cannot depend on imported aliases: "
+                + ", ".join(imported_dependencies)
+            )
+        unsafe_nodes = [
+            candidate
+            for candidate in ast.walk(value)
+            if isinstance(candidate, (ast.Attribute, ast.Lambda, ast.Subscript))
+            or (
+                isinstance(candidate, ast.Call)
+                and not (
+                    isinstance(candidate.func, ast.Name)
+                    and candidate.func.id in {"dict", "frozenset", "list", "set", "tuple"}
+                )
+            )
+        ]
+        if unsafe_nodes:
+            symbol = next(iter(bindings))
+            issues.append(
+                f"canonical assignment {symbol} must be a static value definition"
+            )
     return sorted(set(issues))
+
+
+def _legacy_api_cutover_target_findings(
+    entry: dict[str, Any],
+    *,
+    git: _GitObjects,
+    revision: str,
+    candidate: bool,
+) -> list[Finding]:
+    details = {
+        "source_path": entry["source_path"],
+        "public_module": entry["public_module"],
+        "canonical_module": entry["canonical_module"],
+    }
+    findings: list[Finding] = []
+    target_path = _module_python_path(entry["public_module"])
+    target_source = git.text(revision, target_path, required=False)
+    target_issues: list[str] = []
+    if target_source is not None:
+        target_tree = _parse_python(target_source, target_path, candidate=candidate)
+        target_issues = _public_cutover_target_issues(target_tree, entry)
+    if target_source is None or target_issues:
+        findings.append(
+            Finding(
+                "legacy_api_cutover_target_contract",
+                "the public cutover module must be an exact identity boundary to the canonical owner",
+                target_path,
+                exemptible=False,
+                details={**details, "issues": target_issues},
+            )
+        )
+
+    canonical_path = _module_python_path(entry["canonical_module"])
+    canonical_source = git.text(revision, canonical_path, required=False)
+    canonical_issues: list[str] = []
+    if canonical_source is not None:
+        canonical_tree = _parse_python(
+            canonical_source,
+            canonical_path,
+            candidate=candidate,
+        )
+        canonical_issues = _canonical_cutover_owner_issues(canonical_tree, entry)
+    if canonical_source is None or canonical_issues:
+        findings.append(
+            Finding(
+                "legacy_api_cutover_target_contract",
+                "the canonical cutover module must locally define every declared symbol",
+                canonical_path,
+                exemptible=False,
+                details={**details, "issues": canonical_issues},
+            )
+        )
+    return findings
 
 
 def _python_modules(paths: Sequence[str]) -> set[str]:
@@ -2194,6 +2289,7 @@ def _legacy_api_cutover_findings(
     base_source: str | None,
     head_source: str | None,
     git: _GitObjects,
+    base: str,
     head: str,
 ) -> list[Finding]:
     details = {
@@ -2214,17 +2310,23 @@ def _legacy_api_cutover_findings(
     base_tree = _parse_python(base_source, path, candidate=False)
     base_state = _legacy_api_cutover_state(base_tree, entry)
     if base_state == "consumed":
-        if head_source == base_source:
-            return []
-        return [
-            Finding(
-                "legacy_api_cutover_retirement_required",
-                "a consumed legacy API cutover freezes its source until the authority entry is retired",
-                path,
-                exemptible=False,
-                details=details,
+        findings = _legacy_api_cutover_target_findings(
+            entry,
+            git=git,
+            revision=head,
+            candidate=True,
+        )
+        if head_source != base_source:
+            findings.append(
+                Finding(
+                    "legacy_api_cutover_retirement_required",
+                    "a consumed legacy API cutover freezes its source until the authority entry is retired",
+                    path,
+                    exemptible=False,
+                    details=details,
+                )
             )
-        ]
+        return findings
     if base_state != "pending":
         return [
             Finding(
@@ -2236,6 +2338,27 @@ def _legacy_api_cutover_findings(
             )
         ]
     if head_source == base_source:
+        base_target_paths = {
+            _module_python_path(entry["public_module"]),
+            _module_python_path(entry["canonical_module"]),
+        }
+        if any(
+            git.text(base, target_path, required=False)
+            != git.text(head, target_path, required=False)
+            for target_path in base_target_paths
+        ):
+            return [
+                Finding(
+                    "legacy_api_cutover_target_contract",
+                    "pending cutover targets cannot change independently of the governed source",
+                    target_path,
+                    exemptible=False,
+                    details=details,
+                )
+                for target_path in sorted(base_target_paths)
+                if git.text(base, target_path, required=False)
+                != git.text(head, target_path, required=False)
+            ]
         return []
 
     head_tree = _parse_python(head_source, path, candidate=True)
@@ -2267,39 +2390,14 @@ def _legacy_api_cutover_findings(
             )
         )
 
-    target_path = _module_python_path(entry["public_module"])
-    target_source = git.text(head, target_path, required=False)
-    target_issues: list[str] = []
-    if target_source is not None:
-        target_tree = _parse_python(target_source, target_path, candidate=True)
-        target_issues = _public_cutover_target_issues(target_tree, entry)
-    if target_source is None or target_issues:
-        findings.append(
-            Finding(
-                "legacy_api_cutover_target_contract",
-                "the public cutover module must be an exact identity boundary to the canonical owner",
-                target_path,
-                exemptible=False,
-                details={**details, "issues": target_issues},
-            )
+    findings.extend(
+        _legacy_api_cutover_target_findings(
+            entry,
+            git=git,
+            revision=head,
+            candidate=True,
         )
-
-    canonical_path = _module_python_path(entry["canonical_module"])
-    canonical_source = git.text(head, canonical_path, required=False)
-    canonical_issues: list[str] = []
-    if canonical_source is not None:
-        canonical_tree = _parse_python(canonical_source, canonical_path, candidate=True)
-        canonical_issues = _canonical_cutover_owner_issues(canonical_tree, entry)
-    if canonical_source is None or canonical_issues:
-        findings.append(
-            Finding(
-                "legacy_api_cutover_target_contract",
-                "the canonical cutover module must locally define every declared symbol",
-                canonical_path,
-                exemptible=False,
-                details={**details, "issues": canonical_issues},
-            )
-        )
+    )
 
     base_nodes = _legacy_api_cutover_canonical_nodes(base_tree, entry, baseline=True)
     head_nodes = _legacy_api_cutover_canonical_nodes(head_tree, entry, baseline=False)

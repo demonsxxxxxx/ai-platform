@@ -779,8 +779,8 @@ def test_new_context_boundary_modules_are_layer_exempt(
     governance_repo: tuple[Path, str], boundary: str
 ) -> None:
     repo, authority = governance_repo
-    _write(repo, f"app/runs/{boundary}.py", "VALUE = True\n")
-    head = _commit(repo, f"add runs {boundary} boundary")
+    _write(repo, f"app/execution/{boundary}.py", "VALUE = True\n")
+    head = _commit(repo, f"add execution {boundary} boundary")
 
     evaluation = _evaluate(repo, authority, authority, head)
 
@@ -1142,6 +1142,82 @@ def test_legacy_api_cutover_canonical_symbols_cannot_be_re_exports(
     assert finding.exemptible is False
 
 
+def test_legacy_api_cutover_canonical_symbols_cannot_alias_imported_values(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    canonical = repo / "app/runs/domain/terminalization.py"
+    canonical.write_text(
+        "from app.runs.infrastructure import postgres as upstream\n\n"
+        "TERMINAL_RUN_STATUSES = upstream.TERMINAL_RUN_STATUSES\n\n"
+        "class RunTerminalizationProgress:\n    pass\n\n"
+        "def progress_for_requested_status(value=None):\n    return value\n",
+        encoding="utf-8",
+    )
+    head = _commit(repo, "reject imported canonical value alias")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "legacy_api_cutover_target_contract"
+        and item.path == "app/runs/domain/terminalization.py"
+    )
+    assert "cannot depend on imported aliases" in finding.details["issues"][0]
+
+
+def test_legacy_api_cutover_canonical_values_cannot_use_dynamic_imports(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    canonical = repo / "app/runs/domain/terminalization.py"
+    canonical.write_text(
+        "TERMINAL_RUN_STATUSES = __import__('app.runtime').TERMINAL_RUN_STATUSES\n\n"
+        "class RunTerminalizationProgress:\n    pass\n\n"
+        "def progress_for_requested_status(value=None):\n    return value\n",
+        encoding="utf-8",
+    )
+    head = _commit(repo, "reject dynamic canonical value")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "legacy_api_cutover_target_contract"
+        and item.path == "app/runs/domain/terminalization.py"
+    )
+    assert any(
+        "must be a static value definition" in issue
+        for issue in finding.details["issues"]
+    )
+
+
+@pytest.mark.parametrize(
+    "target_path",
+    ["app/runs/api.py", "app/runs/domain/terminalization.py"],
+)
+def test_pending_legacy_cutover_targets_cannot_change_without_the_source(
+    governance_repo: tuple[Path, str],
+    target_path: str,
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, target_path, "UNRELATED = True\n")
+    head = _commit(repo, "change pending cutover target alone")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "legacy_api_cutover_target_contract" and item.path == target_path
+    )
+    assert finding.exemptible is False
+
+
 def test_authority_rejects_a_consumed_cutover_without_its_canonical_owner(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -1154,6 +1230,26 @@ def test_authority_rejects_a_consumed_cutover_without_its_canonical_owner(
         _evaluate(repo, invalid_authority, invalid_authority, invalid_authority)
 
     assert caught.value.code == "invalid_policy"
+
+
+def test_consumed_cutover_target_cannot_be_deleted_before_authority_retirement(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    _activate_legacy_api_cutover(repo)
+    consumed_authority = _commit(repo, "consume cutover")
+    (repo / "app/runs/domain/terminalization.py").unlink()
+    head = _commit(repo, "delete consumed canonical owner")
+
+    evaluation = _evaluate(repo, consumed_authority, consumed_authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "legacy_api_cutover_target_contract"
+        and item.path == "app/runs/domain/terminalization.py"
+    )
+    assert finding.exemptible is False
 
 
 @pytest.mark.parametrize(
