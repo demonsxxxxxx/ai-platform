@@ -1137,6 +1137,12 @@ class AgentProfileAuthority:
                         pinned_version=snapshot_skill_version,
                         pinned_executor_type=str(snapshot.get("executor_type") or ""),
                         skill_manifests=skill_manifests,
+                        skill_set=(
+                            profile_snapshot.get("skill_set")
+                            if isinstance(profile_snapshot, dict)
+                            and isinstance(profile_snapshot.get("skill_set"), list)
+                            else None
+                        ),
                     )
                 )
             except (

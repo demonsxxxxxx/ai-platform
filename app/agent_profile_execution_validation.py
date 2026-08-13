@@ -25,23 +25,62 @@ def validate_agent_profile_execution_input(
     revision = value.get("revision")
     content_hash = value.get("content_hash")
     instructions = value.get("instructions")
+    has_canonical_skill_set = "skill_set" in value
     raw_skill_set = value.get("skill_set")
-    if not isinstance(raw_skill_set, list) or not raw_skill_set:
+    if has_canonical_skill_set and (not isinstance(raw_skill_set, list) or not raw_skill_set):
+        raise ValueError("agent_profile_skill_set_invalid")
+    if not has_canonical_skill_set:
         raw_skill_set = [
             {
-                "skill_id": value.get("required_skill_id") or skill_id,
-                "expected_version": value.get("required_skill_version") or skill_version,
+                "skill_id": (
+                    value.get("required_skill_id")
+                    if "required_skill_id" in value
+                    else skill_id
+                ),
+                "expected_version": (
+                    value.get("required_skill_version")
+                    if "required_skill_version" in value
+                    else skill_version
+                ),
             }
         ]
     skill_set: list[dict[str, str]] = []
     for item in raw_skill_set:
         if not isinstance(item, dict):
             raise ValueError("agent_profile_skill_set_invalid")
-        item_skill_id = assert_safe_id(item.get("skill_id"), "agent_profile.skill_set.skill_id")
-        item_version = assert_safe_id(
-            item.get("expected_version"),
-            "agent_profile.skill_set.expected_version",
-        )
+        raw_skill_id = item.get("skill_id")
+        raw_version = item.get("expected_version")
+        if not isinstance(raw_skill_id, str):
+            raise ValueError(
+                "agent_profile_skill_set_invalid"
+                if has_canonical_skill_set
+                else "agent_profile_required_skill_invalid"
+            )
+        if not isinstance(raw_version, str):
+            raise ValueError(
+                "agent_profile_skill_set_invalid"
+                if has_canonical_skill_set
+                else "agent_profile_required_skill_version_invalid"
+            )
+        try:
+            item_skill_id = assert_safe_id(raw_skill_id, "agent_profile.skill_set.skill_id")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "agent_profile_skill_set_invalid"
+                if has_canonical_skill_set
+                else "agent_profile_required_skill_invalid"
+            ) from exc
+        try:
+            item_version = assert_safe_id(
+                raw_version,
+                "agent_profile.skill_set.expected_version",
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "agent_profile_skill_set_invalid"
+                if has_canonical_skill_set
+                else "agent_profile_required_skill_version_invalid"
+            ) from exc
         skill_set.append({"skill_id": item_skill_id, "expected_version": item_version})
     if len({item["skill_id"] for item in skill_set}) != len(skill_set):
         raise ValueError("agent_profile_skill_set_invalid")

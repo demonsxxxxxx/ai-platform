@@ -919,6 +919,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         roles=["user"],
     )
     locked_version = "b" * 64
+    secondary_locked_version = "c" * 64
     full_manifest = {
         "skill_id": "profile-skill",
         "version": locked_version,
@@ -934,7 +935,29 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         "dependency_ids": [],
         "mcp_tool_ids": ["profile-tool"],
     }
-    manifest_refs = repository_module.skill_manifest_refs([full_manifest])
+    secondary_manifest = {
+        "skill_id": "profile-skill-secondary",
+        "version": secondary_locked_version,
+        "content_hash": secondary_locked_version,
+        "source": {"kind": "builtin", "asset_dir": "profile-skill-secondary"},
+        "files": [
+            {
+                "relative_path": "SKILL.md",
+                "content_base64": "c2tpbGw=",
+                "size_bytes": 5,
+            }
+        ],
+        "dependency_ids": [],
+        "mcp_tool_ids": ["profile-tool-secondary"],
+    }
+    manifest_refs = repository_module.skill_manifest_refs([full_manifest, secondary_manifest])
+    skill_set = [
+        {"skill_id": "profile-skill", "expected_version": locked_version},
+        {
+            "skill_id": "profile-skill-secondary",
+            "expected_version": secondary_locked_version,
+        },
+    ]
     source = {
         "id": "run-profile",
         "tenant_id": "tenant-a",
@@ -944,7 +967,10 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         "admitted_agent_profile_revision": 4,
         "admitted_agent_profile_hash": "a" * 64,
         "input_json": {
-            "input": {"message": "retry", "mcp_tool_ids": ["profile-tool"]},
+            "input": {
+                "message": "retry",
+                "mcp_tool_ids": ["profile-tool", "profile-tool-secondary"],
+            },
             "executor_type": "claude-agent-worker",
             "skill_version": locked_version,
             "release_decision": {"selected_version": locked_version},
@@ -958,6 +984,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
                 "instructions": "private profile instruction",
                 "required_skill_id": "profile-skill",
                 "required_skill_version": locked_version,
+                "skill_set": skill_set,
             },
         },
     }
@@ -972,23 +999,36 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             content_hash="a" * 64,
             skill={
                 "skill_id": "profile-skill",
-                "skill_version": "version-a",
+                "skill_version": locked_version,
                 "executor_type": "claude-agent-worker",
             },
             model={"id": "model-a", "value": "provider-model-a"},
-            mcp_tool_ids=("profile-tool",),
+            mcp_tool_ids=("profile-tool", "profile-tool-secondary"),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 4,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instruction",
                 "required_skill_id": "profile-skill",
-                "required_skill_version": "version-a",
+                "required_skill_version": locked_version,
+                "skill_set": skill_set,
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
                 revision=4,
                 name="Support assistant",
+            ),
+            skills=(
+                {
+                    "skill_id": "profile-skill",
+                    "skill_version": locked_version,
+                    "executor_type": "claude-agent-worker",
+                },
+                {
+                    "skill_id": "profile-skill-secondary",
+                    "skill_version": secondary_locked_version,
+                    "executor_type": "claude-agent-worker",
+                },
             ),
         )
 
@@ -999,13 +1039,13 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
 
     async def validate_replay_skill_manifests(*_args, **kwargs):
         replay_validation_calls.append({"manifest_validation": kwargs})
-        return ["profile-tool"]
+        return ["profile-tool", "profile-tool-secondary"]
 
     async def materialize_run_skill_manifests(*_args, **kwargs):
         refs = kwargs["skill_manifest_refs"]
         if refs != manifest_refs:
             raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
-        return [full_manifest]
+        return [full_manifest, secondary_manifest]
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
     monkeypatch.setattr(
@@ -1031,6 +1071,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
     assert len(replay_validation_calls) == 2
     assert replay_validation_calls[0]["source_identity"]["pinned_version"] == locked_version
     assert replay_validation_calls[1]["manifest_validation"]["pinned_version"] == locked_version
+    assert replay_validation_calls[1]["manifest_validation"]["skill_set"] == skill_set
 
     for invalid_refs in (
         [manifest_refs[0], "unexpected"],
@@ -1073,7 +1114,10 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             principal=principal,
             run_id="run-profile",
         )
-    source["input_json"]["input"]["mcp_tool_ids"] = ["profile-tool"]
+    source["input_json"]["input"]["mcp_tool_ids"] = [
+        "profile-tool",
+        "profile-tool-secondary",
+    ]
 
     source["input_json"]["release_decision"] = {"selected_version": "c" * 64}
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):

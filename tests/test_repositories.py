@@ -10549,6 +10549,16 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
         ],
     ) == ["mcp:a", "mcp:b"]
 
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=manifests,
+            skill_set=[],
+        )
+
 
 @pytest.mark.asyncio
 async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable_identity():

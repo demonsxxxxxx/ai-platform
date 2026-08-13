@@ -757,12 +757,21 @@ def default_cancel_not_requested(monkeypatch):
     ):
         queue_payload = _CURRENT_QUEUE_PAYLOAD or {}
         profile = dict(queue_payload.get("agent_profile") or {})
+        skill_set = list(profile.get("skill_set") or [])
+        primary = skill_set[0] if skill_set else {}
         return types.SimpleNamespace(
             private_execution_input=profile,
             skill={
-                "skill_id": profile.get("required_skill_id"),
-                "skill_version": profile.get("required_skill_version"),
+                "skill_id": primary.get("skill_id"),
+                "skill_version": primary.get("expected_version"),
             },
+            skills=tuple(
+                {
+                    "skill_id": item.get("skill_id"),
+                    "skill_version": item.get("expected_version"),
+                }
+                for item in skill_set
+            ),
             model={
                 "id": queue_payload.get("model_id"),
                 "value": queue_payload.get("model_value"),
@@ -870,11 +879,21 @@ def default_cancel_not_requested(monkeypatch):
 
     async def validate_replay_skill_manifests(*_args, **kwargs):
         manifests = kwargs.get("skill_manifests") or []
-        primary = next(
-            (item for item in manifests if item.get("skill_id") == kwargs.get("skill_id")),
-            {},
-        )
-        return list(primary.get("mcp_tool_ids") or [])
+        selected = kwargs.get("skill_set") or [
+            {
+                "skill_id": kwargs.get("skill_id"),
+                "expected_version": kwargs.get("pinned_version"),
+            }
+        ]
+        selected_ids = {str(item.get("skill_id") or "") for item in selected}
+        tool_ids: list[str] = []
+        for manifest in manifests:
+            if str(manifest.get("skill_id") or "") not in selected_ids:
+                continue
+            for tool_id in manifest.get("mcp_tool_ids") or []:
+                if tool_id not in tool_ids:
+                    tool_ids.append(tool_id)
+        return tool_ids
 
     monkeypatch.setattr(
         "app.worker.repositories.validate_replay_skill_manifests",
@@ -1345,7 +1364,18 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
         base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
     )
 
-    assert payload.agent_profile == profile
+    assert payload.agent_profile == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [
+            {
+                "skill_id": "qa-file-reviewer",
+                "expected_version": "hash-qa-file-reviewer",
+            }
+        ],
+    }
     with pytest.raises(ValueError, match="agent_profile_agent_id_invalid"):
         parse_queue_payload(
             base_payload(
@@ -1403,7 +1433,13 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         agent_profile=profile,
     )
 
-    assert parse_queue_payload(harness_payload).agent_profile == profile
+    assert parse_queue_payload(harness_payload).agent_profile == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+    }
     for hostile_profile, expected_error in (
         ({**profile, "agent_id": "other-agent"}, "agent_profile_harness_identity_invalid"),
         (
@@ -1412,7 +1448,7 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         ),
         (
             {**profile, "required_skill_version": ""},
-            "agent_profile_harness_identity_invalid",
+            "agent_profile_required_skill_version_invalid",
         ),
         ({**profile, "content_hash": "A" * 64}, "agent_profile_hash_invalid"),
         ({**profile, "content_hash": "g" * 64}, "agent_profile_hash_invalid"),
@@ -1457,7 +1493,13 @@ def test_run_payload_accepts_only_complete_pinned_harness_profile():
         "schema_version": "ai-platform.run-payload.v2",
     }
 
-    assert RunPayload(**harness, agent_profile=profile).agent_profile == profile
+    assert RunPayload(**harness, agent_profile=profile).agent_profile == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+    }
     assert RunPayload(**{**harness, "agent_id": "general-agent"}).agent_profile == {}
     for hostile_profile in (
         {**profile, "agent_id": "other-agent"},
@@ -1868,7 +1910,13 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         assert outcome.status == "succeeded"
         assert outcome.error_code is None
         adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
-        assert adapter_payload.agent_profile == profile
+        assert adapter_payload.agent_profile == {
+            "agent_id": "agt_support",
+            "revision": 7,
+            "content_hash": "a" * 64,
+            "instructions": "Private profile instruction.",
+            "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+        }
         public_calls = [call for call in calls if call[0] != "adapter"]
         assert profile["instructions"] not in repr(public_calls)
     else:
@@ -5894,7 +5942,7 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
     "source",
     ["executor_native", "inferred", "platform_controlled_runner"],
 )
-async def test_agent_app_required_skill_without_exact_provenance_forces_run_failure(monkeypatch, source):
+async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contract(monkeypatch, source):
     failures = []
 
     class NonHookAgentAdapter:
@@ -5990,17 +6038,16 @@ async def test_agent_app_required_skill_without_exact_provenance_forces_run_fail
     )
 
     assert outcome.status == "failed", outcome.error_message
-    assert outcome.error_code == "agent_app_required_skill_not_invoked"
-    assert failures[0]["error_code"] == "agent_app_required_skill_not_invoked"
-    assert failures[0]["result_json"]["capability_state"]["actually_invoked"] is False
-    assert failures[0]["result_json"]["capability_state"]["completed"] is False
+    assert outcome.error_code == "required_artifact_missing"
+    assert failures[0]["error_code"] == "required_artifact_missing"
+    assert "capability_state" not in failures[0]["result_json"]
     serialized = str(failures[0]["result_json"])
     assert "used_skills_source" not in serialized
     assert source not in serialized
 
 
 @pytest.mark.asyncio
-async def test_agent_app_capability_completed_waits_for_platform_terminal_contracts(monkeypatch):
+async def test_optional_agent_skill_claim_does_not_complete_platform_terminal_contracts(monkeypatch):
     failures = []
     events = []
 
@@ -6059,16 +6106,8 @@ async def test_agent_app_capability_completed_waits_for_platform_terminal_contra
 
     assert outcome.status == "failed"
     assert outcome.error_code == "required_artifact_missing"
-    assert failures[0]["result_json"]["capability_state"] == {
-        "selected": True,
-        "staged": True,
-        "sdk_registered": True,
-        "actually_invoked": True,
-        "completed": False,
-        "artifact_ready": False,
-        "optional_not_invoked_count": 0,
-    }
-    assert "capability_actually_invoked" in events
+    assert "capability_state" not in failures[0]["result_json"]
+    assert "capability_actually_invoked" not in events
     assert "capability_completed" not in events
     assert "artifact_ready" not in events
 
