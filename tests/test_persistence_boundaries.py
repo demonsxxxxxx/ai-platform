@@ -14,6 +14,7 @@ from app.persistence import (
 )
 from app.platform.postgres import limits as postgres_limits
 from app.platform.postgres.errors import RepositoryNotFoundError
+from app.runs.infrastructure import postgres as run_persistence
 
 
 def test_repository_facade_binds_each_lifecycle_operation_to_one_canonical_module():
@@ -118,3 +119,20 @@ def test_persistence_limit_facade_binds_each_symbol_to_one_canonical_module():
 
     for name in symbols:
         assert getattr(legacy_persistence_limits, name) is getattr(postgres_limits, name)
+
+
+def test_run_repository_facade_binds_each_primitive_to_one_canonical_adapter():
+    symbols = (
+        "_stage_run_tool_permission_terminalization",
+        "acquire_user_active_run_admission_lock",
+        "count_active_runs_for_user",
+        "enforce_user_active_run_admission",
+        "enforce_user_active_run_admission_under_lock",
+        "get_active_resume_for_source_run",
+        "get_active_retry_for_source_run",
+        "get_run",
+        "get_run_identity",
+    )
+
+    for name in symbols:
+        assert getattr(repositories, name) is getattr(run_persistence, name)
