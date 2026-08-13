@@ -70,6 +70,20 @@ def _fixture_async_definitions(symbols: list[str]) -> str:
     )
 
 
+def _fixture_bridge_definitions(symbols: list[str]) -> str:
+    definitions: list[str] = []
+    for name in symbols:
+        if name.isupper():
+            definitions.append(f"{name} = 1")
+        elif name[:1].isupper():
+            definitions.append(f"class {name}:\n    pass")
+        else:
+            definitions.append(
+                f"async def {name}():\n    marker = {name!r}\n    return marker"
+            )
+    return "\n\n".join(definitions)
+
+
 def _create_repo(
     tmp_path: Path,
     *,
@@ -132,7 +146,7 @@ def _create_repo(
             if source_path == "app/repositories.py"
             else ""
         )
-        _write(repo, source_path, prefix + _fixture_async_definitions(symbols) + "\n")
+        _write(repo, source_path, prefix + _fixture_bridge_definitions(symbols) + "\n")
     _write(
         repo,
         "app/persistence/object_deletions.py",
@@ -266,7 +280,7 @@ def _activate_all_migration_bridges(repo: Path) -> None:
         _write(
             repo,
             f"{target_module.replace('.', '/')}.py",
-            _fixture_async_definitions(symbols) + "\n",
+            _fixture_bridge_definitions(symbols) + "\n",
         )
     for source_path in sorted({bridge["source_path"] for bridge in bridges}):
         source_bridges = sorted(
@@ -826,6 +840,7 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     assert session_messages["symbols"] == [
         "append_message",
         "create_session",
+        "ensure_workspace_belongs_to_tenant",
         "get_authorized_lambchat_session",
         "get_authorized_session_projection",
         "get_session_for_action",
@@ -836,6 +851,137 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
         "mark_session_deleted",
         "update_session_title",
     ]
+
+
+def test_persistence_limits_platform_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/persistence_limits.py",
+        target_module="app.platform.postgres.limits",
+    )
+
+    assert bridge == {
+        "source_path": "app/persistence_limits.py",
+        "target_module": "app.platform.postgres.limits",
+        "module_alias": "postgres_limits",
+        "symbols": [
+            "ARTIFACT_MANIFEST_MAX_BYTES",
+            "AUDIT_PAYLOAD_MAX_BYTES",
+            "CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES",
+            "MESSAGE_CONTENT_MAX_BYTES",
+            "MESSAGE_METADATA_MAX_BYTES",
+            "PersistenceSizeLimitError",
+            "RUN_EVENT_MESSAGE_MAX_BYTES",
+            "RUN_EVENT_PAYLOAD_MAX_BYTES",
+            "RUN_INPUT_MAX_BYTES",
+            "RUN_RESULT_MAX_BYTES",
+            "RUN_STEP_PAYLOAD_MAX_BYTES",
+            "compact_json_dumps",
+            "ensure_json_size",
+            "ensure_text_size",
+            "json_size_bytes",
+        ],
+        "owner": "platform-architecture",
+        "reason": (
+            "The root-level persistence-limit module may preserve its existing "
+            "byte-bound symbols only as exact identity aliases while the technical "
+            "PostgreSQL implementation moves to the platform adapter."
+        ),
+        "removal_condition": (
+            "After the PostgreSQL limit move, inventory all supported imports, "
+            "migrate internal callers to the platform boundary, and remove this "
+            "bridge in an authority-only change before deleting the root-level aliases."
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "target_module",
+    [
+        "app.platform",
+        "app.platform_evil.postgres.limits",
+        "app.platform.postgres.private",
+    ],
+)
+def test_authority_rejects_nonexact_platform_migration_targets(
+    tmp_path: Path,
+    target_module: str,
+) -> None:
+    policy = _fixture_policy()
+    bridge = next(
+        entry
+        for entry in policy["migration_bridges"]
+        if entry["source_path"] == "app/persistence_limits.py"
+    )
+    bridge["target_module"] = target_module
+    policy["migration_bridges"] = sorted(
+        policy["migration_bridges"],
+        key=lambda entry: (entry["source_path"], entry["target_module"]),
+    )
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
+@pytest.mark.parametrize("symbol", ["not-a-python-name", "class", "_"])
+def test_authority_rejects_non_python_migration_symbol(
+    tmp_path: Path,
+    symbol: str,
+) -> None:
+    policy = _fixture_policy()
+    bridge = next(
+        entry
+        for entry in policy["migration_bridges"]
+        if entry["source_path"] == "app/persistence_limits.py"
+    )
+    bridge["symbols"] = sorted([*bridge["symbols"], symbol])
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code in {"invalid_policy", "invalid_policy_schema"}
+
+
+def test_authority_rejects_reused_bridge_alias_within_one_source(
+    tmp_path: Path,
+) -> None:
+    policy = _fixture_policy()
+    bridges = [
+        entry
+        for entry in policy["migration_bridges"]
+        if entry["source_path"] == "app/repositories.py"
+    ]
+    assert len(bridges) == 2
+    bridges[1]["module_alias"] = bridges[0]["module_alias"]
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
+def test_authority_rejects_reused_bridge_symbol_within_one_source(
+    tmp_path: Path,
+) -> None:
+    policy = _fixture_policy()
+    bridges = [
+        entry
+        for entry in policy["migration_bridges"]
+        if entry["source_path"] == "app/repositories.py"
+    ]
+    assert len(bridges) == 2
+    duplicate_symbol = bridges[0]["symbols"][0]
+    bridges[1]["symbols"] = sorted([*bridges[1]["symbols"], duplicate_symbol])
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
 
 
 @pytest.mark.parametrize(

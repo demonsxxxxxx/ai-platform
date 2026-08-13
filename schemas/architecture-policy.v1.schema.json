@@ -270,7 +270,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^_?[a-z][a-z0-9_]*$"
+            "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
           }
         },
         "owner": {
