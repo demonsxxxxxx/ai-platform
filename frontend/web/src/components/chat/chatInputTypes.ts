@@ -32,6 +32,8 @@ export interface ChatInputProps {
   placeholder?: string;
   /** Undefined preserves ordinary Chat uploads; an array scopes Agent uploads. */
   acceptedFileTypes?: string[];
+  /** Agent workspaces use plain task input and do not expose composer commands. */
+  disableSlashCommands?: boolean;
   tools?: ToolState[];
   onToggleTool?: (toolName: string) => void;
   onToggleCategory?: (category: ToolCategory, enabled: boolean) => void;
