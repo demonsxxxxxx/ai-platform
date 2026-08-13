@@ -50,9 +50,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
-from app.execution.infrastructure.harness.skill_invocation_evidence import (
-    SkillInvocationEvidenceBinder,
-)
+from app.execution.api import SkillInvocationEvidenceBinder
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     MaterializedAttachmentFact,
