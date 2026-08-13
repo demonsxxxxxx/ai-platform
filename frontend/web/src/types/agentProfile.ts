@@ -35,6 +35,7 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
+  avatar_seed?: string;
   category: AgentProfileCategory;
   published_at: string | null;
 }
@@ -54,6 +55,7 @@ export interface AgentConversationIdentity {
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
+  avatar_seed?: string;
   category: AgentProfileCategory;
   published_at: string | null;
 }
@@ -174,6 +176,10 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     description: requireString(record.description, PROFILE_ERROR, true),
     ...projectEnterpriseFields(record, PROFILE_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
+    avatar_seed:
+      record.avatar_seed === undefined
+        ? requireString(record.agent_id, PROFILE_ERROR)
+        : requireString(record.avatar_seed, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
   };
 }
@@ -189,6 +195,10 @@ export function projectAgentConversationIdentity(value: unknown): AgentConversat
     description: requireString(record.description, IDENTITY_ERROR, true),
     ...projectEnterpriseFields(record, IDENTITY_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, IDENTITY_ERROR),
+    avatar_seed:
+      record.avatar_seed === undefined
+        ? requireString(record.agent_id, IDENTITY_ERROR)
+        : requireString(record.avatar_seed, IDENTITY_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, IDENTITY_ERROR),
   };
 }
@@ -223,8 +233,10 @@ export interface AgentProfileDraftRequest {
   instructions: string;
   model_id: string;
   selected_skill: SelectedSkillRequest;
+  skill_set: SelectedSkillRequest[];
   mcp_tool_ids: string[];
   avatar_ref: AgentProfileAvatarRef;
+  avatar_seed: string;
   avatar_asset_id: string | null;
   category: AgentProfileCategory;
   visibility: "tenant" | "restricted";
@@ -235,7 +247,12 @@ export interface AgentProfileDraftRequest {
   expected_draft_revision: number;
 }
 
-export interface AgentProfileAdminProjection extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
+export interface AgentProfileAdminProjection extends Omit<
+  AgentProfileDraftRequest,
+  "avatar_seed" | "expected_draft_revision" | "skill_set"
+> {
+  avatar_seed?: string;
+  skill_set?: SelectedSkillRequest[];
   agent_id: string;
   revision: number;
   status: "draft" | "published" | "withdrawn";

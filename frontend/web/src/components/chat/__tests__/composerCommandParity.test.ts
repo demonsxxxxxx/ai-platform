@@ -345,6 +345,28 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
   assert.match(en, /Skills/);
 });
 
+test("Agent workspaces disable composer commands without changing ordinary Chat", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const chatView = readFileSync(
+    join(root, "src/components/layout/AppContent/ChatView.tsx"),
+    "utf8",
+  );
+
+  assert.match(chatInput, /disableSlashCommands = false/);
+  assert.match(
+    chatInput,
+    /if \(!disableSlashCommands && handleComposerCommandSubmit\(input\)\) return/,
+  );
+  assert.match(chatInput, /if \(disableSlashCommands\) return false/);
+  assert.match(
+    chatView,
+    /disableSlashCommands: Boolean\(agentEmptyProfile\)/,
+  );
+});
+
 test("composer commands fail closed when a governed surface is unavailable", () => {
   const chatInput = readFileSync(
     join(root, "src/components/chat/ChatInput.tsx"),

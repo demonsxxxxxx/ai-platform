@@ -84,11 +84,13 @@ test("builder keeps execution fields primary and collapses optional market metad
   assert.match(enterpriseFieldsSource, /市场展示与开场内容/);
   assert.match(enterpriseFieldsSource, /示例问题（可选）/);
   assert.match(enterpriseFieldsSource, /预期输出（可选）/);
-  assert.match(enterpriseFieldsSource, /data-agent-builder-input-settings/);
+  assert.doesNotMatch(enterpriseFieldsSource, /data-agent-builder-input-settings/);
   assert.match(enterpriseFieldsSource, /data-agent-builder-access-settings/);
   assert.match(enterpriseFieldsSource, /访问范围与数据说明（高级）/);
   assert.match(enterpriseFieldsSource, /<option value="tenant">全公司<\/option>/);
   assert.doesNotMatch(enterpriseFieldsSource, />全租户</);
-  assert.match(workbenchSource, /一个智能体固定一个主 Skill/);
-  assert.match(workbenchSource, /title="选择主 Skill"/);
+  assert.match(workbenchSource, /Agent SDK 根据任务上下文自主决定/);
+  assert.match(workbenchSource, /title="配置 Skill Set"/);
+  assert.match(enterpriseFieldsSource, /DiceBear 头像/);
+  assert.doesNotMatch(enterpriseFieldsSource, /支持输入|支持文件类型|文件格式/);
 });
