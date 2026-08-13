@@ -3,6 +3,7 @@
 from app.agent_apps.authority import (
     AgentProfileAdmission,
     AgentProfileAuthority,
+    pin_profile_skill_set_for_admission,
     profile_public_projection,
     reject_profile_selector_conflicts,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "get_public_profile",
     "list_admin_profiles",
     "list_public_profiles",
+    "pin_profile_skill_set_for_admission",
     "profile_public_projection",
     "publish_draft",
     "reauthorize_bound_profile_for_worker_dispatch",
