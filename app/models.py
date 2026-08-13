@@ -20,6 +20,12 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
+from app.agent_apps.api import (
+    AgentConversationIdentity,
+    AgentProfilePublicProjection,
+    normalize_agent_avatar_seed,
+    normalize_agent_skill_set,
+)
 from app.file_type_validation import normalize_profile_file_type
 from app.skills.release_policy import (
     validate_release_decision_lock,
@@ -312,27 +318,13 @@ class AgentProfileDraftRequest(BaseModel):
     @field_validator("avatar_seed")
     @classmethod
     def normalize_avatar_seed(cls, value: str):
-        normalized = value.strip()
-        if "\x00" in normalized or any(ord(character) < 32 for character in normalized):
-            raise ValueError("avatar_seed contains control characters")
-        return normalized
+        return normalize_agent_avatar_seed(value)
 
     @model_validator(mode="after")
     def normalize_skill_set(self):
-        skills = list(self.skill_set)
-        if not skills and self.selected_skill is not None:
-            skills = [self.selected_skill]
-        if not skills:
-            raise ValueError("skill_set must contain at least one Skill")
-        skill_ids = [skill.skill_id for skill in skills]
-        if len(skill_ids) != len(set(skill_ids)):
-            raise ValueError("skill_set contains duplicate skill_id values")
-        if "general-chat" in skill_ids and skill_ids != ["general-chat"]:
-            raise ValueError("general-chat cannot be combined with executable Skills")
-        if self.selected_skill is not None and self.selected_skill != skills[0]:
-            raise ValueError("selected_skill must match the first skill_set item")
-        self.skill_set = skills
-        self.selected_skill = skills[0]
+        self.skill_set, self.selected_skill = normalize_agent_skill_set(
+            self.skill_set, self.selected_skill
+        )
         return self
 
     @field_validator("model_id")
@@ -442,29 +434,6 @@ class AgentAppRunRequest(BaseModel):
         return normalized
 
 
-class AgentProfilePublicProjection(BaseModel):
-    """Ordinary-user market projection without executable configuration."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    agent_id: str
-    expected_revision: int
-    name: str
-    description: str = ""
-    welcome_message: str = ""
-    starter_prompts: list[str] = Field(default_factory=list)
-    capability_summary: str = ""
-    recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
-    expected_outputs: list[str] = Field(default_factory=list)
-    permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
-    avatar_seed: str = ""
-    category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    published_at: Any | None = None
-
-
 class AgentProfileCatalogResponse(BaseModel):
     """Ordinary-user catalog response containing only safe profile cards."""
 
@@ -564,29 +533,6 @@ class CreateAgentConversationRequest(BaseModel):
         if value.int == 0 or value.version != 4 or value.variant != RFC_4122:
             raise ValueError("operation_id must be an RFC 4122 UUID v4")
         return value
-
-
-class AgentConversationIdentity(BaseModel):
-    """Only safe immutable Agent identity retained in public conversation recovery."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    agent_id: str
-    revision: int = Field(ge=1)
-    name: str
-    description: str = ""
-    welcome_message: str = ""
-    starter_prompts: list[str] = Field(default_factory=list)
-    capability_summary: str = ""
-    recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
-    expected_outputs: list[str] = Field(default_factory=list)
-    permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
-    avatar_seed: str = ""
-    category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    published_at: Any | None = None
 
 
 class CreateRunRequest(BaseModel):

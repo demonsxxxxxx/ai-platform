@@ -1,1 +1,0 @@
-"""Harness SDK adapter support."""
