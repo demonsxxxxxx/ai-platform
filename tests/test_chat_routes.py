@@ -23,6 +23,7 @@ from app.models import (
 from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
+from app.runs.api import RunTerminalizationProgress
 from app.routes.chat import (
     _admit_chat_submission,
     _audit_capability_denial,
@@ -1495,7 +1496,7 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_only_fo
 
     async def mark_enqueue_failed(*_args, **kwargs):
         assert kwargs["run_id"] == "run-durable"
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -1660,7 +1661,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run", kwargs["run_id"]))
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -4533,7 +4534,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         conn.run["status"] = "failed"
         conn.run["error_code"] = "queue_enqueue_failed"
         calls.append("terminalize_run")
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,

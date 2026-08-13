@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import app.worker_main as worker_main
-from app import repositories
 from app.queue import LeaseMutationOutcome, QueueMessage
+from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
 from app.worker_main import run_once
 
@@ -192,7 +192,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"], kwargs["max_batches"]))
-        return repositories.ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=kwargs["run_id"] == "run-a",
             status="failed",
         )
@@ -255,9 +255,9 @@ async def test_permission_terminalization_maintenance_reconciles_only_one_final_
     async def drain(**kwargs):
         status = kwargs["run_id"]
         return {
-            "partial": repositories.ToolPermissionTerminalizationProgress(False, "failed"),
-            "final": repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True),
-            "retry": repositories.ToolPermissionTerminalizationProgress(True, "failed"),
+            "partial": RunTerminalizationProgress(False, "failed"),
+            "final": RunTerminalizationProgress(True, "failed", True, True),
+            "retry": RunTerminalizationProgress(True, "failed"),
         }[status]
 
     async def reconcile(**kwargs):
@@ -442,7 +442,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"]))
-        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled", True, True)
 
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"]))
@@ -527,7 +527,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["run_id"]))
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["run_id"]))
@@ -843,7 +843,7 @@ async def test_stale_run_fence_renews_through_stage_and_drain_transactions(monke
         return {"run_id": "run-renewed"}
 
     async def drain(**_kwargs):
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, False)
+        return RunTerminalizationProgress(True, "failed", True, False)
 
     async def release(_fence):
         return True
@@ -1381,11 +1381,11 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
                 kwargs["result_json"],
             )
         )
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def cancel_run(_conn, **kwargs):
         calls.append(("cancel", kwargs["tenant_id"], kwargs["run_id"]))
-        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled", True, True)
 
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].status))
@@ -1582,7 +1582,7 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
         }
 
     async def fail_run(*_args, **_kwargs):
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(**_kwargs):
         raise RuntimeError("parent reconciliation retry")
@@ -1696,7 +1696,7 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
 
     async def fail_run(*_args, **_kwargs):
         calls.append(("terminal_write",))
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     monkeypatch.setattr(worker_main, "parse_leased_queue_envelope", lambda _value: SimpleNamespace(payload=payload))
     monkeypatch.setattr(worker_main, "transaction", Transaction)

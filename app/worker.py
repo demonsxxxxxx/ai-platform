@@ -51,6 +51,7 @@ from app.principal_authority import (
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
+from app.runs.api import RunTerminalizationProgress
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,
@@ -356,16 +357,15 @@ async def _reconcile_multi_agent_child_terminal_state(
     error_code: str | None = None,
     error_message: str | None = None,
     is_multi_agent_child: bool | None = None,
-) -> repositories.ToolPermissionTerminalizationProgress | None:
+) -> RunTerminalizationProgress | None:
     """Carry one committed child transition to the shared post-commit lifecycle seam."""
-
     del conn, result_json, error_code, error_message
     child_dispatch = isinstance(payload.input.get("multi_agent_dispatch"), dict)
     if child_status not in {"succeeded", "failed", "cancelled"} or not (
         child_dispatch if is_multi_agent_child is None else is_multi_agent_child
     ):
         return None
-    return repositories.ToolPermissionTerminalizationProgress(
+    return RunTerminalizationProgress(
         completed=True,
         status=child_status,
         did_transition=True,
@@ -379,7 +379,7 @@ async def _finalize_multi_agent_parent_after_child_commit(
 ) -> Any | None:
     """Use the shared post-commit owner for worker child reconciliation and parent rollup."""
 
-    if not isinstance(reconciled, repositories.ToolPermissionTerminalizationProgress):
+    if not isinstance(reconciled, RunTerminalizationProgress):
         return None
     return await reconcile_terminalized_permission_run(
         tenant_id=payload.tenant_id,

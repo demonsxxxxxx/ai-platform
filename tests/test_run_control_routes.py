@@ -9,7 +9,8 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
-from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, ToolPermissionTerminalizationProgress
+from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
+from app.runs.api import RunTerminalizationProgress
 from app.skills.pinning import build_skill_manifest_ref
 
 
@@ -21,7 +22,7 @@ def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
         return {"id": kwargs["run_id"], "permission_terminalization_target": kwargs["target_status"]}
 
     async def progress(conn, *, tenant_id, run_id):
-        return repository_module.ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="cancelled" if "queued" in run_id else "cancel_requested",
         )
@@ -4955,7 +4956,7 @@ async def test_finalize_multi_agent_parent_run_failure_and_cancel_statuses(monke
         if len(statuses_seen) == 3:
             # This represents a parent whose first 50 permission rows drained
             # but whose final row still keeps the durable finalizer partial.
-            return repositories.ToolPermissionTerminalizationProgress(False, "failed")
+            return RunTerminalizationProgress(False, "failed")
         return True
 
     async def cancel_parent(conn, **kwargs):
@@ -5614,8 +5615,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
-            ToolPermissionTerminalizationProgress(True, "cancelled", True, True),
-            ToolPermissionTerminalizationProgress(True, "cancelled"),
+            RunTerminalizationProgress(True, "cancelled", True, True),
+            RunTerminalizationProgress(True, "cancelled"),
             "cancelled",
             1,
         ),
@@ -5624,8 +5625,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
-            ToolPermissionTerminalizationProgress(True, "cancelled", True, True),
-            ToolPermissionTerminalizationProgress(True, "cancelled"),
+            RunTerminalizationProgress(True, "cancelled", True, True),
+            RunTerminalizationProgress(True, "cancelled"),
             "cancelled",
             1,
         ),
@@ -5634,8 +5635,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
             "cancel_requested",
             0,
         ),
@@ -5644,8 +5645,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
-            ToolPermissionTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
+            RunTerminalizationProgress(False, "cancelled"),
             "cancel_requested",
             0,
         ),
@@ -5654,8 +5655,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
-            ToolPermissionTerminalizationProgress(False, "cancel_requested"),
-            ToolPermissionTerminalizationProgress(True, "cancel_requested"),
+            RunTerminalizationProgress(False, "cancel_requested"),
+            RunTerminalizationProgress(True, "cancel_requested"),
             "cancel_requested",
             0,
         ),
@@ -5664,8 +5665,8 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
-            ToolPermissionTerminalizationProgress(False, "cancel_requested"),
-            ToolPermissionTerminalizationProgress(True, "cancel_requested"),
+            RunTerminalizationProgress(False, "cancel_requested"),
+            RunTerminalizationProgress(True, "cancel_requested"),
             "cancel_requested",
             0,
         ),

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from time import monotonic as system_monotonic
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
-if TYPE_CHECKING:
-    from app.repositories import ToolPermissionTerminalizationProgress
+from app.runs.api import RunTerminalizationProgress
 
 
 TOOL_PERMISSION_REQUEST_TTL_SECONDS = 900.0
@@ -147,12 +146,12 @@ async def drain_run_tool_permission_terminalization(
     run_id: str,
     transaction_factory: Callable[[], Any],
     max_batches: int = 4,
-) -> ToolPermissionTerminalizationProgress | None:
+) -> RunTerminalizationProgress | None:
     """Commit a bounded number of durable terminalization batches for one exact run."""
 
     from app import repositories
 
-    result: ToolPermissionTerminalizationProgress | None = None
+    result: RunTerminalizationProgress | None = None
     for _ in range(max(1, int(max_batches))):
         async with transaction_factory() as conn:
             result = await repositories.progress_run_tool_permission_terminalization(

@@ -23,13 +23,13 @@ from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAu
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
-    ToolPermissionTerminalizationProgress,
 )
 from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     declaration_from_input,
 )
+from app.runs.api import RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
@@ -830,7 +830,7 @@ def default_cancel_not_requested(monkeypatch):
         return True
 
     async def fail_run(conn, **kwargs):
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -2000,7 +2000,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
     async def fail_run(_conn, **kwargs):
         calls.append(("fail", kwargs))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -2502,7 +2502,7 @@ async def test_worker_enforces_capability_artifact_contract_for_real_checkpoint_
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("repository_terminal", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -2585,7 +2585,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
         return False
 
     async def fail_run(conn, **kwargs):
-        return ToolPermissionTerminalizationProgress(completed=False, status=None, did_transition=False)
+        return RunTerminalizationProgress(completed=False, status=None, did_transition=False)
 
     async def classify_success_commit_block(conn, *, tenant_id, run_id):
         return "stale_terminal_state"
@@ -2730,7 +2730,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         conn.pending.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("accepted cancellation must not be reported as tool_permission_pending")
@@ -3081,7 +3081,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -3121,7 +3121,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -3175,7 +3175,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -3231,7 +3231,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -3337,7 +3337,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -3433,7 +3433,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("cancel-requested runtime failures must prefer cancelled over failed")
@@ -3519,7 +3519,7 @@ async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_reques
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("accepted cancel must not be overwritten by executor_failure")
@@ -3622,11 +3622,11 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
 
     async def cancel_run(conn, **kwargs):
         calls.append(("cancel", kwargs["run_id"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
         return {
@@ -3909,7 +3909,7 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -3982,7 +3982,7 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -4094,7 +4094,7 @@ async def test_worker_reconciles_multi_agent_child_after_executor_exception(monk
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -4143,7 +4143,7 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -4210,7 +4210,7 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", conn, error_code))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -5116,7 +5116,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("identity-mismatched queue payload must not refresh context snapshot")
@@ -5171,7 +5171,7 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("missing DB identity must not refresh context snapshot")
@@ -5222,7 +5222,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
@@ -5367,7 +5367,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6017,7 +6017,7 @@ async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contra
 
     async def fail_run(conn, **kwargs):
         failures.append(kwargs)
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6090,7 +6090,7 @@ async def test_optional_agent_skill_claim_does_not_complete_platform_terminal_co
 
     async def fail_run(conn, **kwargs):
         failures.append(kwargs)
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -6432,7 +6432,7 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6488,7 +6488,7 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6567,7 +6567,7 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6708,7 +6708,7 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -6744,7 +6744,7 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancel_requested")
+        return RunTerminalizationProgress(completed=True, status="cancel_requested")
 
     async def append_event(_conn, **kwargs):
         calls.append(("event", kwargs["event_type"]))
@@ -6796,7 +6796,7 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -6846,7 +6846,7 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="cancelled",
             did_transition=True,
@@ -6921,7 +6921,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="cancelled",
             did_transition=True,
@@ -7034,7 +7034,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -7061,7 +7061,7 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -7110,7 +7110,7 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -7181,7 +7181,7 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload or {}))
@@ -7434,7 +7434,7 @@ async def test_worker_records_multi_agent_blocked_step_events(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         failed_result.update(result_json or {})
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -7715,7 +7715,7 @@ async def test_worker_includes_multi_agent_step_summary_in_failed_result(monkeyp
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         failed_result.update(result_json or {})
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -8193,9 +8193,9 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
         return True
 
     async def fail_run(_conn, **_kwargs):
-        return ToolPermissionTerminalizationProgress(False, "failed")
+        return RunTerminalizationProgress(False, "failed")
 
-    final = ToolPermissionTerminalizationProgress(True, "failed", True, True)
+    final = RunTerminalizationProgress(True, "failed", True, True)
 
     async def drain(**_kwargs):
         return final
@@ -8248,7 +8248,7 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload or {}))
@@ -8455,7 +8455,7 @@ def _install_task6_worker_fakes(
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs))

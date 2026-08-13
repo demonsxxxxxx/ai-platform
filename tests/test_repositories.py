@@ -21,6 +21,7 @@ from app.platform.postgres.errors import (
 )
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
+from app.runs.api import RunTerminalizationProgress
 from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
@@ -8304,8 +8305,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
                 message="任务已取消",
                 payload={"visible_to_user": True},
             )
-            return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
-        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled")
+            return RunTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled")
 
     async def record_event(_conn, **kwargs):
         events.append(kwargs["event_type"])
@@ -8851,7 +8852,7 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
         return {"permission_terminalization_target": "failed"}
 
     async def progress(*_args, **_kwargs):
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def no_leases(*_args, **_kwargs):
         return []
@@ -8876,7 +8877,7 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     assert result == {
         "run_id": "run-a",
         "status": "failed",
-        "_permission_terminalization_progress": repositories.ToolPermissionTerminalizationProgress(
+        "_permission_terminalization_progress": RunTerminalizationProgress(
             True, "failed", True, True
         ),
     }
@@ -9016,7 +9017,7 @@ async def test_terminalization_maintenance_lists_ready_parent_rollup_recovery_wo
 def test_terminalization_progress_soft_cancel_intent_is_not_truthy_completion():
     """A recorded cancellation request is not evidence that a run reached cancelled."""
 
-    progress = repositories.ToolPermissionTerminalizationProgress(
+    progress = RunTerminalizationProgress(
         completed=True,
         status="cancel_requested",
     )
