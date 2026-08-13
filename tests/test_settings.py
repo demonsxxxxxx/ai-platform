@@ -6,6 +6,14 @@ from pydantic import ValidationError
 from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, Settings
 
 
+def test_browser_authentication_windows_default_to_twenty_four_hours():
+    settings = Settings(_env_file=None)
+
+    assert settings.ai_session_max_age_seconds == 24 * 60 * 60
+    assert settings.auth_context_max_age_seconds == 24 * 60 * 60
+    assert settings.company_authority_freshness_seconds == 24 * 60 * 60
+
+
 def test_browser_public_launchpad_urls_default_unavailable_and_accept_explicit_env(
     monkeypatch,
 ):

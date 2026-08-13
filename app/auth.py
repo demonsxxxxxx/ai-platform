@@ -228,7 +228,7 @@ def _enforce_company_authority_freshness(
     if checked_at.tzinfo is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
     age_seconds = (datetime.now(timezone.utc) - checked_at.astimezone(timezone.utc)).total_seconds()
-    max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 15 * 60))
+    max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 24 * 60 * 60))
     if age_seconds < -60 or age_seconds > max_age_seconds:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
     return principal
