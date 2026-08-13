@@ -10436,27 +10436,6 @@ async def get_file(conn: AsyncConnection, *, tenant_id: str, file_id: str) -> di
     return await cursor.fetchone()
 
 
-async def get_run_file(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    file_id: str,
-) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select files.*
-        from files
-        join runs on runs.id = files.run_id and runs.tenant_id = files.tenant_id
-        where files.tenant_id = %s
-          and files.id = %s
-          and files.run_id = %s
-        """,
-        (tenant_id, file_id, run_id),
-    )
-    return await cursor.fetchone()
-
-
 async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
