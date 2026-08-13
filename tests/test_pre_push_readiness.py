@@ -91,9 +91,33 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
     migration_bridge_sources = sorted(
         {bridge["source_path"] for bridge in policy["migration_bridges"]}
     )
-    for source_path in migration_bridge_sources:
+    cutover_sources = sorted(
+        {cutover["source_path"] for cutover in policy["legacy_api_cutovers"]}
+    )
+    for source_path in sorted(set(migration_bridge_sources) | set(cutover_sources)):
         if not (repo / source_path).exists():
             _write(repo, source_path, "FIXTURE = True\n")
+    for cutover in policy["legacy_api_cutovers"]:
+        source_path = cutover["source_path"]
+        source = (repo / source_path).read_text(encoding="utf-8")
+        imports = "".join(
+            f"from {item['module']} import {item['name']}\n"
+            for item in cutover["removed_imports"]
+        )
+        definitions: list[str] = []
+        for rewrite in cutover["rewrites"]:
+            name = rewrite["old_symbol"]
+            if name.isupper():
+                definitions.append(f"{name} = {{'succeeded'}}")
+            elif name[:1].isupper():
+                definitions.append(f"class {name}:\n    pass")
+            else:
+                definitions.append(f"def {name}(value=None):\n    return value")
+        _write(
+            repo,
+            source_path,
+            imports + source + "\n\n" + "\n\n".join(definitions) + "\n",
+        )
     policy["approved_root_modules"] = sorted(
         {
             "app/__init__.py",
@@ -102,7 +126,7 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
             "app/repositories.py",
             *(
                 source_path
-                for source_path in migration_bridge_sources
+                for source_path in sorted(set(migration_bridge_sources) | set(cutover_sources))
                 if Path(source_path).parent.as_posix() == "app"
             ),
         }
@@ -170,14 +194,18 @@ def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     return _create_readiness_repo(tmp_path, code_governance_test_path="tests/test_code_governance.py")
 
 
-def test_readiness_fixture_materializes_every_migration_bridge_source(
+def test_readiness_fixture_materializes_every_governed_migration_source(
     readiness_repo: tuple[Path, str],
 ) -> None:
     repo, authority = readiness_repo
     policy = json.loads(_git(repo, "show", f"{authority}:architecture-policy.json"))
 
-    for bridge in policy["migration_bridges"]:
-        source_path = bridge["source_path"]
+    governed_sources = {
+        item["source_path"]
+        for key in ("migration_bridges", "legacy_api_cutovers")
+        for item in policy[key]
+    }
+    for source_path in sorted(governed_sources):
         assert _run(
             repo,
             "git",
