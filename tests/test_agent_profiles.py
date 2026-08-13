@@ -12,6 +12,7 @@ from app.agent_profiles import (
     resolve_profile_for_admission,
 )
 from app.agent_apps.authority import _revision_hash
+from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
     AgentProfileAdminProjection,
@@ -25,6 +26,40 @@ from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app import repositories as repository_module
 from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+
+
+@pytest.mark.asyncio
+async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_payload():
+    version = "version-a"
+
+    async def governed_manifest_pins(*_args, **_kwargs):
+        return [{"skill_id": "qa-review", "content_hash": version}]
+
+    manifests, primary_version, primary_decision = await pin_agent_skill_set(
+        [{"skill_id": "qa-review", "skill_version": version}],
+        manifest_scope=object(),
+        input_payload={},
+        tenant_id="default",
+        rollout_key="user-a",
+        resolve_release_decision=lambda *_args, **_kwargs: type(
+            "Decision",
+            (),
+            {"selected_version": version, "policy_active": False},
+        )(),
+        governed_manifest_pins=governed_manifest_pins,
+        locked_skill_version=lambda **_kwargs: version,
+        decision_payload_for_version=lambda *_args, **_kwargs: {},
+        attach_snapshot_governance=lambda values, **_kwargs: values,
+        pin_mcp_tool_ids=lambda values, **_kwargs: values,
+        mcp_tool_ids_for_skill=lambda *_args, **_kwargs: [],
+        conflict_error=RepositoryConflictError,
+    )
+
+    assert manifests == [
+        {"skill_id": "qa-review", "content_hash": version, "release_decision": {}}
+    ]
+    assert primary_version == version
+    assert primary_decision == {}
 
 
 def auth_settings():

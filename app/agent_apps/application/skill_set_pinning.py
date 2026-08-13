@@ -25,6 +25,7 @@ async def pin_agent_skill_set(
     manifests_by_id: dict[str, dict[str, Any]] = {}
     primary_version = ""
     primary_decision: dict[str, Any] = {}
+    primary_initialized = False
     for index, skill in enumerate(skills):
         skill_id = str(skill.get("skill_id") or "")
         expected_version = str(skill.get("skill_version") or "")
@@ -74,6 +75,7 @@ async def pin_agent_skill_set(
         if index == 0:
             primary_version = version
             primary_decision = decision_payload
-    if not manifests_by_id or not primary_version or not primary_decision:
+            primary_initialized = True
+    if not manifests_by_id or not primary_version or not primary_initialized:
         raise conflict_error("agent_profile_skill_set_invalid")
     return list(manifests_by_id.values()), primary_version, primary_decision

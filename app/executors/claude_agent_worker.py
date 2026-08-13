@@ -199,7 +199,12 @@ def _capability_completion_decision(
     return RequiredCapabilityDecision(True, reason, "", "")
 
 
-def _capability_execution_error(payload: RunPayload, evidence: object) -> str | None:
+def _capability_execution_error(
+    payload: RunPayload,
+    evidence: object,
+    *,
+    available_skill_identities: object = (),
+) -> str | None:
     """Validate required Skill and only the MCP invocations that actually occurred."""
 
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
@@ -211,6 +216,7 @@ def _capability_execution_error(payload: RunPayload, evidence: object) -> str | 
             and payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
             else None
         ),
+        available_skill_identities=available_skill_identities,
     )
     decision = _capability_completion_decision(
         plan,
@@ -1658,6 +1664,9 @@ class ClaudeAgentWorkerAdapter:
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
+            available_skill_identities=(
+                prepared.allowed_skill_names if payload.agent_profile else ()
+            ),
         )
         runtime_sdk_result = type(
             "RuntimeSdkResult",
@@ -1924,6 +1933,9 @@ class ClaudeAgentWorkerAdapter:
             selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
+                available_skill_identities=(
+                    prepared.allowed_skill_names if payload.agent_profile else ()
+                ),
             )
             if selected_skill_error is not None:
                 turn_diagnostics = _public_sdk_turn_diagnostics(
