@@ -914,25 +914,9 @@ def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
 
 
 def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
-    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-        return None
-    profile = payload.agent_profile
-    if not isinstance(profile, dict):
-        return None
-    required_skill_id = str(profile.get("required_skill_id") or payload.skill_id).strip()
-    raw_required_skill_version = (
-        profile["required_skill_version"]
-        if "required_skill_version" in profile
-        else payload.skill_version or ""
-    )
-    if not isinstance(raw_required_skill_version, str):
-        return ""
-    required_skill_version = raw_required_skill_version.strip()
-    if required_skill_id != payload.skill_id:
-        return ""
-    if required_skill_version and required_skill_version != str(payload.skill_version or ""):
-        return ""
-    return required_skill_id
+    # Agent Profiles register an authorized Skill Set. Invocation is an SDK
+    # decision; exact hook evidence is still validated for every actual call.
+    return None
 
 
 def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
@@ -1211,12 +1195,6 @@ def _agent_profile_snapshot_matches_authority(
             or not payload.skill_version
         ):
             return False
-        expected.update(
-            {
-                "required_skill_id": payload.skill_id,
-                "required_skill_version": payload.skill_version,
-            }
-        )
     return payload.agent_profile == expected
 
 

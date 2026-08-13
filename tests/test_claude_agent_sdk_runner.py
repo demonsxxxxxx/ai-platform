@@ -604,6 +604,91 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
 
 
 @pytest.mark.asyncio
+async def test_sdk_agent_skill_set_can_answer_without_invoking_a_skill(monkeypatch, tmp_path):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, _stream_steps("Direct answer."), result_text="Direct answer."),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer from your current context",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review", "reference-search"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            {**_skill_subject("qa-review"), "allowed_skill_names": ["qa-review", "reference-search"]},
+        ],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+        require_selected_skill_invocation=False,
+    )
+
+    assert result.error is None
+    assert result.used_skills == []
+    assert result.capability_evidence == []
+    assert "".join(deltas) == "Direct answer."
+    assert "Authoritative platform Skill requirement" not in _captured_sdk_prompt(captured)
+    assert {"Skill(qa-review)", "Skill(reference-search)"}.issubset(
+        captured["allowed_tools"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(monkeypatch, tmp_path):
+    captured, acknowledged = {}, []
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-reference",
+        "tool_input": {"skill": "reference-search"},
+    }
+
+    async def acknowledge(evidence):
+        acknowledged.append(dict(evidence))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                ("hook", ("PreToolUse", skill_input, "skill-call-reference")),
+                ("hook", ("PostToolUse", skill_input, "skill-call-reference")),
+            ],
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review", "reference-search"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            {**_skill_subject("qa-review"), "allowed_skill_names": ["qa-review", "reference-search"]},
+        ],
+        on_capability_evidence=acknowledge,
+        require_selected_skill_invocation=False,
+    )
+
+    assert result.error is None
+    assert result.used_skills == ["reference-search"]
+    assert [item["canonical_identity"] for item in acknowledged] == [
+        "reference-search",
+        "reference-search",
+    ]
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sdk_selected_skill_streams_after_completed_evidence_before_terminal(
     monkeypatch,
     tmp_path,

@@ -85,6 +85,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "name": "Support assistant",
         "description": "Helps employees with approved support requests.",
         "avatar_ref": "builtin:agent",
+        "avatar_seed": "agt_support",
         "category": "general",
         "welcome_message": "",
         "starter_prompts": [],
@@ -126,6 +127,68 @@ def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(fiel
     changed = definition.model_copy(update={field: value})
 
     assert _revision_hash(changed) != _revision_hash(definition)
+
+
+def test_agent_profile_normalizes_legacy_primary_skill_into_an_exact_skill_set():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    )
+
+    assert definition.skill_set == [definition.selected_skill]
+
+
+def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shadow():
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            **profile_draft_payload("Private instruction"),
+            "selected_skill": {
+                "skill_id": "document-review",
+                "expected_version": "sha256:review",
+            },
+            "skill_set": [
+                {
+                    "skill_id": "document-review",
+                    "expected_version": "sha256:review",
+                },
+                {
+                    "skill_id": "reference-fact-extraction",
+                    "expected_version": "sha256:facts",
+                },
+            ],
+        }
+    )
+
+    assert [skill.skill_id for skill in definition.skill_set] == [
+        "document-review",
+        "reference-fact-extraction",
+    ]
+    assert definition.selected_skill == definition.skill_set[0]
+
+
+@pytest.mark.parametrize(
+    "skill_set",
+    [
+        [
+            {"skill_id": "document-review", "expected_version": "sha256:a"},
+            {"skill_id": "document-review", "expected_version": "sha256:b"},
+        ],
+        [
+            {"skill_id": "general-chat", "expected_version": "version-a"},
+            {"skill_id": "document-review", "expected_version": "sha256:a"},
+        ],
+    ],
+)
+def test_agent_profile_rejects_ambiguous_skill_sets(skill_set):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AgentProfileDraftRequest.model_validate(
+            {
+                **profile_draft_payload("Private instruction"),
+                "selected_skill": skill_set[0],
+                "skill_set": skill_set,
+            }
+        )
 
 
 def test_agent_profile_file_type_contract_normalizes_and_matches_mime_wildcard():
@@ -299,8 +362,9 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 "agent_id": "agt_support",
                 "expected_revision": 4,
                 "name": "Support assistant",
-                "description": "Approved support helper.",
+                    "description": "Approved support helper.",
                     "avatar_ref": "builtin:agent",
+                    "avatar_seed": "",
                     "category": "general",
                     "welcome_message": "",
                     "starter_prompts": [],

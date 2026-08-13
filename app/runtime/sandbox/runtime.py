@@ -519,6 +519,7 @@ class SandboxRuntime:
                 "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
+                "require_selected_skill_invocation": request.require_selected_skill_invocation,
             }
             if lease.provider == "opensandbox":
                 task_config["sdk_execution_profile"] = OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE

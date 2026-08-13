@@ -77,11 +77,26 @@ class AgentProfileAdmission:
     mcp_tool_ids: tuple[str, ...]
     private_execution_input: dict[str, Any]
     public_identity: AgentConversationIdentity
+    skills: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize old one-Skill constructors into the governed Skill Set."""
+
+        normalized = self.skills or (self.skill,)
+        object.__setattr__(self, "skills", normalized)
+        object.__setattr__(self, "skill", normalized[0])
 
 
 def _safe_avatar_ref(value: Any) -> str:
     candidate = str(value or "").strip()
     return candidate if candidate in _AVATAR_REFS else "builtin:agent"
+
+
+def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 128 or any(ord(character) < 32 for character in candidate):
+        return fallback
+    return candidate
 
 
 def _safe_category(value: Any) -> str:
@@ -105,6 +120,24 @@ def _mcp_tool_ids(row: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     return list(dict.fromkeys(raw))
+
+
+def _skill_set(row: dict[str, Any]) -> list[SelectedSkillRequest]:
+    raw = row.get("skill_set")
+    if not isinstance(raw, list) or not raw:
+        raw = [
+            {
+                "skill_id": row.get("skill_id"),
+                "expected_version": row.get("skill_version"),
+            }
+        ]
+    try:
+        skills = [SelectedSkillRequest.model_validate(item) for item in raw]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid") from exc
+    if len({skill.skill_id for skill in skills}) != len(skills):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return skills
 
 
 def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool:
@@ -149,6 +182,7 @@ def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
             row.get("permissions_and_data_access_notice") or ""
         ),
         "avatar_ref": _safe_avatar_ref(row.get("avatar_ref")),
+        "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
         "published_at": row.get("published_at"),
     }
@@ -172,6 +206,7 @@ def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationId
         expected_outputs=public["expected_outputs"],
         permissions_and_data_access_notice=public["permissions_and_data_access_notice"],
         avatar_ref=public["avatar_ref"],
+        avatar_seed=public["avatar_seed"],
         category=public["category"],
         published_at=public["published_at"],
     )
@@ -193,8 +228,7 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition.model_id,
-        "skill_id": definition.selected_skill.skill_id,
-        "skill_version": definition.selected_skill.expected_version,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
@@ -229,13 +263,11 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         ),
         instructions=str(row["instructions"]),
         model_id=str(row["model_id"]),
-        selected_skill=SelectedSkillRequest(
-            skill_id=str(row["skill_id"]),
-            expected_version=str(row["skill_version"]),
-        ),
+        skill_set=_skill_set(row),
         mcp_tool_ids=_mcp_tool_ids(row),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
+        avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
@@ -299,13 +331,12 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         ),
         instructions=str(row["instructions"]),
         model_id=str(row["model_id"]),
-        selected_skill=SelectedSkillRequest(
-            skill_id=str(row["skill_id"]),
-            expected_version=str(row["skill_version"]),
-        ),
+        skill_set=_skill_set(row),
+        selected_skill=_skill_set(row)[0],
         mcp_tool_ids=_mcp_tool_ids(row),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
+        avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
@@ -344,7 +375,7 @@ class AgentProfileAuthority:
         principal: AuthPrincipal,
         agent_id: str,
         definition: AgentProfileDraftRequest,
-    ) -> tuple[dict[str, Any], dict[str, str]]:
+    ) -> tuple[tuple[dict[str, Any], ...], dict[str, str]]:
         """Revalidate current model, Skill, and MCP authorization for a definition."""
 
         if definition.avatar_asset_id:
@@ -366,18 +397,23 @@ class AgentProfileAuthority:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="agent_profile_model_not_available") from exc
         try:
-            skill = await repositories.authorize_selected_run_capabilities(
-                conn,
-                tenant_id=principal.tenant_id,
-                agent_id=agent_id,
-                skill_id=definition.selected_skill.skill_id,
-                expected_version=definition.selected_skill.expected_version,
-                rollout_key=principal.user_id,
-                normalized_input={"mcp_tool_ids": list(definition.mcp_tool_ids)},
-                principal_department_id=principal.department_id,
-                principal_roles=principal.roles,
-                is_admin=is_ai_admin(principal),
-                permissions=principal.permissions,
+            skills = tuple(
+                [
+                    await repositories.authorize_selected_run_capabilities(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        agent_id=agent_id,
+                        skill_id=selected_skill.skill_id,
+                        expected_version=selected_skill.expected_version,
+                        rollout_key=principal.user_id,
+                        normalized_input={"mcp_tool_ids": list(definition.mcp_tool_ids)},
+                        principal_department_id=principal.department_id,
+                        principal_roles=principal.roles,
+                        is_admin=is_ai_admin(principal),
+                        permissions=principal.permissions,
+                    )
+                    for selected_skill in definition.skill_set
+                ]
             )
             await repositories.authorize_selected_chat_mcp_tools(
                 conn,
@@ -392,7 +428,7 @@ class AgentProfileAuthority:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except repositories.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from exc
-        return skill, model
+        return skills, model
 
     async def save_draft(
         self,
@@ -431,7 +467,7 @@ class AgentProfileAuthority:
             tenant_id=principal.tenant_id,
             agent_id=resolved_agent_id,
             name=definition.name,
-            default_skill_id=definition.selected_skill.skill_id,
+            default_skill_id=definition.skill_set[0].skill_id,
         )
         row = await repositories.create_agent_profile_revision(
             conn,
@@ -442,8 +478,9 @@ class AgentProfileAuthority:
             description=definition.description,
             instructions=definition.instructions,
             model_id=definition.model_id,
-            skill_id=definition.selected_skill.skill_id,
-            skill_version=definition.selected_skill.expected_version,
+            skill_id=definition.skill_set[0].skill_id,
+            skill_version=definition.skill_set[0].expected_version,
+            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -455,6 +492,7 @@ class AgentProfileAuthority:
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
+            avatar_seed=definition.avatar_seed or resolved_agent_id,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -519,8 +557,9 @@ class AgentProfileAuthority:
             description=definition.description,
             instructions=definition.instructions,
             model_id=definition.model_id,
-            skill_id=definition.selected_skill.skill_id,
-            skill_version=definition.selected_skill.expected_version,
+            skill_id=definition.skill_set[0].skill_id,
+            skill_version=definition.skill_set[0].expected_version,
+            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -532,6 +571,7 @@ class AgentProfileAuthority:
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
+            avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -610,8 +650,9 @@ class AgentProfileAuthority:
             description=definition.description,
             instructions=definition.instructions,
             model_id=definition.model_id,
-            skill_id=definition.selected_skill.skill_id,
-            skill_version=definition.selected_skill.expected_version,
+            skill_id=definition.skill_set[0].skill_id,
+            skill_version=definition.skill_set[0].expected_version,
+            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -623,6 +664,7 @@ class AgentProfileAuthority:
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
+            avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -898,11 +940,16 @@ class AgentProfileAuthority:
 
         if not profile_acl_allows(_current_acl_row(row), principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
-        skill, model = await self._validate_definition(
+        validated_skills, model = await self._validate_definition(
             conn,
             principal=principal,
             agent_id=str(row["agent_id"]),
             definition=_draft_from_row(row),
+        )
+        skills = (
+            validated_skills
+            if isinstance(validated_skills, tuple)
+            else (validated_skills,)
         )
         agent_id = str(row["agent_id"])
         revision = int(row["revision"])
@@ -911,7 +958,8 @@ class AgentProfileAuthority:
             agent_id=agent_id,
             revision=revision,
             content_hash=content_hash,
-            skill=skill,
+            skill=skills[0],
+            skills=skills,
             model=model,
             mcp_tool_ids=tuple(_mcp_tool_ids(row)),
             private_execution_input={
@@ -919,8 +967,7 @@ class AgentProfileAuthority:
                 "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
-                "required_skill_id": str(row["skill_id"]),
-                "required_skill_version": str(row["skill_version"]),
+                "skill_set": [skill.model_dump(mode="json") for skill in _skill_set(row)],
             },
             public_identity=conversation_identity_projection(row),
         )
@@ -967,7 +1014,9 @@ class AgentProfileAuthority:
         snapshot_skill_version = str(snapshot.get("skill_version") or "")
         authority_skill_id = str(admission.skill.get("skill_id") or "")
         governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
-            "required_skill_id" in profile_snapshot or "required_skill_version" in profile_snapshot
+            isinstance(profile_snapshot.get("skill_set"), list)
+            or "required_skill_id" in profile_snapshot
+            or "required_skill_version" in profile_snapshot
         )
         governed_mcp_tool_ids: tuple[str, ...] | None = None
         if governed_profile_snapshot:
@@ -986,12 +1035,16 @@ class AgentProfileAuthority:
                 raise repositories.RepositoryConflictError(
                     "agent_profile_snapshot_invalid"
                 ) from exc
-            expected_profile_snapshot.update(
-                {
-                    "required_skill_id": authority_skill_id,
-                    "required_skill_version": snapshot_skill_version,
-                }
-            )
+            if isinstance(profile_snapshot, dict) and (
+                "required_skill_id" in profile_snapshot
+                or "required_skill_version" in profile_snapshot
+            ):
+                expected_profile_snapshot.update(
+                    {
+                        "required_skill_id": authority_skill_id,
+                        "required_skill_version": snapshot_skill_version,
+                    }
+                )
             primary_manifest = next(
                 (
                     manifest
@@ -1011,6 +1064,22 @@ class AgentProfileAuthority:
                 str(release_decision.get("selected_version") or "")
                 if isinstance(release_decision, dict)
                 else ""
+            )
+            manifest_versions = {
+                str(manifest.get("skill_id") or ""): str(
+                    manifest.get("content_hash") or manifest.get("version") or ""
+                )
+                for manifest in skill_manifests
+                if isinstance(manifest, dict)
+            }
+            authority_skill_versions = (
+                {
+                    str(skill.get("skill_id") or ""): str(skill.get("skill_version") or "")
+                    for skill in admission.skills
+                }
+                if isinstance(profile_snapshot, dict)
+                and isinstance(profile_snapshot.get("skill_set"), list)
+                else {}
             )
             try:
                 repositories.require_replay_source_identity(
@@ -1036,6 +1105,10 @@ class AgentProfileAuthority:
             skill_version_matches = (
                 bool(snapshot_skill_version)
                 and snapshot_skill_version == manifest_skill_version == release_skill_version
+                and all(
+                    manifest_versions.get(skill_id) == version
+                    for skill_id, version in authority_skill_versions.items()
+                )
                 and governed_mcp_tool_ids == admission.mcp_tool_ids
             )
         else:

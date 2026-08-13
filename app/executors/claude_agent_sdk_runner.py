@@ -866,6 +866,7 @@ async def run_claude_agent_sdk(
     execution_profile: str = "",
     attachment_contexts: list[ParsedAttachmentContext] | None = None,
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
+    require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
@@ -1089,7 +1090,10 @@ async def run_claude_agent_sdk(
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
-        required_skill_identity=selected_sdk_skill,
+        required_skill_identity=(selected_sdk_skill if require_selected_skill_invocation else None),
+        available_skill_identities=(
+            allowed_skill_names if not require_selected_skill_invocation else ()
+        ),
         registered_mcp_servers=mcp_servers,
     )
     required_capability_declarations = {
@@ -1119,7 +1123,11 @@ async def run_claude_agent_sdk(
     )
     if required_answer_gate:
         answer_stream_gate.seal()
-    sdk_prompt = _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
+    sdk_prompt = (
+        _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
+        if require_selected_skill_invocation
+        else prompt
+    )
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
         sandbox_brokered=sandbox_brokered,
@@ -1232,6 +1240,8 @@ async def run_claude_agent_sdk(
             return
 
     def selected_skill_hook_error() -> str | None:
+        if not require_selected_skill_invocation:
+            return None
         if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
             return None
         if selected_sdk_skill in failed_skill_names:

@@ -253,10 +253,12 @@ class AgentProfileDraftRequest(BaseModel):
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     model_id: str
-    selected_skill: SelectedSkillRequest
+    skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
+    selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_asset_id: str | None = None
+    avatar_seed: str = Field(default="", max_length=128)
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
@@ -306,6 +308,32 @@ class AgentProfileDraftRequest(BaseModel):
     @classmethod
     def validate_avatar_asset_id(cls, value: str | None):
         return assert_safe_id(value, "avatar_asset_id") if value else None
+
+    @field_validator("avatar_seed")
+    @classmethod
+    def normalize_avatar_seed(cls, value: str):
+        normalized = value.strip()
+        if "\x00" in normalized or any(ord(character) < 32 for character in normalized):
+            raise ValueError("avatar_seed contains control characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def normalize_skill_set(self):
+        skills = list(self.skill_set)
+        if not skills and self.selected_skill is not None:
+            skills = [self.selected_skill]
+        if not skills:
+            raise ValueError("skill_set must contain at least one Skill")
+        skill_ids = [skill.skill_id for skill in skills]
+        if len(skill_ids) != len(set(skill_ids)):
+            raise ValueError("skill_set contains duplicate skill_id values")
+        if "general-chat" in skill_ids and skill_ids != ["general-chat"]:
+            raise ValueError("general-chat cannot be combined with executable Skills")
+        if self.selected_skill is not None and self.selected_skill != skills[0]:
+            raise ValueError("selected_skill must match the first skill_set item")
+        self.skill_set = skills
+        self.selected_skill = skills[0]
+        return self
 
     @field_validator("model_id")
     @classmethod
@@ -432,6 +460,7 @@ class AgentProfilePublicProjection(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
 
@@ -464,10 +493,12 @@ class AgentProfileAdminProjection(BaseModel):
     permissions_and_data_access_notice: str = ""
     instructions: str
     model_id: str
+    skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_asset_id: str | None = None
+    avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
@@ -553,6 +584,7 @@ class AgentConversationIdentity(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
 

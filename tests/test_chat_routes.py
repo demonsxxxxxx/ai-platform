@@ -2064,6 +2064,7 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "",
         "category": "support",
     }
 
@@ -4261,31 +4262,21 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "force_creation_rollback",
         "restored_continuation",
         "enqueue_failure_mode",
-        "file_denial_code",
-        "reusable_content_type",
-        "profile_allowed_file_type",
     ),
     [
-        (None, False, False, None, None, None, None),
-        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, None, None, None, None),
-        (None, True, False, None, None, None, None),
-        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None, None, None, None),
-        (None, False, False, "before_publish", None, None, None),
-        (None, False, False, "definitive_rejection", None, None, None),
-        ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None, None, None, None),
+        (None, False, False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, None),
+        (None, True, False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None),
+        (None, False, False, "before_publish"),
+        (None, False, False, "definitive_rejection"),
+        ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None),
         (
             "9c356f6d-360b-41d0-a97e-3ab16d70a874",
             False,
             True,
             "after_publish_unknown",
-            None,
-            None,
-            None,
         ),
-        (None, False, False, None, "agent_profile_file_input_not_supported", None, None),
-        (None, False, False, None, "agent_profile_file_type_not_supported", None, None),
-        (None, False, True, None, "agent_profile_file_type_not_supported", "application/pdf", ".docx"),
-        (None, False, True, None, None, "application/pdf", ".pdf"),
     ],
     ids=[
         "unkeyed",
@@ -4296,10 +4287,6 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "unkeyed-definitive-rejection",
         "restored-continuation",
         "restored-lost-ack",
-        "unkeyed-profile-file-input-denied",
-        "unkeyed-profile-file-type-denied",
-        "restored-reusable-profile-file-type-denied",
-        "restored-reusable-profile-file-type-accepted",
     ],
 )
 async def test_new_profile_submit_commits_after_user_and_profile_admission_before_enqueue(
@@ -4308,9 +4295,6 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     force_creation_rollback,
     restored_continuation,
     enqueue_failure_mode,
-    file_denial_code,
-    reusable_content_type,
-    profile_allowed_file_type,
 ):
     """Route/persistence mirror only; PostgreSQL commit visibility is opt-in coverage."""
 
@@ -4328,6 +4312,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     enqueue_payloads: list[dict[str, object]] = []
     published_payloads: list[dict[str, object]] = []
     profile_manifest = snapshot_manifest("profile-specialist")
+    secondary_profile_manifest = snapshot_manifest("profile-reference-search")
 
     class TransactionState:
         def __init__(self) -> None:
@@ -4379,10 +4364,24 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             content_hash="a" * 64,
             skill={
                 "skill_id": "profile-specialist",
-                "skill_version": "version-profile",
+                "skill_version": profile_manifest["content_hash"],
                 "executor_type": "claude-agent-worker",
-                "input_modes": ["pdf"] if reusable_content_type else [],
+                "input_modes": ["docx"],
             },
+            skills=(
+                {
+                    "skill_id": "profile-specialist",
+                    "skill_version": profile_manifest["content_hash"],
+                    "executor_type": "claude-agent-worker",
+                    "input_modes": ["docx"],
+                },
+                {
+                    "skill_id": "profile-reference-search",
+                    "skill_version": secondary_profile_manifest["content_hash"],
+                    "executor_type": "claude-agent-worker",
+                    "input_modes": [],
+                },
+            ),
             model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=(),
             private_execution_input={
@@ -4390,15 +4389,23 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 "revision": 7,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instructions",
-                "required_skill_id": "profile-specialist",
-                "required_skill_version": "version-profile",
+                "skill_set": [
+                    {
+                        "skill_id": "profile-specialist",
+                        "expected_version": profile_manifest["content_hash"],
+                    },
+                    {
+                        "skill_id": "profile-reference-search",
+                        "expected_version": secondary_profile_manifest["content_hash"],
+                    },
+                ],
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
                 revision=7,
                 name="Support assistant",
                 supported_input_types=["text", "file"],
-                supported_file_types=[profile_allowed_file_type or ".pdf"],
+                supported_file_types=[".docx"],
             ),
         )
 
@@ -4415,30 +4422,34 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         calls.append("skill_auth")
         return {
             "skill_id": "profile-specialist",
-            "skill_version": "version-profile",
+            "skill_version": profile_manifest["content_hash"],
             "executor_type": "claude-agent-worker",
-            "input_modes": ["pdf"] if reusable_content_type else [],
+            "input_modes": ["docx"],
         }
 
-    async def governed_manifest(*_args, **_kwargs):
-        return [dict(profile_manifest)]
+    async def governed_manifest(*_args, **kwargs):
+        skill_id = kwargs["skill_id"]
+        manifest = (
+            profile_manifest
+            if skill_id == "profile-specialist"
+            else secondary_profile_manifest
+        )
+        return [dict(manifest)]
 
     async def authorize_workspace(*_args, **_kwargs):
         calls.append("workspace_auth")
 
     async def authorize_files(*_args, **_kwargs):
         calls.append("file_auth")
-        expected_file_ids = ["file_profile_history"] if reusable_content_type else ["file_profile_pdf"]
-        assert _kwargs["file_ids"] == expected_file_ids
-        assert _kwargs["reusable_file_ids"] == (
-            ["file_profile_history"] if reusable_content_type else []
+        assert _kwargs["file_ids"] == (
+            ["file_profile_history"]
+            if restored_continuation
+            else ["file_profile_context"]
         )
-        assert _kwargs["agent_profile_supported_input_types"] == ["text", "file"]
-        assert _kwargs["agent_profile_supported_file_types"] == [
-            profile_allowed_file_type or ".pdf"
-        ]
-        if file_denial_code:
-            raise RepositoryConflictError(file_denial_code)
+        assert _kwargs["reusable_file_ids"] == (
+            ["file_profile_history"] if restored_continuation else []
+        )
+        assert _kwargs["input_modes"] is None
 
     async def list_reusable_files(*_args, **_kwargs):
         calls.append("list_reusable_files")
@@ -4446,7 +4457,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             {
                 "id": "file_profile_history",
                 "original_name": "history.pdf",
-                "content_type": reusable_content_type,
+                "content_type": "application/pdf",
                 "created_at": "2026-08-11T00:00:00Z",
             }
         ]
@@ -4616,40 +4627,19 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "agent_options": {"enable_thinking": "off"},
         "disabled_skills": [],
         "selected_mcp_tool_ids": [],
-        "file_ids": [] if reusable_content_type else ["file_profile_pdf"],
         "submission_id": submission_id,
         "user_timezone": "Asia/Shanghai",
     }
     if restored_continuation:
         request_payload["session_id"] = "ses-profile-lock-order"
     else:
+        request_payload["file_ids"] = ["file_profile_context"]
         request_payload["selected_agent_profile"] = {
             "agent_id": "agt_support",
             "expected_revision": 7,
         }
     chat_request = ChatStreamRequest.model_validate(request_payload)
     query_agent_id = "agt_support" if restored_continuation else "general-agent"
-    if file_denial_code:
-        with pytest.raises(HTTPException) as exc_info:
-            await chat_stream(
-                chat_request,
-                agent_id=query_agent_id,
-                principal=principal(),
-            )
-        assert exc_info.value.status_code == 409
-        assert exc_info.value.detail == file_denial_code
-        assert calls == [
-            "user_lock",
-            "principal",
-            "profile_lock",
-            "skill_auth",
-            *(["list_reusable_files"] if reusable_content_type else []),
-            "workspace_auth",
-            "file_auth",
-        ]
-        assert committed_run is None
-        assert committed_submission is None
-        return
     if force_creation_rollback:
         with pytest.raises(HTTPException) as exc_info:
             await chat_stream(
@@ -4726,8 +4716,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "profile_lock",
     ]
     expected_calls.extend(["skill_auth", "workspace_auth", "file_auth", "claim"])
-    if reusable_content_type:
-        expected_calls.insert(4, "list_reusable_files")
+    if restored_continuation:
+        expected_calls.insert(expected_calls.index("workspace_auth"), "list_reusable_files")
     if not restored_continuation:
         expected_calls.append("create_session")
     expected_calls.extend(["create_run", "profile_reauth", "enqueue"])
@@ -4740,16 +4730,30 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     assert persisted["run"]["admitted_agent_profile_revision"] == 7
     assert persisted["run"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["input_json"]["file_ids"] == (
-        ["file_profile_history"] if reusable_content_type else ["file_profile_pdf"]
+        ["file_profile_history"]
+        if restored_continuation
+        else ["file_profile_context"]
     )
     assert persisted["run"]["input_json"]["agent_profile"] == {
         "agent_id": "agt_support",
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "private profile instructions",
-        "required_skill_id": "profile-specialist",
-        "required_skill_version": profile_manifest["content_hash"],
+        "skill_set": [
+            {
+                "skill_id": "profile-specialist",
+                "expected_version": profile_manifest["content_hash"],
+            },
+            {
+                "skill_id": "profile-reference-search",
+                "expected_version": secondary_profile_manifest["content_hash"],
+            },
+        ],
     }
+    assert {
+        manifest["skill_id"]
+        for manifest in persisted["run"]["input_json"]["skill_manifests"]
+    } == {"profile-specialist", "profile-reference-search"}
     if enqueue_failure_mode is None:
         assert response.status == "queued"
         assert len(enqueue_payloads) == 1

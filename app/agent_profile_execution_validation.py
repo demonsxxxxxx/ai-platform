@@ -25,15 +25,26 @@ def validate_agent_profile_execution_input(
     revision = value.get("revision")
     content_hash = value.get("content_hash")
     instructions = value.get("instructions")
-    required_skill_id = str(value.get("required_skill_id") or skill_id or "").strip()
-    raw_required_skill_version = (
-        value["required_skill_version"]
-        if "required_skill_version" in value
-        else skill_version or ""
-    )
-    if not isinstance(raw_required_skill_version, str):
-        raise ValueError("agent_profile_required_skill_version_invalid")
-    required_skill_version = raw_required_skill_version.strip()
+    raw_skill_set = value.get("skill_set")
+    if not isinstance(raw_skill_set, list) or not raw_skill_set:
+        raw_skill_set = [
+            {
+                "skill_id": value.get("required_skill_id") or skill_id,
+                "expected_version": value.get("required_skill_version") or skill_version,
+            }
+        ]
+    skill_set: list[dict[str, str]] = []
+    for item in raw_skill_set:
+        if not isinstance(item, dict):
+            raise ValueError("agent_profile_skill_set_invalid")
+        item_skill_id = assert_safe_id(item.get("skill_id"), "agent_profile.skill_set.skill_id")
+        item_version = assert_safe_id(
+            item.get("expected_version"),
+            "agent_profile.skill_set.expected_version",
+        )
+        skill_set.append({"skill_id": item_skill_id, "expected_version": item_version})
+    if len({item["skill_id"] for item in skill_set}) != len(skill_set):
+        raise ValueError("agent_profile_skill_set_invalid")
     if not isinstance(profile_agent_id, str):
         raise ValueError("agent_profile_agent_id_invalid")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
@@ -49,16 +60,15 @@ def validate_agent_profile_execution_input(
         if (
             agent_id == HARNESS_CHAT_AGENT_ID
             or profile_agent_id != agent_id
-            or required_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
-            or not required_skill_version
+            or skill_set[0]["skill_id"] != LEGACY_SYNTHETIC_CHAT_SKILL_ID
         ):
             raise ValueError("agent_profile_harness_identity_invalid")
     elif execution_kind == RUN_EXECUTION_KIND_SKILL:
         if profile_agent_id != agent_id:
             raise ValueError("agent_profile_agent_id_invalid")
-        if not required_skill_id or required_skill_id != str(skill_id or ""):
+        if skill_set[0]["skill_id"] != str(skill_id or ""):
             raise ValueError("agent_profile_required_skill_invalid")
-        if required_skill_version != str(skill_version or ""):
+        if skill_set[0]["expected_version"] != str(skill_version or ""):
             raise ValueError("agent_profile_required_skill_version_invalid")
     else:
         raise ValueError("agent_profile_execution_kind_invalid")
@@ -67,12 +77,5 @@ def validate_agent_profile_execution_input(
         "revision": revision,
         "content_hash": content_hash,
         "instructions": instructions,
-        "required_skill_id": assert_safe_id(
-            required_skill_id,
-            "agent_profile.required_skill_id",
-        ),
-        "required_skill_version": assert_safe_id(
-            required_skill_version,
-            "agent_profile.required_skill_version",
-        ),
+        "skill_set": skill_set,
     }

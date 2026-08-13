@@ -423,11 +423,13 @@ create table if not exists agent_profile_revisions (
   model_id text not null,
   skill_id text not null references skills(id),
   skill_version text not null,
+  skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
   avatar_asset_id text,
+  avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   visibility text not null,
@@ -628,6 +630,8 @@ alter table agent_profile_revisions add column if not exists withdrawn_from_revi
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
+alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
+alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
@@ -701,6 +705,14 @@ where allowed_roles is null or jsonb_typeof(allowed_roles) <> 'array';
 update agent_profile_revisions
 set allowed_user_ids = '[]'::jsonb
 where allowed_user_ids is null or jsonb_typeof(allowed_user_ids) <> 'array';
+
+-- Legacy single-Skill revisions become one-member Agent Skill Sets. The first
+-- item remains shadowed in skill_id/skill_version for rollback compatibility.
+update agent_profile_revisions
+set skill_set = jsonb_build_array(
+  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
+)
+where jsonb_typeof(skill_set) <> 'array' or jsonb_array_length(skill_set) = 0;
 
 -- No metadata defaults: omission is how the compatibility trigger recognizes
 -- an old writer and inherits the existing ACL without broadening it.

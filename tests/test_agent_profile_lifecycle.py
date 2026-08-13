@@ -67,6 +67,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "agt_support",
         "category": "support",
         "visibility": "restricted",
         "allowed_department_ids": ["support"],
@@ -99,6 +100,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "agt_support",
         "category": "support",
     }
 
@@ -711,6 +713,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
             "permissions_and_data_access_notice": "",
             "published_at": None,
             "avatar_ref": "builtin:assistant",
+            "avatar_seed": "agt_support",
             "category": "support",
         },
         "created_at": None,
@@ -1053,8 +1056,9 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         "revision": 7,
         "content_hash": row["content_hash"],
         "instructions": "private instruction",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [
+            {"skill_id": "general-chat", "expected_version": "version-a"}
+        ],
     }
     assert [name for name, _ in calls] == ["bound", "validate"]
     assert calls[0][1]["for_update"] is True
@@ -1153,8 +1157,9 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
                 "revision": 7,
                 "content_hash": "a" * 64,
                 "instructions": "private",
-                "required_skill_id": "general-chat",
-                "required_skill_version": "version-a",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -1191,6 +1196,34 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
         harness_calls.append(kwargs)
         return {"id": "agt_support", "agent_type": "chat"}
 
+    async def lock_profile_skills(*_args, **_kwargs):
+        return (
+            [
+                {
+                    "skill_id": "general-chat",
+                    "version": "version-a",
+                    "content_hash": "version-a",
+                    "source": {"kind": "builtin", "asset_dir": "general-chat"},
+                    "files": [
+                        {
+                            "relative_path": "SKILL.md",
+                            "content_base64": "c2tpbGw=",
+                            "size_bytes": 5,
+                        }
+                    ],
+                    "dependency_ids": [],
+                    "mcp_tool_ids": [],
+                }
+            ],
+            "version-a",
+            {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "version-a",
+                "selected_track": "manifest_pin",
+            },
+        )
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
     monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
     monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
@@ -1200,8 +1233,14 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     monkeypatch.setattr(repositories, "get_agent", harness_agent)
     monkeypatch.setattr(repositories, "enforce_user_active_run_admission_under_lock", noop)
     monkeypatch.setattr(repositories, "ensure_workspace_belongs_to_tenant", noop)
+    monkeypatch.setattr(
+        repositories,
+        "list_authorized_session_input_files",
+        AsyncMock(return_value=[]),
+    )
     monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr("app.routes.chat._agent_profile_skill_manifest_pins", lock_profile_skills)
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
         "app.routes.chat.resolve_profile_for_admission",
@@ -1605,6 +1644,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "",
         "category": "support",
     }
     serialized = str(response)

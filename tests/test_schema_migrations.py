@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.12.4"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.13.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -202,6 +202,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "audit_logs",
     )
+    assert (
+        "agent_profile_revisions",
+        "skill_set",
+        "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "avatar_seed",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "runs",
         "chk_runs_execution_skill_identity",

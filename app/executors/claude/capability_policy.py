@@ -129,6 +129,7 @@ class CapabilityExecutionPlan:
         value: object,
         *,
         required_skill_identity: str | None = None,
+        available_skill_identities: object = (),
         registered_mcp_servers: dict[str, object] | None = None,
     ) -> "CapabilityExecutionPlan":
         """Build one executor-private plan from exact server-authorized subjects."""
@@ -151,6 +152,10 @@ class CapabilityExecutionPlan:
             ):
                 continue
             available.add(("mcp", identity))
+        if isinstance(available_skill_identities, (list, tuple, set, frozenset)):
+            for identity in available_skill_identities:
+                if isinstance(identity, str) and identity:
+                    available.add(("skill", identity))
         required: tuple[RequiredCapabilityDeclaration, ...] = ()
         if required_skill_identity:
             declaration = RequiredCapabilityDeclaration.from_authorized_subject(
