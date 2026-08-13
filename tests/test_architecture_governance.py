@@ -976,6 +976,31 @@ def test_runs_persistence_bridge_authority_is_exact() -> None:
     }
 
 
+def test_repository_authorization_error_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.platform.postgres.errors",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.platform.postgres.errors",
+        "module_alias": "postgres_errors",
+        "symbols": ["RepositoryAuthorizationError"],
+        "owner": "platform-architecture",
+        "reason": (
+            "The frozen global repository may preserve its existing authorization "
+            "error type only as an exact identity alias while the shared PostgreSQL "
+            "error contract moves to the platform adapter."
+        ),
+        "removal_condition": (
+            "After repository consumers import the platform PostgreSQL error contract, "
+            "inventory supported external imports and remove this bridge in an "
+            "authority-only change before deleting the repositories alias."
+        ),
+    }
+
+
 def test_skills_persistence_bridge_authority_is_exact() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -1070,6 +1095,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
+        "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
     }
@@ -1094,6 +1120,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
+        "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
     }
