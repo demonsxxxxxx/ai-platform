@@ -46,19 +46,16 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
 
 def test_compose_projects_all_browser_authentication_windows_as_twenty_four_hours():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
-    env_values = env_example_values(ENV_EXAMPLE_FILE.read_text(encoding="utf-8"))
 
     for service_name in ("api", "worker"):
         service = compose_service_text(compose_text, service_name)
-        assert "AI_SESSION_MAX_AGE_SECONDS: ${AI_SESSION_MAX_AGE_SECONDS:-86400}" in service
-        assert "AUTH_CONTEXT_MAX_AGE_SECONDS: ${AUTH_CONTEXT_MAX_AGE_SECONDS:-86400}" in service
-        assert (
-            "COMPANY_AUTHORITY_FRESHNESS_SECONDS: "
-            "${COMPANY_AUTHORITY_FRESHNESS_SECONDS:-86400}"
-        ) in service
-    assert env_values["AI_SESSION_MAX_AGE_SECONDS"] == "86400"
-    assert env_values["AUTH_CONTEXT_MAX_AGE_SECONDS"] == "86400"
-    assert env_values["COMPANY_AUTHORITY_FRESHNESS_SECONDS"] == "86400"
+        assert 'AI_SESSION_MAX_AGE_SECONDS: "86400"' in service
+        assert 'AUTH_CONTEXT_MAX_AGE_SECONDS: "86400"' in service
+        assert 'COMPANY_AUTHORITY_FRESHNESS_SECONDS: "86400"' in service
+    env_values = env_example_values(ENV_EXAMPLE_FILE.read_text(encoding="utf-8"))
+    assert "AI_SESSION_MAX_AGE_SECONDS" not in env_values
+    assert "AUTH_CONTEXT_MAX_AGE_SECONDS" not in env_values
+    assert "COMPANY_AUTHORITY_FRESHNESS_SECONDS" not in env_values
 
 
 def test_production_cors_origin_is_operator_managed_and_browser_visible():
