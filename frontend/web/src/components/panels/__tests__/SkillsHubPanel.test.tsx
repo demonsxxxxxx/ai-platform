@@ -159,9 +159,17 @@ test("Skill management enabled metric uses Chinese enabled-state wording", () =>
       metrics?: { enabled?: string };
     };
   };
+  const metricsEnabled = catalog.skills?.metrics?.enabled;
+  const managementEnabled = catalog.skills?.managementTable?.enabled;
+  assert.equal(typeof metricsEnabled, "string", "zh.skills.metrics.enabled");
   assert.equal(
-    catalog.skills?.metrics?.enabled,
-    catalog.skills?.managementTable?.enabled,
+    typeof managementEnabled,
+    "string",
+    "zh.skills.managementTable.enabled",
+  );
+  assert.equal(
+    metricsEnabled,
+    managementEnabled,
     "zh.skills.metrics.enabled",
   );
 });

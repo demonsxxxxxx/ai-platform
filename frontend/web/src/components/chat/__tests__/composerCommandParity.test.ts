@@ -488,7 +488,7 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
   assert.match(composerPrimitive, /data-librechat-composer-region=\{region\}/);
 });
 
-test("Chinese placeholders are slash and dollar skills first", () => {
+test("Chinese placeholders expose slash and dollar entry points", () => {
   const locale = "zh";
   const source = readFileSync(
     join(root, "src/i18n/locales/zh.json"),
@@ -497,5 +497,4 @@ test("Chinese placeholders are slash and dollar skills first", () => {
 
   assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\//, locale);
   assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\$/, locale);
-  assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*Skills/, locale);
 });

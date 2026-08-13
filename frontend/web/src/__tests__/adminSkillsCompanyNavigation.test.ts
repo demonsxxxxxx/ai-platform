@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
+import { launchpadTabs } from "../components/launchpad/catalog.ts";
 
 const root = process.cwd();
 
@@ -63,8 +64,9 @@ test("company navigation owns legacy webUI links without iframe embedding", () =
   const catalog = readSource("src/components/launchpad/catalog.ts");
   const panel = readSource("src/components/launchpad/LaunchpadPanel.tsx");
   const zh = readSource("src/i18n/locales/zh.json");
+  const lingxiTab = launchpadTabs.find((tab) => tab.key === "lingxi");
 
-  assert.match(catalog, /key:\s*"lingxi"[\s\S]*runtimeUrlKey:\s*"lingxi"/);
+  assert.equal(lingxiTab?.runtimeUrlKey, "lingxi");
   assert.match(panel, /data-company-navigation-shell/);
   assert.match(panel, /openUrl\(tab\.url\)/);
   assert.match(panel, /window\.open/);
