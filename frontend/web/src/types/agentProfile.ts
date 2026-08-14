@@ -8,8 +8,10 @@ export const AGENT_PROFILE_CATEGORIES = ["general", "support", "writing", "resea
 
 export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
 
+export type UniversalAgentInputTypes = ["text", "file"];
+
 export const AGENT_PROFILE_CATEGORY_LABELS = {
-  general: "通用助理",
+  general: "通用专家",
   support: "支持服务",
   writing: "内容写作",
   research: "研究分析",
@@ -30,8 +32,7 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   starter_prompts: string[];
   capability_summary: string;
   recommended_tasks: string[];
-  supported_input_types: Array<"text" | "file">;
-  supported_file_types: string[];
+  supported_input_types: UniversalAgentInputTypes;
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
@@ -50,8 +51,7 @@ export interface AgentConversationIdentity {
   starter_prompts: string[];
   capability_summary: string;
   recommended_tasks: string[];
-  supported_input_types: Array<"text" | "file">;
-  supported_file_types: string[];
+  supported_input_types: UniversalAgentInputTypes;
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
@@ -82,6 +82,19 @@ function requireString(value: unknown, code: string, allowEmpty = false): string
   return value;
 }
 
+function projectAvatarSeed(record: Record<string, unknown>, code: string): string {
+  const fallback = requireString(record.agent_id, code);
+  if (typeof record.avatar_seed !== "string") return fallback;
+  if ([...record.avatar_seed].some((character) => (character.codePointAt(0) ?? 0) < 32)) {
+    return fallback;
+  }
+  const seed = record.avatar_seed.trim();
+  if (!seed || [...seed].length > 128) {
+    return fallback;
+  }
+  return seed;
+}
+
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
   return value as number;
@@ -94,6 +107,14 @@ function requireStringList(value: unknown, code: string): string[] {
   return [...value];
 }
 
+function requireUniversalAgentInputTypes(value: unknown, code: string): UniversalAgentInputTypes {
+  const values = requireStringList(value, code);
+  if (values.length !== 2 || values[0] !== "text" || values[1] !== "file") {
+    throw new Error(code);
+  }
+  return ["text", "file"];
+}
+
 function projectEnterpriseFields(
   record: Record<string, unknown>,
   code: string,
@@ -104,21 +125,10 @@ function projectEnterpriseFields(
   | "capability_summary"
   | "recommended_tasks"
   | "supported_input_types"
-  | "supported_file_types"
   | "expected_outputs"
   | "permissions_and_data_access_notice"
   | "published_at"
 > {
-  const supportedInputTypes =
-    record.supported_input_types === undefined
-      ? ["text"]
-      : requireStringList(record.supported_input_types, code);
-  if (
-    supportedInputTypes.length === 0 ||
-    supportedInputTypes.some((item) => item !== "text" && item !== "file")
-  ) {
-    throw new Error(code);
-  }
   return {
     welcome_message:
       record.welcome_message === undefined
@@ -136,11 +146,7 @@ function projectEnterpriseFields(
       record.recommended_tasks === undefined
         ? []
         : requireStringList(record.recommended_tasks, code),
-    supported_input_types: supportedInputTypes as Array<"text" | "file">,
-    supported_file_types:
-      record.supported_file_types === undefined
-        ? []
-        : requireStringList(record.supported_file_types, code),
+    supported_input_types: requireUniversalAgentInputTypes(record.supported_input_types, code),
     expected_outputs:
       record.expected_outputs === undefined
         ? []
@@ -176,10 +182,7 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     description: requireString(record.description, PROFILE_ERROR, true),
     ...projectEnterpriseFields(record, PROFILE_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
-    avatar_seed:
-      record.avatar_seed === undefined
-        ? requireString(record.agent_id, PROFILE_ERROR)
-        : requireString(record.avatar_seed, PROFILE_ERROR),
+    avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
   };
 }
@@ -195,10 +198,7 @@ export function projectAgentConversationIdentity(value: unknown): AgentConversat
     description: requireString(record.description, IDENTITY_ERROR, true),
     ...projectEnterpriseFields(record, IDENTITY_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, IDENTITY_ERROR),
-    avatar_seed:
-      record.avatar_seed === undefined
-        ? requireString(record.agent_id, IDENTITY_ERROR)
-        : requireString(record.avatar_seed, IDENTITY_ERROR),
+    avatar_seed: projectAvatarSeed(record, IDENTITY_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, IDENTITY_ERROR),
   };
 }
@@ -227,7 +227,6 @@ export interface AgentProfileDraftRequest {
   capability_summary: string;
   recommended_tasks: string[];
   supported_input_types: Array<"text" | "file">;
-  supported_file_types: string[];
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   instructions: string;
@@ -251,14 +250,27 @@ export interface AgentProfileAdminProjection extends Omit<
   AgentProfileDraftRequest,
   "avatar_seed" | "expected_draft_revision" | "skill_set"
 > {
+  supported_input_types: UniversalAgentInputTypes;
   avatar_seed?: string;
   skill_set?: SelectedSkillRequest[];
   agent_id: string;
   revision: number;
+  /** Current aggregate publication; absent only while talking to a rolling old API. */
+  published_revision?: number | null;
   status: "draft" | "published" | "withdrawn";
   content_hash: string;
   created_at?: string | null;
   published_at?: string | null;
+}
+
+/** Validate the universal input contract before trusting an admin-only profile response. */
+export function validateAgentProfileAdminProjection(value: unknown): AgentProfileAdminProjection {
+  const record = requireRecord(value, "invalid_agent_profile_admin_projection");
+  requireUniversalAgentInputTypes(
+    record.supported_input_types,
+    "invalid_agent_profile_admin_projection",
+  );
+  return value as AgentProfileAdminProjection;
 }
 
 export interface AgentProfileMutationResponse {

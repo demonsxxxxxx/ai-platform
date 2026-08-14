@@ -97,7 +97,7 @@ async def create_agent_profile_revision(
     capability_summary: str = "",
     recommended_tasks: list[str] | None = None,
     supported_input_types: list[str] | None = None,
-    supported_file_types: list[str] | None = None,
+    legacy_supported_file_types: list[str] | None = None,
     expected_outputs: list[str] | None = None,
     permissions_and_data_access_notice: str = "",
     avatar_asset_id: str | None = None,
@@ -143,7 +143,8 @@ async def create_agent_profile_revision(
                   model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
                   avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-                  recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+                  recommended_tasks, supported_input_types,
+                  supported_file_types as legacy_supported_file_types, expected_outputs,
                   permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """,
@@ -177,7 +178,7 @@ async def create_agent_profile_revision(
             capability_summary,
             _dumps_json(recommended_tasks or []),
             _dumps_json(supported_input_types or ["text"]),
-            _dumps_json(supported_file_types or []),
+            _dumps_json(legacy_supported_file_types or []),
             _dumps_json(expected_outputs or []),
             permissions_and_data_access_notice,
             avatar_asset_id,
@@ -215,7 +216,8 @@ async def get_agent_profile_revision(
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
                agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
-               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.supported_input_types,
+               agent_profile_revisions.supported_file_types as legacy_supported_file_types,
                agent_profile_revisions.expected_outputs,
                agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
@@ -259,10 +261,12 @@ async def list_latest_agent_profile_revisions(
         select distinct on (agent_profile_revisions.agent_id)
                agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
                agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
+               agent_profiles.published_revision,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
                agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
-               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.supported_input_types,
+               agent_profile_revisions.supported_file_types as legacy_supported_file_types,
                agent_profile_revisions.expected_outputs,
                agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
@@ -276,6 +280,8 @@ async def list_latest_agent_profile_revisions(
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
         from agent_profile_revisions
+        join agent_profiles on agent_profiles.tenant_id = agent_profile_revisions.tenant_id
+          and agent_profiles.agent_id = agent_profile_revisions.agent_id
         join agents on agents.id = agent_profile_revisions.agent_id
           and agents.tenant_id = agent_profile_revisions.tenant_id
         where agent_profile_revisions.tenant_id = %s
@@ -295,10 +301,10 @@ async def record_agent_profile_draft(
     tenant_id: str,
     agent_id: str,
     revision: int,
-) -> None:
+) -> dict[str, Any] | None:
     """Advance aggregate draft history without replacing an already live publication."""
 
-    await conn.execute(
+    cursor = await conn.execute(
         """
         insert into agent_profiles(tenant_id, agent_id, lifecycle_status, latest_revision)
         values (%s, %s, 'draft', %s)
@@ -310,9 +316,12 @@ async def record_agent_profile_draft(
               else 'published'
             end,
             updated_at = now()
+        returning published_revision
         """,
         (tenant_id, agent_id, revision),
     )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
 
 
 async def record_agent_profile_publication(
@@ -427,7 +436,8 @@ async def get_current_published_agent_profile(
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
                agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
-               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.supported_input_types,
+               agent_profile_revisions.supported_file_types as legacy_supported_file_types,
                agent_profile_revisions.expected_outputs,
                agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
@@ -482,7 +492,8 @@ async def get_bound_published_agent_profile(
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
                agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
-               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.supported_input_types,
+               agent_profile_revisions.supported_file_types as legacy_supported_file_types,
                agent_profile_revisions.expected_outputs,
                agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
@@ -544,9 +555,9 @@ async def list_current_published_agent_profiles(
     if query:
         query_filter = """
         and (
-          agent_profile_revisions.name ilike %s
-          or agent_profile_revisions.description ilike %s
-          or agent_profile_revisions.capability_summary ilike %s
+          normalize(agent_profile_revisions.name, NFKC) ilike %s escape E'\\\\'
+          or normalize(agent_profile_revisions.description, NFKC) ilike %s escape E'\\\\'
+          or normalize(agent_profile_revisions.capability_summary, NFKC) ilike %s escape E'\\\\'
           or exists (
             select 1
             from jsonb_array_elements_text(
@@ -556,11 +567,17 @@ async def list_current_published_agent_profiles(
                 else '[]'::jsonb
               end
             ) as recommended_task(value)
-            where recommended_task.value ilike %s
+            where normalize(recommended_task.value, NFKC) ilike %s escape E'\\\\'
           )
         )
         """
-        pattern = f"%{query.strip()}%"
+        escaped_query = (
+            query.strip()
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        pattern = f"%{escaped_query}%"
         params.extend([pattern, pattern, pattern, pattern])
     if category:
         category_filter = "and agent_profile_revisions.category = %s"
@@ -573,7 +590,8 @@ async def list_current_published_agent_profiles(
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
                agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
-               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.supported_input_types,
+               agent_profile_revisions.supported_file_types as legacy_supported_file_types,
                agent_profile_revisions.expected_outputs,
                agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
@@ -620,17 +638,35 @@ async def list_agent_profile_revision_history(
 
     cursor = await conn.execute(
         """
-        select tenant_id, agent_id, revision, revision_status as status, name, description,
-               welcome_message, starter_prompts, capability_summary, recommended_tasks,
-               supported_input_types, supported_file_types, expected_outputs,
-               permissions_and_data_access_notice, instructions,
-               model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-               avatar_ref, avatar_asset_id, avatar_seed,
-               category, visibility, allowed_department_ids, allowed_roles, allowed_user_ids,
-               created_at, published_at
+        select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
+               agent_profile_revisions.revision,
+               agent_profile_revisions.revision_status as status,
+               agent_profiles.published_revision,
+               agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.welcome_message,
+               agent_profile_revisions.starter_prompts,
+               agent_profile_revisions.capability_summary,
+               agent_profile_revisions.recommended_tasks,
+               agent_profile_revisions.supported_input_types,
+               agent_profile_revisions.supported_file_types as legacy_supported_file_types,
+               agent_profile_revisions.expected_outputs,
+               agent_profile_revisions.permissions_and_data_access_notice,
+               agent_profile_revisions.instructions,
+               agent_profile_revisions.model_id, agent_profile_revisions.skill_id,
+               agent_profile_revisions.skill_version, agent_profile_revisions.skill_set,
+               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
+               agent_profile_revisions.avatar_seed, agent_profile_revisions.category,
+               agent_profile_revisions.visibility,
+               agent_profile_revisions.allowed_department_ids,
+               agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at
         from agent_profile_revisions
-        where tenant_id = %s and agent_id = %s
-        order by revision desc
+        join agent_profiles on agent_profiles.tenant_id = agent_profile_revisions.tenant_id
+          and agent_profiles.agent_id = agent_profile_revisions.agent_id
+        where agent_profile_revisions.tenant_id = %s
+          and agent_profile_revisions.agent_id = %s
+        order by agent_profile_revisions.revision desc
         """,
         (tenant_id, agent_id),
     )

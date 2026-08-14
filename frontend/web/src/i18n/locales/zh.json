@@ -46,8 +46,8 @@
   "agent": {
     "selectMode": "选择模式",
     "selectModeDesc": "切换助手模式",
-    "searchPlaceholder": "搜索智能体",
-    "noMatchingAgents": "没有匹配的智能体"
+    "searchPlaceholder": "搜索专家",
+    "noMatchingAgents": "没有匹配的专家"
   },
   "frontendStates": {
     "logged-out": {
@@ -131,7 +131,7 @@
     "error": "运行回放加载失败",
     "errorFallback": "回放接口未返回可用数据。",
     "fields": {
-      "agentId": "助手",
+      "agentId": "专家",
       "progress": "进度",
       "runId": "运行",
       "sessionId": "会话",
@@ -140,9 +140,9 @@
     },
     "loading": "正在加载运行回放...",
     "menuLabel": "运行回放",
-    "multiAgent": "多 Agent 步骤",
+    "multiAgent": "协作步骤",
     "noArtifacts": "暂无产物",
-    "noSteps": "暂无多 Agent 步骤",
+    "noSteps": "暂无协作步骤",
     "noTimeline": "暂无时间线",
     "preview": "预览",
     "retry": "重试",
@@ -641,7 +641,7 @@
     "todo": {
       "progress": "{{completed}}/{{total}} 已完成"
     },
-    "unknownAgent": "未知助手",
+    "unknownAgent": "未知专家",
     "unknownError": "未知错误",
     "user": "用户",
     "waitingForUpload": "请等待文件上传完成",
@@ -1266,9 +1266,9 @@
       "adminGovernanceDescription": "策略库存、全局活跃记录和保留期清理只对具备管理员角色的账号开放。",
       "adminHidden": "当前角色不可查看管理员记忆库存。后端管理员接口保持 fail-closed。",
       "adminProjection": "管理员运行投影",
-      "agent": "智能体",
-      "agentPublicId": "智能体公开 ID",
-      "allAgents": "全部智能体",
+      "agent": "专家",
+      "agentPublicId": "专家公开 ID",
+      "allAgents": "全部专家",
       "allowSessionWrites": "允许会话记忆写入",
       "allowSessionWritesHint": "跨会话长期记忆继续保持 fail-closed。",
       "cleanupDeleted": "保留期清理已删除 {{count}} 条记录",
@@ -1289,7 +1289,7 @@
       "noStoredPolicies": "当前筛选条件下没有已存储策略。",
       "policyMeta": "{{days}} 天保留 · {{source}} · {{date}}",
       "policyProjection": "策略投影",
-      "policyProjectionDescription": "读取当前用户、工作区和 Agent 的公开记忆策略，不暴露跨用户记录。",
+      "policyProjectionDescription": "读取当前用户、工作区和专家的公开记忆策略，不暴露跨用户记录。",
       "policyUpdated": "记忆策略已更新",
       "publicProjectionOnly": "仅公开投影",
       "reason": "原因",
@@ -1452,7 +1452,7 @@
     "plaza": {
       "capabilities": {
         "auditTrail": {
-          "description": "角色与部门 Agent 变更保留审计、追踪和回滚状态。",
+          "description": "角色与部门专家变更保留审计、追踪和回滚状态。",
           "title": "审计追踪"
         },
         "departmentScope": {
@@ -1474,7 +1474,7 @@
         "approve": "批准",
         "queueing": "提交中",
         "reject": "拒绝",
-        "requestDepartment": "申请部门 Agent",
+        "requestDepartment": "申请部门专家",
         "requestLocked": "当前账号不能提交申请",
         "requestRole": "申请角色",
         "rollback": "回滚"
@@ -1498,7 +1498,7 @@
       "operationFailed": "角色治理操作失败",
       "requestReasons": {
         "approve": "管理员从角色治理工作台批准该申请。",
-        "department": "申请加入 {{department}} 部门 Agent 可用范围。",
+        "department": "申请加入 {{department}} 部门专家可用范围。",
         "reject": "管理员从角色治理工作台拒绝该申请。",
         "role": "申请 {{role}} 角色以使用对应工作台能力。",
         "rollback": "从角色治理工作台提交回滚请求。"
@@ -1531,7 +1531,7 @@
         },
         "title": "角色治理已可访问"
       },
-      "subtitle": "查看角色、部门 Agent 和审批能力的治理状态。",
+      "subtitle": "查看角色、部门专家和审批能力的治理状态。",
       "title": "角色治理"
     },
     "roleName": "角色名称",
@@ -1564,7 +1564,7 @@
       "title": "公司导航"
     },
     "chat": {
-      "description": "与 AI 智能体进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和受治理的上下文来源。",
+      "description": "与 AI 专家进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和受治理的上下文来源。",
       "title": "AI 对话"
     },
     "feedback": {
@@ -1576,15 +1576,15 @@
       "title": "文件工作台"
     },
     "marketplace": {
-      "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 智能体功能。",
+      "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 专家功能。",
       "title": "技能市场"
     },
     "mcp": {
-      "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 智能体能力。",
+      "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 专家能力。",
       "title": "MCP 服务器管理"
     },
     "memory": {
-      "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 智能体长期理解。",
+      "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 专家长期理解。",
       "title": "AI 记忆空间"
     },
     "models": {
@@ -1636,7 +1636,7 @@
     "DAYTONA_SERVER_URL": "Daytona 服务器 URL",
     "DAYTONA_TIMEOUT": "Daytona 命令超时时间（秒）",
     "DEBUG": "启用调试模式",
-    "DEFAULT_AGENT": "新会话的默认 Agent 类型",
+    "DEFAULT_AGENT": "新会话的默认专家类型",
     "DEFAULT_MODEL_ID": "管理员设置的新会话和后台任务默认模型配置。留空使用第一个启用模型。",
     "DEFAULT_USER_ROLE": "新注册用户的默认角色",
     "DEFERRED_TOOL_SEARCH_LIMIT": "工具搜索返回的最大结果数",
@@ -1687,11 +1687,11 @@
     "NATIVE_MEMORY_API_BASE": "记忆 LLM 操作的 API 基础 URL。留空使用第一个可用模型的 API 地址。",
     "NATIVE_MEMORY_API_KEY": "记忆 LLM 操作的 API 密钥。留空使用第一个可用模型的密钥。",
     "NATIVE_MEMORY_APPEND_MAX_DETAILS": "项目/参考记忆上保留的最大追加详情条目数，超出后修剪旧条目。",
-    "NATIVE_MEMORY_AUTO_COMPACT_ENABLED": "启用后台记忆压缩 agent。",
-    "NATIVE_MEMORY_AUTO_COMPACT_INTERVAL_SECONDS": "记忆压缩 agent 扫描超阈值用户的间隔秒数。",
+    "NATIVE_MEMORY_AUTO_COMPACT_ENABLED": "启用后台记忆压缩任务。",
+    "NATIVE_MEMORY_AUTO_COMPACT_INTERVAL_SECONDS": "记忆压缩任务扫描超阈值用户的间隔秒数。",
     "NATIVE_MEMORY_AUTO_COMPACT_MIN_INTERVAL_SECONDS": "同一用户两次压缩尝试之间的最小间隔秒数。",
     "NATIVE_MEMORY_AUTO_COMPACT_THRESHOLD": "每个用户触发自动压缩的记忆数量阈值。",
-    "NATIVE_MEMORY_COMPACTION_MODEL_ID": "后台记忆压缩 agent 使用的管理员模型配置。留空使用默认模型。",
+    "NATIVE_MEMORY_COMPACTION_MODEL_ID": "后台记忆压缩任务使用的管理员模型配置。留空使用默认模型。",
     "NATIVE_MEMORY_EMBEDDING_API_BASE": "向量搜索的 Embedding API 基础 URL（OpenAI 兼容）。留空使用纯文本模式。",
     "NATIVE_MEMORY_EMBEDDING_API_KEY": "Embedding API 密钥（OpenAI 兼容端点）",
     "NATIVE_MEMORY_EMBEDDING_MODEL": "Embedding 模型名称（如 text-embedding-3-small）",
@@ -1767,7 +1767,7 @@
     "WELCOME_SUGGESTION_TEXT": "文本"
   },
   "share": {
-    "agent": "智能体",
+    "agent": "专家",
     "authenticated": "需要登录",
     "authenticatedDesc": "只有登录用户可以查看",
     "conversationHistory": "对话历史",
@@ -2340,8 +2340,8 @@
   },
   "composerCommand": {
     "agent": {
-      "description": "选择平台批准的智能体或应用模式。",
-      "label": "智能体"
+      "description": "选择平台批准的专家或应用模式。",
+      "label": "专家"
     },
     "file": {
       "description": "从输入框引用允许使用的文件和产物。",

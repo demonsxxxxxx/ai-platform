@@ -28,6 +28,11 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /department-selector__menu/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);
   assert.match(source, /requiredSelectors/);
+  assert.match(source, /element\.complete/);
+  assert.match(source, /element\.naturalWidth > 0/);
+  assert.match(source, /element\.naturalHeight > 0/);
+  assert.match(source, /rect\.width > 0/);
+  assert.match(source, /rect\.height > 0/);
   assert.match(source, /requiredRequests/);
   assert.match(source, /missingRequests/);
   assert.match(source, /data-selected-skill-detail-shell/);

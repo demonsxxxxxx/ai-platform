@@ -38,11 +38,12 @@ test("skills, market, detail, workspace, and builder share responsive outer gutt
   const builder = read("src/features/agent-builder/AgentBuilderWorkbench.tsx");
 
   assert.match(skills, /px-4[^"]*sm:px-6/);
-  assert.match(market, /max-w-6xl[^\n"]*px-4[^\n"]*sm:px-6/);
+  assert.match(market, /max-w-\[86rem\][^\n"]*px-4[^\n"]*sm:px-6/);
   assert.match(market, /max-w-4xl[^\n"]*px-4[^\n"]*sm:px-6/);
   assert.match(workspace, /px-4[^\n"]*sm:px-6/);
   assert.match(builder, /px-4[^\n"]*sm:px-6/);
-  assert.match(builder, /max-w-4xl[^\n"]*px-4[^\n"]*sm:px-6/);
+  assert.match(builder, /max-w-6xl[^\n"]*px-4[^\n"]*sm:px-6/);
+  assert.match(builder, /lg:grid-cols-\[20rem_minmax\(0,1fr\)\]/);
 });
 
 test("all protected routes keep a bounded shell entry", () => {

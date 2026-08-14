@@ -131,7 +131,6 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
         "capability_summary",
         "recommended_tasks",
         "supported_input_types",
-        "supported_file_types",
         "expected_outputs",
         "permissions_and_data_access_notice",
         "avatar_ref",
@@ -208,10 +207,10 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "agent_profile_capability_summary": "Reviews support policy files.",
             "agent_profile_recommended_tasks": ["Policy review"],
             "agent_profile_supported_input_types": ["text", "file"],
-            "agent_profile_supported_file_types": ["application/pdf", "image/*"],
             "agent_profile_expected_outputs": ["Review memo"],
             "agent_profile_permissions_and_data_access_notice": "Uses authorized files only.",
             "agent_profile_avatar_ref": "builtin:assistant",
+            "agent_profile_avatar_seed": "support-avatar-7",
             "agent_profile_category": "support",
             "agent_profile_published_at": datetime(2026, 7, 31, tzinfo=timezone.utc),
             "created_at": datetime(2026, 8, index, tzinfo=timezone.utc),
@@ -261,20 +260,20 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "name": "Support assistant",
         "description": "Approved support help.",
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "support-avatar-7",
         "category": "support",
         "welcome_message": "Upload a policy for review.",
         "starter_prompts": ["Review this policy"],
         "capability_summary": "Reviews support policy files.",
         "recommended_tasks": ["Policy review"],
         "supported_input_types": ["text", "file"],
-        "supported_file_types": ["application/pdf", "image/*"],
         "expected_outputs": ["Review memo"],
         "permissions_and_data_access_notice": "Uses authorized files only.",
         "published_at": "2026-07-31T00:00:00Z",
     }
 
 
-def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_private_fields():
+def test_agent_conversation_projection_exposes_universal_attachment_access_and_no_private_fields():
     projection = session_response(
         {
             "id": "ses_legacy",
@@ -284,6 +283,7 @@ def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_pr
             "admitted_agent_profile_revision": 2,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
+            "agent_profile_avatar_seed": 12345,
             "created_at": None,
             "updated_at": None,
             "instructions": "private",
@@ -295,14 +295,34 @@ def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_pr
 
     identity = projection.agent_conversation
     assert identity is not None
-    assert identity.supported_input_types == ["text"]
-    assert identity.supported_file_types == []
+    assert identity.avatar_seed == "agt_support"
+    assert identity.supported_input_types == ["text", "file"]
     assert not {
         "instructions",
         "model_id",
         "mcp_tool_ids",
         "content_hash",
     }.intersection(identity.model_dump())
+
+
+@pytest.mark.parametrize("avatar_seed", ["\tseed", "safe\x1fseed", "", "x" * 129])
+def test_agent_conversation_projection_uses_shared_avatar_seed_fallback(avatar_seed):
+    projection = session_response(
+        {
+            "id": "ses_avatar_fallback",
+            "workspace_id": "default",
+            "agent_id": "agt_support",
+            "title": "Support",
+            "admitted_agent_profile_revision": 2,
+            "agent_profile_name": "Support assistant",
+            "agent_profile_avatar_seed": avatar_seed,
+            "created_at": None,
+            "updated_at": None,
+        }
+    )
+
+    assert projection.agent_conversation is not None
+    assert projection.agent_conversation.avatar_seed == "agt_support"
 
 
 @pytest.mark.asyncio

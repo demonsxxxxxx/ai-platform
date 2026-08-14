@@ -11,6 +11,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -31,17 +32,30 @@ from app.settings import get_settings
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
+_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES = ["text", "file"]
+_ROLLING_LEGACY_SUPPORTED_FILE_TYPES = [
+    "application/*",
+    "audio/*",
+    "chemical/*",
+    "font/*",
+    "image/*",
+    "message/*",
+    "model/*",
+    "multipart/*",
+    "text/*",
+    "video/*",
+]
 _PRESENCE_AWARE_PROFILE_FIELDS = (
     "welcome_message",
     "starter_prompts",
     "capability_summary",
     "recommended_tasks",
     "supported_input_types",
-    "supported_file_types",
     "expected_outputs",
     "permissions_and_data_access_notice",
     "avatar_ref",
     "avatar_asset_id",
+    "avatar_seed",
     "category",
     "visibility",
     "allowed_department_ids",
@@ -96,10 +110,7 @@ def _safe_avatar_ref(value: Any) -> str:
 
 
 def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
-    candidate = str(value or "").strip()
-    if not candidate or len(candidate) > 128 or any(ord(character) < 32 for character in candidate):
-        return fallback
-    return candidate
+    return safe_agent_avatar_seed(value, fallback=fallback)
 
 
 def _safe_category(value: Any) -> str:
@@ -188,13 +199,7 @@ def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
         "starter_prompts": _safe_string_list(row.get("starter_prompts")),
         "capability_summary": str(row.get("capability_summary") or ""),
         "recommended_tasks": _safe_string_list(row.get("recommended_tasks")),
-        "supported_input_types": [
-            value
-            for value in _safe_string_list(row.get("supported_input_types"))
-            if value in {"text", "file"}
-        ]
-        or ["text"],
-        "supported_file_types": _safe_string_list(row.get("supported_file_types")),
+        "supported_input_types": list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
         "expected_outputs": _safe_string_list(row.get("expected_outputs")),
         "permissions_and_data_access_notice": str(
             row.get("permissions_and_data_access_notice") or ""
@@ -220,7 +225,6 @@ def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationId
         capability_summary=public["capability_summary"],
         recommended_tasks=public["recommended_tasks"],
         supported_input_types=public["supported_input_types"],
-        supported_file_types=public["supported_file_types"],
         expected_outputs=public["expected_outputs"],
         permissions_and_data_access_notice=public["permissions_and_data_access_notice"],
         avatar_ref=public["avatar_ref"],
@@ -241,7 +245,9 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "capability_summary": definition.capability_summary,
         "recommended_tasks": definition.recommended_tasks,
         "supported_input_types": definition.supported_input_types,
-        "supported_file_types": definition.supported_file_types,
+        # Old workers still hash and enforce this physical column during a rolling
+        # upgrade. Keep it broad and server-owned; it is no longer a product field.
+        "supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
@@ -261,7 +267,91 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
+def _legacy_skill_set_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_input_types: list[str] | None = None,
+    legacy_supported_file_types: list[str] | None = None,
+) -> str:
+    """Recompute hashes written before the profile file whitelist was retired."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": legacy_supported_input_types or definition.supported_input_types,
+        "supported_file_types": legacy_supported_file_types or [],
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": definition.avatar_seed,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _omitted_file_type_skill_set_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_input_types: list[str] | None = None,
+    legacy_avatar_seed: str | None = None,
+) -> str:
+    """Recompute the brief Skill Set contract that omitted the retired key."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": (
+            legacy_supported_input_types
+            if legacy_supported_input_types is not None
+            else definition.supported_input_types
+        ),
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": (
+            legacy_avatar_seed
+            if legacy_avatar_seed is not None
+            else definition.avatar_seed
+        ),
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _legacy_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_input_types: list[str] | None = None,
+    legacy_supported_file_types: list[str] | None = None,
+) -> str:
     """Recompute the pre-Skill-Set hash for exact one-Skill compatibility."""
 
     if len(definition.skill_set) != 1:
@@ -274,8 +364,8 @@ def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
         "starter_prompts": definition.starter_prompts,
         "capability_summary": definition.capability_summary,
         "recommended_tasks": definition.recommended_tasks,
-        "supported_input_types": definition.supported_input_types,
-        "supported_file_types": definition.supported_file_types,
+        "supported_input_types": legacy_supported_input_types or definition.supported_input_types,
+        "supported_file_types": legacy_supported_file_types or [],
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
@@ -295,9 +385,291 @@ def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _pre_avatar_seed_skill_set_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_input_types: list[str] | None = None,
+    legacy_supported_file_types: list[str] | None = None,
+) -> str:
+    """Recompute the Skill Set hash written before avatar seeds were introduced."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": legacy_supported_input_types or definition.supported_input_types,
+        "supported_file_types": legacy_supported_file_types or [],
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _lifecycle_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the first ACL-aware one-Skill profile hash."""
+
+    if len(definition.skill_set) != 1:
+        return ""
+    primary = definition.skill_set[0]
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_id": primary.skill_id,
+        "skill_version": primary.expected_version,
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _mvp_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the original one-Skill profile hash."""
+
+    if len(definition.skill_set) != 1:
+        return ""
+    primary = definition.skill_set[0]
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_id": primary.skill_id,
+        "skill_version": primary.expected_version,
+        "mcp_tool_ids": definition.mcp_tool_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _avatar_seed_is_historical_default(row: dict[str, Any]) -> bool:
+    return row.get("avatar_seed") in {None, ""}
+
+
+def _is_empty_historical_json_list(value: Any) -> bool:
+    return value is None or value == []
+
+
+def _strict_hash_string_list(
+    row: dict[str, Any],
+    field: str,
+    *,
+    allow_missing: bool,
+) -> list[str] | None:
+    raw = row.get(field)
+    if raw is None and allow_missing:
+        return None
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    normalized = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    if normalized != raw or len(normalized) != len(set(normalized)):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return normalized
+
+
+def _strict_hash_skill_set_shape(row: dict[str, Any]) -> bool:
+    raw = row.get("skill_set")
+    if raw is None or raw == []:
+        return False
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    skills = [SelectedSkillRequest.model_validate(item) for item in raw]
+    canonical = [skill.model_dump(mode="json") for skill in skills]
+    if raw != canonical or len({skill.skill_id for skill in skills}) != len(skills):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return True
+
+
+def _strict_hash_row_shape(row: dict[str, Any]) -> tuple[dict[str, list[str] | None], bool]:
+    optional_fields = {
+        "starter_prompts",
+        "recommended_tasks",
+        "supported_input_types",
+        "legacy_supported_file_types",
+        "expected_outputs",
+        "allowed_department_ids",
+        "allowed_roles",
+        "allowed_user_ids",
+    }
+    lists = {
+        field: _strict_hash_string_list(row, field, allow_missing=True)
+        for field in optional_fields
+    }
+    lists["mcp_tool_ids"] = _strict_hash_string_list(
+        row,
+        "mcp_tool_ids",
+        allow_missing=False,
+    )
+    supported_input_types = lists["supported_input_types"]
+    if supported_input_types is not None and (
+        not supported_input_types
+        or len(supported_input_types) > 2
+        or any(value not in {"text", "file"} for value in supported_input_types)
+    ):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    for field, allowed in (
+        ("avatar_ref", _AVATAR_REFS),
+        ("category", _CATEGORIES),
+        ("visibility", _VISIBILITIES),
+    ):
+        raw = row.get(field)
+        if raw is not None and (not isinstance(raw, str) or raw not in allowed):
+            raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    raw_avatar_seed = row.get("avatar_seed")
+    if raw_avatar_seed is not None and (
+        not isinstance(raw_avatar_seed, str)
+        or len(raw_avatar_seed) > 128
+        or any(ord(character) < 32 for character in raw_avatar_seed)
+    ):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return lists, _strict_hash_skill_set_shape(row)
+
+
+def _post_lifecycle_fields_are_historical_defaults(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("welcome_message") or "") == ""
+        and _is_empty_historical_json_list(row.get("starter_prompts"))
+        and str(row.get("capability_summary") or "") == ""
+        and _is_empty_historical_json_list(row.get("recommended_tasks"))
+        and row.get("supported_input_types") == ["text"]
+        and _is_empty_historical_json_list(row.get("legacy_supported_file_types"))
+        and _is_empty_historical_json_list(row.get("expected_outputs"))
+        and str(row.get("permissions_and_data_access_notice") or "") == ""
+        and row.get("avatar_asset_id") in {None, ""}
+        and _avatar_seed_is_historical_default(row)
+    )
+
+
+def _pre_lifecycle_fields_are_historical_defaults(row: dict[str, Any]) -> bool:
+    return (
+        row.get("avatar_ref") in {None, "builtin:agent"}
+        and row.get("category") in {None, "general"}
+        and row.get("visibility") in {None, "tenant"}
+        and _is_empty_historical_json_list(row.get("allowed_department_ids"))
+        and _is_empty_historical_json_list(row.get("allowed_roles"))
+        and _is_empty_historical_json_list(row.get("allowed_user_ids"))
+    )
+
+
 def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
+    if len(content_hash) != 64 or any(character not in "0123456789abcdef" for character in content_hash):
+        return False
+    raw_lists, has_skill_set = _strict_hash_row_shape(row)
     definition = _draft_from_row(row)
-    return content_hash in {_revision_hash(definition), _legacy_revision_hash(definition)}
+    for field in (
+        "starter_prompts",
+        "recommended_tasks",
+        "expected_outputs",
+        "allowed_department_ids",
+        "allowed_roles",
+        "allowed_user_ids",
+        "mcp_tool_ids",
+    ):
+        raw = raw_lists[field]
+        if raw is not None and raw != getattr(definition, field):
+            raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    legacy_supported_input_types = raw_lists["supported_input_types"]
+    legacy_supported_file_types = raw_lists["legacy_supported_file_types"]
+    current_shape = has_skill_set and all(
+        raw_lists[field] is not None
+        for field in (
+            "starter_prompts",
+            "recommended_tasks",
+            "supported_input_types",
+            "legacy_supported_file_types",
+            "expected_outputs",
+            "allowed_department_ids",
+            "allowed_roles",
+            "allowed_user_ids",
+        )
+    )
+    enterprise_shape = all(
+        raw_lists[field] is not None
+        for field in (
+            "starter_prompts",
+            "recommended_tasks",
+            "supported_input_types",
+            "legacy_supported_file_types",
+            "expected_outputs",
+            "allowed_department_ids",
+            "allowed_roles",
+            "allowed_user_ids",
+        )
+    )
+    raw_avatar_seed = row.get("avatar_seed")
+    if (
+        current_shape
+        and raw_avatar_seed == definition.avatar_seed
+        and legacy_supported_input_types == list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES)
+        and legacy_supported_file_types == list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
+        and content_hash == _revision_hash(definition)
+    ):
+        return True
+    if current_shape and content_hash == _omitted_file_type_skill_set_revision_hash(
+        definition,
+        legacy_supported_input_types=legacy_supported_input_types,
+        legacy_avatar_seed=str(raw_avatar_seed or ""),
+    ):
+        return True
+    if (
+        current_shape
+        and raw_avatar_seed == definition.avatar_seed
+        and content_hash
+        == _legacy_skill_set_revision_hash(
+            definition,
+            legacy_supported_input_types=legacy_supported_input_types,
+            legacy_supported_file_types=legacy_supported_file_types,
+        )
+    ):
+        return True
+    if not _avatar_seed_is_historical_default(row):
+        return False
+    if current_shape and content_hash == _pre_avatar_seed_skill_set_revision_hash(
+        definition,
+        legacy_supported_input_types=legacy_supported_input_types,
+        legacy_supported_file_types=legacy_supported_file_types,
+    ):
+        return True
+    if (
+        enterprise_shape
+        and content_hash
+        == _legacy_revision_hash(
+            definition,
+            legacy_supported_input_types=legacy_supported_input_types,
+            legacy_supported_file_types=legacy_supported_file_types,
+        )
+    ):
+        return True
+    if not _post_lifecycle_fields_are_historical_defaults(row):
+        return False
+    if content_hash == _lifecycle_revision_hash(definition):
+        return True
+    return (
+        _pre_lifecycle_fields_are_historical_defaults(row)
+        and content_hash == _mvp_revision_hash(definition)
+    )
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
@@ -308,13 +680,7 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         starter_prompts=_safe_string_list(row.get("starter_prompts")),
         capability_summary=str(row.get("capability_summary") or ""),
         recommended_tasks=_safe_string_list(row.get("recommended_tasks")),
-        supported_input_types=[
-            value
-            for value in _safe_string_list(row.get("supported_input_types"))
-            if value in {"text", "file"}
-        ]
-        or ["text"],
-        supported_file_types=_safe_string_list(row.get("supported_file_types")),
+        supported_input_types=list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
         expected_outputs=_safe_string_list(row.get("expected_outputs")),
         permissions_and_data_access_notice=str(
             row.get("permissions_and_data_access_notice") or ""
@@ -351,24 +717,15 @@ def _merge_omitted_profile_fields(
     return definition.model_copy(update=updates) if updates else definition
 
 
-def _current_acl_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Project current publication ACL aliases over an immutable execution revision."""
-
-    if "current_visibility" not in row:
-        return row
-    return {
-        **row,
-        "visibility": row.get("current_visibility"),
-        "allowed_department_ids": row.get("current_allowed_department_ids"),
-        "allowed_roles": row.get("current_allowed_roles"),
-        "allowed_user_ids": row.get("current_allowed_user_ids"),
-    }
-
-
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
     return AgentProfileAdminProjection(
         agent_id=str(row["agent_id"]),
         revision=int(row["revision"]),
+        published_revision=(
+            int(row["published_revision"])
+            if row.get("published_revision") is not None
+            else None
+        ),
         status=str(row["status"]),
         name=str(row["name"]),
         description=str(row.get("description") or ""),
@@ -376,13 +733,7 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         starter_prompts=_safe_string_list(row.get("starter_prompts")),
         capability_summary=str(row.get("capability_summary") or ""),
         recommended_tasks=_safe_string_list(row.get("recommended_tasks")),
-        supported_input_types=[
-            value
-            for value in _safe_string_list(row.get("supported_input_types"))
-            if value in {"text", "file"}
-        ]
-        or ["text"],
-        supported_file_types=_safe_string_list(row.get("supported_file_types")),
+        supported_input_types=list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
         expected_outputs=_safe_string_list(row.get("expected_outputs")),
         permissions_and_data_access_notice=str(
             row.get("permissions_and_data_access_notice") or ""
@@ -546,8 +897,8 @@ class AgentProfileAuthority:
             starter_prompts=definition.starter_prompts,
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
-            supported_input_types=definition.supported_input_types,
-            supported_file_types=definition.supported_file_types,
+            supported_input_types=list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
+            legacy_supported_file_types=list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
@@ -562,12 +913,18 @@ class AgentProfileAuthority:
             created_by=principal.user_id,
             expected_previous_revision=definition.expected_draft_revision,
         )
-        await repositories.record_agent_profile_draft(
+        aggregate = await repositories.record_agent_profile_draft(
             conn,
             tenant_id=principal.tenant_id,
             agent_id=resolved_agent_id,
             revision=int(row["revision"]),
         )
+        row = {
+            **row,
+            "published_revision": (
+                aggregate.get("published_revision") if aggregate is not None else None
+            ),
+        }
         audit_id = await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
@@ -606,6 +963,8 @@ class AgentProfileAuthority:
         )
         if draft_row is None:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+        source_content_hash = str(draft_row.get("content_hash") or "")
+        self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
         row = await repositories.create_agent_profile_revision(
@@ -625,8 +984,8 @@ class AgentProfileAuthority:
             starter_prompts=definition.starter_prompts,
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
-            supported_input_types=definition.supported_input_types,
-            supported_file_types=definition.supported_file_types,
+            supported_input_types=list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
+            legacy_supported_file_types=list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
@@ -637,7 +996,7 @@ class AgentProfileAuthority:
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
             allowed_user_ids=definition.allowed_user_ids,
-            content_hash=str(draft_row["content_hash"]),
+            content_hash=_revision_hash(definition),
             created_by=principal.user_id,
             published_by=principal.user_id,
             expected_previous_revision=expected_revision,
@@ -650,6 +1009,7 @@ class AgentProfileAuthority:
             revision=int(row["revision"]),
             content_hash=str(row["content_hash"]),
         )
+        row = {**row, "published_revision": int(row["revision"])}
         audit_id = await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
@@ -658,7 +1018,11 @@ class AgentProfileAuthority:
             target_type="agent_profile",
             target_id=agent_id,
             trace_id=standard_trace_id(agent_id),
-            payload_json={"revision": int(row["revision"]), "content_hash": str(row["content_hash"])},
+            payload_json={
+                "revision": int(row["revision"]),
+                "content_hash": str(row["content_hash"]),
+                "published_from_content_hash": source_content_hash,
+            },
         )
         return _admin_projection(row), audit_id
 
@@ -700,7 +1064,20 @@ class AgentProfileAuthority:
         )
         if published_row is None:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
-        definition = _draft_from_row(published_row)
+        latest_revision = int(aggregate["latest_revision"])
+        authoring_row = published_row
+        if latest_revision != expected_revision:
+            authoring_row = await repositories.get_agent_profile_revision(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+                revision=latest_revision,
+            )
+            if authoring_row is None:
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+        authoring_content_hash = str(authoring_row.get("content_hash") or "")
+        self._require_revision_integrity(authoring_row)
+        definition = _draft_from_row(authoring_row)
         row = await repositories.create_agent_profile_revision(
             conn,
             tenant_id=principal.tenant_id,
@@ -718,21 +1095,28 @@ class AgentProfileAuthority:
             starter_prompts=definition.starter_prompts,
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
-            supported_input_types=definition.supported_input_types,
-            supported_file_types=definition.supported_file_types,
+            supported_input_types=_safe_string_list(
+                authoring_row.get("supported_input_types")
+            )
+            or ["text"],
+            legacy_supported_file_types=_safe_string_list(
+                authoring_row.get("legacy_supported_file_types")
+            ),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
-            avatar_seed=definition.avatar_seed or agent_id,
+            # Preserve the persisted value exactly: historical hashes intentionally
+            # omit avatar_seed and use an empty value as their schema marker.
+            avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
             allowed_user_ids=definition.allowed_user_ids,
-            content_hash=str(published_row["content_hash"]),
+            content_hash=authoring_content_hash,
             created_by=principal.user_id,
-            expected_previous_revision=int(aggregate["latest_revision"]),
+            expected_previous_revision=latest_revision,
             withdrawn_from_revision=expected_revision,
         )
         await repositories.record_agent_profile_withdrawal(
@@ -751,7 +1135,7 @@ class AgentProfileAuthority:
             trace_id=standard_trace_id(agent_id),
             payload_json={"revision": expected_revision, "withdrawn_revision": int(row["revision"])},
         )
-        return _admin_projection(row), audit_id
+        return _admin_projection({**row, "published_revision": None}), audit_id
 
     async def validate_draft(
         self,
@@ -886,6 +1270,7 @@ class AgentProfileAuthority:
         principal: AuthPrincipal,
         row: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, str]]:
+        self._require_revision_integrity(row)
         if not profile_acl_allows(row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
         return await self._validate_definition(
@@ -949,7 +1334,19 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        admission = await self._admission_from_row(conn, principal=principal, row=row)
+        current_row = await repositories.get_current_published_agent_profile(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
+        if current_row is None:
+            raise HTTPException(status_code=409, detail="agent_profile_not_available")
+        admission = await self._admission_from_row(
+            conn,
+            principal=principal,
+            row=row,
+            acl_row=current_row,
+        )
         if submitted_request is not None:
             self.reject_profile_selector_conflicts(
                 submitted_request,
@@ -979,12 +1376,20 @@ class AgentProfileAuthority:
                 content_hash=content_hash,
                 for_update=True,
             )
-            if row is None or not _revision_hash_matches(row, content_hash):
+            if row is None:
+                return None
+            current_row = await repositories.get_current_published_agent_profile(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+            )
+            if current_row is None:
                 return None
             return await self._admission_from_row(
                 conn,
                 principal=principal,
                 row=row,
+                acl_row=current_row,
             )
         except (HTTPException, KeyError, TypeError, ValueError):
             return None
@@ -995,10 +1400,15 @@ class AgentProfileAuthority:
         *,
         principal: AuthPrincipal,
         row: dict[str, Any],
+        acl_row: dict[str, Any] | None = None,
     ) -> AgentProfileAdmission:
         """Reauthorize current capabilities and build private/public admission views."""
 
-        if not profile_acl_allows(_current_acl_row(row), principal=principal):
+        self._require_revision_integrity(row)
+        current_acl_row = acl_row or row
+        if current_acl_row is not row:
+            self._require_revision_integrity(current_acl_row)
+        if not profile_acl_allows(current_acl_row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
         validated_skills, model = await self._validate_definition(
             conn,
@@ -1036,6 +1446,19 @@ class AgentProfileAuthority:
             public_identity=conversation_identity_projection(row),
             configured_mcp_tool_ids=configured_mcp_tool_ids,
         )
+
+    @staticmethod
+    def _require_revision_integrity(row: dict[str, Any]) -> None:
+        content_hash = str(row.get("content_hash") or "")
+        try:
+            matches = _revision_hash_matches(row, content_hash)
+        except (HTTPException, KeyError, TypeError, ValueError):
+            matches = False
+        if not matches:
+            raise HTTPException(
+                status_code=409,
+                detail="agent_profile_revision_integrity_mismatch",
+            )
 
     async def reauthorize_pinned_run_for_replay(
         self,

@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Bot, FileText, Headphones, History, Search } from "lucide-react";
+import { History } from "lucide-react";
+import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
@@ -53,7 +54,6 @@ import {
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
-import { resolveAgentAcceptedFileTypes } from "./agentProfileFileTypes";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../types/agentOptions";
 import { shouldShowMessageOutline } from "./messageOutline";
@@ -65,7 +65,6 @@ import { uuid } from "../../../utils/uuid";
 import {
   AGENT_PROFILE_CATEGORY_LABELS,
   type AgentConversationIdentity,
-  type AgentProfileAvatarRef,
   type AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 import {
@@ -310,14 +309,6 @@ export async function recoverAgentConversationIdentity(
   return identity;
 }
 
-function AgentConversationAvatar({ avatarRef }: { avatarRef: AgentProfileAvatarRef }) {
-  const iconProps = { size: 22, "aria-hidden": true } as const;
-  if (avatarRef === "builtin:assistant") return <Headphones {...iconProps} />;
-  if (avatarRef === "builtin:document") return <FileText {...iconProps} />;
-  if (avatarRef === "builtin:research") return <Search {...iconProps} />;
-  return <Bot {...iconProps} />;
-}
-
 /** Render only the public immutable Agent identity above canonical Chat. */
 export function AgentConversationIdentityBanner({
   identity,
@@ -330,14 +321,13 @@ export function AgentConversationIdentityBanner({
       className="border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 text-[var(--theme-text)] sm:px-6"
     >
       <div className="mx-auto flex max-w-4xl items-center gap-3">
-        <span
-          aria-label={`${identity.name} 头像`}
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-          data-agent-avatar-ref={identity.avatar_ref}
-          role="img"
-        >
-          <AgentConversationAvatar avatarRef={identity.avatar_ref} />
-        </span>
+        <AgentIdentityAvatar
+          agentId={identity.agent_id}
+          avatarRef={identity.avatar_ref}
+          avatarSeed={identity.avatar_seed}
+          name={identity.name}
+          size="sm"
+        />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
@@ -434,12 +424,8 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const agentAcceptedFileTypes = useMemo(
-    () => resolveAgentAcceptedFileTypes(agentWorkspace),
-    [agentWorkspace],
-  );
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop(agentAcceptedFileTypes);
+    useDragAndDrop();
 
   const {
     approvals,
@@ -1083,7 +1069,7 @@ export function ChatAppContent({
       }
       const startProfile = agentWorkspaceStartProfile;
       if (agentWorkspaceReadOnly || !startProfile) {
-        setAgentWorkspaceError("该智能体已下架，历史会话仅供查看。");
+        setAgentWorkspaceError("该专家已下架，历史会话仅供查看。");
         return { status: "failed" };
       }
       if (
@@ -1162,10 +1148,10 @@ export function ChatAppContent({
             error.message === "agent_conversation_operation_storage_unavailable"
             ? "浏览器无法安全保存本次创建标识，请启用会话存储后重试。"
             : status === 403
-              ? "当前账号无权使用该智能体。"
+              ? "当前账号无权使用该专家。"
               : status === 404 || status === 409
-                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
-                : "暂时无法创建智能体对话，请稍后重试。",
+                ? "该专家已不可用或发布版本已更新，请返回市场重新选择。"
+                : "暂时无法创建专家对话，请稍后重试。",
         );
         return { status: "failed" };
       }

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
+import unicodedata
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
 from app.agent_profiles import list_admin_profiles, list_public_profiles, publish_draft, save_draft
@@ -49,6 +50,15 @@ def _reject_dedicated_capability_overrides(http_request: HttpRequest) -> None:
         raise HTTPException(status_code=400, detail="agent_app_override_not_allowed")
     if _DEDICATED_OVERRIDE_HEADERS.intersection(name.casefold() for name in http_request.headers):
         raise HTTPException(status_code=400, detail="agent_app_override_not_allowed")
+
+
+def _normalize_catalog_query(query: str | None) -> str | None:
+    if query is None:
+        return None
+    normalized = unicodedata.normalize("NFKC", query).strip()
+    if not normalized or len(normalized) > 160:
+        raise HTTPException(status_code=422, detail="agent_profile_query_invalid")
+    return normalized
 
 
 async def _submit_dedicated_agent_run(
@@ -104,11 +114,17 @@ async def list_agent_profiles(
 ) -> AgentProfileCatalogResponse:
     """Return only current-principal-safe published Agent Profile market cards."""
 
+    normalized_query = _normalize_catalog_query(query)
     async with transaction() as conn:
-        if query is None and category is None:
+        if normalized_query is None and category is None:
             profiles = await list_public_profiles(conn, principal=principal)
         else:
-            profiles = await list_public_profiles(conn, principal=principal, query=query, category=category)
+            profiles = await list_public_profiles(
+                conn,
+                principal=principal,
+                query=normalized_query,
+                category=category,
+            )
     return AgentProfileCatalogResponse(agent_profiles=profiles)
 
 

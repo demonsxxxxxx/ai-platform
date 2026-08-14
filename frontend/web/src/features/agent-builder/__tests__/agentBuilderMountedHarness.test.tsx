@@ -351,8 +351,7 @@ function profile(
     starter_prompts: ["帮我处理支持请求"],
     capability_summary: "在授权范围内处理企业支持请求。",
     recommended_tasks: ["支持请求分流"],
-    supported_input_types: ["text"],
-    supported_file_types: [],
+    supported_input_types: ["text", "file"],
     expected_outputs: ["处理建议"],
     permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
     avatar_ref: "builtin:assistant",
@@ -463,15 +462,15 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     });
     assert.equal(listCalls, 1);
     assert.match(container.textContent, /支持助手/);
-    const nameInput = container.querySelector('[aria-label="智能体名称"]');
-    const descriptionInput = container.querySelector('[aria-label="智能体简介"]');
+    const nameInput = container.querySelector('[aria-label="专家名称"]');
+    const descriptionInput = container.querySelector('[aria-label="专家简介"]');
     const instructionsInput = container.querySelector('[aria-label="Agent.md 初始指令"]');
     assert.equal(nameInput?.value, "支持助手");
     assert.ok(descriptionInput);
     assert.ok(instructionsInput);
     assert.equal((reactProps(descriptionInput) as unknown as { value: string }).value, "处理授权支持请求。");
     assert.equal((reactProps(instructionsInput) as unknown as { value: string }).value, "仅回答公司支持范围内的问题。");
-    const modelSelect = container.querySelector('[aria-label="智能体模型"]');
+    const modelSelect = container.querySelector('[aria-label="专家模型"]');
     assert.ok(modelSelect);
     assert.equal((reactProps(modelSelect) as unknown as { value: string }).value, "model-id");
     assert.match(container.textContent, /support-skill/);
@@ -479,7 +478,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.match(container.textContent, /支持知识检索/);
     assert.match(container.textContent, /revision 4/);
 
-    const refreshButton = container.querySelector('[aria-label="刷新智能体与授权目录"]');
+    const refreshButton = container.querySelector('[aria-label="刷新专家与授权目录"]');
     assert.ok(refreshButton);
     await React.act(async () => {
       await reactProps(refreshButton).onClick?.({} as never);
@@ -487,17 +486,57 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     });
     assert.equal(listCalls, 2);
     assert.equal(catalogRetryCalls, 1);
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "支持助手新版");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "支持助手新版");
     assert.match(container.textContent, /revision 5/);
 
     await React.act(async () => {
-      await reactProps(findButton(container, "新建智能体")).onClick?.({} as never);
+      await reactProps(findButton(container, "新建专家")).onClick?.({} as never);
       await Promise.resolve();
     });
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "");
     assert.match(container.textContent, /本地未保存/);
     assert.equal(container.textContent.includes("local-draft-1"), false);
     assert.equal(container.textContent.includes("local-draft-2"), false);
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("mounted list fields preserve separators while editing and normalize on blur", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  agentProfileApi.listAdmin = async () => ({ agent_profiles: [profile()] });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    const recommendedTasks = container.querySelector('[aria-label="推荐任务（可选）"]');
+    assert.ok(recommendedTasks);
+    await React.act(async () => {
+      reactProps(recommendedTasks).onFocus?.({ target: recommendedTasks } as never);
+      recommendedTasks.value = "任务一,任务二";
+      reactProps(recommendedTasks).onChange?.({ target: recommendedTasks } as never);
+      await Promise.resolve();
+    });
+    assert.equal(recommendedTasks.value, "任务一,任务二");
+
+    await React.act(async () => {
+      reactProps(recommendedTasks).onBlur?.({ target: recommendedTasks } as never);
+      await Promise.resolve();
+    });
+    assert.equal(recommendedTasks.value, "任务一\n任务二");
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());
@@ -538,7 +577,7 @@ test("mounted edit disables publish until save materializes a revision, then ado
       }));
       await flush();
     });
-    const nameInput = container.querySelector('[aria-label="智能体名称"]');
+    const nameInput = container.querySelector('[aria-label="专家名称"]');
     assert.ok(nameInput);
     await React.act(async () => {
       nameInput.value = "支持助手已编辑";
@@ -602,8 +641,8 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
       }));
       await flush();
     });
-    const nameInput = container.querySelector('[aria-label="智能体名称"]');
-    const otherProfile = container.querySelector('[aria-label="编辑智能体 其他助手，草稿，revision 4"]');
+    const nameInput = container.querySelector('[aria-label="专家名称"]');
+    const otherProfile = container.querySelector('[aria-label="编辑专家 其他助手，草稿，revision 4"]');
     assert.ok(nameInput);
     assert.ok(otherProfile);
     await React.act(async () => {
@@ -616,16 +655,16 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
       await Promise.resolve();
     });
     assert.match(document.body.textContent, /放弃未保存更改/);
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "未保存名称");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "未保存名称");
 
     await React.act(async () => {
       await reactProps(findButton(document.body, "继续编辑")).onClick?.({} as never);
       await Promise.resolve();
     });
     assert.doesNotMatch(document.body.textContent, /放弃未保存更改/);
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "未保存名称");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "未保存名称");
 
-    const otherProfileAfterCancel = container.querySelector('[aria-label="编辑智能体 其他助手，草稿，revision 4"]');
+    const otherProfileAfterCancel = container.querySelector('[aria-label="编辑专家 其他助手，草稿，revision 4"]');
     assert.ok(otherProfileAfterCancel);
     await React.act(async () => {
       await reactProps(otherProfileAfterCancel).onClick?.({} as never);
@@ -636,12 +675,12 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
       await reactProps(findButton(document.body, "放弃并切换")).onClick?.({} as never);
       await Promise.resolve();
     });
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "其他助手");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "其他助手");
     await React.act(async () => {
-      await reactProps(findButton(container, "新建智能体")).onClick?.({} as never);
+      await reactProps(findButton(container, "新建专家")).onClick?.({} as never);
       await Promise.resolve();
     });
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "");
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());
@@ -751,7 +790,7 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
       }));
       await flush();
     });
-    const nameInput = container.querySelector('[aria-label="智能体名称"]');
+    const nameInput = container.querySelector('[aria-label="专家名称"]');
     assert.ok(nameInput);
     await React.act(async () => {
       nameInput.value = "重试后的名称";
@@ -767,7 +806,7 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
     assert.match(container.textContent, /HTTP 409/);
     assert.match(container.textContent, /agent_profile_revision_stale/);
     assert.doesNotMatch(container.textContent, /raw database|private payload/);
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "重试后的名称");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "重试后的名称");
     assert.match(container.textContent, /revision 4/);
 
     await React.act(async () => {
@@ -780,11 +819,11 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
       await flush();
     });
     assert.equal(listCalls, 2);
-    assert.equal(container.querySelector('[aria-label="智能体名称"]')?.value, "服务端最新名称");
+    assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "服务端最新名称");
     assert.match(container.textContent, /revision 5/);
     assert.doesNotMatch(container.textContent, /agent_profile_revision_stale/);
 
-    const recoveredNameInput = container.querySelector('[aria-label="智能体名称"]');
+    const recoveredNameInput = container.querySelector('[aria-label="专家名称"]');
     assert.ok(recoveredNameInput);
     await React.act(async () => {
       recoveredNameInput.value = "恢复后再次编辑";
@@ -830,15 +869,15 @@ test("mounted loading, empty, error, and non-admin states are explicit and safe"
       }));
       await Promise.resolve();
     });
-    assert.match(container.textContent, /正在加载智能体/);
+    assert.match(container.textContent, /正在加载专家/);
     await React.act(async () => {
       resolveList?.({ agent_profiles: [] });
       await flush();
     });
-    assert.match(container.textContent, /当前没有服务端智能体/);
+    assert.match(container.textContent, /当前没有服务端专家/);
 
     mode = "error";
-    const refreshButton = container.querySelector('[aria-label="刷新智能体与授权目录"]');
+    const refreshButton = container.querySelector('[aria-label="刷新专家与授权目录"]');
     assert.ok(refreshButton);
     await React.act(async () => {
       await reactProps(refreshButton).onClick?.({} as never);

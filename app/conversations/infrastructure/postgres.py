@@ -143,10 +143,10 @@ async def list_authorized_sessions(
                profile.capability_summary as agent_profile_capability_summary,
                profile.recommended_tasks as agent_profile_recommended_tasks,
                profile.supported_input_types as agent_profile_supported_input_types,
-               profile.supported_file_types as agent_profile_supported_file_types,
                profile.expected_outputs as agent_profile_expected_outputs,
                profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
+               profile.avatar_seed as agent_profile_avatar_seed,
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
@@ -188,10 +188,10 @@ async def get_authorized_session_projection(
                profile.capability_summary as agent_profile_capability_summary,
                profile.recommended_tasks as agent_profile_recommended_tasks,
                profile.supported_input_types as agent_profile_supported_input_types,
-               profile.supported_file_types as agent_profile_supported_file_types,
                profile.expected_outputs as agent_profile_expected_outputs,
                profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
+               profile.avatar_seed as agent_profile_avatar_seed,
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
@@ -468,10 +468,10 @@ async def list_authorized_agent_conversations(
                profile.capability_summary as agent_profile_capability_summary,
                profile.recommended_tasks as agent_profile_recommended_tasks,
                profile.supported_input_types as agent_profile_supported_input_types,
-               profile.supported_file_types as agent_profile_supported_file_types,
                profile.expected_outputs as agent_profile_expected_outputs,
                profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
+               profile.avatar_seed as agent_profile_avatar_seed,
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions

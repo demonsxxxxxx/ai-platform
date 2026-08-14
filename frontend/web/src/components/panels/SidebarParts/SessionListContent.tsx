@@ -117,7 +117,7 @@ export function SessionListContent({
     {
       key: "agentMarket",
       icon: Bot,
-      label: "智能体市场",
+      label: "专家市场",
       onClick: () => navigate("/agent-market"),
     },
     ...(isAiAdmin
@@ -125,7 +125,7 @@ export function SessionListContent({
           {
             key: "agentBuilder" as const,
             icon: Bot,
-            label: "智能体管理",
+            label: "专家管理",
             onClick: () => navigate("/agent-builder"),
           },
         ]

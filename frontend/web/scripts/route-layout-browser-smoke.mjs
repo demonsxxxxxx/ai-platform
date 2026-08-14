@@ -11,20 +11,49 @@ const evidenceDir = resolve(
 const profile = {
   agent_id: "agt_support",
   expected_revision: 1,
-  name: "支持助手",
+  name: "支持专家",
   description: "处理企业支持请求。",
   welcome_message: "你好",
   starter_prompts: ["帮我整理请求"],
   capability_summary: "基于当前授权提供支持。",
   recommended_tasks: ["归纳问题", "形成行动项"],
   supported_input_types: ["text", "file"],
-  supported_file_types: ["pdf"],
   expected_outputs: ["支持建议"],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
+  avatar_seed: "support-expert-1",
   category: "support",
   published_at: "2026-08-09T00:00:00Z",
 };
+const profiles = [
+  profile,
+  {
+    ...profile,
+    agent_id: "agt_contract",
+    expected_revision: 3,
+    name: "合同审阅专家",
+    description: "识别合同中的风险条款、责任边界与缺失约定。",
+    capability_summary: "从法务与业务协作视角整理风险、证据和修改建议。",
+    recommended_tasks: ["审阅合同条款", "提取履约风险", "形成修改建议"],
+    starter_prompts: ["请审阅这份合同并标记需要确认的条款"],
+    avatar_ref: "builtin:research",
+    avatar_seed: "contract-expert-3",
+    category: "research",
+  },
+  {
+    ...profile,
+    agent_id: "agt_ops",
+    expected_revision: 2,
+    name: "运营分析专家",
+    description: "归纳运营数据，定位异常并形成可执行的改进清单。",
+    capability_summary: "将零散运营信息整理为趋势、原因和下一步行动。",
+    recommended_tasks: ["分析运营周报", "定位指标异常", "拆解改进动作"],
+    starter_prompts: ["请分析这批运营数据并给出优先级建议"],
+    avatar_ref: "builtin:document",
+    avatar_seed: "operations-expert-2",
+    category: "operations",
+  },
+];
 
 function bootstrapSource() {
   return `(() => {
@@ -42,7 +71,25 @@ function bootstrapSource() {
       file_count: 1, installed_from: 'manual', is_published: true, marketplace_is_active: true,
       created_at: '2026-08-09T00:00:00Z', updated_at: '2026-08-09T00:00:00Z'
     };
-    const profile = ${JSON.stringify(profile)};
+    const profiles = ${JSON.stringify(profiles)};
+    const profile = profiles[0];
+    const adminProfile = {
+      ...profile,
+      revision: profile.expected_revision,
+      status: 'published',
+      content_hash: 'a'.repeat(64),
+      instructions: '你是一位企业支持专家。先理解任务，再从授权 Skill Set 中自主选择需要的能力。',
+      model_id: 'model-enterprise',
+      selected_skill: { skill_id: 'qa-file-reviewer', expected_version: '0.1.0' },
+      skill_set: [{ skill_id: 'qa-file-reviewer', expected_version: '0.1.0' }],
+      mcp_tool_ids: [],
+      avatar_asset_id: null,
+      visibility: 'tenant',
+      allowed_department_ids: [],
+      allowed_roles: [],
+      allowed_user_ids: [],
+      created_at: '2026-08-08T00:00:00Z'
+    };
     window.fetch = async (input, init = {}) => {
       const raw = typeof input === 'string' ? input : input.url;
       const url = new URL(raw, location.origin);
@@ -53,7 +100,15 @@ function bootstrapSource() {
         roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','marketplace:admin','agent_profile:admin'],
         is_admin: true, source: 'cookie_session'
       });
+      if (url.pathname === '/api/ai/auth/bootstrap' && method === 'POST') return json({
+        status: 'ready', protocol_version: 1
+      });
       if (url.pathname === '/api/auth/profile') return json({ metadata: { pinned_model_ids: [] } });
+      if (url.pathname === '/api/auth/profile/metadata' && method === 'PUT') return json({ metadata: { pinned_model_ids: [] } });
+      if (url.pathname === '/api/auth/oauth/providers') return json({
+        providers: [], registration_enabled: false,
+        turnstile: { enabled: false, site_key: '', require_on_login: false, require_on_register: false, require_on_password_change: false }
+      });
       if (url.pathname === '/api/skills' || url.pathname === '/api/skills/') return json({
         skills: [skill], total: 1, skip: 0, limit: 20, available_tags: ['review'],
         effective_permissions: ['skill:admin','skill:read','skill:write','skill:delete'], effective_permissions_known: true, catalog_read_resolved: true
@@ -75,11 +130,26 @@ function bootstrapSource() {
         status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
       });
       if (url.pathname === '/api/roles/') return json({ roles: [{ id: 'reviewer', name: 'reviewer', description: 'Reviewer', permissions: [], is_system: false }], total: 1, skip: 0, limit: 100 });
-      if (url.pathname === '/api/ai/agent-profiles') return json({ agent_profiles: [profile] });
+      if (url.pathname === '/api/ai/agent-profiles') return json({ agent_profiles: profiles });
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
-      if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [] });
-      if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [] });
-      if (url.pathname === '/api/agent/models/available') return json({ models: [], count: 0, enabled_count: 0, default_model_id: null });
+      if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
+      if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
+      if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/agent/models/available') return json({
+        models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
+        count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
+      });
+      if (url.pathname === '/api/upload/config') return json({
+        enabled: true,
+        provider: 's3',
+        maxFiles: 32,
+        uploadLimitsBytes: {
+          image: 20971520,
+          video: 104857600,
+          audio: 52428800,
+          document: 52428800
+        }
+      });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.includes('notification')) return json([]);
@@ -124,6 +194,7 @@ const cases = [
       "[data-agent-market-search]",
       "[data-agent-market-filter]",
       "[data-agent-market-card]",
+      "[data-agent-market-card] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
     ],
     requiredRequests: ["/api/ai/agent-profiles"],
   },
@@ -132,14 +203,20 @@ const cases = [
     selector: "[data-agent-market-detail]",
     name: "market-detail",
     scroller: "[data-agent-market-detail]",
-    requiredSelectors: ["[data-agent-market-start-chat]"],
+    requiredSelectors: [
+      "[data-agent-market-start-chat]",
+      "[data-agent-market-detail] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
+    ],
     requiredRequests: ["/api/ai/agent-profiles/agt_support"],
   },
   {
     path: "/agent-market/agt_support/1/chat",
     selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']",
     name: "market-workspace",
-    requiredSelectors: ["[data-agent-workspace-welcome]", "[data-agent-workspace-start]"],
+    requiredSelectors: [
+      "[data-agent-chat-opening] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
+      "textarea",
+    ],
     requiredRequests: ["/api/ai/agent-profiles/agt_support"],
   },
   {
@@ -147,7 +224,12 @@ const cases = [
     selector: "[data-agent-builder-workbench]",
     name: "builder",
     scroller: "[data-agent-builder-workbench] > div:last-child",
-    requiredSelectors: ["[data-agent-builder-workbench] input", "[data-agent-builder-save-reason]"],
+    requiredSelectors: [
+      "[data-agent-builder-workbench] input",
+      "[data-agent-builder-save-reason]",
+      "[data-agent-avatar-picker]",
+      "[data-agent-avatar-picker] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
+    ],
     requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
   },
 ];
@@ -173,9 +255,28 @@ async function runCase(viewport, scenario) {
   try {
     await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource() });
     await browser.client.send("Page.navigate", { url: `${baseUrl}${scenario.path}` });
-    await browser.client.waitFor(`Boolean(document.querySelector(${JSON.stringify(scenario.selector)}))`, `${viewport.name}:${scenario.name}`);
+    try {
+      await browser.client.waitFor(
+        `Boolean(document.querySelector(${JSON.stringify(scenario.selector)}))`,
+        `${viewport.name}:${scenario.name}`,
+      );
+    } catch (error) {
+      const diagnostic = await browser.client.evaluate(`(() => ({
+        url: location.href,
+        text: document.body?.innerText?.slice(0, 1000) || '',
+        errors: window.__routeLayoutSmoke?.errors || [],
+        requests: window.__routeLayoutSmoke?.requests || []
+      }))()`);
+      throw new Error(`route_mount_failed:${viewport.name}:${scenario.name}:${JSON.stringify(diagnostic)}:${String(error)}`);
+    }
     await browser.client.waitFor(
-      `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => Boolean(document.querySelector(selector)))`,
+      `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return false;
+        if (!(element instanceof HTMLImageElement)) return true;
+        const rect = element.getBoundingClientRect();
+        return element.complete && element.naturalWidth > 0 && element.naturalHeight > 0 && rect.width > 0 && rect.height > 0;
+      })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
     const layout = await browser.client.evaluate(`(() => {

@@ -23,7 +23,6 @@ from app.agent_profile_execution_validation import validate_agent_profile_execut
 from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
-from app.file_type_validation import normalize_profile_file_type
 from app.skills.release_policy import (
     validate_release_decision_lock,
     validate_release_decision_payload,
@@ -64,6 +63,12 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
+
+
+def _require_universal_agent_input_types(values: list[str]) -> list[str]:
+    if values != ["text", "file"]:
+        raise ValueError("supported_input_types must be the universal text/file capability")
+    return values
 
 
 class CapabilityDistributionResponse(BaseModel):
@@ -226,11 +231,10 @@ class AgentProfileDraftRequest(BaseModel):
     capability_summary: str = Field(default="", max_length=4_000)
     recommended_tasks: list[str] = Field(default_factory=list, max_length=12)
     supported_input_types: list[Literal["text", "file"]] = Field(
-        default_factory=lambda: ["text"],
+        default_factory=lambda: ["text", "file"],
         min_length=1,
         max_length=2,
     )
-    supported_file_types: list[str] = Field(default_factory=list, max_length=32)
     expected_outputs: list[str] = Field(default_factory=list, max_length=16)
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
@@ -268,23 +272,8 @@ class AgentProfileDraftRequest(BaseModel):
     @field_validator("supported_input_types")
     @classmethod
     def normalize_supported_input_types(cls, value: list[str]):
-        normalized = list(dict.fromkeys(value))
-        if "file" not in normalized:
-            return normalized
-        return [item for item in ("text", "file") if item in normalized]
-
-    @field_validator("supported_file_types")
-    @classmethod
-    def normalize_supported_file_types(cls, value: list[str]):
-        normalized: list[str] = []
-        for item in value:
-            candidate = normalize_profile_file_type(item)
-            if candidate is None:
-                raise ValueError("supported_file_types contains an invalid media type or extension")
-            if candidate in normalized:
-                raise ValueError("supported_file_types contains duplicates")
-            normalized.append(candidate)
-        return normalized
+        del value
+        return ["text", "file"]
 
     @field_validator("avatar_asset_id")
     @classmethod
@@ -421,14 +410,17 @@ class AgentProfilePublicProjection(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
+
+    _validate_supported_input_types = field_validator("supported_input_types")(
+        _require_universal_agent_input_types
+    )
 
 
 class AgentProfileCatalogResponse(BaseModel):
@@ -446,6 +438,7 @@ class AgentProfileAdminProjection(BaseModel):
 
     agent_id: str
     revision: int
+    published_revision: int | None = Field(default=None, ge=1)
     status: Literal["draft", "published", "withdrawn"]
     name: str
     description: str = ""
@@ -453,8 +446,7 @@ class AgentProfileAdminProjection(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
@@ -473,6 +465,10 @@ class AgentProfileAdminProjection(BaseModel):
     content_hash: str
     created_at: Any | None = None
     published_at: Any | None = None
+
+    _validate_supported_input_types = field_validator("supported_input_types")(
+        _require_universal_agent_input_types
+    )
 
 
 class AgentProfileAdminListResponse(BaseModel):
@@ -545,14 +541,17 @@ class AgentConversationIdentity(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
+
+    _validate_supported_input_types = field_validator("supported_input_types")(
+        _require_universal_agent_input_types
+    )
 
 
 class CreateRunRequest(BaseModel):

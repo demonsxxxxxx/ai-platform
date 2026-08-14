@@ -11,11 +11,25 @@ from app.agent_profiles import (
     reject_profile_selector_conflicts,
     resolve_profile_for_admission,
 )
-from app.agent_apps.authority import _revision_hash
+from app.agent_apps.authority import (
+    _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+    AgentProfileAuthority,
+    _legacy_revision_hash,
+    _legacy_skill_set_revision_hash,
+    _lifecycle_revision_hash,
+    _mvp_revision_hash,
+    _omitted_file_type_skill_set_revision_hash,
+    _pre_avatar_seed_skill_set_revision_hash,
+    _revision_hash,
+    _revision_hash_matches,
+)
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
+    AgentConversationIdentity,
     AgentProfileAdminProjection,
+    AgentProfilePublicProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
@@ -26,6 +40,95 @@ from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app import repositories as repository_module
 from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+
+
+def test_agent_profile_draft_rejects_retired_supported_file_types():
+    with pytest.raises(ValueError):
+        AgentProfileDraftRequest.model_validate(
+            {
+                "name": "Support expert",
+                "instructions": "Use the configured Skills autonomously.",
+                "model_id": "model-a",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
+                "supported_file_types": ["application/pdf"],
+                "expected_draft_revision": 0,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (
+            AgentProfilePublicProjection,
+            {"agent_id": "agt_public", "expected_revision": 1, "name": "Public"},
+        ),
+        (
+            AgentProfileAdminProjection,
+            {
+                "agent_id": "agt_admin",
+                "revision": 1,
+                "status": "draft",
+                "name": "Admin",
+                "instructions": "Private",
+                "model_id": "model-a",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
+                "selected_skill": {
+                    "skill_id": "general-chat",
+                    "expected_version": "version-a",
+                },
+                "content_hash": "a" * 64,
+            },
+        ),
+        (
+            AgentConversationIdentity,
+            {"agent_id": "agt_conversation", "revision": 1, "name": "Conversation"},
+        ),
+    ],
+)
+def test_agent_profile_projections_require_universal_text_and_file_input(model, payload):
+    assert model.model_validate(payload).supported_input_types == ["text", "file"]
+    with pytest.raises(ValueError, match="universal text/file"):
+        model.model_validate({**payload, "supported_input_types": ["text"]})
+
+
+def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_controls():
+    seed = "\U0001f680" * 128
+    definition = AgentProfileDraftRequest.model_validate(
+        {**profile_draft_payload("Private instruction"), "avatar_seed": seed}
+    )
+    assert definition.avatar_seed == seed
+
+    with pytest.raises(ValueError, match="control characters"):
+        AgentProfileDraftRequest.model_validate(
+            {**profile_draft_payload("Private instruction"), "avatar_seed": "\x1fseed"}
+        )
+
+    for historical_control in ("\x7f", "\x80", "\x85", "\x9f"):
+        historical_seed = f"safe{historical_control}seed"
+        definition = AgentProfileDraftRequest.model_validate(
+            {**profile_draft_payload("Private instruction"), "avatar_seed": historical_seed}
+        )
+        assert definition.avatar_seed == historical_seed
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" seed ", "seed"),
+        ("\tseed", "agt_fallback"),
+        ("safe\x1fseed", "agt_fallback"),
+        ("", "agt_fallback"),
+        ("x" * 129, "agt_fallback"),
+        (None, "agt_fallback"),
+    ],
+)
+def test_safe_agent_avatar_seed_has_one_projection_contract(value, expected):
+    assert safe_agent_avatar_seed(value, fallback="agt_fallback") == expected
 
 
 @pytest.mark.asyncio
@@ -126,8 +229,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
-        "supported_file_types": [],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
@@ -149,8 +251,6 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         ("starter_prompts", ["Review this request"]),
         ("capability_summary", "Reviews approved requests."),
         ("recommended_tasks", ["Policy review"]),
-        ("supported_input_types", ["text", "file"]),
-        ("supported_file_types", ["application/pdf"]),
         ("expected_outputs", ["Review memo"]),
         ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
         ("avatar_asset_id", "file-avatar-a"),
@@ -247,78 +347,265 @@ def test_agent_profile_rejects_ambiguous_skill_sets(skill_set):
         )
 
 
-def test_agent_profile_file_type_contract_normalizes_and_matches_mime_wildcard():
-    from app.repositories import _agent_profile_file_type_allowed
-
+def test_agent_profile_normalizes_legacy_input_mode_to_universal_attachment_access():
     definition = AgentProfileDraftRequest.model_validate(
         {
             **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text", "file"],
-            "supported_file_types": [" IMAGE/* ", "application/pdf", ".docx"],
+            "supported_input_types": ["text"],
         }
     )
 
-    assert definition.supported_file_types == ["image/*", "application/pdf", ".docx"]
-    assert _agent_profile_file_type_allowed(
-        {"original_name": "diagram.png", "content_type": "image/png"},
-        allowed_file_types=definition.supported_file_types,
-    )
-    assert not _agent_profile_file_type_allowed(
-        {"original_name": "report.pdf", "content_type": "application/pdf"},
-        allowed_file_types=[definition.supported_file_types[0]],
-    )
+    assert definition.supported_input_types == ["text", "file"]
 
 
-def test_agent_profile_file_type_contract_accepts_standard_docx_mime_and_observed_parameters():
-    from app.repositories import _agent_profile_file_type_allowed
-
-    docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     definition = AgentProfileDraftRequest.model_validate(
-        {
-            **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text", "file"],
-            "supported_file_types": [docx_mime, " APPLICATION/PDF "],
-        }
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    legacy_hash = _legacy_skill_set_revision_hash(
+        definition,
+        legacy_supported_file_types=["word"],
+    )
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "legacy_supported_file_types": ["word"],
+    }
+
+    assert _revision_hash_matches(row, legacy_hash)
+    assert _revision_hash(definition) != legacy_hash
+    assert "supported_file_types" not in definition.model_dump(mode="json")
+
+
+def test_new_profile_hash_is_accepted_by_the_rolling_worker_contract():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+
+    assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
+        definition,
+        legacy_supported_file_types=_ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
     )
 
-    assert definition.supported_file_types == [docx_mime, "application/pdf"]
-    assert _agent_profile_file_type_allowed(
-        {"original_name": "report.docx", "content_type": docx_mime},
-        allowed_file_types=definition.supported_file_types,
+
+def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_untampered_data():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    current_row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+    }
+    legacy_skill_set_row = {
+        **current_row,
+        "supported_input_types": ["text"],
+        "legacy_supported_file_types": ["application/pdf"],
+    }
+    pre_avatar_row = {
+        **legacy_skill_set_row,
+        "avatar_seed": "",
+        "supported_input_types": ["text"],
+    }
+    lifecycle_row = {
+        **pre_avatar_row,
+        "legacy_supported_file_types": [],
+    }
+    expected_hashes = {
+        "mvp": "be497d2fe2c215f93754ed81bf71381716ed327f7929ffc0247160dba436261b",
+        "lifecycle": "8a7f56cc8fa02a34766a2a92d8191506c41f073a40729e0e66ae25e16e4411b5",
+        "enterprise": "738787e259c84d722bcd6f67d5b79c48c6a44fbd09d65d45219b4316970f3e55",
+        "pre_avatar": "fafc5e59592db25119f09339c91fd1ba8513fe3a88dbfbf50185363800cc82b0",
+        "legacy_skill_set": "af5557ab47e5308b0045df18146100853adf4578455e99331db813d592767868",
+        "omitted_file_type": "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
+        "current": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
+    }
+    generated_hashes = {
+        "mvp": _mvp_revision_hash(definition),
+        "lifecycle": _lifecycle_revision_hash(definition),
+        "enterprise": _legacy_revision_hash(
+            definition,
+            legacy_supported_input_types=["text"],
+            legacy_supported_file_types=["application/pdf"],
+        ),
+        "pre_avatar": _pre_avatar_seed_skill_set_revision_hash(
+            definition,
+            legacy_supported_input_types=["text"],
+            legacy_supported_file_types=["application/pdf"],
+        ),
+        "legacy_skill_set": _legacy_skill_set_revision_hash(
+            definition,
+            legacy_supported_input_types=["text"],
+            legacy_supported_file_types=["application/pdf"],
+        ),
+        "omitted_file_type": _omitted_file_type_skill_set_revision_hash(definition),
+        "current": _revision_hash(definition),
+    }
+    rows_by_schema = {
+        "mvp": lifecycle_row,
+        "lifecycle": lifecycle_row,
+        "enterprise": pre_avatar_row,
+        "pre_avatar": pre_avatar_row,
+        "legacy_skill_set": legacy_skill_set_row,
+        "omitted_file_type": current_row,
+        "current": current_row,
+    }
+
+    assert generated_hashes == expected_hashes
+    assert all(
+        _revision_hash_matches(rows_by_schema[schema], content_hash)
+        for schema, content_hash in expected_hashes.items()
     )
-    assert _agent_profile_file_type_allowed(
-        {"original_name": "report.pdf", "content_type": "application/pdf; charset=binary"},
-        allowed_file_types=definition.supported_file_types,
+
+    assert all(
+        not _revision_hash_matches(
+            {
+                **rows_by_schema[schema],
+                "instructions": "changed without a new immutable hash",
+            },
+            content_hash,
+        )
+        for schema, content_hash in expected_hashes.items()
     )
 
 
 @pytest.mark.parametrize(
-    "invalid_file_type",
+    ("supported_input_types", "avatar_seed", "expected_hash"),
     [
-        "*/pdf",
-        "image/**",
-        "*/*",
-        "image/*; charset=utf-8",
-        "image/ *",
-        "application/pdf; charset=binary",
-        f"application/{'a' * 116}",
+        (
+            ["text"],
+            "agt_support",
+            "4b119840182fd953bfb78e2e7724bb6d05ce949dcf915c38baeb5cbb4d10203a",
+        ),
+        (
+            ["file"],
+            "agt_support",
+            "673256a00512ac265b80d3fb3b2f4f227d9a8f442526ae24d3d16dd47015c9b8",
+        ),
+        (
+            ["text", "file"],
+            "agt_support",
+            "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
+        ),
+        (
+            ["text"],
+            "",
+            "1c1ec2a973d36f0d3905b944eca7a075d15a3845435ff08015f1c6a28899fca4",
+        ),
     ],
 )
-def test_agent_profile_file_type_contract_rejects_invalid_wildcards_with_422(
-    monkeypatch, invalid_file_type
+def test_omitted_file_type_hash_uses_exact_historical_input_and_avatar_values(
+    supported_input_types,
+    avatar_seed,
+    expected_hash,
 ):
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    response = TestClient(create_app()).post(
-        "/api/ai/admin/agent-profiles",
-        headers=admin_headers(),
-        json={
-            **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text", "file"],
-            "supported_file_types": [invalid_file_type],
-        },
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "supported_input_types": supported_input_types,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "avatar_seed": avatar_seed,
+    }
+
+    assert (
+        _omitted_file_type_skill_set_revision_hash(
+            definition,
+            legacy_supported_input_types=supported_input_types,
+            legacy_avatar_seed=avatar_seed,
+        )
+        == expected_hash
+    )
+    assert _revision_hash_matches(row, expected_hash)
+
+
+def test_early_profile_hashes_cannot_authorize_fields_their_schema_did_not_cover():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "avatar_seed": "",
+        "supported_input_types": ["text"],
+        "legacy_supported_file_types": [],
+    }
+
+    mvp_hash = _mvp_revision_hash(definition)
+    lifecycle_hash = _lifecycle_revision_hash(definition)
+    enterprise_hash = _legacy_revision_hash(
+        definition,
+        legacy_supported_input_types=["text"],
+    )
+    skill_set_hash = _pre_avatar_seed_skill_set_revision_hash(
+        definition,
+        legacy_supported_input_types=["text"],
+    )
+    assert all(
+        _revision_hash_matches(row, content_hash)
+        for content_hash in (mvp_hash, lifecycle_hash, enterprise_hash, skill_set_hash)
     )
 
-    assert response.status_code == 422
+    assert not _revision_hash_matches({**row, "visibility": "restricted"}, mvp_hash)
+    assert not _revision_hash_matches(
+        {**row, "welcome_message": "not covered by lifecycle hash"},
+        lifecycle_hash,
+    )
+    assert not _revision_hash_matches(
+        {**row, "avatar_seed": "not-covered-by-enterprise-hash"},
+        enterprise_hash,
+    )
+    assert not _revision_hash_matches(
+        {**row, "avatar_seed": "not-covered-by-skill-set-hash"},
+        skill_set_hash,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("skill_set", ["malformed-skill"]),
+        ("skill_set", {"malformed": "skill-set"}),
+        ("skill_set", []),
+        ("skill_set", None),
+        ("mcp_tool_ids", {"malformed": "tool-list"}),
+        ("starter_prompts", [{}]),
+        ("recommended_tasks", [17]),
+        ("supported_input_types", {"malformed": "input-list"}),
+        ("expected_outputs", [False]),
+        ("allowed_department_ids", [17]),
+        ("allowed_roles", [False]),
+        ("allowed_user_ids", [{}]),
+        ("avatar_ref", "malformed-avatar"),
+        ("category", "malformed-category"),
+        ("visibility", "malformed-visibility"),
+    ],
+)
+def test_revision_integrity_normalizes_malformed_historical_json(field, value):
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "skill_id": "general-chat",
+        "skill_version": "version-a",
+        "content_hash": _revision_hash(definition),
+        field: value,
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        AgentProfileAuthority._require_revision_integrity(row)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "agent_profile_revision_integrity_mismatch"
 
 
 def test_selected_profile_rejects_client_owned_capability_selectors():
@@ -426,14 +713,104 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "starter_prompts": [],
                     "capability_summary": "",
                     "recommended_tasks": [],
-                    "supported_input_types": ["text"],
-                    "supported_file_types": [],
+                    "supported_input_types": ["text", "file"],
                     "expected_outputs": [],
                     "permissions_and_data_access_notice": "",
                     "published_at": None,
                 }
         ]
     }
+
+
+def test_agent_profile_market_normalizes_unicode_search_before_repository_query(monkeypatch):
+    observed: list[tuple[str | None, str | None]] = []
+
+    async def profiles(_conn, *, principal, query, category):
+        assert principal.tenant_id == "tenant-a"
+        observed.append((query, category))
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+
+    response = TestClient(create_app()).get(
+        "/api/ai/agent-profiles",
+        headers=ordinary_headers(),
+        params={"query": "Ａｕｄｉｔ", "category": "general"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"agent_profiles": []}
+    assert observed == [("Audit", "general")]
+
+
+def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normalization(monkeypatch):
+    called = False
+
+    async def profiles(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+
+    response = TestClient(create_app()).get(
+        "/api/ai/agent-profiles",
+        headers=ordinary_headers(),
+        params={"query": "\ufdfa" * 10},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "agent_profile_query_invalid"
+    assert not called
+
+
+def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeypatch):
+    profile = AgentProfileAdminProjection(
+        agent_id="agt_support",
+        revision=4,
+        published_revision=4,
+        status="published",
+        name="Support assistant",
+        description="Approved support helper.",
+        instructions="Keep answers concise.",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        content_hash="a" * 64,
+    )
+
+    async def profiles(_conn, *, principal):
+        assert principal.tenant_id == "tenant-a"
+        return [profile]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_admin_profiles", profiles)
+    client = TestClient(create_app())
+
+    legacy_response = client.get(
+        "/api/ai/admin/agent-profiles",
+        headers=admin_headers(),
+    )
+    current_response = client.get(
+        "/api/ai/admin/agent-profiles",
+        headers={**admin_headers(), "x-ai-agent-profile-schema": "2"},
+    )
+
+    assert legacy_response.status_code == 200
+    assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
+    assert current_response.status_code == 200
+    assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
+    schema = client.get("/openapi.json").json()
+    admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
+    assert "supported_file_types" not in admin_projection["properties"]
+    assert current_response.json()["agent_profiles"][0]["published_revision"] == 4
 
 
 def test_agent_profile_admin_write_requires_admin(monkeypatch):

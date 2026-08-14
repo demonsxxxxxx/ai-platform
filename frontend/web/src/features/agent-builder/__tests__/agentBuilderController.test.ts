@@ -56,8 +56,7 @@ function profile(
     starter_prompts: ["请审阅这份材料"],
     capability_summary: "在授权范围内审阅企业文档。",
     recommended_tasks: ["文档审阅"],
-    supported_input_types: ["text"],
-    supported_file_types: [],
+    supported_input_types: ["text", "file"],
     expected_outputs: ["审阅意见"],
     permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
     avatar_ref: "builtin:document",
@@ -294,8 +293,7 @@ test("edit disables publish, save fences the exact revision, then publish adopts
       starter_prompts: ["请审阅这份材料"],
       capability_summary: "在授权范围内审阅企业文档。",
       recommended_tasks: ["文档审阅"],
-      supported_input_types: ["text"],
-      supported_file_types: [],
+      supported_input_types: ["text", "file"],
       expected_outputs: ["审阅意见"],
       permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
       instructions: "更新后的说明",
@@ -388,6 +386,22 @@ test("safe save errors expose typed status and code but never raw messages", asy
   assert.doesNotMatch(unknown.message, /secret backend copy/);
   assert.equal(unknown.status, undefined);
   assert.equal(unknown.code, undefined);
+});
+
+test("revision integrity errors use action-neutral copy for publish and unpublish", () => {
+  for (const action of ["publish", "unpublish"] as const) {
+    const projected = projectAgentBuilderError(
+      action,
+      new ApiRequestError(
+        "private integrity detail",
+        409,
+        "agent_profile_revision_integrity_mismatch",
+      ),
+    );
+    assert.match(projected.message, /当前操作/);
+    assert.match(projected.message, /重新保存为新版本/);
+    assert.doesNotMatch(projected.message, /阻止发布|阻止下架|private integrity detail/);
+  }
 });
 
 test("revision conflict recovery discards edits only after an explicit successful reload", async () => {
@@ -618,12 +632,20 @@ test("unpublish fences the exact published revision and adopts immutable withdra
   const calls: Array<{ agentId: string; revision: number }> = [];
   const controller = new AgentBuilderController(fakeApi({
     listAdmin: async () => ({
-      agent_profiles: [profile({ revision: 9, status: "published" })],
+      agent_profiles: [profile({
+        revision: 10,
+        status: "draft",
+        published_revision: 9,
+      })],
     }),
     unpublish: async (agentId, revision) => {
       calls.push({ agentId, revision });
       return {
-        agent_profile: profile({ revision: 10, status: "withdrawn" }),
+        agent_profile: profile({
+          revision: 11,
+          status: "withdrawn",
+          published_revision: null,
+        }),
         audit_id: "audit-unpublish",
       };
     },
@@ -633,12 +655,12 @@ test("unpublish fences the exact published revision and adopts immutable withdra
   await controller.unpublishActiveProfile();
 
   assert.deepEqual(calls, [{ agentId: "agt_document_review", revision: 9 }]);
-  assert.equal(controller.state.activeEditor?.revision, 10);
+  assert.equal(controller.state.activeEditor?.revision, 11);
   assert.equal(controller.state.activeEditor?.status, "withdrawn");
   assert.deepEqual(controller.state.mutation, {
     phase: "success",
     action: "unpublish",
-    revision: 10,
+    revision: 11,
   });
 });
 

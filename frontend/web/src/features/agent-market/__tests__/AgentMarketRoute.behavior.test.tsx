@@ -15,8 +15,7 @@ const enterpriseProfileFields = {
   starter_prompts: ["帮我处理企业任务"] as string[],
   capability_summary: "在授权范围内处理企业任务。",
   recommended_tasks: ["企业任务处理"] as string[],
-  supported_input_types: ["text"] as Array<"text" | "file">,
-  supported_file_types: [] as string[],
+  supported_input_types: ["text", "file"] as ["text", "file"],
   expected_outputs: ["处理建议"] as string[],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   published_at: "2026-08-04T01:00:00Z",
@@ -32,7 +31,7 @@ test("Agent Profile category labels cover the canonical category contract", () =
       AGENT_PROFILE_CATEGORY_LABELS[category],
     ]),
     [
-      ["general", "通用助理"],
+      ["general", "通用专家"],
       ["support", "支持服务"],
       ["writing", "内容写作"],
       ["research", "研究分析"],
@@ -639,7 +638,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const categoryGroup = container.querySelector("[data-agent-market-filter]");
     assert.ok(categoryGroup);
     assert.equal(categoryGroup.getAttribute("role"), "group");
-    assert.equal(categoryGroup.getAttribute("aria-label"), "智能体分类");
+    assert.equal(categoryGroup.getAttribute("aria-label"), "专家分类");
     assert.equal(categoryGroup.querySelectorAll('[role="tab"]').length, 0);
     const categoryButtons = categoryGroup.querySelectorAll("button");
     assert.equal(
@@ -807,7 +806,8 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
   });
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
 
@@ -1173,7 +1173,8 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
   });
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
   const container = dom.document.createElement("div");
@@ -1183,7 +1184,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4"] },
+          { initialEntries: ["/agent-market/agt_support/4?q=合同&category=support"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -1210,7 +1211,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market");
+    assert.equal(decodeURI(currentPath), "/agent-market?q=合同&category=support");
     assert.ok(container.querySelector("[data-agent-market]"));
     assert.equal(container.querySelector("[data-agent-market-detail]"), null);
     assert.equal(container.querySelector("[data-canonical-chat]"), null);

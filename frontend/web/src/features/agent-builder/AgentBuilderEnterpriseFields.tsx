@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Building2, RefreshCw, ShieldCheck } from "lucide-react";
+import { Building2, MessageSquareText, ShieldCheck } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
 import {
@@ -11,8 +11,7 @@ import {
   AGENT_PROFILE_CATEGORY_LABELS,
 } from "../../types/agentProfile";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
-import { AgentIdentityAvatar } from "../agent-market/AgentIdentityAvatar";
-import { uuid } from "../../utils/uuid";
+import { AgentAvatarPicker } from "./AgentAvatarPicker";
 
 const INPUT_CLASS =
   "w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60";
@@ -43,8 +42,11 @@ function ListField({
 }) {
   const canonicalValue = lineValue(values);
   const [draft, setDraft] = useState(canonicalValue);
+  const [editing, setEditing] = useState(false);
 
-  useEffect(() => setDraft(canonicalValue), [canonicalValue]);
+  useEffect(() => {
+    if (!editing) setDraft(canonicalValue);
+  }, [canonicalValue, editing]);
 
   const commit = () => {
     const normalized = lines(draft);
@@ -56,10 +58,18 @@ function ListField({
     <label className="flex flex-col gap-2">
       <span className="text-sm font-medium">{label}</span>
       <textarea
+        aria-label={label}
         className={`${INPUT_CLASS} resize-y ${className ?? "min-h-24"}`}
         disabled={disabled}
-        onBlur={commit}
-        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          commit();
+          setEditing(false);
+        }}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          onChange(lines(event.target.value));
+        }}
+        onFocus={() => setEditing(true)}
         value={draft}
       />
     </label>
@@ -103,65 +113,57 @@ export function AgentBuilderEnterpriseFields({
     <>
       <section
         aria-labelledby="agent-enterprise-heading"
-        className="border-b border-[var(--theme-border)] py-6"
+        className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5"
+        data-agent-builder-market-settings
       >
-        <div className="mb-4 flex items-center gap-2">
-          <Building2
-            aria-hidden="true"
-            className="text-[var(--theme-text-secondary)]"
-            size={17}
-          />
-          <h3 className="text-sm font-semibold" id="agent-enterprise-heading">
-            可选配置
-          </h3>
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--theme-primary-light)] text-[var(--theme-primary)]">
+            <Building2 aria-hidden="true" size={17} />
+          </span>
+          <div>
+            <h3 className="text-sm font-semibold" id="agent-enterprise-heading">
+              市场展示与任务入口
+            </h3>
+            <p className="mt-1 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              配置员工在专家市场看到的信息、开场白和可以直接开始的任务。
+            </p>
+          </div>
         </div>
-        <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
-          首次创建只需要完成名称、Agent.md、模型和 Skill Set；展示与访问范围可稍后补充。
-        </p>
-        <details
-          className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
-          data-agent-builder-market-settings
-        >
-          <summary className="cursor-pointer text-sm font-medium">
-            市场展示与开场内容
-          </summary>
-          <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            这些字段只影响市场卡片、详情和开场体验，不改变执行能力。
-          </p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <span className="text-sm font-medium">DiceBear 头像</span>
-              <div className="flex items-center gap-3">
-                <AgentIdentityAvatar
-                  agentId={(editor.agentId ?? editor.name) || "new-agent"}
-                  avatarSeed={editor.avatarSeed}
-                  name={editor.name || "未命名智能体"}
-                />
-                <label className="min-w-0 flex-1">
-                  <span className="sr-only">头像种子</span>
-                  <input
-                    aria-label="头像种子"
-                    className={INPUT_CLASS}
-                    disabled={disabled}
-                    onChange={(event) => onChange({ avatarSeed: event.target.value })}
-                    placeholder="输入稳定种子"
-                    value={editor.avatarSeed}
-                  />
-                </label>
-                <button
-                  aria-label="生成另一张头像"
-                  className="btn-secondary inline-flex h-10 w-10 shrink-0 items-center justify-center p-0"
-                  disabled={disabled}
-                  onClick={() => onChange({ avatarSeed: `agent-${uuid().slice(0, 8)}` })}
-                  title="生成另一张头像"
-                  type="button"
-                >
-                  <RefreshCw aria-hidden="true" size={16} />
-                </button>
-              </div>
-            </div>
+        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(14rem,0.85fr)]">
+          <div className="grid gap-4">
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">分类</span>
+              <span className="text-sm font-medium">专家简介</span>
+              <textarea
+                aria-label="专家简介"
+                className={`${INPUT_CLASS} min-h-24 resize-y`}
+                disabled={disabled}
+                onChange={(event) => onChange({ description: event.target.value })}
+                placeholder="用一句话说明这位专家适合解决什么问题"
+                value={editor.description}
+              />
+            </label>
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">能力摘要</span>
+              <textarea
+                className={`${INPUT_CLASS} min-h-28 resize-y`}
+                disabled={disabled}
+                onChange={(event) => onChange({ capabilitySummary: event.target.value })}
+                placeholder="说明能力范围和交付方式"
+                value={editor.capabilitySummary}
+              />
+            </label>
+          </div>
+          <div className="grid content-start gap-4 rounded-lg bg-[var(--theme-bg-sidebar)] p-4 ring-1 ring-[var(--theme-border)]">
+            <AgentAvatarPicker
+              agentId={(editor.agentId ?? editor.name) || "new-expert"}
+              avatarRef={editor.avatarRef}
+              avatarSeed={editor.avatarSeed}
+              disabled={disabled}
+              name={editor.name || "未命名专家"}
+              onChange={(update) => onChange(update)}
+            />
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">专家分类</span>
               <select
                 className={INPUT_CLASS}
                 disabled={disabled}
@@ -180,37 +182,24 @@ export function AgentBuilderEnterpriseFields({
               </select>
             </label>
           </div>
-          <div className="mt-4 grid gap-4">
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">简介</span>
-              <textarea
-                aria-label="智能体简介"
-                className={`${INPUT_CLASS} min-h-20 resize-y`}
-                disabled={disabled}
-                onChange={(event) => onChange({ description: event.target.value })}
-                value={editor.description}
-              />
-            </label>
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">能力摘要</span>
-              <textarea
-                className={`${INPUT_CLASS} min-h-24 resize-y`}
-                disabled={disabled}
-                onChange={(event) => onChange({ capabilitySummary: event.target.value })}
-                value={editor.capabilitySummary}
-              />
-            </label>
-            <label className="flex flex-col gap-2">
+        </div>
+
+        <div className="mt-5 border-t border-[var(--theme-border)] pt-5">
+          <div className="mb-4 flex items-center gap-2">
+            <MessageSquareText aria-hidden="true" className="text-[var(--theme-text-secondary)]" size={17} />
+            <h4 className="text-sm font-semibold">对话开场</h4>
+          </div>
+          <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">欢迎语</span>
               <textarea
                 className={`${INPUT_CLASS} min-h-20 resize-y`}
                 disabled={disabled}
                 onChange={(event) => onChange({ welcomeMessage: event.target.value })}
+                placeholder="员工打开专家工作区时看到的开场白"
                 value={editor.welcomeMessage}
               />
-            </label>
-          </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          </label>
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
             <ListField
               className="min-h-28"
               disabled={disabled}
@@ -232,16 +221,14 @@ export function AgentBuilderEnterpriseFields({
               values={editor.expectedOutputs}
             />
           </div>
-        </details>
-
+        </div>
       </section>
 
       <section
         aria-label="访问范围与数据说明（高级）"
-        className="border-b border-[var(--theme-border)] py-6"
+        className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5"
       >
         <details
-          className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
           data-agent-builder-access-settings
         >
           <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium">

@@ -62,7 +62,12 @@ the decision baseline already implements the boundary. At baseline
   exist as typed contracts/adapters;
 - `app.bootstrap` is not yet the API/worker composition root; and
 - capability, principal, Conversation, Run, and audit dependencies remain mixed
-  behind the global repository facade.
+  behind the global repository facade; and
+- the frozen global file-authorization bridge still accepts dormant
+  `agent_profile_supported_input_types` and
+  `agent_profile_supported_file_types` parameters, although supported production
+  callers no longer pass them. Deleting those parameters belongs to the governed
+  bridge-retirement slice; they are not a supported Agent Profile policy surface.
 
 Those are migration gaps, not precedent. The existing identity aliases do not
 make `app.repositories` an Agent Profile owner or a public cross-domain API.
@@ -135,15 +140,17 @@ concrete authority class. HTTP status and wire DTOs remain transport concerns.
 
 `agent_id`, `expected_revision`, `name`, `description`, `welcome_message`,
 `starter_prompts`, `capability_summary`, `recommended_tasks`,
-`supported_input_types`, `supported_file_types`, `expected_outputs`,
+`supported_input_types`, `expected_outputs`,
 `permissions_and_data_access_notice`, `avatar_ref`, `avatar_seed`, `category`,
 and `published_at`.
 
 Unknown fields are forbidden. Construction must call the Agent Apps public
 projection policy; serializing a persistence record, admitted private
 definition, admin projection, or generic `dict` directly is forbidden. The same
-allowlist applies to catalog cards and the embedded Agent Profile identity in
-ordinary-user Conversation recovery.
+safe field semantics apply to catalog cards and the embedded Agent Profile
+identity in ordinary-user Conversation recovery. Conversation recovery maps
+`expected_revision` to its immutable `revision` field; all other public fields
+retain the same meaning and forbidden-field rules.
 
 The ordinary-user projection must not contain, including in nested maps/lists:
 
@@ -160,9 +167,10 @@ The ordinary-user projection must not contain, including in nested maps/lists:
   by the shared projection-redaction contract.
 
 `AdminProfileProjection` is a separate admin-only allowlist with exactly:
-`agent_id`, `revision`, `status`, `name`, `description`, `welcome_message`,
+`agent_id`, `revision`, `published_revision`, `status`, `name`, `description`,
+`welcome_message`,
 `starter_prompts`, `capability_summary`, `recommended_tasks`,
-`supported_input_types`, `supported_file_types`, `expected_outputs`,
+`supported_input_types`, `expected_outputs`,
 `permissions_and_data_access_notice`, `instructions`, `model_id`, `skill_set`,
 `selected_skill`, `mcp_tool_ids`, `avatar_ref`, `avatar_asset_id`, `avatar_seed`,
 `category`, `visibility`, `allowed_department_ids`, `allowed_roles`,
@@ -174,6 +182,13 @@ paths, executor-private payloads, or secrets.
 Both projection models are closed typed records (`extra="forbid"`). Adding,
 renaming, or exposing a field is a product/security behavior change, not a
 source replay.
+
+`supported_input_types` is the universal `["text", "file"]` capability. It is
+not an administrator-configurable per-Profile restriction. `supported_file_types`
+is not an application command, definition, or projection field. A physical
+legacy column may remain temporarily inside the PostgreSQL adapter only to
+verify immutable historical hashes and preserve rollback compatibility; no
+application, transport, or executor path may use it as Agent admission policy.
 
 ### 3.2 Persistence port
 

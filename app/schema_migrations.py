@@ -33,6 +33,8 @@ CRITICAL_RELATIONS = (
 CRITICAL_COLUMNS = (
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
+    # Temporary physical compatibility for the previous binary; product DTOs ignore it.
+    ("agent_profile_revisions", "supported_file_types", "jsonb", True),
     ("runs", "execution_kind", "text", True),
     ("runs", "skill_id", "text", False),
     ("runs", "authz_policy_version", "int4", True),

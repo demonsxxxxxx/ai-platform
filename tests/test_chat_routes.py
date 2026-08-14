@@ -2059,13 +2059,12 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
-        "supported_file_types": [],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
-        "avatar_seed": "",
+        "avatar_seed": "agt_support",
         "category": "support",
     }
 
@@ -4406,7 +4405,6 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 revision=7,
                 name="Support assistant",
                 supported_input_types=["text", "file"],
-                supported_file_types=[".docx"],
             ),
         )
 

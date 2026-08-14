@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.models import AgentConversationIdentity, ChatSessionResponse
 from app.projection_redaction import public_agent_id_for_projection
 
@@ -30,6 +31,10 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
         and profile_name
     ):
         avatar_ref = str(row.get("agent_profile_avatar_ref") or "")
+        avatar_seed = safe_agent_avatar_seed(
+            row.get("agent_profile_avatar_seed"),
+            fallback=raw_agent_id,
+        )
         category = str(row.get("agent_profile_category") or "")
         agent_conversation = AgentConversationIdentity(
             agent_id=raw_agent_id,
@@ -40,13 +45,7 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
             starter_prompts=_safe_strings(row.get("agent_profile_starter_prompts")),
             capability_summary=str(row.get("agent_profile_capability_summary") or ""),
             recommended_tasks=_safe_strings(row.get("agent_profile_recommended_tasks")),
-            supported_input_types=[
-                item
-                for item in _safe_strings(row.get("agent_profile_supported_input_types"))
-                if item in {"text", "file"}
-            ]
-            or ["text"],
-            supported_file_types=_safe_strings(row.get("agent_profile_supported_file_types")),
+            supported_input_types=["text", "file"],
             expected_outputs=_safe_strings(row.get("agent_profile_expected_outputs")),
             permissions_and_data_access_notice=str(
                 row.get("agent_profile_permissions_and_data_access_notice") or ""
@@ -62,6 +61,7 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
                 }
                 else "builtin:agent"
             ),
+            avatar_seed=avatar_seed,
             category=(
                 category
                 if category

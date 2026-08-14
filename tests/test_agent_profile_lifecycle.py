@@ -62,7 +62,6 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "capability_summary": "",
         "recommended_tasks": [],
         "supported_input_types": ["text"],
-        "supported_file_types": [],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
@@ -94,8 +93,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
-        "supported_file_types": [],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
@@ -133,15 +131,27 @@ def _profile_row(
     *,
     status: str = "published",
     revision: int = 7,
-    content_hash: str = "a" * 64,
+    content_hash: str | None = None,
 ) -> dict[str, object]:
-    return {
+    from app.agent_apps.authority import _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
+
+    row: dict[str, object] = {
         "agent_id": "agt_support",
         "revision": revision,
         "status": status,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text", "file"],
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
         "avatar_ref": "builtin:assistant",
+        "avatar_asset_id": None,
+        "avatar_seed": "agt_support",
         "category": "support",
         "visibility": "tenant",
         "allowed_department_ids": [],
@@ -151,9 +161,23 @@ def _profile_row(
         "model_id": "model-a",
         "skill_id": "general-chat",
         "skill_version": "version-a",
+        "skill_set": [
+            {
+                "skill_id": "general-chat",
+                "expected_version": "version-a",
+            }
+        ],
         "mcp_tool_ids": [],
-        "content_hash": content_hash,
+        "content_hash": content_hash or "",
     }
+    return _seal_profile_row(row) if content_hash is None else row
+
+
+def _seal_profile_row(row: dict[str, object]) -> dict[str, object]:
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    row["content_hash"] = _revision_hash(_draft_from_row(row))
+    return row
 
 
 @pytest.mark.asyncio
@@ -161,9 +185,11 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     """Record call order without claiming PostgreSQL lock-manager coverage."""
 
     from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
     from app.models import AgentProfileDraftRequest, SelectedSkillRequest
 
     order: list[str] = []
+    revision_writes: list[dict[str, object]] = []
 
     async def lock_profile(*_args, **_kwargs):
         order.append("advisory_lock")
@@ -176,6 +202,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
 
     async def append_revision(*_args, **kwargs):
         order.append("revision_append")
+        revision_writes.append(kwargs)
         return _profile_row(
             status=kwargs["status"],
             revision=kwargs["expected_previous_revision"] + 1,
@@ -187,7 +214,9 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
 
     async def read_draft(*_args, **_kwargs):
         order.append("revision_read")
-        return _profile_row(status="draft", revision=7)
+        row = _profile_row(status="draft", revision=7)
+        row["content_hash"] = _revision_hash(_draft_from_row(row))
+        return row
 
     async def record_publication(*_args, **_kwargs):
         order.append("aggregate_update")
@@ -233,6 +262,19 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
+    assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
+    assert revision_writes[-1]["legacy_supported_file_types"] == [
+        "application/*",
+        "audio/*",
+        "chemical/*",
+        "font/*",
+        "image/*",
+        "message/*",
+        "model/*",
+        "multipart/*",
+        "text/*",
+        "video/*",
+    ]
 
     order.clear()
     await authority.publish_draft(
@@ -245,7 +287,134 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
+    assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
+    assert revision_writes[-1]["legacy_supported_file_types"] == [
+        "application/*",
+        "audio/*",
+        "chemical/*",
+        "font/*",
+        "image/*",
+        "message/*",
+        "model/*",
+        "multipart/*",
+        "text/*",
+        "video/*",
+    ]
 
+
+@pytest.mark.asyncio
+async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    draft = _profile_row(status="draft", revision=7)
+    draft["content_hash"] = _revision_hash(_draft_from_row(draft))
+    draft["instructions"] = "tampered after the immutable hash was written"
+    calls: list[str] = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_draft(*_args, **_kwargs):
+        calls.append("read")
+        return draft
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("tampered draft must fail before validation, append, or audit")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        read_draft,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        forbidden,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.publish_draft(
+            object(),
+            principal=_principal(roles=["admin"]),
+            agent_id="agt_support",
+            expected_revision=7,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_revision_integrity_mismatch",
+    )
+    assert calls == ["read"]
+
+
+@pytest.mark.parametrize("invalid_hash", ["", "not-a-sha256", "a" * 63])
+@pytest.mark.asyncio
+async def test_publish_rejects_an_unsigned_multi_skill_draft(monkeypatch, invalid_hash):
+    from app.agent_apps import AgentProfileAuthority
+
+    draft = _profile_row(status="draft", revision=7, content_hash=invalid_hash)
+    draft["skill_set"] = [
+        {"skill_id": "general-chat", "expected_version": "version-a"},
+        {"skill_id": "qa-file-reviewer", "expected_version": "version-b"},
+    ]
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_draft(*_args, **_kwargs):
+        return draft
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("unsigned draft must fail before validation, append, or audit")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        read_draft,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        forbidden,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.publish_draft(
+            object(),
+            principal=_principal(roles=["admin"]),
+            agent_id="agt_support",
+            expected_revision=7,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_revision_integrity_mismatch",
+    )
 
 @pytest.mark.asyncio
 async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identity(monkeypatch):
@@ -293,6 +462,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     prior.update(
         {
             "avatar_ref": "builtin:research",
+            "avatar_seed": "support-custom-seed",
             "category": "research",
             "visibility": "restricted",
             "allowed_department_ids": ["research"],
@@ -331,6 +501,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
                     "skill_version",
                     "mcp_tool_ids",
                     "avatar_ref",
+                    "avatar_seed",
                     "category",
                     "visibility",
                     "allowed_department_ids",
@@ -372,6 +543,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     )
     assert not {
         "avatar_ref",
+        "avatar_seed",
         "category",
         "visibility",
         "allowed_department_ids",
@@ -387,6 +559,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     )
 
     assert captured[-1]["avatar_ref"] == "builtin:research"
+    assert captured[-1]["avatar_seed"] == "support-custom-seed"
     assert captured[-1]["category"] == "research"
     assert captured[-1]["visibility"] == "restricted"
     assert captured[-1]["allowed_department_ids"] == ["research"]
@@ -408,6 +581,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     explicit_empty = omitted.model_copy(
         update={
             "expected_draft_revision": 9,
+            "avatar_seed": "support-updated-seed",
             "visibility": "restricted",
             "allowed_department_ids": [],
             "allowed_roles": [],
@@ -415,7 +589,13 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
         }
     )
     explicit_empty.model_fields_set.update(
-        {"visibility", "allowed_department_ids", "allowed_roles", "allowed_user_ids"}
+        {
+            "avatar_seed",
+            "visibility",
+            "allowed_department_ids",
+            "allowed_roles",
+            "allowed_user_ids",
+        }
     )
     await authority.save_draft(
         object(),
@@ -425,6 +605,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     )
 
     assert captured[-1]["visibility"] == "restricted"
+    assert captured[-1]["avatar_seed"] == "support-updated-seed"
     assert captured[-1]["allowed_department_ids"] == []
     assert captured[-1]["allowed_roles"] == []
     assert captured[-1]["allowed_user_ids"] == []
@@ -596,27 +777,86 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_public_catalog_and_admission_reject_a_tampered_publication(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import SelectedAgentProfileRequest
+
+    tampered = _profile_row()
+    tampered["instructions"] = "changed without advancing the immutable hash"
+
+    async def get_current(*_args, **_kwargs):
+        return tampered
+
+    async def list_current(*_args, **_kwargs):
+        return [tampered]
+
+    async def forbidden_validation(*_args, **_kwargs):
+        raise AssertionError("integrity rejection must happen before capability validation")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.list_current_published_agent_profiles",
+        list_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
+
+    assert await authority.list_public(object(), principal=_principal()) == []
+    with pytest.raises(HTTPException) as detail_error:
+        await authority.get_public(
+            object(),
+            principal=_principal(),
+            agent_id="agt_support",
+        )
+    assert (detail_error.value.status_code, detail_error.value.detail) == (
+        404,
+        "agent_profile_not_found",
+    )
+    with pytest.raises(HTTPException) as admission_error:
+        await authority.resolve_for_admission(
+            object(),
+            principal=_principal(),
+            selection=SelectedAgentProfileRequest(
+                agent_id="agt_support",
+                expected_revision=7,
+            ),
+        )
+    assert (admission_error.value.status_code, admission_error.value.detail) == (
+        409,
+        "agent_profile_revision_integrity_mismatch",
+    )
+
+
+@pytest.mark.asyncio
 async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revision(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
 
     pinned = _profile_row(revision=7)
-    pinned.update(
+    current = _profile_row(revision=9)
+    current.update(
         {
-            "visibility": "tenant",
-            "current_visibility": "restricted",
-            "current_allowed_department_ids": ["support"],
-            "current_allowed_roles": [],
-            "current_allowed_user_ids": [],
+            "visibility": "restricted",
+            "allowed_department_ids": ["support"],
+            "allowed_roles": [],
+            "allowed_user_ids": [],
         }
     )
+    _seal_profile_row(current)
 
     async def get_bound(*_args, **_kwargs):
         return pinned
+
+    async def get_current(*_args, **_kwargs):
+        return current
 
     async def forbidden_validation(*_args, **_kwargs):
         raise AssertionError("current ACL denial must happen before capability validation")
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_bound_published_agent_profile", get_bound)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
@@ -626,10 +866,66 @@ async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revisio
             principal=_principal(department_id="finance"),
             agent_id="agt_support",
             revision=7,
-            content_hash="a" * 64,
+            content_hash=str(pinned["content_hash"]),
         )
 
     assert (caught.value.status_code, caught.value.detail) == (403, "agent_profile_not_authorized")
+
+
+@pytest.mark.asyncio
+async def test_bound_profile_rejects_a_tampered_current_acl(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+
+    pinned = _profile_row(revision=7)
+    current = _profile_row(revision=9)
+    current.update(
+        visibility="restricted",
+        allowed_department_ids=[],
+        allowed_roles=[],
+        allowed_user_ids=["other-user"],
+    )
+    _seal_profile_row(current)
+    current["allowed_user_ids"] = ["user-a"]
+
+    async def get_bound(*_args, **_kwargs):
+        return pinned
+
+    async def get_current(*_args, **_kwargs):
+        return current
+
+    async def forbidden_validation(*_args, **_kwargs):
+        raise AssertionError("current ACL integrity must fail before capability validation")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        get_bound,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.resolve_bound_for_submission(
+            object(),
+            principal=_principal(),
+            agent_id="agt_support",
+            revision=7,
+            content_hash=str(pinned["content_hash"]),
+        )
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_revision_integrity_mismatch",
+    )
+    assert await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(pinned["content_hash"]),
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -638,10 +934,11 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
     from app.models import SelectedAgentProfileRequest
 
     observed: dict[str, object] = {}
+    profile_row = _profile_row()
 
     async def get_current(*_args, **kwargs):
         observed["for_update"] = kwargs.get("for_update")
-        return _profile_row()
+        return profile_row
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"}, {"id": "model-a", "value": "model-a"})
@@ -685,7 +982,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         "agent_id": "agt_support",
         "title": "Support assistant",
         "admitted_agent_profile_revision": 7,
-        "admitted_agent_profile_hash": "a" * 64,
+        "admitted_agent_profile_hash": profile_row["content_hash"],
     }
     assert observed["audit"]["payload_json"] == {
         "revision": 7,
@@ -707,8 +1004,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
             "starter_prompts": [],
             "capability_summary": "",
             "recommended_tasks": [],
-            "supported_input_types": ["text"],
-            "supported_file_types": [],
+            "supported_input_types": ["text", "file"],
             "expected_outputs": [],
             "permissions_and_data_access_notice": "",
             "published_at": None,
@@ -732,10 +1028,11 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
     calls: dict[str, int] = {"create": 0, "audit": 0, "admission": 0}
     operation_id = UUID("33333333-3333-4333-8333-333333333333")
     session_id = f"ses_agent_{operation_id.hex}"
+    profile_row = _profile_row()
 
     async def get_current(*_args, **_kwargs):
         calls["admission"] += 1
-        return _profile_row() if state["published"] else None
+        return profile_row if state["published"] else None
 
     async def get_session(*_args, **_kwargs):
         return state["existing"]
@@ -754,7 +1051,7 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
             "title": "Support assistant",
             "purpose": "conversation",
             "admitted_agent_profile_revision": 7,
-            "admitted_agent_profile_hash": "a" * 64,
+            "admitted_agent_profile_hash": profile_row["content_hash"],
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
             "agent_profile_welcome_message": "",
@@ -762,7 +1059,6 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
             "agent_profile_capability_summary": "",
             "agent_profile_recommended_tasks": [],
             "agent_profile_supported_input_types": ["text"],
-            "agent_profile_supported_file_types": [],
             "agent_profile_expected_outputs": [],
             "agent_profile_permissions_and_data_access_notice": "",
             "agent_profile_avatar_ref": "builtin:assistant",
@@ -860,7 +1156,6 @@ async def test_agent_conversation_operation_replay_rejects_exact_title_mismatch(
         "agent_profile_capability_summary": "",
         "agent_profile_recommended_tasks": [],
         "agent_profile_supported_input_types": ["text"],
-        "agent_profile_supported_file_types": [],
         "agent_profile_expected_outputs": [],
         "agent_profile_permissions_and_data_access_notice": "",
         "agent_profile_avatar_ref": "builtin:assistant",
@@ -896,10 +1191,13 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
     from app.agent_apps import AgentProfileAuthority
     from app.models import SelectedAgentProfileRequest
 
-    publications = {
-        7: _profile_row(revision=7, content_hash="a" * 64),
-        9: _profile_row(revision=9, content_hash="b" * 64),
-    }
+    revision_7 = _profile_row(revision=7)
+    revision_9 = _profile_row(revision=9)
+    revision_9["instructions"] = "updated private instruction"
+    _seal_profile_row(revision_9)
+    publications = {7: revision_7, 9: revision_9}
+    hash_7 = str(revision_7["content_hash"])
+    hash_9 = str(revision_9["content_hash"])
     state = {"current_revision": 7, "lifecycle_status": "published"}
     observed: list[tuple[str, int, str | None, bool | None]] = []
     created_sessions: list[dict[str, object]] = []
@@ -907,9 +1205,13 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
     async def get_current(*_args, **kwargs):
         revision = kwargs.get("expected_revision")
         observed.append(("current", revision, None, kwargs.get("for_update")))
-        if state["lifecycle_status"] != "published" or revision != state["current_revision"]:
+        effective_revision = state["current_revision"] if revision is None else revision
+        if (
+            state["lifecycle_status"] != "published"
+            or effective_revision != state["current_revision"]
+        ):
             return None
-        return publications[revision]
+        return publications[effective_revision]
 
     async def get_bound(*_args, **kwargs):
         revision = kwargs["revision"]
@@ -967,7 +1269,7 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
         principal=_principal(),
         agent_id="agt_support",
         revision=7,
-        content_hash="a" * 64,
+        content_hash=hash_7,
     )
     second = await authority.create_conversation(
         object(),
@@ -978,13 +1280,13 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
     )
 
     assert (first.agent_conversation.revision, existing.revision, second.agent_conversation.revision) == (7, 7, 9)
-    assert existing.content_hash == "a" * 64
+    assert existing.content_hash == hash_7
     assert [
         (session["admitted_agent_profile_revision"], session["admitted_agent_profile_hash"])
         for session in created_sessions
-    ] == [(7, "a" * 64), (9, "b" * 64)]
+    ] == [(7, hash_7), (9, hash_9)]
     assert observed[-2:] == [
-        ("bound", 7, "a" * 64, True),
+        ("current", None, None, None),
         ("current", 9, None, True),
     ]
 
@@ -1004,7 +1306,7 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
         )
 
     state["lifecycle_status"] = "withdrawn"
-    for revision, content_hash in ((7, "a" * 64), (9, "b" * 64)):
+    for revision, content_hash in ((7, hash_7), (9, hash_9)):
         with pytest.raises(HTTPException, match="agent_profile_not_available"):
             await authority.resolve_bound_for_submission(
                 object(),
@@ -1028,6 +1330,9 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         calls.append(("bound", kwargs))
         return row
 
+    async def get_current(*_args, **_kwargs):
+        return row
+
     async def validate(*_args, **kwargs):
         calls.append(("validate", kwargs["definition"]))
         return (
@@ -1038,6 +1343,10 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
         get_bound,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
     )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
@@ -1070,9 +1379,14 @@ async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monk
     from app.agent_apps.authority import _draft_from_row, _legacy_revision_hash
 
     row = _profile_row()
+    row["avatar_seed"] = ""
+    row["legacy_supported_file_types"] = []
     row["content_hash"] = _legacy_revision_hash(_draft_from_row(row))
 
     async def get_bound(*_args, **_kwargs):
+        return row
+
+    async def get_current(*_args, **_kwargs):
         return row
 
     async def validate(*_args, **_kwargs):
@@ -1084,6 +1398,10 @@ async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monk
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
         get_bound,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
     )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
@@ -1115,21 +1433,27 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
 
     row = _profile_row()
     row["content_hash"] = _revision_hash(_draft_from_row(row))
+    current_row = row
     expected_hash = str(row["content_hash"])
     calls = {"bound": 0, "validate": 0}
     if denial == "hash_mismatch":
         row["instructions"] = "changed without a new immutable hash"
     if denial == "acl":
-        row.update(
-            current_visibility="restricted",
-            current_allowed_department_ids=[],
-            current_allowed_roles=[],
-            current_allowed_user_ids=["other-user"],
+        current_row = _profile_row(revision=9)
+        current_row.update(
+            visibility="restricted",
+            allowed_department_ids=[],
+            allowed_roles=[],
+            allowed_user_ids=["other-user"],
         )
+        _seal_profile_row(current_row)
 
     async def get_bound(*_args, **_kwargs):
         calls["bound"] += 1
         return None if denial == "withdrawn" else row
+
+    async def get_current(*_args, **_kwargs):
+        return current_row
 
     async def validate(*_args, **_kwargs):
         calls["validate"] += 1
@@ -1143,6 +1467,10 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
         get_bound,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        get_current,
     )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
@@ -1347,6 +1675,12 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
 @pytest.mark.asyncio
 async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admission(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import (
+        _draft_from_row,
+        _pre_avatar_seed_skill_set_revision_hash,
+        _revision_hash,
+        _revision_hash_matches,
+    )
 
     observed: dict[str, object] = {}
     order: list[str] = []
@@ -1363,12 +1697,35 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         return {"lifecycle_status": "published", "published_revision": 7, "latest_revision": 8}
 
     async def get_revision(*_args, **kwargs):
-        observed["published_lookup"] = kwargs
-        return _profile_row()
+        observed.setdefault("revision_lookups", []).append(kwargs)
+        if kwargs["revision"] == 7:
+            row = _profile_row(revision=7)
+        else:
+            row = _profile_row(status="draft", revision=8)
+            row["name"] = "Unpublished authoring changes"
+            row["instructions"] = "new draft instructions"
+            row["avatar_seed"] = ""
+        if row["avatar_seed"]:
+            row["content_hash"] = _revision_hash(_draft_from_row(row))
+        else:
+            row["content_hash"] = _pre_avatar_seed_skill_set_revision_hash(
+                _draft_from_row(row),
+                legacy_supported_input_types=row["supported_input_types"],
+                legacy_supported_file_types=row["legacy_supported_file_types"],
+            )
+        return row
 
     async def append_revision(*_args, **kwargs):
         observed["append"] = kwargs
-        return _profile_row(status="withdrawn", revision=9)
+        row = {
+            **kwargs,
+            "agent_id": "agt_support",
+            "revision": 9,
+            "published_at": None,
+            "created_at": None,
+        }
+        observed["appended_row"] = row
+        return row
 
     async def record_withdrawal(*_args, **kwargs):
         observed["withdrawal"] = kwargs
@@ -1401,6 +1758,23 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     assert observed["append"]["status"] == "withdrawn"
     assert observed["append"]["expected_previous_revision"] == 8
     assert observed["append"]["withdrawn_from_revision"] == 7
+    assert observed["append"]["name"] == "Unpublished authoring changes"
+    assert observed["append"]["instructions"] == "new draft instructions"
+    assert observed["append"]["avatar_seed"] == ""
+    assert observed["append"]["content_hash"] != "a" * 64
+    assert _revision_hash_matches(
+        observed["appended_row"],
+        str(observed["append"]["content_hash"]),
+    )
+    assert observed["revision_lookups"] == [
+        {
+            "tenant_id": "tenant-a",
+            "agent_id": "agt_support",
+            "revision": 7,
+            "status": "published",
+        },
+        {"tenant_id": "tenant-a", "agent_id": "agt_support", "revision": 8},
+    ]
     assert observed["withdrawal"] == {"tenant_id": "tenant-a", "agent_id": "agt_support", "revision": 9}
     assert profile.status == "withdrawn"
     assert audit_id == "aud_profile_withdrawn"
@@ -1435,6 +1809,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     profile_row = _profile_row()
     if bound:
         profile_row["mcp_tool_ids"] = ["profile-tool"]
+        _seal_profile_row(profile_row)
 
     async def get_current(*_args, **kwargs):
         observed.append(("current", kwargs.get("for_update")))
@@ -1489,7 +1864,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
             principal=_principal(),
             agent_id="agt_support",
             revision=7,
-            content_hash="a" * 64,
+            content_hash=str(profile_row["content_hash"]),
             submitted_request=request,
             query_agent_id=query_agent_id,
         )
@@ -1507,7 +1882,11 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
 
     assert admission.agent_id == "agt_support"
     assert admission.revision == 7
-    assert observed == [("bound" if bound else "current", True)]
+    assert observed == (
+        [("bound", True), ("current", None)]
+        if bound
+        else [("current", True)]
+    )
 
 
 @pytest.mark.asyncio
@@ -1519,6 +1898,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
 
     profile_row = _profile_row()
     profile_row["mcp_tool_ids"] = ["profile-tool"]
+    _seal_profile_row(profile_row)
 
     async def get_current(*_args, **_kwargs):
         return profile_row
@@ -1579,6 +1959,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         {"skill_id": "skill-a", "expected_version": "version-a"},
         {"skill_id": "skill-b", "expected_version": "version-b"},
     ]
+    _seal_profile_row(profile_row)
 
     async def get_current(*_args, **_kwargs):
         return profile_row
@@ -1716,14 +2097,15 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
     from app.models import ChatStreamRequest, SelectedAgentProfileRequest
 
     storage_reads: list[str] = []
+    profile_row = _profile_row()
 
     async def get_current(*_args, **_kwargs):
         storage_reads.append("current")
-        return _profile_row()
+        return profile_row
 
     async def get_bound(*_args, **_kwargs):
         storage_reads.append("bound")
-        return _profile_row()
+        return profile_row
 
     async def validate(*_args, **_kwargs):
         return (
@@ -1755,7 +2137,7 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
                 principal=_principal(),
                 agent_id="agt_support",
                 revision=7,
-                content_hash="a" * 64,
+                content_hash=str(profile_row["content_hash"]),
                 submitted_request=request,
                 query_agent_id=query_agent_id,
             )
@@ -1772,7 +2154,7 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
             )
 
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
-    assert storage_reads == ["bound" if bound else "current"]
+    assert storage_reads == (["bound", "current"] if bound else ["current"])
 
 
 def test_session_recovery_projects_only_safe_agent_conversation_identity():
@@ -1806,13 +2188,12 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
-        "supported_file_types": [],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
-        "avatar_seed": "",
+        "avatar_seed": "agt_support",
         "category": "support",
     }
     serialized = str(response)
