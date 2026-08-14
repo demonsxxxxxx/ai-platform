@@ -306,6 +306,9 @@ def _legacy_skill_set_revision_hash(
 
 def _omitted_file_type_skill_set_revision_hash(
     definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_input_types: list[str] | None = None,
+    legacy_avatar_seed: str | None = None,
 ) -> str:
     """Recompute the brief Skill Set contract that omitted the retired key."""
 
@@ -316,7 +319,11 @@ def _omitted_file_type_skill_set_revision_hash(
         "starter_prompts": definition.starter_prompts,
         "capability_summary": definition.capability_summary,
         "recommended_tasks": definition.recommended_tasks,
-        "supported_input_types": definition.supported_input_types,
+        "supported_input_types": (
+            legacy_supported_input_types
+            if legacy_supported_input_types is not None
+            else definition.supported_input_types
+        ),
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
@@ -325,7 +332,11 @@ def _omitted_file_type_skill_set_revision_hash(
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
-        "avatar_seed": definition.avatar_seed,
+        "avatar_seed": (
+            legacy_avatar_seed
+            if legacy_avatar_seed is not None
+            else definition.avatar_seed
+        ),
         "category": definition.category,
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
@@ -459,7 +470,82 @@ def _avatar_seed_is_historical_default(row: dict[str, Any]) -> bool:
 
 
 def _is_empty_historical_json_list(value: Any) -> bool:
-    return value is None or value == [] or value == ()
+    return value is None or value == []
+
+
+def _strict_hash_string_list(
+    row: dict[str, Any],
+    field: str,
+    *,
+    allow_missing: bool,
+) -> list[str] | None:
+    raw = row.get(field)
+    if raw is None and allow_missing:
+        return None
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    normalized = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    if normalized != raw or len(normalized) != len(set(normalized)):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return normalized
+
+
+def _strict_hash_skill_set_shape(row: dict[str, Any]) -> bool:
+    raw = row.get("skill_set")
+    if raw is None or raw == []:
+        return False
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    skills = [SelectedSkillRequest.model_validate(item) for item in raw]
+    canonical = [skill.model_dump(mode="json") for skill in skills]
+    if raw != canonical or len({skill.skill_id for skill in skills}) != len(skills):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return True
+
+
+def _strict_hash_row_shape(row: dict[str, Any]) -> tuple[dict[str, list[str] | None], bool]:
+    optional_fields = {
+        "starter_prompts",
+        "recommended_tasks",
+        "supported_input_types",
+        "legacy_supported_file_types",
+        "expected_outputs",
+        "allowed_department_ids",
+        "allowed_roles",
+        "allowed_user_ids",
+    }
+    lists = {
+        field: _strict_hash_string_list(row, field, allow_missing=True)
+        for field in optional_fields
+    }
+    lists["mcp_tool_ids"] = _strict_hash_string_list(
+        row,
+        "mcp_tool_ids",
+        allow_missing=False,
+    )
+    supported_input_types = lists["supported_input_types"]
+    if supported_input_types is not None and (
+        not supported_input_types
+        or len(supported_input_types) > 2
+        or any(value not in {"text", "file"} for value in supported_input_types)
+    ):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    for field, allowed in (
+        ("avatar_ref", _AVATAR_REFS),
+        ("category", _CATEGORIES),
+        ("visibility", _VISIBILITIES),
+    ):
+        raw = row.get(field)
+        if raw is not None and (not isinstance(raw, str) or raw not in allowed):
+            raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    raw_avatar_seed = row.get("avatar_seed")
+    if raw_avatar_seed is not None and (
+        not isinstance(raw_avatar_seed, str)
+        or len(raw_avatar_seed) > 128
+        or any(ord(character) < 32 for character in raw_avatar_seed)
+    ):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return lists, _strict_hash_skill_set_shape(row)
 
 
 def _post_lifecycle_fields_are_historical_defaults(row: dict[str, Any]) -> bool:
@@ -491,35 +577,91 @@ def _pre_lifecycle_fields_are_historical_defaults(row: dict[str, Any]) -> bool:
 def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
     if len(content_hash) != 64 or any(character not in "0123456789abcdef" for character in content_hash):
         return False
+    raw_lists, has_skill_set = _strict_hash_row_shape(row)
     definition = _draft_from_row(row)
-    legacy_supported_input_types = _safe_string_list(row.get("supported_input_types"))
-    legacy_supported_file_types = _safe_string_list(
-        row.get("legacy_supported_file_types")
+    for field in (
+        "starter_prompts",
+        "recommended_tasks",
+        "expected_outputs",
+        "allowed_department_ids",
+        "allowed_roles",
+        "allowed_user_ids",
+        "mcp_tool_ids",
+    ):
+        raw = raw_lists[field]
+        if raw is not None and raw != getattr(definition, field):
+            raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    legacy_supported_input_types = raw_lists["supported_input_types"]
+    legacy_supported_file_types = raw_lists["legacy_supported_file_types"]
+    current_shape = has_skill_set and all(
+        raw_lists[field] is not None
+        for field in (
+            "starter_prompts",
+            "recommended_tasks",
+            "supported_input_types",
+            "legacy_supported_file_types",
+            "expected_outputs",
+            "allowed_department_ids",
+            "allowed_roles",
+            "allowed_user_ids",
+        )
     )
-    if content_hash in {
-        _revision_hash(definition),
-        _omitted_file_type_skill_set_revision_hash(definition),
-        _legacy_skill_set_revision_hash(
+    enterprise_shape = all(
+        raw_lists[field] is not None
+        for field in (
+            "starter_prompts",
+            "recommended_tasks",
+            "supported_input_types",
+            "legacy_supported_file_types",
+            "expected_outputs",
+            "allowed_department_ids",
+            "allowed_roles",
+            "allowed_user_ids",
+        )
+    )
+    raw_avatar_seed = row.get("avatar_seed")
+    if (
+        current_shape
+        and raw_avatar_seed == definition.avatar_seed
+        and legacy_supported_input_types == list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES)
+        and legacy_supported_file_types == list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
+        and content_hash == _revision_hash(definition)
+    ):
+        return True
+    if current_shape and content_hash == _omitted_file_type_skill_set_revision_hash(
+        definition,
+        legacy_supported_input_types=legacy_supported_input_types,
+        legacy_avatar_seed=str(raw_avatar_seed or ""),
+    ):
+        return True
+    if (
+        current_shape
+        and raw_avatar_seed == definition.avatar_seed
+        and content_hash
+        == _legacy_skill_set_revision_hash(
             definition,
             legacy_supported_input_types=legacy_supported_input_types,
             legacy_supported_file_types=legacy_supported_file_types,
-        ),
-    }:
+        )
+    ):
         return True
     if not _avatar_seed_is_historical_default(row):
         return False
-    if content_hash in {
-        _pre_avatar_seed_skill_set_revision_hash(
+    if current_shape and content_hash == _pre_avatar_seed_skill_set_revision_hash(
+        definition,
+        legacy_supported_input_types=legacy_supported_input_types,
+        legacy_supported_file_types=legacy_supported_file_types,
+    ):
+        return True
+    if (
+        enterprise_shape
+        and content_hash
+        == _legacy_revision_hash(
             definition,
             legacy_supported_input_types=legacy_supported_input_types,
             legacy_supported_file_types=legacy_supported_file_types,
-        ),
-        _legacy_revision_hash(
-            definition,
-            legacy_supported_input_types=legacy_supported_input_types,
-            legacy_supported_file_types=legacy_supported_file_types,
-        ),
-    }:
+        )
+    ):
         return True
     if not _post_lifecycle_fields_are_historical_defaults(row):
         return False

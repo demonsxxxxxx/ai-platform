@@ -317,10 +317,15 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         **definition.model_dump(mode="json"),
         "agent_id": "agt_support",
         "revision": 7,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+    }
+    legacy_skill_set_row = {
+        **current_row,
+        "supported_input_types": ["text"],
         "legacy_supported_file_types": ["application/pdf"],
     }
     pre_avatar_row = {
-        **current_row,
+        **legacy_skill_set_row,
         "avatar_seed": "",
         "supported_input_types": ["text"],
     }
@@ -363,7 +368,7 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         "lifecycle": lifecycle_row,
         "enterprise": pre_avatar_row,
         "pre_avatar": pre_avatar_row,
-        "legacy_skill_set": pre_avatar_row,
+        "legacy_skill_set": legacy_skill_set_row,
         "omitted_file_type": current_row,
         "current": current_row,
     }
@@ -384,6 +389,59 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         )
         for schema, content_hash in expected_hashes.items()
     )
+
+
+@pytest.mark.parametrize(
+    ("supported_input_types", "avatar_seed", "expected_hash"),
+    [
+        (
+            ["text"],
+            "agt_support",
+            "4b119840182fd953bfb78e2e7724bb6d05ce949dcf915c38baeb5cbb4d10203a",
+        ),
+        (
+            ["file"],
+            "agt_support",
+            "673256a00512ac265b80d3fb3b2f4f227d9a8f442526ae24d3d16dd47015c9b8",
+        ),
+        (
+            ["text", "file"],
+            "agt_support",
+            "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
+        ),
+        (
+            ["text"],
+            "",
+            "1c1ec2a973d36f0d3905b944eca7a075d15a3845435ff08015f1c6a28899fca4",
+        ),
+    ],
+)
+def test_omitted_file_type_hash_uses_exact_historical_input_and_avatar_values(
+    supported_input_types,
+    avatar_seed,
+    expected_hash,
+):
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "supported_input_types": supported_input_types,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "avatar_seed": avatar_seed,
+    }
+
+    assert (
+        _omitted_file_type_skill_set_revision_hash(
+            definition,
+            legacy_supported_input_types=supported_input_types,
+            legacy_avatar_seed=avatar_seed,
+        )
+        == expected_hash
+    )
+    assert _revision_hash_matches(row, expected_hash)
 
 
 def test_early_profile_hashes_cannot_authorize_fields_their_schema_did_not_cover():
@@ -433,7 +491,20 @@ def test_early_profile_hashes_cannot_authorize_fields_their_schema_did_not_cover
     ("field", "value"),
     [
         ("skill_set", ["malformed-skill"]),
+        ("skill_set", {"malformed": "skill-set"}),
+        ("skill_set", []),
+        ("skill_set", None),
         ("mcp_tool_ids", {"malformed": "tool-list"}),
+        ("starter_prompts", [{}]),
+        ("recommended_tasks", [17]),
+        ("supported_input_types", {"malformed": "input-list"}),
+        ("expected_outputs", [False]),
+        ("allowed_department_ids", [17]),
+        ("allowed_roles", [False]),
+        ("allowed_user_ids", [{}]),
+        ("avatar_ref", "malformed-avatar"),
+        ("category", "malformed-category"),
+        ("visibility", "malformed-visibility"),
     ],
 )
 def test_revision_integrity_normalizes_malformed_historical_json(field, value):
@@ -444,6 +515,8 @@ def test_revision_integrity_normalizes_malformed_historical_json(field, value):
         **definition.model_dump(mode="json"),
         "agent_id": "agt_support",
         "revision": 7,
+        "skill_id": "general-chat",
+        "skill_version": "version-a",
         "content_hash": _revision_hash(definition),
         field: value,
     }

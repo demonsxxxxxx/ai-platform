@@ -133,13 +133,25 @@ def _profile_row(
     revision: int = 7,
     content_hash: str | None = None,
 ) -> dict[str, object]:
+    from app.agent_apps.authority import _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
+
     row: dict[str, object] = {
         "agent_id": "agt_support",
         "revision": revision,
         "status": status,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text", "file"],
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
         "avatar_ref": "builtin:assistant",
+        "avatar_asset_id": None,
+        "avatar_seed": "agt_support",
         "category": "support",
         "visibility": "tenant",
         "allowed_department_ids": [],
@@ -149,6 +161,12 @@ def _profile_row(
         "model_id": "model-a",
         "skill_id": "general-chat",
         "skill_version": "version-a",
+        "skill_set": [
+            {
+                "skill_id": "general-chat",
+                "expected_version": "version-a",
+            }
+        ],
         "mcp_tool_ids": [],
         "content_hash": content_hash or "",
     }
@@ -1349,6 +1367,8 @@ async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monk
     from app.agent_apps.authority import _draft_from_row, _legacy_revision_hash
 
     row = _profile_row()
+    row["avatar_seed"] = ""
+    row["legacy_supported_file_types"] = []
     row["content_hash"] = _legacy_revision_hash(_draft_from_row(row))
 
     async def get_bound(*_args, **_kwargs):
