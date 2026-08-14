@@ -304,6 +304,38 @@ def _legacy_skill_set_revision_hash(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _omitted_file_type_skill_set_revision_hash(
+    definition: AgentProfileDraftRequest,
+) -> str:
+    """Recompute the brief Skill Set contract that omitted the retired key."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": definition.supported_input_types,
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": definition.avatar_seed,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _legacy_revision_hash(
     definition: AgentProfileDraftRequest,
     *,
@@ -422,6 +454,40 @@ def _mvp_revision_hash(definition: AgentProfileDraftRequest) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _avatar_seed_is_historical_default(row: dict[str, Any]) -> bool:
+    return row.get("avatar_seed") in {None, ""}
+
+
+def _is_empty_historical_json_list(value: Any) -> bool:
+    return value is None or value == [] or value == ()
+
+
+def _post_lifecycle_fields_are_historical_defaults(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("welcome_message") or "") == ""
+        and _is_empty_historical_json_list(row.get("starter_prompts"))
+        and str(row.get("capability_summary") or "") == ""
+        and _is_empty_historical_json_list(row.get("recommended_tasks"))
+        and row.get("supported_input_types") == ["text"]
+        and _is_empty_historical_json_list(row.get("legacy_supported_file_types"))
+        and _is_empty_historical_json_list(row.get("expected_outputs"))
+        and str(row.get("permissions_and_data_access_notice") or "") == ""
+        and row.get("avatar_asset_id") in {None, ""}
+        and _avatar_seed_is_historical_default(row)
+    )
+
+
+def _pre_lifecycle_fields_are_historical_defaults(row: dict[str, Any]) -> bool:
+    return (
+        row.get("avatar_ref") in {None, "builtin:agent"}
+        and row.get("category") in {None, "general"}
+        and row.get("visibility") in {None, "tenant"}
+        and _is_empty_historical_json_list(row.get("allowed_department_ids"))
+        and _is_empty_historical_json_list(row.get("allowed_roles"))
+        and _is_empty_historical_json_list(row.get("allowed_user_ids"))
+    )
+
+
 def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
     if len(content_hash) != 64 or any(character not in "0123456789abcdef" for character in content_hash):
         return False
@@ -430,13 +496,19 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
     legacy_supported_file_types = _safe_string_list(
         row.get("legacy_supported_file_types")
     )
-    candidates = {
+    if content_hash in {
         _revision_hash(definition),
+        _omitted_file_type_skill_set_revision_hash(definition),
         _legacy_skill_set_revision_hash(
             definition,
             legacy_supported_input_types=legacy_supported_input_types,
             legacy_supported_file_types=legacy_supported_file_types,
         ),
+    }:
+        return True
+    if not _avatar_seed_is_historical_default(row):
+        return False
+    if content_hash in {
         _pre_avatar_seed_skill_set_revision_hash(
             definition,
             legacy_supported_input_types=legacy_supported_input_types,
@@ -447,10 +519,16 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
             legacy_supported_input_types=legacy_supported_input_types,
             legacy_supported_file_types=legacy_supported_file_types,
         ),
-        _lifecycle_revision_hash(definition),
-        _mvp_revision_hash(definition),
-    }
-    return content_hash in {candidate for candidate in candidates if candidate}
+    }:
+        return True
+    if not _post_lifecycle_fields_are_historical_defaults(row):
+        return False
+    if content_hash == _lifecycle_revision_hash(definition):
+        return True
+    return (
+        _pre_lifecycle_fields_are_historical_defaults(row)
+        and content_hash == _mvp_revision_hash(definition)
+    )
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
@@ -1231,7 +1309,7 @@ class AgentProfileAuthority:
         content_hash = str(row.get("content_hash") or "")
         try:
             matches = _revision_hash_matches(row, content_hash)
-        except (KeyError, TypeError, ValueError):
+        except (HTTPException, KeyError, TypeError, ValueError):
             matches = False
         if not matches:
             raise HTTPException(

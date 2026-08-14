@@ -13,10 +13,12 @@ from app.agent_profiles import (
 )
 from app.agent_apps.authority import (
     _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+    AgentProfileAuthority,
     _legacy_revision_hash,
     _legacy_skill_set_revision_hash,
     _lifecycle_revision_hash,
     _mvp_revision_hash,
+    _omitted_file_type_skill_set_revision_hash,
     _pre_avatar_seed_skill_set_revision_hash,
     _revision_hash,
     _revision_hash_matches,
@@ -311,38 +313,146 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
     definition = AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
     ).model_copy(update={"avatar_seed": "agt_support"})
-    row = {
+    current_row = {
         **definition.model_dump(mode="json"),
         "agent_id": "agt_support",
         "revision": 7,
         "legacy_supported_file_types": ["application/pdf"],
     }
-    historical_hashes = {
-        _mvp_revision_hash(definition),
-        _lifecycle_revision_hash(definition),
-        _legacy_revision_hash(
+    pre_avatar_row = {
+        **current_row,
+        "avatar_seed": "",
+        "supported_input_types": ["text"],
+    }
+    lifecycle_row = {
+        **pre_avatar_row,
+        "legacy_supported_file_types": [],
+    }
+    expected_hashes = {
+        "mvp": "be497d2fe2c215f93754ed81bf71381716ed327f7929ffc0247160dba436261b",
+        "lifecycle": "8a7f56cc8fa02a34766a2a92d8191506c41f073a40729e0e66ae25e16e4411b5",
+        "enterprise": "738787e259c84d722bcd6f67d5b79c48c6a44fbd09d65d45219b4316970f3e55",
+        "pre_avatar": "fafc5e59592db25119f09339c91fd1ba8513fe3a88dbfbf50185363800cc82b0",
+        "legacy_skill_set": "af5557ab47e5308b0045df18146100853adf4578455e99331db813d592767868",
+        "omitted_file_type": "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
+        "current": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
+    }
+    generated_hashes = {
+        "mvp": _mvp_revision_hash(definition),
+        "lifecycle": _lifecycle_revision_hash(definition),
+        "enterprise": _legacy_revision_hash(
             definition,
+            legacy_supported_input_types=["text"],
             legacy_supported_file_types=["application/pdf"],
         ),
-        _pre_avatar_seed_skill_set_revision_hash(
+        "pre_avatar": _pre_avatar_seed_skill_set_revision_hash(
             definition,
+            legacy_supported_input_types=["text"],
             legacy_supported_file_types=["application/pdf"],
         ),
-        _legacy_skill_set_revision_hash(
+        "legacy_skill_set": _legacy_skill_set_revision_hash(
             definition,
+            legacy_supported_input_types=["text"],
             legacy_supported_file_types=["application/pdf"],
         ),
-        _revision_hash(definition),
+        "omitted_file_type": _omitted_file_type_skill_set_revision_hash(definition),
+        "current": _revision_hash(definition),
+    }
+    rows_by_schema = {
+        "mvp": lifecycle_row,
+        "lifecycle": lifecycle_row,
+        "enterprise": pre_avatar_row,
+        "pre_avatar": pre_avatar_row,
+        "legacy_skill_set": pre_avatar_row,
+        "omitted_file_type": current_row,
+        "current": current_row,
     }
 
-    assert len(historical_hashes) == 6
-    assert all(_revision_hash_matches(row, content_hash) for content_hash in historical_hashes)
-
-    tampered = {**row, "instructions": "changed without a new immutable hash"}
-    assert not any(
-        _revision_hash_matches(tampered, content_hash)
-        for content_hash in historical_hashes
+    assert generated_hashes == expected_hashes
+    assert all(
+        _revision_hash_matches(rows_by_schema[schema], content_hash)
+        for schema, content_hash in expected_hashes.items()
     )
+
+    assert all(
+        not _revision_hash_matches(
+            {
+                **rows_by_schema[schema],
+                "instructions": "changed without a new immutable hash",
+            },
+            content_hash,
+        )
+        for schema, content_hash in expected_hashes.items()
+    )
+
+
+def test_early_profile_hashes_cannot_authorize_fields_their_schema_did_not_cover():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "avatar_seed": "",
+        "supported_input_types": ["text"],
+        "legacy_supported_file_types": [],
+    }
+
+    mvp_hash = _mvp_revision_hash(definition)
+    lifecycle_hash = _lifecycle_revision_hash(definition)
+    enterprise_hash = _legacy_revision_hash(
+        definition,
+        legacy_supported_input_types=["text"],
+    )
+    skill_set_hash = _pre_avatar_seed_skill_set_revision_hash(
+        definition,
+        legacy_supported_input_types=["text"],
+    )
+    assert all(
+        _revision_hash_matches(row, content_hash)
+        for content_hash in (mvp_hash, lifecycle_hash, enterprise_hash, skill_set_hash)
+    )
+
+    assert not _revision_hash_matches({**row, "visibility": "restricted"}, mvp_hash)
+    assert not _revision_hash_matches(
+        {**row, "welcome_message": "not covered by lifecycle hash"},
+        lifecycle_hash,
+    )
+    assert not _revision_hash_matches(
+        {**row, "avatar_seed": "not-covered-by-enterprise-hash"},
+        enterprise_hash,
+    )
+    assert not _revision_hash_matches(
+        {**row, "avatar_seed": "not-covered-by-skill-set-hash"},
+        skill_set_hash,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("skill_set", ["malformed-skill"]),
+        ("mcp_tool_ids", {"malformed": "tool-list"}),
+    ],
+)
+def test_revision_integrity_normalizes_malformed_historical_json(field, value):
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": _revision_hash(definition),
+        field: value,
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        AgentProfileAuthority._require_revision_integrity(row)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "agent_profile_revision_integrity_mismatch"
 
 
 def test_selected_profile_rejects_client_owned_capability_selectors():
