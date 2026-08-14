@@ -2068,10 +2068,6 @@ def _safe_recorded_gate_evidence_value(field: str, value: object) -> object | No
     return _safe_capacity_evidence_ref(value)
 
 
-def _is_diagnostic_release_evidence(source: dict[str, Any]) -> bool:
-    return _contains_diagnostic_release_evidence_marker(source)
-
-
 def _capacity_recorded_gate_evidence_packet(
     packet: dict[str, Any],
     gate: str,
