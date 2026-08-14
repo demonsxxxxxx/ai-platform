@@ -47,6 +47,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.error_taxonomy import summarize_error_categories
+from app.file_type_validation import profile_file_type_allowed
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.persistence import (
     RepositoryNotFoundError,
@@ -9945,6 +9946,8 @@ async def authorize_files_for_run(
     file_ids: list[str],
     reusable_file_ids: list[str] | None = None,
     input_modes: list[object] | None = None,
+    agent_profile_supported_input_types: list[str] | None = None,
+    agent_profile_supported_file_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Lock and validate run input files before any run creation side effect."""
 
@@ -10008,11 +10011,28 @@ async def authorize_files_for_run(
             if row["run_id"] and row["run_id"] != run_id:
                 raise RepositoryConflictError("file_already_bound")
         rows.append(dict(row))
+    if agent_profile_supported_input_types is not None:
+        if rows and "file" not in agent_profile_supported_input_types:
+            raise RepositoryConflictError("agent_profile_file_input_not_supported")
+        allowed_file_types = agent_profile_supported_file_types or []
+        if rows and not all(
+            profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
+            for row in rows
+        ):
+            raise RepositoryConflictError("agent_profile_file_type_not_supported")
     if input_modes is not None and has_file_input_mode(input_modes):
         compatible_ids = compatible_reusable_file_ids(rows, input_modes=input_modes)
         if len(compatible_ids) != len(rows):
             raise RepositoryConflictError("file_required_for_skill")
     return rows
+
+
+def _agent_profile_file_type_allowed(
+    row: dict[str, Any],
+    *,
+    allowed_file_types: list[str],
+) -> bool:
+    return profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
 
 
 async def bind_files_to_run(
