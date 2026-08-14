@@ -126,20 +126,6 @@ def tool_permission_budget(normal_execution_timeout_seconds: float = 120.0) -> T
     )
 
 
-def callback_timeout_seconds(payload: dict[str, Any]) -> float:
-    """Select the long transport only for the governed permission callback."""
-
-    budget = tool_permission_budget()
-    if isinstance(payload.get("tool_name"), str) and isinstance(payload.get("tool_call_id"), str):
-        requested_wait = payload.get("permission_wait_seconds")
-        if isinstance(requested_wait, int | float) and not isinstance(requested_wait, bool):
-            return max(min(float(requested_wait), budget.aggregate_permission_wait_seconds), 0.0) + (
-                budget.permission_callback_timeout_seconds - budget.permission_wait_seconds
-            )
-        return budget.permission_callback_timeout_seconds
-    return budget.non_permission_callback_timeout_seconds
-
-
 async def drain_run_tool_permission_terminalization(
     *,
     tenant_id: str,
