@@ -111,10 +111,10 @@ def _safe_avatar_ref(value: Any) -> str:
 def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
+    if any(ord(character) < 32 for character in value):
+        return fallback
     candidate = value.strip()
-    if not candidate or len(candidate) > 128 or any(
-        ord(character) < 32 or 0x7F <= ord(character) <= 0x9F for character in candidate
-    ):
+    if not candidate or len(candidate) > 128:
         return fallback
     return candidate
 

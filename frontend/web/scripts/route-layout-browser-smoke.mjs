@@ -270,7 +270,13 @@ async function runCase(viewport, scenario) {
       throw new Error(`route_mount_failed:${viewport.name}:${scenario.name}:${JSON.stringify(diagnostic)}:${String(error)}`);
     }
     await browser.client.waitFor(
-      `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => Boolean(document.querySelector(selector)))`,
+      `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return false;
+        if (!(element instanceof HTMLImageElement)) return true;
+        const rect = element.getBoundingClientRect();
+        return element.complete && element.naturalWidth > 0 && element.naturalHeight > 0 && rect.width > 0 && rect.height > 0;
+      })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
     const layout = await browser.client.evaluate(`(() => {

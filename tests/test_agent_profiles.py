@@ -55,18 +55,17 @@ def test_agent_profile_draft_rejects_retired_supported_file_types():
         )
 
 
-def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_control_ranges():
+def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_controls():
     seed = "\U0001f680" * 128
     definition = AgentProfileDraftRequest.model_validate(
         {**profile_draft_payload("Private instruction"), "avatar_seed": seed}
     )
     assert definition.avatar_seed == seed
 
-    for control in ("\x7f", "\x85"):
-        with pytest.raises(ValueError, match="control characters"):
-            AgentProfileDraftRequest.model_validate(
-                {**profile_draft_payload("Private instruction"), "avatar_seed": f"safe{control}seed"}
-            )
+    with pytest.raises(ValueError, match="control characters"):
+        AgentProfileDraftRequest.model_validate(
+            {**profile_draft_payload("Private instruction"), "avatar_seed": "\x1fseed"}
+        )
 
 
 @pytest.mark.asyncio

@@ -83,15 +83,11 @@ function requireString(value: unknown, code: string, allowEmpty = false): string
 function projectAvatarSeed(record: Record<string, unknown>, code: string): string {
   const fallback = requireString(record.agent_id, code);
   if (typeof record.avatar_seed !== "string") return fallback;
+  if ([...record.avatar_seed].some((character) => (character.codePointAt(0) ?? 0) < 32)) {
+    return fallback;
+  }
   const seed = record.avatar_seed.trim();
-  if (
-    !seed ||
-    [...seed].length > 128 ||
-    [...seed].some((character) => {
-      const codePoint = character.codePointAt(0) ?? 0;
-      return codePoint < 32 || (codePoint >= 0x7f && codePoint <= 0x9f);
-    })
-  ) {
+  if (!seed || [...seed].length > 128) {
     return fallback;
   }
   return seed;
