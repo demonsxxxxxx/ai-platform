@@ -290,6 +290,40 @@ def _activate_agent_profile_bridge(repo: Path, *, source_suffix: str = "") -> No
     )
 
 
+def _activate_context_memory_bridge(repo: Path) -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.postgres",
+    )
+    remaining_symbols = sorted(
+        {
+            symbol
+            for other in _fixture_policy()["migration_bridges"]
+            if other["source_path"] == bridge["source_path"] and other != bridge
+            for symbol in other["symbols"]
+        }
+    )
+    _write(
+        repo,
+        "app/context/infrastructure/postgres.py",
+        _fixture_bridge_definitions(bridge["symbols"]) + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        "DEFAULT_RUN_EXECUTOR_TYPES = {\"claude-agent-worker\"}\n"
+        + _fixture_bridge_definitions(remaining_symbols)
+        + "\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n"
+        + _fixture_cutover_suffix(bridge["source_path"]),
+    )
+
+
 def _activate_conversation_bridges(repo: Path) -> None:
     bridges = [
         _migration_bridge(
@@ -974,6 +1008,19 @@ def test_exact_legacy_migration_bridge_moves_symbols_as_identity_aliases(
     assert evaluation.findings == ()
 
 
+def test_exact_context_memory_migration_bridge_moves_symbols_as_identity_aliases(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_context_memory_bridge(repo)
+    head = _commit(repo, "activate exact Context Memory persistence bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
 def test_exact_conversation_migration_bridges_move_symbols_as_identity_aliases(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -1502,6 +1549,69 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
+def test_context_memory_persistence_bridge_authority_is_exact() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.context.infrastructure.postgres",
+        "module_alias": "memory_persistence",
+        "symbols": [
+            "MEMORY_RETENTION_CLEANUP_CURSOR_KEY",
+            "_default_memory_policy",
+            "_list_expired_memory_cleanup_scopes",
+            "_memory_policy_from_row",
+            "_stored_memory_redaction_mode",
+            "_validated_memory_redaction_mode",
+            "admin_delete_memory_record",
+            "cleanup_expired_memory_records",
+            "cleanup_expired_memory_records_across_scopes",
+            "create_memory_record",
+            "delete_memory_record",
+            "get_effective_memory_policy",
+            "list_admin_memory_policies",
+            "list_admin_memory_records",
+            "list_memory_records",
+            "list_scoped_context_memory_records",
+            "memory_policy_id",
+            "set_memory_policy",
+        ],
+        "owner": "context",
+        "reason": (
+            "The frozen global repository may expose these existing Memory policy, "
+            "record, scoped-read, and retention persistence symbols only as exact "
+            "identity aliases while their PostgreSQL implementation moves to the "
+            "Context adapter."
+        ),
+        "removal_condition": (
+            "After the Context Memory persistence move, migrate supported internal "
+            "callers to the Context API, inventory external imports, and remove this "
+            "bridge in an authority-only change before deleting the repositories "
+            "aliases."
+        ),
+    }
+
+
+def test_live_context_memory_persistence_bridge_is_inactive() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.postgres",
+    )
+    target_path = REPO_ROOT / "app/context/infrastructure/postgres.py"
+    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+
+    assert not target_path.exists()
+    assert (
+        f"import {bridge['target_module']} as {bridge['module_alias']}"
+        not in source
+    )
+    for symbol in bridge["symbols"]:
+        assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
+
+
 def test_persistence_limits_platform_bridge_authority_is_exact() -> None:
     bridge = _migration_bridge(
         source_path="app/persistence_limits.py",
@@ -1783,6 +1893,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
+        "app.context.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
@@ -1808,6 +1919,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
+        "app.context.infrastructure.postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
@@ -1821,6 +1933,79 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         _evaluate(repo, authority, authority, authority)
 
     assert caught.value.code == "invalid_policy"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("wrong_alias", "migration_bridge_import_contract"),
+        ("missing_symbol", "migration_bridge_symbol_contract"),
+        ("rebound_symbol", "migration_bridge_symbol_contract"),
+        ("missing_target", "migration_bridge_target_contract"),
+        ("missing_target_symbol", "migration_bridge_target_contract"),
+        ("new_logic", "migration_bridge_source_logic"),
+    ],
+)
+def test_context_memory_migration_bridge_fails_closed_on_contract_drift(
+    governance_repo: tuple[Path, str], mutation: str, expected: str
+) -> None:
+    repo, authority = governance_repo
+    _activate_context_memory_bridge(repo)
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.postgres",
+    )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    first_symbol = bridge["symbols"][0]
+    target_path = repo / "app/context/infrastructure/postgres.py"
+    if mutation == "wrong_alias":
+        source = source.replace(
+            f" as {bridge['module_alias']}",
+            " as unauthorized_alias",
+            1,
+        )
+    elif mutation == "missing_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}\n",
+            "",
+        )
+    elif mutation == "rebound_symbol":
+        source = source.replace(
+            f"{first_symbol} = {bridge['module_alias']}.{first_symbol}",
+            f"{first_symbol} = object()",
+        )
+    elif mutation == "missing_target":
+        target_path.unlink()
+    elif mutation == "missing_target_symbol":
+        target_source = target_path.read_text(encoding="utf-8")
+        target_path.write_text(
+            target_source.replace(
+                _fixture_bridge_definitions([first_symbol]),
+                "",
+                1,
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "new_logic":
+        source += "\ndef newly_owned_logic():\n    return True\n"
+    _write(repo, bridge["source_path"], source)
+    head = _commit(repo, f"reject Context Memory bridge {mutation}")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+    assert evaluation.status != "pass"
+
+    expected_path = (
+        "app/context/infrastructure/postgres.py"
+        if mutation in {"missing_target", "missing_target_symbol"}
+        else bridge["source_path"]
+    )
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == expected and item.path == expected_path
+    )
+    assert finding.exemptible is False
 
 
 @pytest.mark.parametrize(

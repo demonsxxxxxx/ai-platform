@@ -307,6 +307,34 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.context.infrastructure.postgres",
+      "module_alias": "memory_persistence",
+      "symbols": [
+        "MEMORY_RETENTION_CLEANUP_CURSOR_KEY",
+        "_default_memory_policy",
+        "_list_expired_memory_cleanup_scopes",
+        "_memory_policy_from_row",
+        "_stored_memory_redaction_mode",
+        "_validated_memory_redaction_mode",
+        "admin_delete_memory_record",
+        "cleanup_expired_memory_records",
+        "cleanup_expired_memory_records_across_scopes",
+        "create_memory_record",
+        "delete_memory_record",
+        "get_effective_memory_policy",
+        "list_admin_memory_policies",
+        "list_admin_memory_records",
+        "list_memory_records",
+        "list_scoped_context_memory_records",
+        "memory_policy_id",
+        "set_memory_policy"
+      ],
+      "owner": "context",
+      "reason": "The frozen global repository may expose these existing Memory policy, record, scoped-read, and retention persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Context adapter.",
+      "removal_condition": "After the Context Memory persistence move, migrate supported internal callers to the Context API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.conversations.infrastructure.postgres",
       "module_alias": "conversation_persistence",
       "symbols": [
