@@ -67,6 +67,13 @@ def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_contr
             {**profile_draft_payload("Private instruction"), "avatar_seed": "\x1fseed"}
         )
 
+    for historical_control in ("\x7f", "\x80", "\x85", "\x9f"):
+        historical_seed = f"safe{historical_control}seed"
+        definition = AgentProfileDraftRequest.model_validate(
+            {**profile_draft_payload("Private instruction"), "avatar_seed": historical_seed}
+        )
+        assert definition.avatar_seed == historical_seed
+
 
 @pytest.mark.asyncio
 async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_payload():
