@@ -54,6 +54,7 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "permissions_and_data_access_notice",
     "avatar_ref",
     "avatar_asset_id",
+    "avatar_seed",
     "category",
     "visibility",
     "allowed_department_ids",
@@ -111,7 +112,9 @@ def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
     candidate = value.strip()
-    if not candidate or len(candidate) > 128 or any(ord(character) < 32 for character in candidate):
+    if not candidate or len(candidate) > 128 or any(
+        ord(character) < 32 or 0x7F <= ord(character) <= 0x9F for character in candidate
+    ):
         return fallback
     return candidate
 
@@ -1109,7 +1112,9 @@ class AgentProfileAuthority:
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
-            avatar_seed=definition.avatar_seed or agent_id,
+            # Preserve the persisted value exactly: historical hashes intentionally
+            # omit avatar_seed and use an empty value as their schema marker.
+            avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,

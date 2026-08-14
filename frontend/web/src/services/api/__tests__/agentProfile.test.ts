@@ -33,6 +33,7 @@ test("builds server-authoritative catalog and detail URLs", () => {
 test("loads only the safe public Agent Profile projection", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const unicodeAvatarSeed = "\u{1F680}".repeat(128);
   globalThis.fetch = (async (input) => {
     calls.push(String(input));
     return new Response(
@@ -44,6 +45,7 @@ test("loads only the safe public Agent Profile projection", async () => {
             name: "支持助手",
             description: "处理已授权的支持请求。",
             avatar_ref: "builtin:assistant",
+            avatar_seed: unicodeAvatarSeed,
             category: "support",
             instructions: "PRIVATE_PROMPT",
             model_id: "private-model",
@@ -68,6 +70,7 @@ test("loads only the safe public Agent Profile projection", async () => {
           name: "支持助手",
           description: "处理已授权的支持请求。",
           avatar_ref: "builtin:assistant",
+          avatar_seed: unicodeAvatarSeed,
           category: "support",
         },
       ],

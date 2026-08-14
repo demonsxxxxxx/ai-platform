@@ -33,7 +33,9 @@ def normalize_agent_skill_set(
 
 def normalize_agent_avatar_seed(value: str) -> str:
     normalized = value.strip()
-    if "\x00" in normalized or any(ord(character) < 32 for character in normalized):
+    if any(
+        ord(character) < 32 or 0x7F <= ord(character) <= 0x9F for character in normalized
+    ):
         raise ValueError("avatar_seed contains control characters")
     return normalized
 

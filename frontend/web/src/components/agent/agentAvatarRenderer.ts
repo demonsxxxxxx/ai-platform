@@ -16,7 +16,7 @@ const DICEBEAR_STYLES = {
 function opaqueSeed(value: string): string {
   let hash = 2166136261;
   for (const character of value) {
-    hash ^= character.charCodeAt(0);
+    hash ^= character.codePointAt(0) ?? 0;
     hash = Math.imul(hash, 16777619);
   }
   return `expert-${(hash >>> 0).toString(16).padStart(8, "0")}`;

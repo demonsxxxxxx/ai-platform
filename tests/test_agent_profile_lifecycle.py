@@ -462,6 +462,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     prior.update(
         {
             "avatar_ref": "builtin:research",
+            "avatar_seed": "support-custom-seed",
             "category": "research",
             "visibility": "restricted",
             "allowed_department_ids": ["research"],
@@ -500,6 +501,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
                     "skill_version",
                     "mcp_tool_ids",
                     "avatar_ref",
+                    "avatar_seed",
                     "category",
                     "visibility",
                     "allowed_department_ids",
@@ -541,6 +543,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     )
     assert not {
         "avatar_ref",
+        "avatar_seed",
         "category",
         "visibility",
         "allowed_department_ids",
@@ -556,6 +559,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     )
 
     assert captured[-1]["avatar_ref"] == "builtin:research"
+    assert captured[-1]["avatar_seed"] == "support-custom-seed"
     assert captured[-1]["category"] == "research"
     assert captured[-1]["visibility"] == "restricted"
     assert captured[-1]["allowed_department_ids"] == ["research"]
@@ -577,6 +581,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     explicit_empty = omitted.model_copy(
         update={
             "expected_draft_revision": 9,
+            "avatar_seed": "support-updated-seed",
             "visibility": "restricted",
             "allowed_department_ids": [],
             "allowed_roles": [],
@@ -584,7 +589,13 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
         }
     )
     explicit_empty.model_fields_set.update(
-        {"visibility", "allowed_department_ids", "allowed_roles", "allowed_user_ids"}
+        {
+            "avatar_seed",
+            "visibility",
+            "allowed_department_ids",
+            "allowed_roles",
+            "allowed_user_ids",
+        }
     )
     await authority.save_draft(
         object(),
@@ -594,6 +605,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     )
 
     assert captured[-1]["visibility"] == "restricted"
+    assert captured[-1]["avatar_seed"] == "support-updated-seed"
     assert captured[-1]["allowed_department_ids"] == []
     assert captured[-1]["allowed_roles"] == []
     assert captured[-1]["allowed_user_ids"] == []
@@ -1663,7 +1675,12 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
 @pytest.mark.asyncio
 async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admission(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
-    from app.agent_apps.authority import _draft_from_row, _revision_hash
+    from app.agent_apps.authority import (
+        _draft_from_row,
+        _pre_avatar_seed_skill_set_revision_hash,
+        _revision_hash,
+        _revision_hash_matches,
+    )
 
     observed: dict[str, object] = {}
     order: list[str] = []
@@ -1687,12 +1704,28 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
             row = _profile_row(status="draft", revision=8)
             row["name"] = "Unpublished authoring changes"
             row["instructions"] = "new draft instructions"
-        row["content_hash"] = _revision_hash(_draft_from_row(row))
+            row["avatar_seed"] = ""
+        if row["avatar_seed"]:
+            row["content_hash"] = _revision_hash(_draft_from_row(row))
+        else:
+            row["content_hash"] = _pre_avatar_seed_skill_set_revision_hash(
+                _draft_from_row(row),
+                legacy_supported_input_types=row["supported_input_types"],
+                legacy_supported_file_types=row["legacy_supported_file_types"],
+            )
         return row
 
     async def append_revision(*_args, **kwargs):
         observed["append"] = kwargs
-        return _profile_row(status="withdrawn", revision=9)
+        row = {
+            **kwargs,
+            "agent_id": "agt_support",
+            "revision": 9,
+            "published_at": None,
+            "created_at": None,
+        }
+        observed["appended_row"] = row
+        return row
 
     async def record_withdrawal(*_args, **kwargs):
         observed["withdrawal"] = kwargs
@@ -1727,7 +1760,12 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     assert observed["append"]["withdrawn_from_revision"] == 7
     assert observed["append"]["name"] == "Unpublished authoring changes"
     assert observed["append"]["instructions"] == "new draft instructions"
+    assert observed["append"]["avatar_seed"] == ""
     assert observed["append"]["content_hash"] != "a" * 64
+    assert _revision_hash_matches(
+        observed["appended_row"],
+        str(observed["append"]["content_hash"]),
+    )
     assert observed["revision_lookups"] == [
         {
             "tenant_id": "tenant-a",
