@@ -13,7 +13,11 @@ from app.agent_profiles import (
 )
 from app.agent_apps.authority import (
     _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+    _legacy_revision_hash,
     _legacy_skill_set_revision_hash,
+    _lifecycle_revision_hash,
+    _mvp_revision_hash,
+    _pre_avatar_seed_skill_set_revision_hash,
     _revision_hash,
     _revision_hash_matches,
 )
@@ -300,6 +304,44 @@ def test_new_profile_hash_is_accepted_by_the_rolling_worker_contract():
     assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
         definition,
         legacy_supported_file_types=_ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+    )
+
+
+def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_untampered_data():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "legacy_supported_file_types": ["application/pdf"],
+    }
+    historical_hashes = {
+        _mvp_revision_hash(definition),
+        _lifecycle_revision_hash(definition),
+        _legacy_revision_hash(
+            definition,
+            legacy_supported_file_types=["application/pdf"],
+        ),
+        _pre_avatar_seed_skill_set_revision_hash(
+            definition,
+            legacy_supported_file_types=["application/pdf"],
+        ),
+        _legacy_skill_set_revision_hash(
+            definition,
+            legacy_supported_file_types=["application/pdf"],
+        ),
+        _revision_hash(definition),
+    }
+
+    assert len(historical_hashes) == 6
+    assert all(_revision_hash_matches(row, content_hash) for content_hash in historical_hashes)
+
+    tampered = {**row, "instructions": "changed without a new immutable hash"}
+    assert not any(
+        _revision_hash_matches(tampered, content_hash)
+        for content_hash in historical_hashes
     )
 
 

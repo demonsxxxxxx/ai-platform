@@ -267,12 +267,57 @@ def _profile_chat_manifest(skill_id: str) -> dict[str, object]:
     }
 
 
+def _canonical_profile_hash(
+    *,
+    agent_id: str,
+    name: str,
+    description: str,
+    instructions: str,
+    model_id: str,
+    skill_id: str,
+    skill_version: str,
+) -> str:
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    row = {
+        "agent_id": agent_id,
+        "revision": 1,
+        "name": name,
+        "description": description,
+        "instructions": instructions,
+        "model_id": model_id,
+        "skill_id": skill_id,
+        "skill_version": skill_version,
+        "skill_set": [
+            {"skill_id": skill_id, "expected_version": skill_version}
+        ],
+        "mcp_tool_ids": [],
+        "avatar_ref": "builtin:agent",
+        "category": "general",
+        "visibility": "tenant",
+        "allowed_department_ids": [],
+        "allowed_roles": [],
+        "allowed_user_ids": [],
+    }
+    return _revision_hash(_draft_from_row(row))
+
+
 async def _seed_profile_chat_storage(
     conn: psycopg.AsyncConnection,
     *,
     skill_version: str,
-) -> None:
+) -> str:
     """Seed the minimum real storage graph for a profile-bound Chat submission."""
+
+    profile_hash = _canonical_profile_hash(
+        agent_id="agt_profile_chat",
+        name="Profile Chat Agent",
+        description="Published profile for Chat locking",
+        instructions="private profile chat instructions",
+        model_id="model-a",
+        skill_id="profile-chat-skill",
+        skill_version=skill_version,
+    )
 
     await conn.execute(
         "insert into tenants(id, name) values (%s, %s)",
@@ -336,7 +381,7 @@ async def _seed_profile_chat_storage(
             skill_version,
             "profile-chat-skill",
             skill_version,
-            "a" * 64,
+            profile_hash,
             "admin-profile-chat",
             "admin-profile-chat",
         ),
@@ -348,8 +393,9 @@ async def _seed_profile_chat_storage(
           published_revision, published_hash, published_status
         ) values (%s, %s, 'published', 1, 1, %s, 'published')
         """,
-        ("tenant-profile-chat", "agt_profile_chat", "a" * 64),
+        ("tenant-profile-chat", "agt_profile_chat", profile_hash),
     )
+    return profile_hash
 
 
 @pytest.mark.asyncio
@@ -796,6 +842,15 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
     queue_entered = asyncio.Event()
     manifest = _profile_chat_manifest("profile-skill")
     locked_skill_version = str(manifest["content_hash"])
+    profile_hash = _canonical_profile_hash(
+        agent_id="agt_profile",
+        name="Profile agent",
+        description="Published profile",
+        instructions="private profile instructions",
+        model_id="model-a",
+        skill_id="profile-skill",
+        skill_version=locked_skill_version,
+    )
     admission_task = None
     withdrawal_task = None
     try:
@@ -865,7 +920,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 locked_skill_version,
                 "profile-skill",
                 locked_skill_version,
-                "a" * 64,
+                profile_hash,
                 "admin-profile",
                 "admin-profile",
             ),
@@ -877,7 +932,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
               published_revision, published_hash, published_status
             ) values (%s, %s, 'published', 1, 1, %s, 'published')
             """,
-            ("tenant-profile", "agt_profile", "a" * 64),
+            ("tenant-profile", "agt_profile", profile_hash),
         )
         await admission_conn.execute(
             """
@@ -893,7 +948,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "user-profile",
                 "agt_profile",
                 "Profile session",
-                "a" * 64,
+                profile_hash,
             ),
         )
         execution_snapshot = {
@@ -908,7 +963,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             "agent_profile": {
                 "agent_id": "agt_profile",
                 "revision": 1,
-                "content_hash": "a" * 64,
+                "content_hash": profile_hash,
                 "instructions": "private profile instructions",
                 "skill_set": [
                     {
@@ -935,7 +990,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 "agt_profile",
                 "profile-skill",
                 json.dumps(execution_snapshot),
-                "a" * 64,
+                profile_hash,
             ),
         )
         await repositories.insert_run_skill_snapshots_at_creation(
@@ -1130,7 +1185,7 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
         for conn in (admission_conn, lifecycle_conn, observer_conn):
             await _set_search_path(conn, schema_name)
         await admission_conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
-        await _seed_profile_chat_storage(
+        profile_hash = await _seed_profile_chat_storage(
             admission_conn,
             skill_version=str(manifest["content_hash"]),
         )
@@ -1158,7 +1213,7 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
             assert payload["agent_profile"] == {
                 "agent_id": "agt_profile_chat",
                 "revision": 1,
-                "content_hash": "a" * 64,
+                "content_hash": profile_hash,
                 "instructions": "private profile chat instructions",
                 "skill_set": [
                     {
@@ -1289,9 +1344,9 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
         assert await persisted_cursor.fetchone() == {
             "status": "queued",
             "admitted_agent_profile_revision": 1,
-            "admitted_agent_profile_hash": "a" * 64,
+            "admitted_agent_profile_hash": profile_hash,
             "session_revision": 1,
-            "session_hash": "a" * 64,
+            "session_hash": profile_hash,
         }
         submission_cursor = await observer_conn.execute(
             "select submission_id::text, state from chat_submissions where tenant_id = %s and run_id = %s",

@@ -343,6 +343,85 @@ def _legacy_revision_hash(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _pre_avatar_seed_skill_set_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_input_types: list[str] | None = None,
+    legacy_supported_file_types: list[str] | None = None,
+) -> str:
+    """Recompute the Skill Set hash written before avatar seeds were introduced."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": legacy_supported_input_types or definition.supported_input_types,
+        "supported_file_types": legacy_supported_file_types or [],
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _lifecycle_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the first ACL-aware one-Skill profile hash."""
+
+    if len(definition.skill_set) != 1:
+        return ""
+    primary = definition.skill_set[0]
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_id": primary.skill_id,
+        "skill_version": primary.expected_version,
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _mvp_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the original one-Skill profile hash."""
+
+    if len(definition.skill_set) != 1:
+        return ""
+    primary = definition.skill_set[0]
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_id": primary.skill_id,
+        "skill_version": primary.expected_version,
+        "mcp_tool_ids": definition.mcp_tool_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
     if len(content_hash) != 64 or any(character not in "0123456789abcdef" for character in content_hash):
         return False
@@ -358,11 +437,18 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
             legacy_supported_input_types=legacy_supported_input_types,
             legacy_supported_file_types=legacy_supported_file_types,
         ),
+        _pre_avatar_seed_skill_set_revision_hash(
+            definition,
+            legacy_supported_input_types=legacy_supported_input_types,
+            legacy_supported_file_types=legacy_supported_file_types,
+        ),
         _legacy_revision_hash(
             definition,
             legacy_supported_input_types=legacy_supported_input_types,
             legacy_supported_file_types=legacy_supported_file_types,
         ),
+        _lifecycle_revision_hash(definition),
+        _mvp_revision_hash(definition),
     }
     return content_hash in {candidate for candidate in candidates if candidate}
 
@@ -659,11 +745,7 @@ class AgentProfileAuthority:
         if draft_row is None:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
         source_content_hash = str(draft_row.get("content_hash") or "")
-        if not _revision_hash_matches(draft_row, source_content_hash):
-            raise HTTPException(
-                status_code=409,
-                detail="agent_profile_revision_integrity_mismatch",
-            )
+        self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
         row = await repositories.create_agent_profile_revision(
@@ -775,11 +857,7 @@ class AgentProfileAuthority:
             if authoring_row is None:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
         authoring_content_hash = str(authoring_row.get("content_hash") or "")
-        if not _revision_hash_matches(authoring_row, authoring_content_hash):
-            raise HTTPException(
-                status_code=409,
-                detail="agent_profile_revision_integrity_mismatch",
-            )
+        self._require_revision_integrity(authoring_row)
         definition = _draft_from_row(authoring_row)
         row = await repositories.create_agent_profile_revision(
             conn,
@@ -1151,7 +1229,11 @@ class AgentProfileAuthority:
     @staticmethod
     def _require_revision_integrity(row: dict[str, Any]) -> None:
         content_hash = str(row.get("content_hash") or "")
-        if not _revision_hash_matches(row, content_hash):
+        try:
+            matches = _revision_hash_matches(row, content_hash)
+        except (KeyError, TypeError, ValueError):
+            matches = False
+        if not matches:
             raise HTTPException(
                 status_code=409,
                 detail="agent_profile_revision_integrity_mismatch",
