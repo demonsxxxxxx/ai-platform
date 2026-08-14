@@ -14,6 +14,10 @@ import {
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 
+const AGENT_PROFILE_ADMIN_SCHEMA_HEADERS = {
+  "X-AI-Agent-Profile-Schema": "2",
+} as const;
+
 export interface AgentProfileCatalogResponse {
   agent_profiles: AgentProfilePublicProjection[];
 }
@@ -138,13 +142,15 @@ export const agentProfileApi = {
   },
 
   listAdmin(): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
-    return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`);
+    return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`, {
+      headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
+    });
   },
 
   listHistory(agentId: string): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
     return authFetch(
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/history`,
-      { cache: "no-store" },
+      { cache: "no-store", headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS },
     );
   },
 
@@ -158,6 +164,7 @@ export const agentProfileApi = {
         : `${API_BASE}/api/ai/admin/agent-profiles`,
       {
         method: agentId ? "PUT" : "POST",
+        headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
         body: JSON.stringify(draft),
       },
     );
@@ -168,6 +175,7 @@ export const agentProfileApi = {
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/publish`,
       {
         method: "POST",
+        headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
         body: JSON.stringify({ expected_revision: expectedRevision }),
       },
     );
@@ -178,6 +186,7 @@ export const agentProfileApi = {
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/unpublish`,
       {
         method: "POST",
+        headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
         body: JSON.stringify({ expected_revision: expectedRevision }),
       },
     );

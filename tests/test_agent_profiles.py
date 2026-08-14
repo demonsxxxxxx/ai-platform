@@ -429,6 +429,72 @@ def test_agent_profile_market_normalizes_unicode_search_before_repository_query(
     assert observed == [("Audit", "general")]
 
 
+def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normalization(monkeypatch):
+    called = False
+
+    async def profiles(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+
+    response = TestClient(create_app()).get(
+        "/api/ai/agent-profiles",
+        headers=ordinary_headers(),
+        params={"query": "\ufdfa" * 10},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "agent_profile_query_invalid"
+    assert not called
+
+
+def test_agent_profile_admin_wire_version_isolates_rolling_client_compatibility(monkeypatch):
+    profile = AgentProfileAdminProjection(
+        agent_id="agt_support",
+        revision=4,
+        status="published",
+        name="Support assistant",
+        description="Approved support helper.",
+        instructions="Keep answers concise.",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        content_hash="a" * 64,
+    )
+
+    async def profiles(_conn, *, principal):
+        assert principal.tenant_id == "tenant-a"
+        return [profile]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_admin_profiles", profiles)
+    client = TestClient(create_app())
+
+    legacy_response = client.get(
+        "/api/ai/admin/agent-profiles",
+        headers=admin_headers(),
+    )
+    current_response = client.get(
+        "/api/ai/admin/agent-profiles",
+        headers={**admin_headers(), "x-ai-agent-profile-schema": "2"},
+    )
+
+    assert legacy_response.status_code == 200
+    assert legacy_response.json()["agent_profiles"][0]["supported_file_types"] == []
+    assert current_response.status_code == 200
+    assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
+    schema = client.get("/openapi.json").json()
+    admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
+    assert "supported_file_types" not in admin_projection["properties"]
+
+
 def test_agent_profile_admin_write_requires_admin(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     response = TestClient(create_app()).post(

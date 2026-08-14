@@ -489,12 +489,13 @@ async def test_list_published_agent_profiles_searches_safe_public_use_fields():
     )
 
     assert rows == []
-    assert "agent_profile_revisions.name ilike %s" in conn.sql
-    assert "agent_profile_revisions.description ilike %s" in conn.sql
-    assert "agent_profile_revisions.capability_summary ilike %s" in conn.sql
+    assert "normalize(agent_profile_revisions.name, NFKC) ilike %s" in conn.sql
+    assert "normalize(agent_profile_revisions.description, NFKC) ilike %s" in conn.sql
+    assert "normalize(agent_profile_revisions.capability_summary, NFKC) ilike %s" in conn.sql
     assert "jsonb_array_elements_text" in conn.sql
     assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
-    assert "recommended_task.value ilike %s" in conn.sql
+    assert "normalize(recommended_task.value, NFKC) ilike %s" in conn.sql
+    assert conn.sql.count("escape E'\\\\'") == 4
     assert conn.params == (
         "company-default",
         "%内部通知润色%",
@@ -502,6 +503,37 @@ async def test_list_published_agent_profiles_searches_safe_public_use_fields():
         "%内部通知润色%",
         "%内部通知润色%",
         "writing",
+        200,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_published_agent_profiles_escapes_like_metacharacters():
+    class RowsCursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.params = None
+
+        async def execute(self, _statement, params):
+            self.params = params
+            return RowsCursor()
+
+    conn = Connection()
+    await repositories.list_current_published_agent_profiles(
+        conn,
+        tenant_id="company-default",
+        query="%_\\",
+    )
+
+    assert conn.params == (
+        "company-default",
+        "%\\%\\_\\\\%",
+        "%\\%\\_\\\\%",
+        "%\\%\\_\\\\%",
+        "%\\%\\_\\\\%",
         200,
     )
 

@@ -15,6 +15,7 @@ const defaultEnterpriseProjection = {
   supported_input_types: ["text"] as Array<"text" | "file">,
   expected_outputs: [] as string[],
   permissions_and_data_access_notice: "",
+  avatar_seed: "agt_support",
   published_at: null,
 };
 
@@ -286,6 +287,93 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
     globalThis.fetch = originalFetch;
   }
 });
+
+test("declares the current admin profile wire schema on every profile response request", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method?: string; schema: string | null }> = [];
+  const draft = {
+    name: "Support assistant",
+    description: "Approved support helper.",
+    welcome_message: "",
+    starter_prompts: [],
+    capability_summary: "Approved support requests.",
+    recommended_tasks: ["Review a request"],
+    supported_input_types: ["text"] as Array<"text" | "file">,
+    expected_outputs: [],
+    permissions_and_data_access_notice: "",
+    instructions: "Keep answers concise.",
+    model_id: "model-a",
+    selected_skill: { skill_id: "general-chat", expected_version: "version-a" },
+    skill_set: [{ skill_id: "general-chat", expected_version: "version-a" }],
+    mcp_tool_ids: [],
+    avatar_ref: "builtin:agent" as const,
+    avatar_seed: "support-assistant",
+    avatar_asset_id: null,
+    category: "support" as const,
+    visibility: "tenant" as const,
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
+    expected_draft_revision: 0,
+  };
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method,
+      schema: new Headers(init?.headers).get("x-ai-agent-profile-schema"),
+    });
+    const isList = !init?.method || init.method === "GET";
+    return new Response(
+      JSON.stringify(isList ? { agent_profiles: [] } : { agent_profile: {}, audit_id: "audit-a" }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  try {
+    await agentProfileApi.listAdmin();
+    await agentProfileApi.listHistory("agt_support");
+    await agentProfileApi.saveDraft(draft);
+    await agentProfileApi.saveDraft({ ...draft, expected_draft_revision: 7 }, "agt_support");
+    await agentProfileApi.publish("agt_support", 7);
+    await agentProfileApi.unpublish("agt_support", 7);
+
+    assert.deepEqual(calls, [
+      {
+        url: "/api/ai/admin/agent-profiles",
+        method: undefined,
+        schema: "2",
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support/history",
+        method: undefined,
+        schema: "2",
+      },
+      {
+        url: "/api/ai/admin/agent-profiles",
+        method: "POST",
+        schema: "2",
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support",
+        method: "PUT",
+        schema: "2",
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support/publish",
+        method: "POST",
+        schema: "2",
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support/unpublish",
+        method: "POST",
+        schema: "2",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 
 test("preserves typed 403 and stale revision failures from conversation admission", async () => {
   const originalFetch = globalThis.fetch;

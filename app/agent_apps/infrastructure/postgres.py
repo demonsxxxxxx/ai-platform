@@ -549,9 +549,9 @@ async def list_current_published_agent_profiles(
     if query:
         query_filter = """
         and (
-          agent_profile_revisions.name ilike %s
-          or agent_profile_revisions.description ilike %s
-          or agent_profile_revisions.capability_summary ilike %s
+          normalize(agent_profile_revisions.name, NFKC) ilike %s escape E'\\\\'
+          or normalize(agent_profile_revisions.description, NFKC) ilike %s escape E'\\\\'
+          or normalize(agent_profile_revisions.capability_summary, NFKC) ilike %s escape E'\\\\'
           or exists (
             select 1
             from jsonb_array_elements_text(
@@ -561,11 +561,17 @@ async def list_current_published_agent_profiles(
                 else '[]'::jsonb
               end
             ) as recommended_task(value)
-            where recommended_task.value ilike %s
+            where normalize(recommended_task.value, NFKC) ilike %s escape E'\\\\'
           )
         )
         """
-        pattern = f"%{query.strip()}%"
+        escaped_query = (
+            query.strip()
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        pattern = f"%{escaped_query}%"
         params.extend([pattern, pattern, pattern, pattern])
     if category:
         category_filter = "and agent_profile_revisions.category = %s"
