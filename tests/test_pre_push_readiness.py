@@ -25,6 +25,40 @@ EXCEPTION_PATH = ".code-governance-exception.json"
 FRONTEND_PACKAGE_MANAGER = "pnpm@10.32.1"
 
 
+def _retired_runs_legacy_api_cutover() -> dict[str, object]:
+    return {
+        "source_path": "app/repositories.py",
+        "public_module": "app.runs.api",
+        "canonical_module": "app.runs.domain.terminalization",
+        "module_alias": "runs_api",
+        "removed_imports": [{"module": "dataclasses", "name": "dataclass"}],
+        "rewrites": [
+            {
+                "old_symbol": "TERMINAL_RUN_STATUSES",
+                "new_symbol": "TERMINAL_RUN_STATUSES",
+            },
+            {
+                "old_symbol": "ToolPermissionTerminalizationProgress",
+                "new_symbol": "RunTerminalizationProgress",
+            },
+            {
+                "old_symbol": "_terminalization_progress_for_requested_status",
+                "new_symbol": "progress_for_requested_status",
+            },
+        ],
+        "owner": "runs",
+        "reason": (
+            "The frozen global repository may perform one exact hard cut from its "
+            "locally owned Run terminalization policy symbols to the public Runs API "
+            "without retaining policy aliases or importing Runs internals."
+        ),
+        "removal_condition": (
+            "After the exact Runs policy cutover is merged, remove this consumed "
+            "authority entry before any further app/repositories.py source change."
+        ),
+    }
+
+
 def _run(
     repo: Path,
     *arguments: str,
@@ -88,6 +122,7 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
     _write(repo, "tools/architecture_governance.py", ARCHITECTURE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/pre_push_readiness.py", READINESS_TOOL.read_text(encoding="utf-8"))
     policy = json.loads(ARCHITECTURE_POLICY.read_text(encoding="utf-8"))
+    policy["legacy_api_cutovers"] = [_retired_runs_legacy_api_cutover()]
     migration_bridge_sources = sorted(
         {bridge["source_path"] for bridge in policy["migration_bridges"]}
     )
