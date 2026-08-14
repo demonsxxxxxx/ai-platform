@@ -305,6 +305,26 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
     }.intersection(identity.model_dump())
 
 
+@pytest.mark.parametrize("avatar_seed", ["\tseed", "safe\x1fseed", "", "x" * 129])
+def test_agent_conversation_projection_uses_shared_avatar_seed_fallback(avatar_seed):
+    projection = session_response(
+        {
+            "id": "ses_avatar_fallback",
+            "workspace_id": "default",
+            "agent_id": "agt_support",
+            "title": "Support",
+            "admitted_agent_profile_revision": 2,
+            "agent_profile_name": "Support assistant",
+            "agent_profile_avatar_seed": avatar_seed,
+            "created_at": None,
+            "updated_at": None,
+        }
+    )
+
+    assert projection.agent_conversation is not None
+    assert projection.agent_conversation.avatar_seed == "agt_support"
+
+
 @pytest.mark.asyncio
 async def test_list_sessions_preserves_owned_history_without_current_publication(
     monkeypatch,

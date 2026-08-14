@@ -503,6 +503,46 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
   }
 });
 
+test("mounted list fields preserve separators while editing and normalize on blur", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  agentProfileApi.listAdmin = async () => ({ agent_profiles: [profile()] });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    const recommendedTasks = container.querySelector('[aria-label="推荐任务（可选）"]');
+    assert.ok(recommendedTasks);
+    await React.act(async () => {
+      reactProps(recommendedTasks).onFocus?.({ target: recommendedTasks } as never);
+      recommendedTasks.value = "任务一,任务二";
+      reactProps(recommendedTasks).onChange?.({ target: recommendedTasks } as never);
+      await Promise.resolve();
+    });
+    assert.equal(recommendedTasks.value, "任务一,任务二");
+
+    await React.act(async () => {
+      reactProps(recommendedTasks).onBlur?.({ target: recommendedTasks } as never);
+      await Promise.resolve();
+    });
+    assert.equal(recommendedTasks.value, "任务一\n任务二");
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
 test("mounted edit disables publish until save materializes a revision, then adopts publish status", async () => {
   const document = installDom();
   const ReactDOM = await import("react-dom/client");

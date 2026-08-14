@@ -23,6 +23,7 @@ from app.agent_apps.authority import (
     _revision_hash,
     _revision_hash_matches,
 )
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
@@ -73,6 +74,21 @@ def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_contr
             {**profile_draft_payload("Private instruction"), "avatar_seed": historical_seed}
         )
         assert definition.avatar_seed == historical_seed
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" seed ", "seed"),
+        ("\tseed", "agt_fallback"),
+        ("safe\x1fseed", "agt_fallback"),
+        ("", "agt_fallback"),
+        ("x" * 129, "agt_fallback"),
+        (None, "agt_fallback"),
+    ],
+)
+def test_safe_agent_avatar_seed_has_one_projection_contract(value, expected):
+    assert safe_agent_avatar_seed(value, fallback="agt_fallback") == expected
 
 
 @pytest.mark.asyncio

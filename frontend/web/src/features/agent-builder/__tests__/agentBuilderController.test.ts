@@ -388,6 +388,22 @@ test("safe save errors expose typed status and code but never raw messages", asy
   assert.equal(unknown.code, undefined);
 });
 
+test("revision integrity errors use action-neutral copy for publish and unpublish", () => {
+  for (const action of ["publish", "unpublish"] as const) {
+    const projected = projectAgentBuilderError(
+      action,
+      new ApiRequestError(
+        "private integrity detail",
+        409,
+        "agent_profile_revision_integrity_mismatch",
+      ),
+    );
+    assert.match(projected.message, /当前操作/);
+    assert.match(projected.message, /重新保存为新版本/);
+    assert.doesNotMatch(projected.message, /阻止发布|阻止下架|private integrity detail/);
+  }
+});
+
 test("revision conflict recovery discards edits only after an explicit successful reload", async () => {
   let listCalls = 0;
   const latest = profile({ revision: 8, name: "服务端最新版本" });

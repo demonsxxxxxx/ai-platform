@@ -42,8 +42,11 @@ function ListField({
 }) {
   const canonicalValue = lineValue(values);
   const [draft, setDraft] = useState(canonicalValue);
+  const [editing, setEditing] = useState(false);
 
-  useEffect(() => setDraft(canonicalValue), [canonicalValue]);
+  useEffect(() => {
+    if (!editing) setDraft(canonicalValue);
+  }, [canonicalValue, editing]);
 
   const commit = () => {
     const normalized = lines(draft);
@@ -55,13 +58,18 @@ function ListField({
     <label className="flex flex-col gap-2">
       <span className="text-sm font-medium">{label}</span>
       <textarea
+        aria-label={label}
         className={`${INPUT_CLASS} resize-y ${className ?? "min-h-24"}`}
         disabled={disabled}
-        onBlur={commit}
+        onBlur={() => {
+          commit();
+          setEditing(false);
+        }}
         onChange={(event) => {
           setDraft(event.target.value);
           onChange(lines(event.target.value));
         }}
+        onFocus={() => setEditing(true)}
         value={draft}
       />
     </label>

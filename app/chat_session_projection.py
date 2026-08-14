@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.models import AgentConversationIdentity, ChatSessionResponse
 from app.projection_redaction import public_agent_id_for_projection
 
@@ -30,14 +31,9 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
         and profile_name
     ):
         avatar_ref = str(row.get("agent_profile_avatar_ref") or "")
-        raw_avatar_seed = row.get("agent_profile_avatar_seed")
-        avatar_seed = (
-            raw_avatar_seed.strip()
-            if isinstance(raw_avatar_seed, str)
-            and raw_avatar_seed.strip()
-            and len(raw_avatar_seed.strip()) <= 128
-            and not any(ord(character) < 32 for character in raw_avatar_seed.strip())
-            else raw_agent_id
+        avatar_seed = safe_agent_avatar_seed(
+            row.get("agent_profile_avatar_seed"),
+            fallback=raw_agent_id,
         )
         category = str(row.get("agent_profile_category") or "")
         agent_conversation = AgentConversationIdentity(

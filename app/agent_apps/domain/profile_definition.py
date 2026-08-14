@@ -38,6 +38,18 @@ def normalize_agent_avatar_seed(value: str) -> str:
     return normalized
 
 
+def safe_agent_avatar_seed(value: object, *, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    try:
+        candidate = normalize_agent_avatar_seed(value)
+    except ValueError:
+        return fallback
+    if not candidate or len(candidate) > 128:
+        return fallback
+    return candidate
+
+
 def normalize_agent_profile_display_items(
     values: Sequence[str],
     field_name: str,

@@ -84,7 +84,7 @@ function safeErrorCopy(
     return "服务端拒绝了当前专家版本标识，请刷新目录后重试。";
   }
   if (code === "agent_profile_revision_integrity_mismatch") {
-    return "草稿完整性校验失败，服务端已阻止发布；请刷新目录并重新保存。";
+    return "专家版本完整性校验失败，服务端已阻止当前操作；请刷新目录并重新保存为新版本，若仍失败请联系管理员。";
   }
   if (code === "agent_profile_capability_not_available") {
     return "所选 Skill 或 MCP 工具已不可用，请刷新目录后重新选择。";

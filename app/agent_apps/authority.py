@@ -11,6 +11,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -109,14 +110,7 @@ def _safe_avatar_ref(value: Any) -> str:
 
 
 def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
-    if not isinstance(value, str):
-        return fallback
-    if any(ord(character) < 32 for character in value):
-        return fallback
-    candidate = value.strip()
-    if not candidate or len(candidate) > 128:
-        return fallback
-    return candidate
+    return safe_agent_avatar_seed(value, fallback=fallback)
 
 
 def _safe_category(value: Any) -> str:
