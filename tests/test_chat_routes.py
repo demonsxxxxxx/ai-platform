@@ -2059,7 +2059,7 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,

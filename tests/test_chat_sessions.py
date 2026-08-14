@@ -272,7 +272,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
     }
 
 
-def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_private_fields():
+def test_agent_conversation_projection_exposes_universal_attachment_access_and_no_private_fields():
     projection = session_response(
         {
             "id": "ses_legacy",
@@ -293,7 +293,7 @@ def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_pr
 
     identity = projection.agent_conversation
     assert identity is not None
-    assert identity.supported_input_types == ["text"]
+    assert identity.supported_input_types == ["text", "file"]
     assert not {
         "instructions",
         "model_id",
