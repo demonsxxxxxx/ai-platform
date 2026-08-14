@@ -4,7 +4,6 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
-from dataclasses import dataclass
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -61,6 +60,7 @@ from app.persistence import (
 import app.agent_apps.infrastructure.postgres as agent_profile_persistence
 import app.conversations.infrastructure.postgres as conversation_persistence
 import app.platform.postgres.errors as postgres_errors
+import app.runs.api as runs_api
 import app.runs.infrastructure.postgres as run_persistence
 import app.skills.infrastructure.postgres as skill_persistence
 from app.platform.postgres.errors import RepositoryConflictError
@@ -184,7 +184,6 @@ finalize_chat_submission = chat_submissions.finalize_chat_submission
 get_chat_submission = chat_submissions.get_chat_submission
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
-TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
 RUN_CONTROL_OPERATION_ACTIONS = {"retry", "resume"}
 MEMORY_RETENTION_CLEANUP_CURSOR_KEY = "memory_retention_cleanup"
@@ -5904,7 +5903,7 @@ async def progress_run_tool_permission_terminalization(
                 conn, tenant_id=tenant_id, run_id=run_id, terminal_status=terminal_status,
                 terminal_reason="legacy_terminal_run_permission_drain",
             )
-            return ToolPermissionTerminalizationProgress(
+            return runs_api.RunTerminalizationProgress(
                 completed=not await _has_unterminalized_run_tool_permissions(conn, tenant_id=tenant_id, run_id=run_id),
                 status=run_status,
             )
@@ -5912,8 +5911,8 @@ async def progress_run_tool_permission_terminalization(
             expired_rows = await expire_pending_tool_permission_requests(
                 conn, tenant_id=tenant_id, run_id=run_id)
             if expired_rows:
-                return ToolPermissionTerminalizationProgress(completed=False, status="running")
-        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+                return runs_api.RunTerminalizationProgress(completed=False, status="running")
+        return runs_api.RunTerminalizationProgress(completed=False, status=None)
     terminal_reason = str(staged.get("permission_terminalization_reason") or "run_terminalized")
     await terminalize_pending_tool_permission_requests(
         conn, tenant_id=tenant_id, run_id=run_id,
@@ -5921,7 +5920,7 @@ async def progress_run_tool_permission_terminalization(
         terminal_reason=terminal_reason,
     )
     if await _has_unterminalized_run_tool_permissions(conn, tenant_id=tenant_id, run_id=run_id):
-        return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
+        return runs_api.RunTerminalizationProgress(completed=False, status=target_status)
     if target_status == "cancel_requested":
         cursor = await conn.execute(
             """
@@ -6000,9 +5999,9 @@ async def progress_run_tool_permission_terminalization(
         )
     finalized = await cursor.fetchone()
     if finalized is None:
-        return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
+        return runs_api.RunTerminalizationProgress(completed=False, status=target_status)
     if target_status not in {"failed", "cancelled"}:
-        return ToolPermissionTerminalizationProgress(completed=False, status="cancel_requested")
+        return runs_api.RunTerminalizationProgress(completed=False, status="cancel_requested")
     result_payload = (
         staged.get("permission_terminalization_result_json")
         if isinstance(staged.get("permission_terminalization_result_json"), dict)
@@ -6082,7 +6081,7 @@ async def progress_run_tool_permission_terminalization(
     await ensure_run_terminal_intent(
         conn, tenant_id=tenant_id, run_id=run_id, status=target_status
     )
-    return ToolPermissionTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
+    return runs_api.RunTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
 
 async def has_pending_tool_permission_requests(
@@ -8116,7 +8115,7 @@ def _multi_agent_parent_status(parent_run: dict[str, Any], steps: list[dict[str,
     if not steps:
         return None
     statuses = {str(item.get("status") or "") for item in steps}
-    if not statuses.issubset(TERMINAL_RUN_STATUSES):
+    if not statuses.issubset(runs_api.TERMINAL_RUN_STATUSES):
         return None
     if "failed" in statuses:
         return "failed"
@@ -8180,7 +8179,7 @@ async def finalize_multi_agent_parent_run_if_ready(
     if parent_run.get("copied_from_run_id"):
         return None
     parent_status = str(parent_run.get("status") or "")
-    parent_is_terminal = parent_status in TERMINAL_RUN_STATUSES
+    parent_is_terminal = parent_status in runs_api.TERMINAL_RUN_STATUSES
     if not parent_is_terminal and parent_status != "running" and parent_run.get("cancel_requested_at") is None:
         return None
     execution_input = _run_execution_input_from_row(parent_run)
@@ -8236,7 +8235,7 @@ async def finalize_multi_agent_parent_run_if_ready(
     safe_triggered_by = sanitize_public_text(triggered_by_child_run_id)
     if safe_triggered_by:
         result_json["multi_agent"]["triggered_by_child_run_id"] = safe_triggered_by
-    terminal_written: bool | ToolPermissionTerminalizationProgress = parent_is_terminal
+    terminal_written: bool | runs_api.RunTerminalizationProgress = parent_is_terminal
     if not parent_is_terminal:
         if target_status == "succeeded":
             terminal_written = await complete_run(
@@ -8390,7 +8389,7 @@ async def reconcile_multi_agent_child_run_terminal_state(
     child_run = await child_cursor.fetchone()
     if child_run is None:
         return None
-    if str(child_run.get("status") or "") != child_status or child_status not in TERMINAL_RUN_STATUSES:
+    if str(child_run.get("status") or "") != child_status or child_status not in runs_api.TERMINAL_RUN_STATUSES:
         return None
     parent_run_id = str(child_run.get("copied_from_run_id") or "").strip()
     if not parent_run_id:
@@ -8634,7 +8633,7 @@ async def get_admin_runtime_run_summary(
         "total": sum(by_status.values()),
         "by_status": by_status,
         "active": sum(by_status.get(status, 0) for status in ACTIVE_RUN_STATUSES),
-        "terminal": sum(by_status.get(status, 0) for status in TERMINAL_RUN_STATUSES),
+        "terminal": sum(by_status.get(status, 0) for status in runs_api.TERMINAL_RUN_STATUSES),
         "recent_failures": [
             {
                 "run_id": row["id"],
@@ -9285,7 +9284,7 @@ async def classify_success_commit_block(conn: AsyncConnection, *, tenant_id: str
         (tenant_id, run_id),
     )
     row = await cursor.fetchone()
-    if row is None or str(row.get("status") or "") in TERMINAL_RUN_STATUSES:
+    if row is None or str(row.get("status") or "") in runs_api.TERMINAL_RUN_STATUSES:
         return "stale_terminal_state"
     if row.get("cancel_requested_at") or str(row.get("permission_terminalization_target") or "") in {
         "cancel_requested",
@@ -10228,7 +10227,7 @@ async def fail_run(
     error_message: str,
     result_json: dict[str, Any] | None = None,
     terminal_reason: str = "run_failed",
-) -> ToolPermissionTerminalizationProgress:
+) -> runs_api.RunTerminalizationProgress:
     _require_json_size(result_json or {}, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     staged = await _stage_run_tool_permission_terminalization(
@@ -10242,10 +10241,10 @@ async def fail_run(
         error_message=error_message,
     )
     if staged is None:
-        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+        return runs_api.RunTerminalizationProgress(completed=False, status=None)
     staged_target = str(staged.get("permission_terminalization_target") or "")
     if staged_target != "failed":
-        return ToolPermissionTerminalizationProgress(completed=False, status=staged_target or None)
+        return runs_api.RunTerminalizationProgress(completed=False, status=staged_target or None)
     await conn.execute(
         """
         update runs
@@ -10265,7 +10264,7 @@ async def fail_run(
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    return _terminalization_progress_for_requested_status(progress, requested_status="failed")
+    return runs_api.progress_for_requested_status(progress, requested_status="failed")
 
 
 async def mark_run_enqueue_failed(
@@ -10275,7 +10274,7 @@ async def mark_run_enqueue_failed(
     user_id: str | None,
     run_id: str,
     trace_id: str | None = None,
-) -> ToolPermissionTerminalizationProgress:
+) -> runs_api.RunTerminalizationProgress:
     """Compensate one post-commit enqueue failure with a non-queued durable outcome."""
 
     error_code = "queue_enqueue_failed"
@@ -10322,7 +10321,7 @@ async def cancel_run(
     tenant_id: str,
     run_id: str,
     result_json: dict[str, Any] | None = None,
-) -> ToolPermissionTerminalizationProgress:
+) -> runs_api.RunTerminalizationProgress:
     _require_json_size(result_json or {}, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     staged = await _stage_run_tool_permission_terminalization(
         conn,
@@ -10333,16 +10332,16 @@ async def cancel_run(
         result_json=result_json,
     )
     if staged is None:
-        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+        return runs_api.RunTerminalizationProgress(completed=False, status=None)
     staged_target = str(staged.get("permission_terminalization_target") or "")
     if staged_target != "cancelled":
-        return ToolPermissionTerminalizationProgress(completed=False, status=staged_target or None)
+        return runs_api.RunTerminalizationProgress(completed=False, status=staged_target or None)
     progress = await progress_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    return _terminalization_progress_for_requested_status(progress, requested_status="cancelled")
+    return runs_api.progress_for_requested_status(progress, requested_status="cancelled")
 
 
 async def _cancel_open_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> None:
@@ -10574,53 +10573,6 @@ async def get_latest_authorized_session_run_input(
         return None
     input_json = row.get("input_json")
     return input_json if isinstance(input_json, dict) else None
-
-
-@dataclass(frozen=True)
-class ToolPermissionTerminalizationProgress:
-    """One bounded run-first permission-drain result with transition ownership."""
-
-    completed: bool
-    status: str | None
-    did_transition: bool = False
-    needs_reconcile: bool = False
-    terminalized_count: int = 0
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return a result field with mapping-style compatibility for callers."""
-        return getattr(self, key, default)
-
-    def is_terminal(self, requested_status: str | None = None) -> bool:
-        """Return whether this result records a completed actual terminal state, optionally the requested one."""
-
-        return (
-            self.completed
-            and self.status in TERMINAL_RUN_STATUSES
-            and (requested_status is None or self.status == requested_status)
-        )
-
-    def __bool__(self) -> bool:
-        return self.is_terminal()
-
-
-def _terminalization_progress_for_requested_status(
-    progress: ToolPermissionTerminalizationProgress | None,
-    *,
-    requested_status: str,
-) -> ToolPermissionTerminalizationProgress:
-    """Preserve an observed status but deny completion to a caller whose terminal intent did not win."""
-
-    if progress is None:
-        return ToolPermissionTerminalizationProgress(completed=False, status=None)
-    if progress.is_terminal(requested_status):
-        return progress
-    return ToolPermissionTerminalizationProgress(
-        completed=False,
-        status=progress.status,
-        did_transition=progress.did_transition,
-        needs_reconcile=progress.needs_reconcile,
-        terminalized_count=progress.terminalized_count,
-    )
 
 
 # MCP catalog persistence and Chat-selection ownership live in app.mcp.repository.

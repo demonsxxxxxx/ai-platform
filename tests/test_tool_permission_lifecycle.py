@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from app import repositories
+from app.runs.api import RunTerminalizationProgress
 from app.tool_permission_lifecycle import (
     ToolPermissionWaitLedger,
     drain_run_tool_permission_terminalization,
@@ -55,8 +56,8 @@ def test_permission_wait_ledger_consumes_one_monotonic_aggregate_allowance():
 @pytest.mark.asyncio
 async def test_drain_propagates_typed_partial_then_final_and_stops(monkeypatch):
     results = [
-        repositories.ToolPermissionTerminalizationProgress(False, "failed"),
-        repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True),
+        RunTerminalizationProgress(False, "failed"),
+        RunTerminalizationProgress(True, "failed", True, True),
     ]
 
     @asynccontextmanager
@@ -78,7 +79,7 @@ async def test_post_commit_reconcile_is_noop_unless_final_transition(monkeypatch
     async def tx():
         yield object()
 
-    partial = repositories.ToolPermissionTerminalizationProgress(False, "failed")
+    partial = RunTerminalizationProgress(False, "failed")
     assert await reconcile_terminalized_permission_run(tenant_id="tenant-a", run_id="run-a", progress=partial, transaction_factory=tx) is None
 
 
@@ -109,7 +110,7 @@ async def test_post_commit_reconcile_loads_durable_child_and_rolls_up_once(monke
 
     monkeypatch.setattr(repositories, "get_run", get_run)
     monkeypatch.setattr(repositories, "reconcile_multi_agent_child_run_terminal_state", reconcile)
-    final = repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+    final = RunTerminalizationProgress(True, "cancelled", True, True)
 
     result = await reconcile_terminalized_permission_run(
         tenant_id="tenant-a", run_id="child-a", progress=final, transaction_factory=tx
@@ -117,7 +118,7 @@ async def test_post_commit_reconcile_loads_durable_child_and_rolls_up_once(monke
     retry = await reconcile_terminalized_permission_run(
         tenant_id="tenant-a",
         run_id="child-a",
-        progress=repositories.ToolPermissionTerminalizationProgress(True, "cancelled"),
+        progress=RunTerminalizationProgress(True, "cancelled"),
         transaction_factory=tx,
     )
 
