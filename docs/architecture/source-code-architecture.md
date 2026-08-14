@@ -105,6 +105,9 @@ policy belongs to `execution`; provider credentials remain configuration at the
 trusted adapter boundary. General Harness chat and specialized Skills remain
 separate identities under
 [`../adr/0005-harness-chat-is-not-a-skill.md`](../adr/0005-harness-chat-is-not-a-skill.md).
+The Agent Apps application, persistence, transaction, composition, and
+compatibility target is defined by
+[`agent-profile-persistence-boundary.md`](agent-profile-persistence-boundary.md).
 
 ### 2.2 Kernel and platform limits
 

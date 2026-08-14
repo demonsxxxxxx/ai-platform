@@ -19,7 +19,7 @@ const profile: AgentProfilePublicProjection = {
   starter_prompts: ["帮我处理支持请求"],
   capability_summary: "在授权范围内处理企业支持请求。",
   recommended_tasks: ["支持请求分流"],
-  supported_input_types: ["text"],
+  supported_input_types: ["text", "file"],
   expected_outputs: ["处理建议"],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant" as const,

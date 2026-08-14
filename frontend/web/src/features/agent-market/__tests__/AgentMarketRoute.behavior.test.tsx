@@ -15,7 +15,7 @@ const enterpriseProfileFields = {
   starter_prompts: ["帮我处理企业任务"] as string[],
   capability_summary: "在授权范围内处理企业任务。",
   recommended_tasks: ["企业任务处理"] as string[],
-  supported_input_types: ["text", "file"] as Array<"text" | "file">,
+  supported_input_types: ["text", "file"] as ["text", "file"],
   expected_outputs: ["处理建议"] as string[],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   published_at: "2026-08-04T01:00:00Z",

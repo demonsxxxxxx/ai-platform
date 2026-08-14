@@ -65,6 +65,12 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
     return normalized
 
 
+def _require_universal_agent_input_types(values: list[str]) -> list[str]:
+    if values != ["text", "file"]:
+        raise ValueError("supported_input_types must be the universal text/file capability")
+    return values
+
+
 class CapabilityDistributionResponse(BaseModel):
     """Authoritative tenant capability distribution projection."""
 
@@ -404,15 +410,17 @@ class AgentProfilePublicProjection(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(
-        default_factory=lambda: ["text", "file"]
-    )
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
+
+    _validate_supported_input_types = field_validator("supported_input_types")(
+        _require_universal_agent_input_types
+    )
 
 
 class AgentProfileCatalogResponse(BaseModel):
@@ -438,9 +446,7 @@ class AgentProfileAdminProjection(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(
-        default_factory=lambda: ["text", "file"]
-    )
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
@@ -459,6 +465,10 @@ class AgentProfileAdminProjection(BaseModel):
     content_hash: str
     created_at: Any | None = None
     published_at: Any | None = None
+
+    _validate_supported_input_types = field_validator("supported_input_types")(
+        _require_universal_agent_input_types
+    )
 
 
 class AgentProfileAdminListResponse(BaseModel):
@@ -531,15 +541,17 @@ class AgentConversationIdentity(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(
-        default_factory=lambda: ["text", "file"]
-    )
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
+
+    _validate_supported_input_types = field_validator("supported_input_types")(
+        _require_universal_agent_input_types
+    )
 
 
 class CreateRunRequest(BaseModel):

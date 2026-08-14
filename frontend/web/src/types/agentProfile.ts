@@ -8,6 +8,8 @@ export const AGENT_PROFILE_CATEGORIES = ["general", "support", "writing", "resea
 
 export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
 
+export type UniversalAgentInputTypes = ["text", "file"];
+
 export const AGENT_PROFILE_CATEGORY_LABELS = {
   general: "通用专家",
   support: "支持服务",
@@ -30,7 +32,7 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   starter_prompts: string[];
   capability_summary: string;
   recommended_tasks: string[];
-  supported_input_types: Array<"text" | "file">;
+  supported_input_types: UniversalAgentInputTypes;
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
@@ -49,7 +51,7 @@ export interface AgentConversationIdentity {
   starter_prompts: string[];
   capability_summary: string;
   recommended_tasks: string[];
-  supported_input_types: Array<"text" | "file">;
+  supported_input_types: UniversalAgentInputTypes;
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
@@ -105,6 +107,14 @@ function requireStringList(value: unknown, code: string): string[] {
   return [...value];
 }
 
+function requireUniversalAgentInputTypes(value: unknown, code: string): UniversalAgentInputTypes {
+  const values = requireStringList(value, code);
+  if (values.length !== 2 || values[0] !== "text" || values[1] !== "file") {
+    throw new Error(code);
+  }
+  return ["text", "file"];
+}
+
 function projectEnterpriseFields(
   record: Record<string, unknown>,
   code: string,
@@ -119,16 +129,6 @@ function projectEnterpriseFields(
   | "permissions_and_data_access_notice"
   | "published_at"
 > {
-  const receivedSupportedInputTypes =
-    record.supported_input_types === undefined
-      ? ["text", "file"]
-      : requireStringList(record.supported_input_types, code);
-  if (
-    receivedSupportedInputTypes.length === 0 ||
-    receivedSupportedInputTypes.some((item) => item !== "text" && item !== "file")
-  ) {
-    throw new Error(code);
-  }
   return {
     welcome_message:
       record.welcome_message === undefined
@@ -146,7 +146,7 @@ function projectEnterpriseFields(
       record.recommended_tasks === undefined
         ? []
         : requireStringList(record.recommended_tasks, code),
-    supported_input_types: ["text", "file"],
+    supported_input_types: requireUniversalAgentInputTypes(record.supported_input_types, code),
     expected_outputs:
       record.expected_outputs === undefined
         ? []
@@ -250,6 +250,7 @@ export interface AgentProfileAdminProjection extends Omit<
   AgentProfileDraftRequest,
   "avatar_seed" | "expected_draft_revision" | "skill_set"
 > {
+  supported_input_types: UniversalAgentInputTypes;
   avatar_seed?: string;
   skill_set?: SelectedSkillRequest[];
   agent_id: string;
@@ -260,6 +261,16 @@ export interface AgentProfileAdminProjection extends Omit<
   content_hash: string;
   created_at?: string | null;
   published_at?: string | null;
+}
+
+/** Validate the universal input contract before trusting an admin-only profile response. */
+export function validateAgentProfileAdminProjection(value: unknown): AgentProfileAdminProjection {
+  const record = requireRecord(value, "invalid_agent_profile_admin_projection");
+  requireUniversalAgentInputTypes(
+    record.supported_input_types,
+    "invalid_agent_profile_admin_projection",
+  );
+  return value as AgentProfileAdminProjection;
 }
 
 export interface AgentProfileMutationResponse {

@@ -27,7 +27,9 @@ from app.agent_apps.api import safe_agent_avatar_seed
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
+    AgentConversationIdentity,
     AgentProfileAdminProjection,
+    AgentProfilePublicProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
@@ -54,6 +56,44 @@ def test_agent_profile_draft_rejects_retired_supported_file_types():
                 "expected_draft_revision": 0,
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (
+            AgentProfilePublicProjection,
+            {"agent_id": "agt_public", "expected_revision": 1, "name": "Public"},
+        ),
+        (
+            AgentProfileAdminProjection,
+            {
+                "agent_id": "agt_admin",
+                "revision": 1,
+                "status": "draft",
+                "name": "Admin",
+                "instructions": "Private",
+                "model_id": "model-a",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
+                "selected_skill": {
+                    "skill_id": "general-chat",
+                    "expected_version": "version-a",
+                },
+                "content_hash": "a" * 64,
+            },
+        ),
+        (
+            AgentConversationIdentity,
+            {"agent_id": "agt_conversation", "revision": 1, "name": "Conversation"},
+        ),
+    ],
+)
+def test_agent_profile_projections_require_universal_text_and_file_input(model, payload):
+    assert model.model_validate(payload).supported_input_types == ["text", "file"]
+    with pytest.raises(ValueError, match="universal text/file"):
+        model.model_validate({**payload, "supported_input_types": ["text"]})
 
 
 def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_controls():
