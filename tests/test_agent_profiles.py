@@ -39,6 +39,22 @@ from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
+def test_agent_profile_draft_rejects_retired_supported_file_types():
+    with pytest.raises(ValueError):
+        AgentProfileDraftRequest.model_validate(
+            {
+                "name": "Support expert",
+                "instructions": "Use the configured Skills autonomously.",
+                "model_id": "model-a",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
+                "supported_file_types": ["application/pdf"],
+                "expected_draft_revision": 0,
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_payload():
     version = "version-a"
@@ -253,18 +269,6 @@ def test_agent_profile_rejects_ambiguous_skill_sets(skill_set):
                 "skill_set": skill_set,
             }
         )
-
-
-def test_agent_profile_discards_retired_file_type_whitelist_from_rolling_clients():
-    definition = AgentProfileDraftRequest.model_validate(
-        {
-            **profile_draft_payload("Private instruction"),
-            "supported_file_types": ["application/pdf"],
-        }
-    )
-
-    assert "supported_file_types" not in definition.model_dump(mode="json")
-    assert "supported_file_types" not in AgentProfileDraftRequest.model_json_schema()["properties"]
 
 
 def test_agent_profile_normalizes_legacy_input_mode_to_universal_attachment_access():
@@ -688,7 +692,7 @@ def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normal
     assert not called
 
 
-def test_agent_profile_admin_wire_version_isolates_rolling_client_compatibility(monkeypatch):
+def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeypatch):
     profile = AgentProfileAdminProjection(
         agent_id="agt_support",
         revision=4,
@@ -724,9 +728,7 @@ def test_agent_profile_admin_wire_version_isolates_rolling_client_compatibility(
     )
 
     assert legacy_response.status_code == 200
-    assert legacy_response.json()["agent_profiles"][0]["supported_file_types"] == list(
-        _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
-    )
+    assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
     assert current_response.status_code == 200
     assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
     schema = client.get("/openapi.json").json()

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Building2, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
+import { Building2, MessageSquareText, ShieldCheck } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
 import {
@@ -11,8 +11,7 @@ import {
   AGENT_PROFILE_CATEGORY_LABELS,
 } from "../../types/agentProfile";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
-import { AgentIdentityAvatar } from "../agent-market/AgentIdentityAvatar";
-import { uuid } from "../../utils/uuid";
+import { AgentAvatarPicker } from "./AgentAvatarPicker";
 
 const INPUT_CLASS =
   "w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60";
@@ -147,38 +146,14 @@ export function AgentBuilderEnterpriseFields({
             </label>
           </div>
           <div className="grid content-start gap-4 rounded-lg bg-[var(--theme-bg-sidebar)] p-4 ring-1 ring-[var(--theme-border)]">
-            <div className="flex flex-col gap-2">
-              <span className="text-sm font-medium">DiceBear 头像</span>
-              <div className="flex items-center gap-3">
-                <AgentIdentityAvatar
-                  agentId={(editor.agentId ?? editor.name) || "new-agent"}
-                  avatarSeed={editor.avatarSeed}
-                  name={editor.name || "未命名专家"}
-                  size="lg"
-                />
-                <label className="min-w-0 flex-1">
-                  <span className="sr-only">头像种子</span>
-                  <input
-                    aria-label="头像种子"
-                    className={INPUT_CLASS}
-                    disabled={disabled}
-                    onChange={(event) => onChange({ avatarSeed: event.target.value })}
-                    placeholder="稳定头像种子"
-                    value={editor.avatarSeed}
-                  />
-                </label>
-                <button
-                  aria-label="生成另一张头像"
-                  className="btn-secondary inline-flex h-10 w-10 shrink-0 items-center justify-center p-0"
-                  disabled={disabled}
-                  onClick={() => onChange({ avatarSeed: `agent-${uuid().slice(0, 8)}` })}
-                  title="生成另一张头像"
-                  type="button"
-                >
-                  <RefreshCw aria-hidden="true" size={16} />
-                </button>
-              </div>
-            </div>
+            <AgentAvatarPicker
+              agentId={(editor.agentId ?? editor.name) || "new-expert"}
+              avatarRef={editor.avatarRef}
+              avatarSeed={editor.avatarSeed}
+              disabled={disabled}
+              name={editor.name || "未命名专家"}
+              onChange={(update) => onChange(update)}
+            />
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">专家分类</span>
               <select

@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, ListTree } from "lucide-react";
+import { ListTree } from "lucide-react";
 import toast from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
@@ -26,6 +26,7 @@ import {
 } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { ChatInput } from "../../chat/ChatInput";
 import { WelcomePage } from "../../chat/WelcomePage";
+import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
 import { Virtuoso, type ListRange } from "react-virtuoso";
 import { ApprovalPanel } from "../../panels/ApprovalPanel";
@@ -891,9 +892,15 @@ export function ChatView({
               >
                 <section className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-5">
                   <div className="max-w-2xl text-center">
-                    <div className="mx-auto flex size-11 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
-                      <Bot size={22} aria-hidden="true" />
-                    </div>
+                    <span className="inline-flex">
+                      <AgentIdentityAvatar
+                        agentId={agentEmptyProfile.agent_id}
+                        avatarRef={agentEmptyProfile.avatar_ref}
+                        avatarSeed={agentEmptyProfile.avatar_seed}
+                        name={agentEmptyProfile.name}
+                        size="md"
+                      />
+                    </span>
                     <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
                       {agentEmptyProfile.name}
                     </h1>

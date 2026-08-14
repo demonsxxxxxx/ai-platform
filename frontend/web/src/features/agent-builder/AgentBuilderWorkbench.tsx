@@ -20,7 +20,7 @@ import type { ModelOption } from "../../services/api/modelPublic";
 import type { PublicSkillResponse } from "../../types";
 import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
 import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
-import { AgentIdentityAvatar } from "../agent-market/AgentIdentityAvatar";
+import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 import {
   agentBuilderBlockReason,
   getAgentProfilePublishBlock,
@@ -408,7 +408,12 @@ export function AgentBuilderWorkbench({
                   onClick={() => requestProfile(profile.agent_id)}
                   type="button"
                 >
-                  <AgentIdentityAvatar agentId={profile.agent_id} avatarSeed={profile.avatar_seed} name={profile.name} />
+                  <AgentIdentityAvatar
+                    agentId={profile.agent_id}
+                    avatarRef={profile.avatar_ref}
+                    avatarSeed={profile.avatar_seed}
+                    name={profile.name}
+                  />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{profile.name}</span>
                     <span className="mt-1 flex items-center justify-between gap-2 text-xs text-[var(--theme-text-secondary)]">
@@ -448,6 +453,7 @@ export function AgentBuilderWorkbench({
                 <div className="flex min-w-0 items-center gap-3">
                   <AgentIdentityAvatar
                     agentId={(activeEditor.agentId ?? activeEditor.name) || "new-agent"}
+                    avatarRef={activeEditor.avatarRef}
                     avatarSeed={activeEditor.avatarSeed}
                     name={activeEditor.name || "未命名专家"}
                     size="lg"

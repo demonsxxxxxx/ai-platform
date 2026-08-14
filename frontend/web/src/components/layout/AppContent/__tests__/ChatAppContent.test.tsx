@@ -657,6 +657,7 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.match(html, /处理已授权的支持请求/);
   assert.match(html, /支持服务/);
   assert.match(html, /data-agent-conversation-profile/);
+  assert.match(html, /data-agent-avatar-ref="builtin:assistant"/);
   assert.doesNotMatch(html, /content_hash|model_id|skill_id|mcp_tool_ids|PRIVATE/);
   assert.equal(areAgentConversationControlsLocked("loading"), true);
   assert.equal(areAgentConversationControlsLocked("bound"), true);
@@ -680,6 +681,10 @@ test("projects the Agent welcome and recommendations only in the empty Chat UI",
 
   assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
   assert.match(chatViewSource, /data-agent-chat-opening/);
+  assert.match(chatViewSource, /<AgentIdentityAvatar/);
+  assert.match(chatViewSource, /avatarRef=\{agentEmptyProfile\.avatar_ref\}/);
+  assert.match(chatViewSource, /avatarSeed=\{agentEmptyProfile\.avatar_seed\}/);
+  assert.doesNotMatch(chatViewSource, /<Bot\b/);
   assert.match(chatViewSource, /agentEmptyProfile\.welcome_message/);
   assert.match(chatViewSource, /data-agent-starter-prompts/);
   assert.match(chatViewSource, /onClick=\{\(\) => void onSendMessage\(prompt\)\}/);

@@ -21,6 +21,7 @@ const profile = {
   expected_outputs: ["支持建议"],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
+  avatar_seed: "support-expert-1",
   category: "support",
   published_at: "2026-08-09T00:00:00Z",
 };
@@ -35,6 +36,8 @@ const profiles = [
     capability_summary: "从法务与业务协作视角整理风险、证据和修改建议。",
     recommended_tasks: ["审阅合同条款", "提取履约风险", "形成修改建议"],
     starter_prompts: ["请审阅这份合同并标记需要确认的条款"],
+    avatar_ref: "builtin:research",
+    avatar_seed: "contract-expert-3",
     category: "research",
   },
   {
@@ -46,6 +49,8 @@ const profiles = [
     capability_summary: "将零散运营信息整理为趋势、原因和下一步行动。",
     recommended_tasks: ["分析运营周报", "定位指标异常", "拆解改进动作"],
     starter_prompts: ["请分析这批运营数据并给出优先级建议"],
+    avatar_ref: "builtin:document",
+    avatar_seed: "operations-expert-2",
     category: "operations",
   },
 ];
@@ -134,6 +139,17 @@ function bootstrapSource() {
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
       });
+      if (url.pathname === '/api/upload/config') return json({
+        enabled: true,
+        provider: 's3',
+        maxFiles: 32,
+        uploadLimitsBytes: {
+          image: 20971520,
+          video: 104857600,
+          audio: 52428800,
+          document: 52428800
+        }
+      });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.includes('notification')) return json([]);
@@ -178,6 +194,7 @@ const cases = [
       "[data-agent-market-search]",
       "[data-agent-market-filter]",
       "[data-agent-market-card]",
+      "[data-agent-market-card] [data-agent-avatar-ref]",
     ],
     requiredRequests: ["/api/ai/agent-profiles"],
   },
@@ -193,7 +210,7 @@ const cases = [
     path: "/agent-market/agt_support/1/chat",
     selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']",
     name: "market-workspace",
-    requiredSelectors: ["[data-agent-workspace-welcome]", "[data-agent-workspace-start]"],
+    requiredSelectors: ["[data-agent-chat-opening]", "textarea"],
     requiredRequests: ["/api/ai/agent-profiles/agt_support"],
   },
   {
@@ -201,7 +218,11 @@ const cases = [
     selector: "[data-agent-builder-workbench]",
     name: "builder",
     scroller: "[data-agent-builder-workbench] > div:last-child",
-    requiredSelectors: ["[data-agent-builder-workbench] input", "[data-agent-builder-save-reason]"],
+    requiredSelectors: [
+      "[data-agent-builder-workbench] input",
+      "[data-agent-builder-save-reason]",
+      "[data-agent-avatar-picker]",
+    ],
     requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
   },
 ];

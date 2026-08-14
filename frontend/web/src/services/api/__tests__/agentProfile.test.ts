@@ -288,7 +288,7 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
   }
 });
 
-test("declares the current admin profile wire schema on every profile response request", async () => {
+test("uses the current admin profile contract without retired file-type transport fields", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; method?: string; schema: string | null }> = [];
   const draftWriteBodies: Array<Record<string, unknown>> = [];
@@ -346,47 +346,38 @@ test("declares the current admin profile wire schema on every profile response r
       {
         url: "/api/ai/admin/agent-profiles",
         method: undefined,
-        schema: "2",
+        schema: null,
       },
       {
         url: "/api/ai/admin/agent-profiles/agt_support/history",
         method: undefined,
-        schema: "2",
+        schema: null,
       },
       {
         url: "/api/ai/admin/agent-profiles",
         method: "POST",
-        schema: "2",
+        schema: null,
       },
       {
         url: "/api/ai/admin/agent-profiles/agt_support",
         method: "PUT",
-        schema: "2",
+        schema: null,
       },
       {
         url: "/api/ai/admin/agent-profiles/agt_support/publish",
         method: "POST",
-        schema: "2",
+        schema: null,
       },
       {
         url: "/api/ai/admin/agent-profiles/agt_support/unpublish",
         method: "POST",
-        schema: "2",
+        schema: null,
       },
     ]);
     assert.equal("supported_file_types" in draft, false);
-    assert.deepEqual(
-      draftWriteBodies.map((body) => body.supported_file_types),
-      [
-        [
-          "application/*", "audio/*", "chemical/*", "font/*", "image/*",
-          "message/*", "model/*", "multipart/*", "text/*", "video/*",
-        ],
-        [
-          "application/*", "audio/*", "chemical/*", "font/*", "image/*",
-          "message/*", "model/*", "multipart/*", "text/*", "video/*",
-        ],
-      ],
+    assert.equal(
+      draftWriteBodies.some((body) => "supported_file_types" in body),
+      false,
     );
   } finally {
     globalThis.fetch = originalFetch;

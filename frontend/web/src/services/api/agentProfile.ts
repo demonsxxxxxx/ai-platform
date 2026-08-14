@@ -14,26 +14,6 @@ import {
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 
-const AGENT_PROFILE_ADMIN_SCHEMA_HEADERS = {
-  "X-AI-Agent-Profile-Schema": "2",
-} as const;
-
-// During a rolling upgrade, an old API/worker still requires a permissive
-// physical MIME list. This is transport-only and is not part of the editor or
-// current Agent Profile contract.
-const ROLLING_LEGACY_FILE_CAPABILITY = [
-  "application/*",
-  "audio/*",
-  "chemical/*",
-  "font/*",
-  "image/*",
-  "message/*",
-  "model/*",
-  "multipart/*",
-  "text/*",
-  "video/*",
-] as const;
-
 export interface AgentProfileCatalogResponse {
   agent_profiles: AgentProfilePublicProjection[];
 }
@@ -158,15 +138,13 @@ export const agentProfileApi = {
   },
 
   listAdmin(): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
-    return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`, {
-      headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
-    });
+    return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`);
   },
 
   listHistory(agentId: string): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
     return authFetch(
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/history`,
-      { cache: "no-store", headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS },
+      { cache: "no-store" },
     );
   },
 
@@ -180,11 +158,7 @@ export const agentProfileApi = {
         : `${API_BASE}/api/ai/admin/agent-profiles`,
       {
         method: agentId ? "PUT" : "POST",
-        headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
-        body: JSON.stringify({
-          ...draft,
-          supported_file_types: ROLLING_LEGACY_FILE_CAPABILITY,
-        }),
+        body: JSON.stringify(draft),
       },
     );
   },
@@ -194,7 +168,6 @@ export const agentProfileApi = {
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/publish`,
       {
         method: "POST",
-        headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
         body: JSON.stringify({ expected_revision: expectedRevision }),
       },
     );
@@ -205,7 +178,6 @@ export const agentProfileApi = {
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/unpublish`,
       {
         method: "POST",
-        headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
         body: JSON.stringify({ expected_revision: expectedRevision }),
       },
     );

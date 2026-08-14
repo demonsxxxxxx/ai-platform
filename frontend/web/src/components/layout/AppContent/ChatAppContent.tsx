@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Bot, FileText, Headphones, History, Search } from "lucide-react";
+import { History } from "lucide-react";
+import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
@@ -64,7 +65,6 @@ import { uuid } from "../../../utils/uuid";
 import {
   AGENT_PROFILE_CATEGORY_LABELS,
   type AgentConversationIdentity,
-  type AgentProfileAvatarRef,
   type AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 import {
@@ -309,14 +309,6 @@ export async function recoverAgentConversationIdentity(
   return identity;
 }
 
-function AgentConversationAvatar({ avatarRef }: { avatarRef: AgentProfileAvatarRef }) {
-  const iconProps = { size: 22, "aria-hidden": true } as const;
-  if (avatarRef === "builtin:assistant") return <Headphones {...iconProps} />;
-  if (avatarRef === "builtin:document") return <FileText {...iconProps} />;
-  if (avatarRef === "builtin:research") return <Search {...iconProps} />;
-  return <Bot {...iconProps} />;
-}
-
 /** Render only the public immutable Agent identity above canonical Chat. */
 export function AgentConversationIdentityBanner({
   identity,
@@ -329,14 +321,13 @@ export function AgentConversationIdentityBanner({
       className="border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 text-[var(--theme-text)] sm:px-6"
     >
       <div className="mx-auto flex max-w-4xl items-center gap-3">
-        <span
-          aria-label={`${identity.name} 头像`}
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-          data-agent-avatar-ref={identity.avatar_ref}
-          role="img"
-        >
-          <AgentConversationAvatar avatarRef={identity.avatar_ref} />
-        </span>
+        <AgentIdentityAvatar
+          agentId={identity.agent_id}
+          avatarRef={identity.avatar_ref}
+          avatarSeed={identity.avatar_seed}
+          name={identity.name}
+          size="sm"
+        />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>

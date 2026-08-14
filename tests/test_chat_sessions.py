@@ -210,6 +210,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "agent_profile_expected_outputs": ["Review memo"],
             "agent_profile_permissions_and_data_access_notice": "Uses authorized files only.",
             "agent_profile_avatar_ref": "builtin:assistant",
+            "agent_profile_avatar_seed": "support-avatar-7",
             "agent_profile_category": "support",
             "agent_profile_published_at": datetime(2026, 7, 31, tzinfo=timezone.utc),
             "created_at": datetime(2026, 8, index, tzinfo=timezone.utc),
@@ -259,6 +260,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "name": "Support assistant",
         "description": "Approved support help.",
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "support-avatar-7",
         "category": "support",
         "welcome_message": "Upload a policy for review.",
         "starter_prompts": ["Review this policy"],
@@ -267,7 +269,6 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "supported_input_types": ["text", "file"],
         "expected_outputs": ["Review memo"],
         "permissions_and_data_access_notice": "Uses authorized files only.",
-        "avatar_seed": "",
         "published_at": "2026-07-31T00:00:00Z",
     }
 
@@ -282,6 +283,7 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
             "admitted_agent_profile_revision": 2,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
+            "agent_profile_avatar_seed": 12345,
             "created_at": None,
             "updated_at": None,
             "instructions": "private",
@@ -293,6 +295,7 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
 
     identity = projection.agent_conversation
     assert identity is not None
+    assert identity.avatar_seed == "agt_support"
     assert identity.supported_input_types == ["text", "file"]
     assert not {
         "instructions",

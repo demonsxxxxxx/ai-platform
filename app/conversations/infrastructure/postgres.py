@@ -146,6 +146,7 @@ async def list_authorized_sessions(
                profile.expected_outputs as agent_profile_expected_outputs,
                profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
+               profile.avatar_seed as agent_profile_avatar_seed,
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
@@ -190,6 +191,7 @@ async def get_authorized_session_projection(
                profile.expected_outputs as agent_profile_expected_outputs,
                profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
+               profile.avatar_seed as agent_profile_avatar_seed,
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
@@ -469,6 +471,7 @@ async def list_authorized_agent_conversations(
                profile.expected_outputs as agent_profile_expected_outputs,
                profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
+               profile.avatar_seed as agent_profile_avatar_seed,
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions

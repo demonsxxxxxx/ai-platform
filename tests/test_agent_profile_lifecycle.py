@@ -2155,7 +2155,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
-        "avatar_seed": "",
+        "avatar_seed": "agt_support",
         "category": "support",
     }
     serialized = str(response)

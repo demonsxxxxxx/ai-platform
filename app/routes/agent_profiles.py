@@ -1,11 +1,8 @@
 import unicodedata
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
-from fastapi.responses import JSONResponse
-
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
-from app.agent_apps.authority import _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
 from app.agent_profiles import list_admin_profiles, list_public_profiles, publish_draft, save_draft
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
@@ -33,7 +30,6 @@ from app.validation import assert_safe_id
 
 router = APIRouter()
 _authority = AgentProfileAuthority()
-_ADMIN_PROFILE_SCHEMA_HEADER = "x-ai-agent-profile-schema"
 _DEDICATED_OVERRIDE_HEADERS = frozenset(
     {
         "x-agent-id",
@@ -63,27 +59,6 @@ def _normalize_catalog_query(query: str | None) -> str | None:
     if not normalized or len(normalized) > 160:
         raise HTTPException(status_code=422, detail="agent_profile_query_invalid")
     return normalized
-
-
-def _admin_profile_wire_response(
-    payload: AgentProfileAdminListResponse | AgentProfileHistoryResponse | AgentProfileMutationResponse,
-    *,
-    http_request: HttpRequest,
-) -> AgentProfileAdminListResponse | AgentProfileHistoryResponse | AgentProfileMutationResponse | JSONResponse:
-    """Keep one rolling-release response shim outside the current API schema."""
-
-    if http_request.headers.get(_ADMIN_PROFILE_SCHEMA_HEADER) is not None:
-        return payload
-    body = payload.model_dump(mode="json")
-    profiles = body.get("agent_profiles")
-    if isinstance(profiles, list):
-        for profile in profiles:
-            if isinstance(profile, dict):
-                profile["supported_file_types"] = list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
-    profile = body.get("agent_profile")
-    if isinstance(profile, dict):
-        profile["supported_file_types"] = list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
-    return JSONResponse(content=body)
 
 
 async def _submit_dedicated_agent_run(
@@ -224,27 +199,22 @@ async def submit_agent_app_run(
 
 @router.get("/admin/agent-profiles", response_model=AgentProfileAdminListResponse)
 async def admin_list_agent_profiles(
-    http_request: HttpRequest,
     principal: AuthPrincipal = Depends(require_principal),
-):
+) -> AgentProfileAdminListResponse:
     """Return same-tenant latest profile revisions to AI administrators only."""
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
         profiles = await list_admin_profiles(conn, principal=principal)
-    return _admin_profile_wire_response(
-        AgentProfileAdminListResponse(agent_profiles=profiles),
-        http_request=http_request,
-    )
+    return AgentProfileAdminListResponse(agent_profiles=profiles)
 
 
 @router.get("/admin/agent-profiles/{agent_id}/history", response_model=AgentProfileHistoryResponse)
 async def admin_agent_profile_history(
     agent_id: str,
-    http_request: HttpRequest,
     principal: AuthPrincipal = Depends(require_principal),
-):
+) -> AgentProfileHistoryResponse:
     """Return immutable lifecycle history to same-tenant AI administrators."""
 
     if not is_ai_admin(principal):
@@ -255,18 +225,14 @@ async def admin_agent_profile_history(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     async with transaction() as conn:
         profiles = await _authority.list_history(conn, principal=principal, agent_id=safe_agent_id)
-    return _admin_profile_wire_response(
-        AgentProfileHistoryResponse(agent_profiles=profiles),
-        http_request=http_request,
-    )
+    return AgentProfileHistoryResponse(agent_profiles=profiles)
 
 
 @router.post("/admin/agent-profiles", response_model=AgentProfileMutationResponse)
 async def create_agent_profile(
     request: AgentProfileDraftRequest,
-    http_request: HttpRequest,
     principal: AuthPrincipal = Depends(require_principal),
-):
+) -> AgentProfileMutationResponse:
     """Save the first immutable draft revision with a server-generated Agent identity."""
 
     if not is_ai_admin(principal):
@@ -281,19 +247,15 @@ async def create_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return _admin_profile_wire_response(
-        AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id),
-        http_request=http_request,
-    )
+    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
 
 
 @router.put("/admin/agent-profiles/{agent_id}", response_model=AgentProfileMutationResponse)
 async def save_agent_profile_draft(
     agent_id: str,
     request: AgentProfileDraftRequest,
-    http_request: HttpRequest,
     principal: AuthPrincipal = Depends(require_principal),
-):
+) -> AgentProfileMutationResponse:
     """Append a later immutable draft revision for the same profile identity."""
 
     if not is_ai_admin(principal):
@@ -312,10 +274,7 @@ async def save_agent_profile_draft(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return _admin_profile_wire_response(
-        AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id),
-        http_request=http_request,
-    )
+    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
 
 
 @router.post("/admin/agent-profiles/test", response_model=AgentProfileValidationResponse)
@@ -398,9 +357,8 @@ async def run_agent_profile_test(
 async def publish_agent_profile(
     agent_id: str,
     request: AgentProfilePublishRequest,
-    http_request: HttpRequest,
     principal: AuthPrincipal = Depends(require_principal),
-):
+) -> AgentProfileMutationResponse:
     """Publish a revalidated immutable copy of the requested draft revision."""
 
     if not is_ai_admin(principal):
@@ -419,19 +377,15 @@ async def publish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return _admin_profile_wire_response(
-        AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id),
-        http_request=http_request,
-    )
+    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
 
 
 @router.post("/admin/agent-profiles/{agent_id}/unpublish", response_model=AgentProfileMutationResponse)
 async def unpublish_agent_profile(
     agent_id: str,
     request: AgentProfileUnpublishRequest,
-    http_request: HttpRequest,
     principal: AuthPrincipal = Depends(require_principal),
-):
+) -> AgentProfileMutationResponse:
     """Withdraw a current publication and block every new Agent Conversation admission."""
 
     if not is_ai_admin(principal):
@@ -450,7 +404,4 @@ async def unpublish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return _admin_profile_wire_response(
-        AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id),
-        http_request=http_request,
-    )
+    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
