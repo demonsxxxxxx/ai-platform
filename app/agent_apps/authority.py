@@ -412,20 +412,6 @@ def _merge_omitted_profile_fields(
     return definition.model_copy(update=updates) if updates else definition
 
 
-def _current_acl_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Project current publication ACL aliases over an immutable execution revision."""
-
-    if "current_visibility" not in row:
-        return row
-    return {
-        **row,
-        "visibility": row.get("current_visibility"),
-        "allowed_department_ids": row.get("current_allowed_department_ids"),
-        "allowed_roles": row.get("current_allowed_roles"),
-        "allowed_user_ids": row.get("current_allowed_user_ids"),
-    }
-
-
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
     return AgentProfileAdminProjection(
         agent_id=str(row["agent_id"]),
@@ -985,6 +971,7 @@ class AgentProfileAuthority:
         principal: AuthPrincipal,
         row: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, str]]:
+        self._require_revision_integrity(row)
         if not profile_acl_allows(row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
         return await self._validate_definition(
@@ -1048,7 +1035,19 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        admission = await self._admission_from_row(conn, principal=principal, row=row)
+        current_row = await repositories.get_current_published_agent_profile(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
+        if current_row is None:
+            raise HTTPException(status_code=409, detail="agent_profile_not_available")
+        admission = await self._admission_from_row(
+            conn,
+            principal=principal,
+            row=row,
+            acl_row=current_row,
+        )
         if submitted_request is not None:
             self.reject_profile_selector_conflicts(
                 submitted_request,
@@ -1078,12 +1077,20 @@ class AgentProfileAuthority:
                 content_hash=content_hash,
                 for_update=True,
             )
-            if row is None or not _revision_hash_matches(row, content_hash):
+            if row is None:
+                return None
+            current_row = await repositories.get_current_published_agent_profile(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+            )
+            if current_row is None:
                 return None
             return await self._admission_from_row(
                 conn,
                 principal=principal,
                 row=row,
+                acl_row=current_row,
             )
         except (HTTPException, KeyError, TypeError, ValueError):
             return None
@@ -1094,10 +1101,15 @@ class AgentProfileAuthority:
         *,
         principal: AuthPrincipal,
         row: dict[str, Any],
+        acl_row: dict[str, Any] | None = None,
     ) -> AgentProfileAdmission:
         """Reauthorize current capabilities and build private/public admission views."""
 
-        if not profile_acl_allows(_current_acl_row(row), principal=principal):
+        self._require_revision_integrity(row)
+        current_acl_row = acl_row or row
+        if current_acl_row is not row:
+            self._require_revision_integrity(current_acl_row)
+        if not profile_acl_allows(current_acl_row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
         validated_skills, model = await self._validate_definition(
             conn,
@@ -1135,6 +1147,15 @@ class AgentProfileAuthority:
             public_identity=conversation_identity_projection(row),
             configured_mcp_tool_ids=configured_mcp_tool_ids,
         )
+
+    @staticmethod
+    def _require_revision_integrity(row: dict[str, Any]) -> None:
+        content_hash = str(row.get("content_hash") or "")
+        if not _revision_hash_matches(row, content_hash):
+            raise HTTPException(
+                status_code=409,
+                detail="agent_profile_revision_integrity_mismatch",
+            )
 
     async def reauthorize_pinned_run_for_replay(
         self,

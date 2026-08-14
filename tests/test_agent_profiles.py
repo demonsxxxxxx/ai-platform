@@ -499,7 +499,9 @@ def test_agent_profile_admin_wire_version_isolates_rolling_client_compatibility(
     )
 
     assert legacy_response.status_code == 200
-    assert legacy_response.json()["agent_profiles"][0]["supported_file_types"] == []
+    assert legacy_response.json()["agent_profiles"][0]["supported_file_types"] == list(
+        _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
+    )
     assert current_response.status_code == 200
     assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
     schema = client.get("/openapi.json").json()

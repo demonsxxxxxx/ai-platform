@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
+from app.agent_apps.authority import _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
 from app.agent_profiles import list_admin_profiles, list_public_profiles, publish_draft, save_draft
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
@@ -78,10 +79,10 @@ def _admin_profile_wire_response(
     if isinstance(profiles, list):
         for profile in profiles:
             if isinstance(profile, dict):
-                profile["supported_file_types"] = []
+                profile["supported_file_types"] = list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
     profile = body.get("agent_profile")
     if isinstance(profile, dict):
-        profile["supported_file_types"] = []
+        profile["supported_file_types"] = list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
     return JSONResponse(content=body)
 
 
