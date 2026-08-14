@@ -131,7 +131,6 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
         "capability_summary",
         "recommended_tasks",
         "supported_input_types",
-        "supported_file_types",
         "expected_outputs",
         "permissions_and_data_access_notice",
         "avatar_ref",
@@ -208,7 +207,6 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "agent_profile_capability_summary": "Reviews support policy files.",
             "agent_profile_recommended_tasks": ["Policy review"],
             "agent_profile_supported_input_types": ["text", "file"],
-            "agent_profile_supported_file_types": ["application/pdf", "image/*"],
             "agent_profile_expected_outputs": ["Review memo"],
             "agent_profile_permissions_and_data_access_notice": "Uses authorized files only.",
             "agent_profile_avatar_ref": "builtin:assistant",
@@ -267,9 +265,9 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "capability_summary": "Reviews support policy files.",
         "recommended_tasks": ["Policy review"],
         "supported_input_types": ["text", "file"],
-        "supported_file_types": ["application/pdf", "image/*"],
         "expected_outputs": ["Review memo"],
         "permissions_and_data_access_notice": "Uses authorized files only.",
+        "avatar_seed": "",
         "published_at": "2026-07-31T00:00:00Z",
     }
 
@@ -296,7 +294,6 @@ def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_pr
     identity = projection.agent_conversation
     assert identity is not None
     assert identity.supported_input_types == ["text"]
-    assert identity.supported_file_types == []
     assert not {
         "instructions",
         "model_id",

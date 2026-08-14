@@ -93,7 +93,6 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "capability_summary": "",
         "recommended_tasks": [],
         "supported_input_types": ["text"],
-        "supported_file_types": [],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,

@@ -31,12 +31,12 @@ test("server list and mutations are owned by the feature-local controller", () =
   assert.match(workbenchSource, /controller\.publishActiveProfile\(currentCatalog\)/);
 });
 
-test("workbench has explicit admin, loading, error, empty, and New Agent surfaces", () => {
+test("workbench has explicit admin, loading, error, empty, and New Expert surfaces", () => {
   assert.match(workbenchSource, /data-agent-builder-access-denied/);
-  assert.match(workbenchSource, /正在加载智能体/);
+  assert.match(workbenchSource, /正在加载专家/);
   assert.match(workbenchSource, /workbench\.listError/);
-  assert.match(workbenchSource, /当前没有服务端智能体/);
-  assert.match(workbenchSource, /新建智能体/);
+  assert.match(workbenchSource, /当前没有服务端专家/);
+  assert.match(workbenchSource, /新建专家/);
   assert.match(workbenchSource, /controller\.createNewAgent\(/);
 });
 
@@ -76,12 +76,17 @@ test("safe errors never render arbitrary Error.message", () => {
   assert.doesNotMatch(workbenchSource, /error instanceof Error \? error\.message/);
 });
 
-test("builder keeps execution fields primary and collapses optional market metadata", () => {
+test("expert management follows the directory and first-class configuration layout", () => {
+  assert.match(workbenchSource, /专家管理/);
+  assert.match(workbenchSource, /专家目录/);
+  assert.match(workbenchSource, /aria-label="搜索专家"/);
+  assert.match(workbenchSource, /AgentIdentityAvatar/);
   assert.match(workbenchSource, /完成下面 4 项即可保存/);
   assert.match(workbenchSource, /Agent\.md 初始指令/);
   assert.match(workbenchSource, /data-agent-builder-agent-md/);
   assert.match(enterpriseFieldsSource, /data-agent-builder-market-settings/);
-  assert.match(enterpriseFieldsSource, /市场展示与开场内容/);
+  assert.match(enterpriseFieldsSource, /市场展示与任务入口/);
+  assert.match(enterpriseFieldsSource, /对话开场/);
   assert.match(enterpriseFieldsSource, /示例问题（可选）/);
   assert.match(enterpriseFieldsSource, /预期输出（可选）/);
   assert.doesNotMatch(enterpriseFieldsSource, /data-agent-builder-input-settings/);

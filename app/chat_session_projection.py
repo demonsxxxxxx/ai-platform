@@ -46,7 +46,6 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
                 if item in {"text", "file"}
             ]
             or ["text"],
-            supported_file_types=_safe_strings(row.get("agent_profile_supported_file_types")),
             expected_outputs=_safe_strings(row.get("agent_profile_expected_outputs")),
             permissions_and_data_access_notice=str(
                 row.get("agent_profile_permissions_and_data_access_notice") or ""

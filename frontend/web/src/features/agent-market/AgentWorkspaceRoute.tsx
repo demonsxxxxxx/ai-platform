@@ -51,7 +51,6 @@ function historicalProfile(
     capability_summary: identity.capability_summary,
     recommended_tasks: identity.recommended_tasks,
     supported_input_types: identity.supported_input_types,
-    supported_file_types: identity.supported_file_types,
     expected_outputs: identity.expected_outputs,
     permissions_and_data_access_notice:
       identity.permissions_and_data_access_notice,
@@ -261,8 +260,8 @@ export function AgentWorkspaceRoute() {
         <div className="max-w-md text-center">
           <p>
             {phase === "error"
-              ? "暂时无法校验智能体工作区。"
-              : "正在校验当前智能体与会话权限…"}
+              ? "暂时无法校验专家工作区。"
+              : "正在校验当前专家与会话权限…"}
           </p>
           {phase === "error" ? (
             <div className="mt-4 flex justify-center gap-3">

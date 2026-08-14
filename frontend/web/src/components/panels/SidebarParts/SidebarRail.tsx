@@ -171,8 +171,8 @@ export function SidebarRail({
           onClick={onOpenAgentMarket}
           className={railBtn}
           aria-current={isRailItemActive("agentMarket") ? "page" : undefined}
-          title="智能体市场"
-          aria-label="智能体市场"
+          title="专家市场"
+          aria-label="专家市场"
           itemKey="agentMarket"
           active={isRailItemActive("agentMarket")}
         >
@@ -184,8 +184,8 @@ export function SidebarRail({
             onClick={onOpenAgentBuilder}
             className={railBtn}
             aria-current={isRailItemActive("agentBuilder") ? "page" : undefined}
-            title="智能体管理"
-            aria-label="智能体管理"
+            title="专家管理"
+            aria-label="专家管理"
             itemKey="agentBuilder"
             active={isRailItemActive("agentBuilder")}
           >

@@ -1,26 +1,27 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   isAcceptedProfileFile,
   partitionAcceptedProfileFiles,
 } from "../../../hooks/useFileUpload.ts";
-import { resolveAgentAcceptedFileTypes } from "../../../components/layout/AppContent/agentProfileFileTypes.ts";
 
-test("Agent file inputs follow the published MIME and extension allowlist", () => {
+test("generic upload inputs can apply an explicit platform MIME or extension allowlist", () => {
   const pdf = { name: "report.PDF", type: "application/pdf" };
   const image = { name: "scan.png", type: "image/png" };
   const script = { name: "run.js", type: "text/javascript" };
 
   assert.equal(isAcceptedProfileFile(pdf, undefined), true, "ordinary Chat stays unchanged");
-  assert.equal(isAcceptedProfileFile(pdf, []), false, "text-only Agent rejects files");
+  assert.equal(isAcceptedProfileFile(pdf, []), false, "an explicit empty platform policy rejects files");
   assert.equal(isAcceptedProfileFile(pdf, [".pdf"]), true);
   assert.equal(isAcceptedProfileFile(pdf, ["application/pdf"]), true);
   assert.equal(isAcceptedProfileFile(image, ["image/*"]), true);
   assert.equal(isAcceptedProfileFile(script, ["application/pdf", ".docx"]), false);
 });
 
-test("unsupported Agent files do not consume the accepted upload count", () => {
+test("files rejected by a platform policy do not consume the accepted upload count", () => {
   const pdf = { name: "report.pdf", type: "application/pdf" } as File;
   const script = { name: "run.js", type: "text/javascript" } as File;
 
@@ -30,20 +31,17 @@ test("unsupported Agent files do not consume the accepted upload count", () => {
   assert.deepEqual(result.rejected, [script]);
 });
 
-test("Agent attachments are optional context and profile hints never become an upload allowlist", () => {
-  assert.equal(resolveAgentAcceptedFileTypes(undefined), undefined);
-  assert.equal(
-    resolveAgentAcceptedFileTypes({
-      supported_input_types: ["text"],
-      supported_file_types: ["application/pdf"],
-    }),
-    undefined,
+test("Expert attachments are optional context and profiles never configure upload formats", () => {
+  const chatSource = readFileSync(
+    join(process.cwd(), "src/components/layout/AppContent/ChatAppContent.tsx"),
+    "utf8",
   );
-  assert.equal(
-    resolveAgentAcceptedFileTypes({
-      supported_input_types: ["text", "file"],
-      supported_file_types: ["application/pdf"],
-    }),
-    undefined,
+  const viewSource = readFileSync(
+    join(process.cwd(), "src/components/layout/AppContent/ChatView.tsx"),
+    "utf8",
   );
+
+  assert.match(chatSource, /useDragAndDrop\(\)/);
+  assert.match(viewSource, /acceptedFileTypes: undefined/);
+  assert.doesNotMatch(`${chatSource}\n${viewSource}`, /supported_file_types|resolveAgentAcceptedFileTypes/);
 });

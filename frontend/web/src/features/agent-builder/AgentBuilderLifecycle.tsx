@@ -66,7 +66,7 @@ export function AgentBuilderLifecycle({
   return (
     <section
       aria-labelledby="agent-lifecycle-heading"
-      className="border-t border-[var(--theme-border)] py-6"
+      className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5"
     >
       <div className="mb-4 flex items-center gap-2">
         <History

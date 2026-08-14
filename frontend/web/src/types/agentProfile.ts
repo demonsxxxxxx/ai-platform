@@ -31,7 +31,6 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   capability_summary: string;
   recommended_tasks: string[];
   supported_input_types: Array<"text" | "file">;
-  supported_file_types: string[];
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
@@ -51,7 +50,6 @@ export interface AgentConversationIdentity {
   capability_summary: string;
   recommended_tasks: string[];
   supported_input_types: Array<"text" | "file">;
-  supported_file_types: string[];
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
@@ -104,7 +102,6 @@ function projectEnterpriseFields(
   | "capability_summary"
   | "recommended_tasks"
   | "supported_input_types"
-  | "supported_file_types"
   | "expected_outputs"
   | "permissions_and_data_access_notice"
   | "published_at"
@@ -137,10 +134,6 @@ function projectEnterpriseFields(
         ? []
         : requireStringList(record.recommended_tasks, code),
     supported_input_types: supportedInputTypes as Array<"text" | "file">,
-    supported_file_types:
-      record.supported_file_types === undefined
-        ? []
-        : requireStringList(record.supported_file_types, code),
     expected_outputs:
       record.expected_outputs === undefined
         ? []
@@ -227,7 +220,6 @@ export interface AgentProfileDraftRequest {
   capability_summary: string;
   recommended_tasks: string[];
   supported_input_types: Array<"text" | "file">;
-  supported_file_types: string[];
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   instructions: string;

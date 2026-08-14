@@ -126,7 +126,6 @@
     "app/execution_boundary.py",
     "app/file_parser_contracts.py",
     "app/file_preview_contracts.py",
-    "app/file_type_validation.py",
     "app/foundation_alpha_readiness.py",
     "app/foundation_runtime_concurrency.py",
     "app/governance_readiness.py",

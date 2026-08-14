@@ -10,9 +10,9 @@ test("SidebarRail exposes distinct Chinese Agent Market and Agent management ent
   );
 
   assert.match(source, /onClick=\{onOpenAgentMarket\}/);
-  assert.match(source, /title="智能体市场"/);
+  assert.match(source, /title="专家市场"/);
   assert.match(source, /onClick=\{onOpenAgentBuilder\}/);
-  assert.match(source, /title="智能体管理"/);
+  assert.match(source, /title="专家管理"/);
   assert.match(source, /itemKey="agentMarket"/);
   assert.match(source, /itemKey="agentBuilder"/);
   assert.match(source, /isRailItemActive\("agentBuilder"\)/);

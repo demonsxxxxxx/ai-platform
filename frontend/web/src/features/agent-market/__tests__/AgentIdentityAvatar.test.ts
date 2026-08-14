@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildAgentAvatarUrl } from "../AgentIdentityAvatar.tsx";
+import { buildAgentAvatarUrl } from "../agentAvatar.ts";
 
 test("DiceBear avatars are deterministic, locally rendered data URIs without exposing the seed", () => {
   const first = buildAgentAvatarUrl("internal-agent-identity");

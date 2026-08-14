@@ -23,7 +23,6 @@ from app.agent_profile_execution_validation import validate_agent_profile_execut
 from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
-from app.file_type_validation import normalize_profile_file_type
 from app.skills.release_policy import (
     validate_release_decision_lock,
     validate_release_decision_payload,
@@ -230,7 +229,6 @@ class AgentProfileDraftRequest(BaseModel):
         min_length=1,
         max_length=2,
     )
-    supported_file_types: list[str] = Field(default_factory=list, max_length=32)
     expected_outputs: list[str] = Field(default_factory=list, max_length=16)
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
@@ -272,19 +270,6 @@ class AgentProfileDraftRequest(BaseModel):
         if "file" not in normalized:
             return normalized
         return [item for item in ("text", "file") if item in normalized]
-
-    @field_validator("supported_file_types")
-    @classmethod
-    def normalize_supported_file_types(cls, value: list[str]):
-        normalized: list[str] = []
-        for item in value:
-            candidate = normalize_profile_file_type(item)
-            if candidate is None:
-                raise ValueError("supported_file_types contains an invalid media type or extension")
-            if candidate in normalized:
-                raise ValueError("supported_file_types contains duplicates")
-            normalized.append(candidate)
-        return normalized
 
     @field_validator("avatar_asset_id")
     @classmethod
@@ -422,7 +407,6 @@ class AgentProfilePublicProjection(BaseModel):
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
@@ -454,7 +438,6 @@ class AgentProfileAdminProjection(BaseModel):
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
@@ -546,7 +529,6 @@ class AgentConversationIdentity(BaseModel):
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
-    supported_file_types: list[str] = Field(default_factory=list)
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"

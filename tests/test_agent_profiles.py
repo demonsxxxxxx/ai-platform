@@ -11,7 +11,11 @@ from app.agent_profiles import (
     reject_profile_selector_conflicts,
     resolve_profile_for_admission,
 )
-from app.agent_apps.authority import _revision_hash
+from app.agent_apps.authority import (
+    _legacy_skill_set_revision_hash,
+    _revision_hash,
+    _revision_hash_matches,
+)
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
@@ -127,7 +131,6 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "capability_summary": "",
         "recommended_tasks": [],
         "supported_input_types": ["text"],
-        "supported_file_types": [],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
@@ -150,7 +153,6 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         ("capability_summary", "Reviews approved requests."),
         ("recommended_tasks", ["Policy review"]),
         ("supported_input_types", ["text", "file"]),
-        ("supported_file_types", ["application/pdf"]),
         ("expected_outputs", ["Review memo"]),
         ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
         ("avatar_asset_id", "file-avatar-a"),
@@ -247,78 +249,36 @@ def test_agent_profile_rejects_ambiguous_skill_sets(skill_set):
         )
 
 
-def test_agent_profile_file_type_contract_normalizes_and_matches_mime_wildcard():
-    from app.repositories import _agent_profile_file_type_allowed
+def test_agent_profile_rejects_retired_file_type_whitelist_field():
+    from pydantic import ValidationError
 
+    with pytest.raises(ValidationError, match="supported_file_types"):
+        AgentProfileDraftRequest.model_validate(
+            {
+                **profile_draft_payload("Private instruction"),
+                "supported_file_types": ["application/pdf"],
+            }
+        )
+
+
+def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     definition = AgentProfileDraftRequest.model_validate(
-        {
-            **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text", "file"],
-            "supported_file_types": [" IMAGE/* ", "application/pdf", ".docx"],
-        }
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+    legacy_hash = _legacy_skill_set_revision_hash(
+        definition,
+        legacy_supported_file_types=["word"],
     )
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "legacy_supported_file_types": ["word"],
+    }
 
-    assert definition.supported_file_types == ["image/*", "application/pdf", ".docx"]
-    assert _agent_profile_file_type_allowed(
-        {"original_name": "diagram.png", "content_type": "image/png"},
-        allowed_file_types=definition.supported_file_types,
-    )
-    assert not _agent_profile_file_type_allowed(
-        {"original_name": "report.pdf", "content_type": "application/pdf"},
-        allowed_file_types=[definition.supported_file_types[0]],
-    )
-
-
-def test_agent_profile_file_type_contract_accepts_standard_docx_mime_and_observed_parameters():
-    from app.repositories import _agent_profile_file_type_allowed
-
-    docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    definition = AgentProfileDraftRequest.model_validate(
-        {
-            **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text", "file"],
-            "supported_file_types": [docx_mime, " APPLICATION/PDF "],
-        }
-    )
-
-    assert definition.supported_file_types == [docx_mime, "application/pdf"]
-    assert _agent_profile_file_type_allowed(
-        {"original_name": "report.docx", "content_type": docx_mime},
-        allowed_file_types=definition.supported_file_types,
-    )
-    assert _agent_profile_file_type_allowed(
-        {"original_name": "report.pdf", "content_type": "application/pdf; charset=binary"},
-        allowed_file_types=definition.supported_file_types,
-    )
-
-
-@pytest.mark.parametrize(
-    "invalid_file_type",
-    [
-        "*/pdf",
-        "image/**",
-        "*/*",
-        "image/*; charset=utf-8",
-        "image/ *",
-        "application/pdf; charset=binary",
-        f"application/{'a' * 116}",
-    ],
-)
-def test_agent_profile_file_type_contract_rejects_invalid_wildcards_with_422(
-    monkeypatch, invalid_file_type
-):
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    response = TestClient(create_app()).post(
-        "/api/ai/admin/agent-profiles",
-        headers=admin_headers(),
-        json={
-            **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text", "file"],
-            "supported_file_types": [invalid_file_type],
-        },
-    )
-
-    assert response.status_code == 422
+    assert _revision_hash_matches(row, legacy_hash)
+    assert _revision_hash(definition) != legacy_hash
+    assert "supported_file_types" not in definition.model_dump(mode="json")
 
 
 def test_selected_profile_rejects_client_owned_capability_selectors():
@@ -427,7 +387,6 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "capability_summary": "",
                     "recommended_tasks": [],
                     "supported_input_types": ["text"],
-                    "supported_file_types": [],
                     "expected_outputs": [],
                     "permissions_and_data_access_notice": "",
                     "published_at": None,

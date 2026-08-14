@@ -27,7 +27,6 @@ const defaultEnterpriseProjection = {
   capability_summary: "",
   recommended_tasks: [] as string[],
   supported_input_types: ["text"] as Array<"text" | "file">,
-  supported_file_types: [] as string[],
   expected_outputs: [] as string[],
   permissions_and_data_access_notice: "",
   published_at: null,

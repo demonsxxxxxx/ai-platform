@@ -53,7 +53,6 @@ import {
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
-import { resolveAgentAcceptedFileTypes } from "./agentProfileFileTypes";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../types/agentOptions";
 import { shouldShowMessageOutline } from "./messageOutline";
@@ -434,12 +433,8 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const agentAcceptedFileTypes = useMemo(
-    () => resolveAgentAcceptedFileTypes(agentWorkspace),
-    [agentWorkspace],
-  );
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop(agentAcceptedFileTypes);
+    useDragAndDrop();
 
   const {
     approvals,
@@ -1083,7 +1078,7 @@ export function ChatAppContent({
       }
       const startProfile = agentWorkspaceStartProfile;
       if (agentWorkspaceReadOnly || !startProfile) {
-        setAgentWorkspaceError("该智能体已下架，历史会话仅供查看。");
+        setAgentWorkspaceError("该专家已下架，历史会话仅供查看。");
         return { status: "failed" };
       }
       if (
@@ -1162,10 +1157,10 @@ export function ChatAppContent({
             error.message === "agent_conversation_operation_storage_unavailable"
             ? "浏览器无法安全保存本次创建标识，请启用会话存储后重试。"
             : status === 403
-              ? "当前账号无权使用该智能体。"
+              ? "当前账号无权使用该专家。"
               : status === 404 || status === 409
-                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
-                : "暂时无法创建智能体对话，请稍后重试。",
+                ? "该专家已不可用或发布版本已更新，请返回市场重新选择。"
+                : "暂时无法创建专家对话，请稍后重试。",
         );
         return { status: "failed" };
       }

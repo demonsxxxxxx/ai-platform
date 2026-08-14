@@ -34,7 +34,6 @@ export interface AgentBuilderEditor {
   capabilitySummary: string;
   recommendedTasks: string[];
   supportedInputTypes: Array<"text" | "file">;
-  supportedFileTypes: string[];
   expectedOutputs: string[];
   permissionsAndDataAccessNotice: string;
   instructions: string;
@@ -127,7 +126,6 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     capabilitySummary: "",
     recommendedTasks: [],
     supportedInputTypes: ["text"],
-    supportedFileTypes: [],
     expectedOutputs: [],
     permissionsAndDataAccessNotice: "",
     instructions: "",
@@ -161,7 +159,6 @@ export function hydrateAgentProfileEditor(
     capabilitySummary: profile.capability_summary,
     recommendedTasks: [...profile.recommended_tasks],
     supportedInputTypes: [...profile.supported_input_types],
-    supportedFileTypes: [...profile.supported_file_types],
     expectedOutputs: [...profile.expected_outputs],
     permissionsAndDataAccessNotice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
@@ -190,7 +187,6 @@ export function hydrateAgentProfileEditor(
       starter_prompts: [...profile.starter_prompts],
       recommended_tasks: [...profile.recommended_tasks],
       supported_input_types: [...profile.supported_input_types],
-      supported_file_types: [...profile.supported_file_types],
       expected_outputs: [...profile.expected_outputs],
       allowed_department_ids: [...profile.allowed_department_ids],
       allowed_roles: [...profile.allowed_roles],
@@ -208,7 +204,6 @@ function editorDefinition(editor: AgentBuilderEditor) {
     capability_summary: editor.capabilitySummary.trim(),
     recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
     supported_input_types: editor.supportedInputTypes,
-    supported_file_types: editor.supportedFileTypes.map((item) => item.trim()).filter(Boolean),
     expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
@@ -236,7 +231,6 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     capability_summary: profile.capability_summary,
     recommended_tasks: profile.recommended_tasks,
     supported_input_types: profile.supported_input_types,
-    supported_file_types: profile.supported_file_types,
     expected_outputs: profile.expected_outputs,
     permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
@@ -276,7 +270,6 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
     editor.recommendedTasks.length > 0 ||
     editor.supportedInputTypes.length !== 1 ||
     editor.supportedInputTypes[0] !== "text" ||
-    editor.supportedFileTypes.length > 0 ||
     editor.expectedOutputs.length > 0 ||
     editor.permissionsAndDataAccessNotice.trim() ||
     editor.instructions.trim() ||
@@ -383,7 +376,6 @@ export function buildAgentProfileDraftRequest(
     capability_summary: editor.capabilitySummary.trim(),
     recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
     supported_input_types: [...editor.supportedInputTypes],
-    supported_file_types: editor.supportedFileTypes.map((item) => item.trim()).filter(Boolean),
     expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
@@ -407,7 +399,7 @@ export function buildAgentProfileDraftRequest(
 export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): string {
   switch (issue.code) {
     case "no_selection":
-      return "请先选择或新建一个智能体。";
+      return "请先选择或新建一位专家。";
     case "name_required":
       return "缺少名称，请填写后再保存。";
     case "instructions_required":
@@ -417,9 +409,9 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "skill_required":
       return "缺少 Skill，请至少选择一个已授权版本。";
     case "skill_limit_exceeded":
-      return "一个智能体最多可选择 32 个 Skill，请移除多余项。";
+      return "一位专家最多可选择 32 个 Skill，请移除多余项。";
     case "profile_revision_missing":
-      return "当前智能体缺少可用于版本锁定的服务端 revision，请刷新列表。";
+      return "当前专家缺少可用于版本锁定的服务端 revision，请刷新目录。";
     case "catalog_unavailable":
       return "授权目录尚未完整加载，暂不能保存或发布。";
     case "selected_model_stale":

@@ -28,7 +28,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
-  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,20rem\),1fr\)\)\]/);
+  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,22rem\),1fr\)\)\]/);
   assert.doesNotMatch(source, /xl:grid-cols-3/);
   assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
@@ -40,8 +40,8 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.doesNotMatch(source, /model_id|instructions|mcp_tool_ids|selected_skill/);
   assert.doesNotMatch(source, /CANONICAL_CHAT_PATH/);
   assert.match(source, /AgentIdentityAvatar/);
-  assert.match(source, /Agent SDK/);
-  assert.match(source, /附件可选，不由智能体限定格式/);
+  assert.match(source, /Skill Set/);
+  assert.match(source, /附件可选，不由专家限定格式/);
 });
 
 test("Agent product surfaces do not expose attachment type configuration", () => {
@@ -54,8 +54,8 @@ test("Agent product surfaces do not expose attachment type configuration", () =>
     "utf8",
   );
 
-  assert.match(marketSource, /附件可选，不由智能体限定格式/);
-  assert.doesNotMatch(marketSource, /profile\.supported_file_types\.join/);
+  assert.match(marketSource, /附件可选，不由专家限定格式/);
+  assert.doesNotMatch(marketSource, /supported_file_types/);
   assert.doesNotMatch(builderSource, /data-agent-builder-input-settings/);
   assert.doesNotMatch(builderSource, /常见附件类型提示/);
 });

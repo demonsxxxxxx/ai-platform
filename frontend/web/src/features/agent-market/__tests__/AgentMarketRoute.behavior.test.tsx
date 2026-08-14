@@ -16,7 +16,6 @@ const enterpriseProfileFields = {
   capability_summary: "在授权范围内处理企业任务。",
   recommended_tasks: ["企业任务处理"] as string[],
   supported_input_types: ["text"] as Array<"text" | "file">,
-  supported_file_types: [] as string[],
   expected_outputs: ["处理建议"] as string[],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   published_at: "2026-08-04T01:00:00Z",
@@ -639,7 +638,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const categoryGroup = container.querySelector("[data-agent-market-filter]");
     assert.ok(categoryGroup);
     assert.equal(categoryGroup.getAttribute("role"), "group");
-    assert.equal(categoryGroup.getAttribute("aria-label"), "智能体分类");
+    assert.equal(categoryGroup.getAttribute("aria-label"), "专家分类");
     assert.equal(categoryGroup.querySelectorAll('[role="tab"]').length, 0);
     const categoryButtons = categoryGroup.querySelectorAll("button");
     assert.equal(

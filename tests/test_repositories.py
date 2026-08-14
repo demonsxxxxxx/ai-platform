@@ -430,7 +430,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
           model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
           avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+          recommended_tasks, supported_input_types, legacy_supported_file_types, expected_outputs,
           permissions_and_data_access_notice, avatar_asset_id,
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
@@ -443,7 +443,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                   model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
                   avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-                  recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+                  recommended_tasks, supported_input_types, legacy_supported_file_types, expected_outputs,
                   permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """.split()
@@ -10826,7 +10826,7 @@ async def test_authorize_files_for_run_rejects_skill_file_with_mismatched_mime()
 
 
 @pytest.mark.asyncio
-async def test_authorize_files_for_run_rejects_agent_profile_without_file_input():
+async def test_authorize_files_for_run_does_not_apply_profile_format_whitelists():
     class FileCursor:
         async def fetchone(self):
             return {
@@ -10838,84 +10838,6 @@ async def test_authorize_files_for_run_rejects_agent_profile_without_file_input(
                 "run_id": None,
                 "original_name": "report.pdf",
                 "content_type": "application/pdf",
-                "size_bytes": 1024,
-                "sha256": "a" * 64,
-            }
-
-    class FileConnection(RecordingConnection):
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return FileCursor()
-
-    with pytest.raises(repositories.RepositoryConflictError, match="agent_profile_file_input_not_supported"):
-        await repositories.authorize_files_for_run(
-            FileConnection(),
-            tenant_id="tenant-a",
-            workspace_id="workspace-a",
-            user_id="user-a",
-            session_id="session-a",
-            run_id="run-a",
-            file_ids=["file-a"],
-            agent_profile_supported_input_types=["text"],
-            agent_profile_supported_file_types=[],
-        )
-
-
-@pytest.mark.asyncio
-async def test_authorize_files_for_run_rejects_agent_profile_file_type_mismatch():
-    class FileCursor:
-        async def fetchone(self):
-            return {
-                "id": "file-a",
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": None,
-                "run_id": None,
-                "original_name": "report.pdf",
-                "content_type": "application/pdf",
-                "size_bytes": 1024,
-                "sha256": "a" * 64,
-            }
-
-    class FileConnection(RecordingConnection):
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return FileCursor()
-
-    with pytest.raises(repositories.RepositoryConflictError, match="agent_profile_file_type_not_supported"):
-        await repositories.authorize_files_for_run(
-            FileConnection(),
-            tenant_id="tenant-a",
-            workspace_id="workspace-a",
-            user_id="user-a",
-            session_id="session-a",
-            run_id="run-a",
-            file_ids=["file-a"],
-            agent_profile_supported_input_types=["text", "file"],
-            agent_profile_supported_file_types=[".docx", "image/*"],
-        )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "allowed_type",
-    [".pdf", "application/pdf", "application/*"],
-)
-async def test_authorize_files_for_run_accepts_agent_profile_file_type_from_authoritative_metadata(
-    allowed_type,
-):
-    class FileCursor:
-        async def fetchone(self):
-            return {
-                "id": "file-a",
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": None,
-                "run_id": None,
-                "original_name": "REPORT.PDF",
-                "content_type": "Application/PDF",
                 "size_bytes": 1024,
                 "sha256": "a" * 64,
             }
@@ -10933,14 +10855,12 @@ async def test_authorize_files_for_run_accepts_agent_profile_file_type_from_auth
         session_id="session-a",
         run_id="run-a",
         file_ids=["file-a"],
-        agent_profile_supported_input_types=["text", "file"],
-        agent_profile_supported_file_types=[allowed_type],
     )
     assert [row["id"] for row in rows] == ["file-a"]
 
 
 @pytest.mark.asyncio
-async def test_authorize_files_for_run_rejects_mixed_requested_and_reusable_profile_mismatch():
+async def test_authorize_files_for_run_accepts_mixed_authorized_file_formats():
     rows = {
         "file-requested": {
             "id": "file-requested",
@@ -10981,19 +10901,17 @@ async def test_authorize_files_for_run_rejects_mixed_requested_and_reusable_prof
             return FileCursor(rows.get(params[0]))
 
     conn = FileConnection()
-    with pytest.raises(repositories.RepositoryConflictError, match="agent_profile_file_type_not_supported"):
-        await repositories.authorize_files_for_run(
-            conn,
-            tenant_id="tenant-a",
-            workspace_id="workspace-a",
-            user_id="user-a",
-            session_id="session-a",
-            run_id="run-current",
-            file_ids=["file-requested", "file-reusable"],
-            reusable_file_ids=["file-reusable"],
-            agent_profile_supported_input_types=["text", "file"],
-            agent_profile_supported_file_types=["application/pdf"],
-        )
+    authorized = await repositories.authorize_files_for_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        file_ids=["file-requested", "file-reusable"],
+        reusable_file_ids=["file-reusable"],
+    )
+    assert [row["id"] for row in authorized] == ["file-requested", "file-reusable"]
     reusable_sql = conn.calls[1][0]
     assert "join run_context_snapshots authorized_snapshot" in reusable_sql
     assert "authorized_snapshot.included_file_ids ? files.id" in reusable_sql

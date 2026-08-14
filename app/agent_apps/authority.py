@@ -37,7 +37,6 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "capability_summary",
     "recommended_tasks",
     "supported_input_types",
-    "supported_file_types",
     "expected_outputs",
     "permissions_and_data_access_notice",
     "avatar_ref",
@@ -194,7 +193,6 @@ def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
             if value in {"text", "file"}
         ]
         or ["text"],
-        "supported_file_types": _safe_string_list(row.get("supported_file_types")),
         "expected_outputs": _safe_string_list(row.get("expected_outputs")),
         "permissions_and_data_access_notice": str(
             row.get("permissions_and_data_access_notice") or ""
@@ -220,7 +218,6 @@ def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationId
         capability_summary=public["capability_summary"],
         recommended_tasks=public["recommended_tasks"],
         supported_input_types=public["supported_input_types"],
-        supported_file_types=public["supported_file_types"],
         expected_outputs=public["expected_outputs"],
         permissions_and_data_access_notice=public["permissions_and_data_access_notice"],
         avatar_ref=public["avatar_ref"],
@@ -241,7 +238,6 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "capability_summary": definition.capability_summary,
         "recommended_tasks": definition.recommended_tasks,
         "supported_input_types": definition.supported_input_types,
-        "supported_file_types": definition.supported_file_types,
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
@@ -261,7 +257,46 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
+def _legacy_skill_set_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_file_types: list[str] | None = None,
+) -> str:
+    """Recompute hashes written before the profile file whitelist was retired."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": definition.supported_input_types,
+        "supported_file_types": legacy_supported_file_types or [],
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition.model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": definition.avatar_seed,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _legacy_revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    legacy_supported_file_types: list[str] | None = None,
+) -> str:
     """Recompute the pre-Skill-Set hash for exact one-Skill compatibility."""
 
     if len(definition.skill_set) != 1:
@@ -275,7 +310,7 @@ def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
         "capability_summary": definition.capability_summary,
         "recommended_tasks": definition.recommended_tasks,
         "supported_input_types": definition.supported_input_types,
-        "supported_file_types": definition.supported_file_types,
+        "supported_file_types": legacy_supported_file_types or [],
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
@@ -297,7 +332,20 @@ def _legacy_revision_hash(definition: AgentProfileDraftRequest) -> str:
 
 def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
     definition = _draft_from_row(row)
-    return content_hash in {_revision_hash(definition), _legacy_revision_hash(definition)}
+    legacy_supported_file_types = _safe_string_list(
+        row.get("legacy_supported_file_types")
+    )
+    return content_hash in {
+        _revision_hash(definition),
+        _legacy_skill_set_revision_hash(
+            definition,
+            legacy_supported_file_types=legacy_supported_file_types,
+        ),
+        _legacy_revision_hash(
+            definition,
+            legacy_supported_file_types=legacy_supported_file_types,
+        ),
+    }
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
@@ -314,7 +362,6 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
             if value in {"text", "file"}
         ]
         or ["text"],
-        supported_file_types=_safe_string_list(row.get("supported_file_types")),
         expected_outputs=_safe_string_list(row.get("expected_outputs")),
         permissions_and_data_access_notice=str(
             row.get("permissions_and_data_access_notice") or ""
@@ -382,7 +429,6 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
             if value in {"text", "file"}
         ]
         or ["text"],
-        supported_file_types=_safe_string_list(row.get("supported_file_types")),
         expected_outputs=_safe_string_list(row.get("expected_outputs")),
         permissions_and_data_access_notice=str(
             row.get("permissions_and_data_access_notice") or ""
@@ -547,7 +593,6 @@ class AgentProfileAuthority:
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
             supported_input_types=definition.supported_input_types,
-            supported_file_types=definition.supported_file_types,
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
@@ -626,7 +671,9 @@ class AgentProfileAuthority:
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
             supported_input_types=definition.supported_input_types,
-            supported_file_types=definition.supported_file_types,
+            legacy_supported_file_types=_safe_string_list(
+                draft_row.get("legacy_supported_file_types")
+            ),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
@@ -719,7 +766,9 @@ class AgentProfileAuthority:
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
             supported_input_types=definition.supported_input_types,
-            supported_file_types=definition.supported_file_types,
+            legacy_supported_file_types=_safe_string_list(
+                published_row.get("legacy_supported_file_types")
+            ),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
