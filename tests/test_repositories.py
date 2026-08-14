@@ -430,7 +430,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
           model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
           avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-          recommended_tasks, supported_input_types, legacy_supported_file_types, expected_outputs,
+          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
           permissions_and_data_access_notice, avatar_asset_id,
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
@@ -443,7 +443,8 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                   model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
                   avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-                  recommended_tasks, supported_input_types, legacy_supported_file_types, expected_outputs,
+                  recommended_tasks, supported_input_types,
+                  supported_file_types as legacy_supported_file_types, expected_outputs,
                   permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """.split()

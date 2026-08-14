@@ -806,7 +806,8 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
   });
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
 
@@ -1172,7 +1173,8 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
   });
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
   const container = dom.document.createElement("div");
@@ -1182,7 +1184,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4"] },
+          { initialEntries: ["/agent-market/agt_support/4?q=合同&category=support"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -1209,7 +1211,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market");
+    assert.equal(decodeURI(currentPath), "/agent-market?q=合同&category=support");
     assert.ok(container.querySelector("[data-agent-market]"));
     assert.equal(container.querySelector("[data-agent-market-detail]"), null);
     assert.equal(container.querySelector("[data-canonical-chat]"), null);

@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.14.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.13.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -212,6 +212,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "agent_profile_revisions",
         "avatar_seed",
         "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "supported_file_types",
+        "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -334,3 +340,15 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "idx_run_context_snapshots_file_ids_gin": ("gin", ("jsonb_ops",)),
         "idx_artifacts_manifest_json_gin": ("gin", ("jsonb_path_ops",)),
     }
+
+
+def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert (
+        "alter table agent_profile_revisions add column if not exists "
+        "supported_file_types jsonb not null default '[]'::jsonb"
+    ) in schema
+    assert "rename column supported_file_types" not in schema
+    assert "drop column supported_file_types" not in schema
+    assert "legacy_supported_file_types" not in schema

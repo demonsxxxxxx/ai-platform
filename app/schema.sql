@@ -418,7 +418,7 @@ create table if not exists agent_profile_revisions (
   supported_input_types jsonb not null default '["text"]'::jsonb,
   -- Historical hash material only. New product contracts and revisions never
   -- configure or enforce a profile-level file-type whitelist.
-  legacy_supported_file_types jsonb not null default '[]'::jsonb,
+  supported_file_types jsonb not null default '[]'::jsonb,
   expected_outputs jsonb not null default '[]'::jsonb,
   permissions_and_data_access_notice text not null default '',
   instructions text not null,
@@ -644,40 +644,8 @@ alter table agent_profile_revisions add column if not exists starter_prompts jso
 alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
 alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
-do $$
-begin
-  if exists (
-    select 1 from pg_attribute
-    where attrelid = 'agent_profile_revisions'::regclass
-      and attname = 'supported_file_types'
-      and not attisdropped
-  ) and exists (
-    select 1 from pg_attribute
-    where attrelid = 'agent_profile_revisions'::regclass
-      and attname = 'legacy_supported_file_types'
-      and not attisdropped
-  ) then
-    update agent_profile_revisions
-    set legacy_supported_file_types = supported_file_types;
-    alter table agent_profile_revisions drop column supported_file_types;
-  elsif exists (
-    select 1 from pg_attribute
-    where attrelid = 'agent_profile_revisions'::regclass
-      and attname = 'supported_file_types'
-      and not attisdropped
-  ) then
-    alter table agent_profile_revisions
-      rename column supported_file_types to legacy_supported_file_types;
-  elsif not exists (
-    select 1 from pg_attribute
-    where attrelid = 'agent_profile_revisions'::regclass
-      and attname = 'legacy_supported_file_types'
-      and not attisdropped
-  ) then
-    alter table agent_profile_revisions
-      add column legacy_supported_file_types jsonb not null default '[]'::jsonb;
-  end if;
-end $$;
+-- Compatibility storage only. Product/API semantics no longer expose or enforce this value.
+alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';
 alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;

@@ -13,6 +13,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
   assert.doesNotMatch(source, /agentProfileApi\s*\.\s*createConversation\(/);
   assert.match(source, /navigate\(buildAgentMarketWorkspacePath\(profile\)\)/);
+  assert.match(source, /navigate\(catalogReturnPath, \{ replace: true \}\)/);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /mobileSidebarOpen/);

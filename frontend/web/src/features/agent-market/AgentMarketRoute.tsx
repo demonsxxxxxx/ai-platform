@@ -625,11 +625,15 @@ export function AgentMarketRoute() {
     revision,
     isDetailRoute,
   );
+  const returnSearch = searchParams.toString();
+  const catalogReturnPath = returnSearch
+    ? `${APP_ROUTE_PATHS.agentMarket}?${returnSearch}`
+    : APP_ROUTE_PATHS.agentMarket;
   useEffect(() => {
     if (isDetailRoute && detail.phase === "unavailable") {
-      navigate(APP_ROUTE_PATHS.agentMarket, { replace: true });
+      navigate(catalogReturnPath, { replace: true });
     }
-  }, [detail.phase, isDetailRoute, navigate]);
+  }, [catalogReturnPath, detail.phase, isDetailRoute, navigate]);
 
   if (!isDetailRoute) {
     return (
@@ -652,10 +656,10 @@ export function AgentMarketRoute() {
           </div>
         </main>
       ) : detail.phase === "ready" && detail.value ? (
-        <AgentMarketDetail
-          profile={detail.value}
-          returnSearch={searchParams.toString()}
-        />
+            <AgentMarketDetail
+              profile={detail.value}
+              returnSearch={returnSearch}
+            />
       ) : (
         <main
           aria-live="polite"
