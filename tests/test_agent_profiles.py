@@ -467,6 +467,7 @@ def test_agent_profile_admin_wire_version_isolates_rolling_client_compatibility(
     profile = AgentProfileAdminProjection(
         agent_id="agt_support",
         revision=4,
+        published_revision=4,
         status="published",
         name="Support assistant",
         description="Approved support helper.",
@@ -504,6 +505,7 @@ def test_agent_profile_admin_wire_version_isolates_rolling_client_compatibility(
     schema = client.get("/openapi.json").json()
     admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
     assert "supported_file_types" not in admin_projection["properties"]
+    assert current_response.json()["agent_profiles"][0]["published_revision"] == 4
 
 
 def test_agent_profile_admin_write_requires_admin(monkeypatch):

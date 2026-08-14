@@ -440,6 +440,7 @@ class AgentProfileAdminProjection(BaseModel):
 
     agent_id: str
     revision: int
+    published_revision: int | None = Field(default=None, ge=1)
     status: Literal["draft", "published", "withdrawn"]
     name: str
     description: str = ""

@@ -291,6 +291,7 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
 test("declares the current admin profile wire schema on every profile response request", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; method?: string; schema: string | null }> = [];
+  const draftWriteBodies: Array<Record<string, unknown>> = [];
   const draft = {
     name: "Support assistant",
     description: "Approved support helper.",
@@ -322,6 +323,10 @@ test("declares the current admin profile wire schema on every profile response r
       method: init?.method,
       schema: new Headers(init?.headers).get("x-ai-agent-profile-schema"),
     });
+    if (typeof init?.body === "string") {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (typeof body.name === "string") draftWriteBodies.push(body);
+    }
     const isList = !init?.method || init.method === "GET";
     return new Response(
       JSON.stringify(isList ? { agent_profiles: [] } : { agent_profile: {}, audit_id: "audit-a" }),
@@ -369,6 +374,20 @@ test("declares the current admin profile wire schema on every profile response r
         schema: "2",
       },
     ]);
+    assert.equal("supported_file_types" in draft, false);
+    assert.deepEqual(
+      draftWriteBodies.map((body) => body.supported_file_types),
+      [
+        [
+          "application/*", "audio/*", "chemical/*", "font/*", "image/*",
+          "message/*", "model/*", "multipart/*", "text/*", "video/*",
+        ],
+        [
+          "application/*", "audio/*", "chemical/*", "font/*", "image/*",
+          "message/*", "model/*", "multipart/*", "text/*", "video/*",
+        ],
+      ],
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

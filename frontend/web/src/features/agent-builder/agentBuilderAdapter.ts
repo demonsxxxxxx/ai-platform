@@ -26,6 +26,7 @@ export interface AgentBuilderCurrentCatalog {
 export interface AgentBuilderEditor {
   agentId: string | null;
   revision: number | null;
+  publishedRevision: number | null;
   status: AgentProfileAdminProjection["status"] | null;
   name: string;
   description: string;
@@ -118,6 +119,7 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
   return {
     agentId: null,
     revision: null,
+    publishedRevision: null,
     status: null,
     name: "",
     description: "",
@@ -151,6 +153,9 @@ export function hydrateAgentProfileEditor(
   return {
     agentId: profile.agent_id,
     revision: profile.revision,
+    publishedRevision: profile.published_revision ?? (
+      profile.status === "published" ? profile.revision : null
+    ),
     status: profile.status,
     name: profile.name,
     description: profile.description,

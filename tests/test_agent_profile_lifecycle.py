@@ -159,6 +159,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     """Record call order without claiming PostgreSQL lock-manager coverage."""
 
     from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
     from app.models import AgentProfileDraftRequest, SelectedSkillRequest
 
     order: list[str] = []
@@ -187,7 +188,9 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
 
     async def read_draft(*_args, **_kwargs):
         order.append("revision_read")
-        return _profile_row(status="draft", revision=7)
+        row = _profile_row(status="draft", revision=7)
+        row["content_hash"] = _revision_hash(_draft_from_row(row))
+        return row
 
     async def record_publication(*_args, **_kwargs):
         order.append("aggregate_update")
@@ -272,6 +275,63 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         "video/*",
     ]
 
+
+@pytest.mark.asyncio
+async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    draft = _profile_row(status="draft", revision=7)
+    draft["content_hash"] = _revision_hash(_draft_from_row(draft))
+    draft["instructions"] = "tampered after the immutable hash was written"
+    calls: list[str] = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_draft(*_args, **_kwargs):
+        calls.append("read")
+        return draft
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("tampered draft must fail before validation, append, or audit")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        read_draft,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        forbidden,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.publish_draft(
+            object(),
+            principal=_principal(roles=["admin"]),
+            agent_id="agt_support",
+            expected_revision=7,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_revision_integrity_mismatch",
+    )
+    assert calls == ["read"]
 
 @pytest.mark.asyncio
 async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identity(monkeypatch):

@@ -18,6 +18,22 @@ const AGENT_PROFILE_ADMIN_SCHEMA_HEADERS = {
   "X-AI-Agent-Profile-Schema": "2",
 } as const;
 
+// During a rolling upgrade, an old API/worker still requires a permissive
+// physical MIME list. This is transport-only and is not part of the editor or
+// current Agent Profile contract.
+const ROLLING_LEGACY_FILE_CAPABILITY = [
+  "application/*",
+  "audio/*",
+  "chemical/*",
+  "font/*",
+  "image/*",
+  "message/*",
+  "model/*",
+  "multipart/*",
+  "text/*",
+  "video/*",
+] as const;
+
 export interface AgentProfileCatalogResponse {
   agent_profiles: AgentProfilePublicProjection[];
 }
@@ -165,7 +181,10 @@ export const agentProfileApi = {
       {
         method: agentId ? "PUT" : "POST",
         headers: AGENT_PROFILE_ADMIN_SCHEMA_HEADERS,
-        body: JSON.stringify(draft),
+        body: JSON.stringify({
+          ...draft,
+          supported_file_types: ROLLING_LEGACY_FILE_CAPABILITY,
+        }),
       },
     );
   },

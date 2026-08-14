@@ -247,6 +247,8 @@ export interface AgentProfileAdminProjection extends Omit<
   skill_set?: SelectedSkillRequest[];
   agent_id: string;
   revision: number;
+  /** Current aggregate publication; absent only while talking to a rolling old API. */
+  published_revision?: number | null;
   status: "draft" | "published" | "withdrawn";
   content_hash: string;
   created_at?: string | null;

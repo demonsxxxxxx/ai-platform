@@ -23,7 +23,7 @@ export function AgentBuilderLifecycle({
   editor: AgentBuilderEditor;
   mutation: AgentBuilderMutationState;
   onRunTest: (message: string) => void;
-  onUnpublish: () => void;
+  onUnpublish: (publishedRevision: number) => void;
 }) {
   const [history, setHistory] = useState<AgentProfileAdminProjection[]>([]);
   const [historyState, setHistoryState] = useState<"idle" | "loading" | "ready" | "error">(
@@ -59,6 +59,13 @@ export function AgentBuilderLifecycle({
 
   const cleanPublished =
     Boolean(editor.agentId) && editor.status === "published" && !isAgentProfileEditorDirty(editor);
+  const historyPublishedRevision = editor.status === "withdrawn"
+    ? null
+    : history.find((profile) => profile.status === "published")?.revision ?? null;
+  const publishedRevision = editor.publishedRevision ?? historyPublishedRevision;
+  const canUnpublish = Boolean(
+    editor.agentId && publishedRevision && !isAgentProfileEditorDirty(editor),
+  );
   const trialRun = mutation.phase === "success" && mutation.action === "test"
     ? mutation.trialRun
     : undefined;
@@ -147,8 +154,8 @@ export function AgentBuilderLifecycle({
         </button>
         <button
           className="btn-secondary inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={disabled || !cleanPublished}
-          onClick={onUnpublish}
+          disabled={disabled || !canUnpublish}
+          onClick={() => publishedRevision && onUnpublish(publishedRevision)}
           title="下架当前发布版本"
           type="button"
         >

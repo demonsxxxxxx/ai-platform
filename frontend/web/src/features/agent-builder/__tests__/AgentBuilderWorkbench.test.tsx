@@ -63,7 +63,7 @@ test("real lifecycle controls use the profile authority without fake handoff pat
   assert.doesNotMatch(featureProductionSource, /预览消息|打开对话运行|对话交接/);
   assert.doesNotMatch(featureProductionSource, /sessionApi|sendMessage|onHandoffReady/);
   assert.match(workbenchSource, /controller\.runActiveProfileTest\(message\)/);
-  assert.match(workbenchSource, /controller\.unpublishActiveProfile\(\)/);
+  assert.match(workbenchSource, /controller\.unpublishActiveProfile\(publishedRevision\)/);
   assert.match(controllerSource, /this\.api\.runTest\(/);
   assert.match(controllerSource, /this\.api\.unpublish\(/);
   assert.doesNotMatch(featureProductionSource, /deactivate|handoff/i);

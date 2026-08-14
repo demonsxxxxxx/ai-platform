@@ -616,12 +616,20 @@ test("unpublish fences the exact published revision and adopts immutable withdra
   const calls: Array<{ agentId: string; revision: number }> = [];
   const controller = new AgentBuilderController(fakeApi({
     listAdmin: async () => ({
-      agent_profiles: [profile({ revision: 9, status: "published" })],
+      agent_profiles: [profile({
+        revision: 10,
+        status: "draft",
+        published_revision: 9,
+      })],
     }),
     unpublish: async (agentId, revision) => {
       calls.push({ agentId, revision });
       return {
-        agent_profile: profile({ revision: 10, status: "withdrawn" }),
+        agent_profile: profile({
+          revision: 11,
+          status: "withdrawn",
+          published_revision: null,
+        }),
         audit_id: "audit-unpublish",
       };
     },
@@ -631,12 +639,12 @@ test("unpublish fences the exact published revision and adopts immutable withdra
   await controller.unpublishActiveProfile();
 
   assert.deepEqual(calls, [{ agentId: "agt_document_review", revision: 9 }]);
-  assert.equal(controller.state.activeEditor?.revision, 10);
+  assert.equal(controller.state.activeEditor?.revision, 11);
   assert.equal(controller.state.activeEditor?.status, "withdrawn");
   assert.deepEqual(controller.state.mutation, {
     phase: "success",
     action: "unpublish",
-    revision: 10,
+    revision: 11,
   });
 });
 

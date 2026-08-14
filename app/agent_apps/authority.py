@@ -427,6 +427,11 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
     return AgentProfileAdminProjection(
         agent_id=str(row["agent_id"]),
         revision=int(row["revision"]),
+        published_revision=(
+            int(row["published_revision"])
+            if row.get("published_revision") is not None
+            else None
+        ),
         status=str(row["status"]),
         name=str(row["name"]),
         description=str(row.get("description") or ""),
@@ -614,12 +619,18 @@ class AgentProfileAuthority:
             created_by=principal.user_id,
             expected_previous_revision=definition.expected_draft_revision,
         )
-        await repositories.record_agent_profile_draft(
+        aggregate = await repositories.record_agent_profile_draft(
             conn,
             tenant_id=principal.tenant_id,
             agent_id=resolved_agent_id,
             revision=int(row["revision"]),
         )
+        row = {
+            **row,
+            "published_revision": (
+                aggregate.get("published_revision") if aggregate is not None else None
+            ),
+        }
         audit_id = await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
@@ -658,6 +669,12 @@ class AgentProfileAuthority:
         )
         if draft_row is None:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+        source_content_hash = str(draft_row.get("content_hash") or "")
+        if not _revision_hash_matches(draft_row, source_content_hash):
+            raise HTTPException(
+                status_code=409,
+                detail="agent_profile_revision_integrity_mismatch",
+            )
         definition = _draft_from_row(draft_row)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
         row = await repositories.create_agent_profile_revision(
@@ -702,6 +719,7 @@ class AgentProfileAuthority:
             revision=int(row["revision"]),
             content_hash=str(row["content_hash"]),
         )
+        row = {**row, "published_revision": int(row["revision"])}
         audit_id = await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
@@ -710,7 +728,11 @@ class AgentProfileAuthority:
             target_type="agent_profile",
             target_id=agent_id,
             trace_id=standard_trace_id(agent_id),
-            payload_json={"revision": int(row["revision"]), "content_hash": str(row["content_hash"])},
+            payload_json={
+                "revision": int(row["revision"]),
+                "content_hash": str(row["content_hash"]),
+                "published_from_content_hash": source_content_hash,
+            },
         )
         return _admin_projection(row), audit_id
 
@@ -808,7 +830,7 @@ class AgentProfileAuthority:
             trace_id=standard_trace_id(agent_id),
             payload_json={"revision": expected_revision, "withdrawn_revision": int(row["revision"])},
         )
-        return _admin_projection(row), audit_id
+        return _admin_projection({**row, "published_revision": None}), audit_id
 
     async def validate_draft(
         self,

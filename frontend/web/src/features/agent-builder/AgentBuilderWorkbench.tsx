@@ -767,7 +767,8 @@ export function AgentBuilderWorkbench({
                 editor={activeEditor}
                 mutation={workbench.mutation}
                 onRunTest={(message) => void controller.runActiveProfileTest(message)}
-                onUnpublish={() => void controller.unpublishActiveProfile()}
+                onUnpublish={(publishedRevision) =>
+                  void controller.unpublishActiveProfile(publishedRevision)}
               />
             </div>
           )}
