@@ -182,10 +182,6 @@ class XlsxPreviewResponse(BaseModel):
         return self
 
 
-class XlsxPreviewBusyError(RuntimeError):
-    """Raised when the bounded preview admission limit has been reached."""
-
-
 @dataclass(frozen=True)
 class XlsxPreviewIdentity:
     """One stored-metadata decision for the exact XLSX preview contract."""
