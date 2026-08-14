@@ -302,6 +302,18 @@ def _canonical_profile_hash(
     return _revision_hash(_draft_from_row(row))
 
 
+def _canonical_profile_storage_lists() -> tuple[str, str]:
+    from app.agent_apps.authority import (
+        _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+        _ROLLING_LEGACY_SUPPORTED_INPUT_TYPES,
+    )
+
+    return (
+        json.dumps(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
+        json.dumps(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+    )
+
+
 async def _seed_profile_chat_storage(
     conn: psycopg.AsyncConnection,
     *,
@@ -357,16 +369,17 @@ async def _seed_profile_chat_storage(
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status,
           name, description, instructions, model_id, skill_id,
-          skill_version, skill_set, mcp_tool_ids, content_hash, avatar_ref,
-          category, visibility, allowed_department_ids, allowed_roles,
+          skill_version, skill_set, mcp_tool_ids,
+          supported_input_types, supported_file_types, content_hash, avatar_ref,
+          avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, legacy_compatibility_write, created_by,
           published_by, published_at, published_from_revision
         ) values (
           %s, %s, 1, 'published', 'published',
           %s, %s, %s, %s, %s,
           %s, jsonb_build_array(jsonb_build_object('skill_id', %s::text, 'expected_version', %s::text)),
-          '[]'::jsonb, %s, 'builtin:agent',
-          'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
+          '[]'::jsonb, %s::jsonb, %s::jsonb, %s, 'builtin:agent',
+          %s, 'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
           '[]'::jsonb, false, %s, %s, now(), 1
         )
         """,
@@ -381,7 +394,9 @@ async def _seed_profile_chat_storage(
             skill_version,
             "profile-chat-skill",
             skill_version,
+            *_canonical_profile_storage_lists(),
             profile_hash,
+            "agt_profile_chat",
             "admin-profile-chat",
             "admin-profile-chat",
         ),
@@ -896,16 +911,17 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             insert into agent_profile_revisions(
               tenant_id, agent_id, revision, status, revision_status,
               name, description, instructions, model_id, skill_id,
-              skill_version, skill_set, mcp_tool_ids, content_hash, avatar_ref,
-              category, visibility, allowed_department_ids, allowed_roles,
+              skill_version, skill_set, mcp_tool_ids,
+              supported_input_types, supported_file_types, content_hash, avatar_ref,
+              avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
               allowed_user_ids, legacy_compatibility_write, created_by,
               published_by, published_at, published_from_revision
             ) values (
               %s, %s, 1, 'published', 'published',
               %s, %s, %s, %s, %s,
               %s, jsonb_build_array(jsonb_build_object('skill_id', %s::text, 'expected_version', %s::text)),
-              '[]'::jsonb, %s, 'builtin:agent',
-              'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
+              '[]'::jsonb, %s::jsonb, %s::jsonb, %s, 'builtin:agent',
+              %s, 'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
               '[]'::jsonb, false, %s, %s, now(), 1
             )
             """,
@@ -920,7 +936,9 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
                 locked_skill_version,
                 "profile-skill",
                 locked_skill_version,
+                *_canonical_profile_storage_lists(),
                 profile_hash,
+                "agt_profile",
                 "admin-profile",
                 "admin-profile",
             ),
