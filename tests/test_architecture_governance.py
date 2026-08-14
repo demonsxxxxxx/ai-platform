@@ -51,8 +51,44 @@ def _commit(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+def _retired_runs_legacy_api_cutover() -> dict[str, Any]:
+    return {
+        "source_path": "app/repositories.py",
+        "public_module": "app.runs.api",
+        "canonical_module": "app.runs.domain.terminalization",
+        "module_alias": "runs_api",
+        "removed_imports": [{"module": "dataclasses", "name": "dataclass"}],
+        "rewrites": [
+            {
+                "old_symbol": "TERMINAL_RUN_STATUSES",
+                "new_symbol": "TERMINAL_RUN_STATUSES",
+            },
+            {
+                "old_symbol": "ToolPermissionTerminalizationProgress",
+                "new_symbol": "RunTerminalizationProgress",
+            },
+            {
+                "old_symbol": "_terminalization_progress_for_requested_status",
+                "new_symbol": "progress_for_requested_status",
+            },
+        ],
+        "owner": "runs",
+        "reason": (
+            "The frozen global repository may perform one exact hard cut from its "
+            "locally owned Run terminalization policy symbols to the public Runs API "
+            "without retaining policy aliases or importing Runs internals."
+        ),
+        "removal_condition": (
+            "After the exact Runs policy cutover is merged, remove this consumed "
+            "authority entry before any further app/repositories.py source change."
+        ),
+    }
+
+
 def _fixture_policy() -> dict[str, Any]:
-    return json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    policy["legacy_api_cutovers"] = [_retired_runs_legacy_api_cutover()]
+    return policy
 
 
 def _migration_bridge(*, source_path: str, target_module: str) -> dict[str, Any]:
@@ -134,7 +170,11 @@ def _create_repo(
     _write(
         repo,
         "architecture-policy.json",
-        policy_text if policy_text is not None else POLICY_PATH.read_text(encoding="utf-8"),
+        (
+            policy_text
+            if policy_text is not None
+            else json.dumps(_fixture_policy(), indent=2, sort_keys=True) + "\n"
+        ),
     )
     _write(repo, "docs/architecture/source-code-architecture.md", "# Source architecture\n")
     for path in _fixture_policy()["approved_root_modules"]:
@@ -485,6 +525,12 @@ def test_authority_can_retire_the_last_legacy_api_cutover(tmp_path: Path) -> Non
     evaluation = _evaluate(repo, authority, authority, authority)
 
     assert evaluation.status == "pass"
+
+
+def test_live_authority_has_retired_legacy_api_cutovers() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    assert policy["legacy_api_cutovers"] == []
 
 
 @pytest.mark.parametrize("value", ["main", "ABCDEF", "0" * 39, "A" * 40])
@@ -1390,8 +1436,8 @@ def test_legacy_api_cutover_findings_are_non_exemptible_authority() -> None:
     assert expected <= architecture_governance.BUILTIN_NON_EXEMPTIBLE_CODES
 
 
-def test_runs_legacy_api_cutover_authority_is_exact() -> None:
-    assert _legacy_api_cutover() == {
+def test_retired_runs_legacy_api_cutover_fixture_is_exact() -> None:
+    expected = {
         "source_path": "app/repositories.py",
         "public_module": "app.runs.api",
         "canonical_module": "app.runs.domain.terminalization",
@@ -1422,6 +1468,9 @@ def test_runs_legacy_api_cutover_authority_is_exact() -> None:
             "authority entry before any further app/repositories.py source change."
         ),
     }
+
+    assert _retired_runs_legacy_api_cutover() == expected
+    assert _legacy_api_cutover() == expected
 
 
 def test_conversation_migration_bridge_authority_is_exact() -> None:

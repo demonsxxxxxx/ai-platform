@@ -372,37 +372,7 @@
       "removal_condition": "After the Skill persistence move, migrate supported internal callers to the Skills API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
     }
   ],
-  "legacy_api_cutovers": [
-    {
-      "source_path": "app/repositories.py",
-      "public_module": "app.runs.api",
-      "canonical_module": "app.runs.domain.terminalization",
-      "module_alias": "runs_api",
-      "removed_imports": [
-        {
-          "module": "dataclasses",
-          "name": "dataclass"
-        }
-      ],
-      "rewrites": [
-        {
-          "old_symbol": "TERMINAL_RUN_STATUSES",
-          "new_symbol": "TERMINAL_RUN_STATUSES"
-        },
-        {
-          "old_symbol": "ToolPermissionTerminalizationProgress",
-          "new_symbol": "RunTerminalizationProgress"
-        },
-        {
-          "old_symbol": "_terminalization_progress_for_requested_status",
-          "new_symbol": "progress_for_requested_status"
-        }
-      ],
-      "owner": "runs",
-      "reason": "The frozen global repository may perform one exact hard cut from its locally owned Run terminalization policy symbols to the public Runs API without retaining policy aliases or importing Runs internals.",
-      "removal_condition": "After the exact Runs policy cutover is merged, remove this consumed authority entry before any further app/repositories.py source change."
-    }
-  ],
+  "legacy_api_cutovers": [],
   "production_registries": [
     {
       "path": "app/executors/registry.py",
