@@ -532,7 +532,9 @@ A legacy public-API cutover is a different, one-shot authority. It MAY let one
 frozen legacy source delete an exact set of locally defined symbols and replace
 every use with one declared bounded-context `api.py` or `events.py` symbol. The
 authority records a one-to-one old/new symbol map, one exact static module
-alias, and the exact owning domain/application module. The public boundary may
+alias, and the exact owning domain/application module. The source MUST already
+be frozen by an approved migration bridge before the cutover is declared, and
+the activating change MUST strictly shrink that source. The public boundary may
 only expose those symbols as explicit same-name static re-exports from that
 owner; it cannot implement or replace policy locally. The authority may also
 inventory exact now-unused standard-library imports removed with those
