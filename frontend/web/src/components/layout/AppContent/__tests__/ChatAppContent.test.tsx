@@ -42,6 +42,7 @@ const safeIdentity: AgentConversationIdentity = {
   expected_outputs: ["处理建议"],
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
+  avatar_seed: "support-avatar",
   category: "support",
   published_at: "2026-08-04T01:00:00Z",
 };
@@ -658,6 +659,7 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.match(html, /处理已授权的支持请求/);
   assert.match(html, /支持服务/);
   assert.match(html, /data-agent-conversation-profile/);
+  assert.doesNotMatch(html, /support-avatar/);
   assert.doesNotMatch(html, /content_hash|model_id|skill_id|mcp_tool_ids|PRIVATE/);
   assert.equal(areAgentConversationControlsLocked("loading"), true);
   assert.equal(areAgentConversationControlsLocked("bound"), true);

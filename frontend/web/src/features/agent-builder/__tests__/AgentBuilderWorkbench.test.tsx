@@ -19,6 +19,10 @@ const enterpriseFieldsSource = readFileSync(
   join(process.cwd(), "src/features/agent-builder/AgentBuilderEnterpriseFields.tsx"),
   "utf8",
 );
+const avatarPickerSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/AgentAvatarPicker.tsx"),
+  "utf8",
+);
 
 test("server list and mutations are owned by the feature-local controller", () => {
   assert.match(controllerSource, /agentProfileApi/);
@@ -91,6 +95,9 @@ test("builder keeps execution fields primary and collapses optional market metad
   assert.doesNotMatch(enterpriseFieldsSource, />全租户</);
   assert.match(workbenchSource, /Agent SDK 根据任务上下文自主决定/);
   assert.match(workbenchSource, /title="配置 Skill Set"/);
-  assert.match(enterpriseFieldsSource, /DiceBear 头像/);
+  assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
+  assert.match(avatarPickerSource, /头像风格/);
+  assert.match(avatarPickerSource, /换一批/);
+  assert.doesNotMatch(enterpriseFieldsSource, /头像种子/);
   assert.doesNotMatch(enterpriseFieldsSource, /支持输入|支持文件类型|文件格式/);
 });

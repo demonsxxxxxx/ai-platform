@@ -20,7 +20,7 @@ import {
   filterPublishedMarketProfiles,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
-import { AgentIdentityAvatar } from "./AgentIdentityAvatar";
+import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -211,7 +211,13 @@ function AgentMarketCard({
         onClick={() => onOpenWorkspace(profile)}
         type="button"
       >
-        <AgentIdentityAvatar agentId={profile.agent_id} avatarSeed={profile.avatar_seed} name={profile.name} size="lg" />
+        <AgentIdentityAvatar
+          agentId={profile.agent_id}
+          avatarRef={profile.avatar_ref}
+          avatarSeed={profile.avatar_seed}
+          name={profile.name}
+          size="lg"
+        />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex flex-wrap items-start justify-between gap-2">
             <span className="text-base font-semibold text-[var(--theme-text)]">{profile.name}</span>
@@ -478,7 +484,13 @@ function AgentMarketDetail({
 
         <section className="mt-7 border-y border-[var(--theme-border)] py-8 sm:py-10">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
-            <AgentIdentityAvatar agentId={profile.agent_id} avatarSeed={profile.avatar_seed} name={profile.name} size="lg" />
+            <AgentIdentityAvatar
+              agentId={profile.agent_id}
+              avatarRef={profile.avatar_ref}
+              avatarSeed={profile.avatar_seed}
+              name={profile.name}
+              size="lg"
+            />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
                 <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>

@@ -2065,7 +2065,7 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
-        "avatar_seed": "",
+        "avatar_seed": "agt_support",
         "category": "support",
     }
 

@@ -135,6 +135,7 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
         "expected_outputs",
         "permissions_and_data_access_notice",
         "avatar_ref",
+        "avatar_seed",
         "category",
         "published_at",
     ):
@@ -212,6 +213,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "agent_profile_expected_outputs": ["Review memo"],
             "agent_profile_permissions_and_data_access_notice": "Uses authorized files only.",
             "agent_profile_avatar_ref": "builtin:assistant",
+            "agent_profile_avatar_seed": "support-avatar-7",
             "agent_profile_category": "support",
             "agent_profile_published_at": datetime(2026, 7, 31, tzinfo=timezone.utc),
             "created_at": datetime(2026, 8, index, tzinfo=timezone.utc),
@@ -261,6 +263,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "name": "Support assistant",
         "description": "Approved support help.",
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "support-avatar-7",
         "category": "support",
         "welcome_message": "Upload a policy for review.",
         "starter_prompts": ["Review this policy"],
@@ -295,6 +298,7 @@ def test_agent_conversation_projection_keeps_legacy_text_only_defaults_and_no_pr
 
     identity = projection.agent_conversation
     assert identity is not None
+    assert identity.avatar_seed == "agt_support"
     assert identity.supported_input_types == ["text"]
     assert identity.supported_file_types == []
     assert not {

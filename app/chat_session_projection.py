@@ -30,6 +30,7 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
         and profile_name
     ):
         avatar_ref = str(row.get("agent_profile_avatar_ref") or "")
+        avatar_seed = str(row.get("agent_profile_avatar_seed") or "").strip()
         category = str(row.get("agent_profile_category") or "")
         agent_conversation = AgentConversationIdentity(
             agent_id=raw_agent_id,
@@ -62,6 +63,7 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
                 }
                 else "builtin:agent"
             ),
+            avatar_seed=avatar_seed or raw_agent_id,
             category=(
                 category
                 if category

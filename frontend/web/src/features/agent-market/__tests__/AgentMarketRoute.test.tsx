@@ -40,6 +40,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.doesNotMatch(source, /model_id|instructions|mcp_tool_ids|selected_skill/);
   assert.doesNotMatch(source, /CANONICAL_CHAT_PATH/);
   assert.match(source, /AgentIdentityAvatar/);
+  assert.match(source, /avatarRef=\{profile\.avatar_ref\}/);
   assert.match(source, /Agent SDK/);
   assert.match(source, /附件可选，不由智能体限定格式/);
 });

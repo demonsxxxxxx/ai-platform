@@ -82,6 +82,13 @@ function requireString(value: unknown, code: string, allowEmpty = false): string
   return value;
 }
 
+function projectAvatarSeed(record: Record<string, unknown>, code: string): string {
+  const fallback = requireString(record.agent_id, code);
+  if (record.avatar_seed === undefined || record.avatar_seed === null) return fallback;
+  const seed = requireString(record.avatar_seed, code, true).trim();
+  return seed || fallback;
+}
+
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
   return value as number;
@@ -176,10 +183,7 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     description: requireString(record.description, PROFILE_ERROR, true),
     ...projectEnterpriseFields(record, PROFILE_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
-    avatar_seed:
-      record.avatar_seed === undefined
-        ? requireString(record.agent_id, PROFILE_ERROR)
-        : requireString(record.avatar_seed, PROFILE_ERROR),
+    avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
   };
 }
@@ -195,10 +199,7 @@ export function projectAgentConversationIdentity(value: unknown): AgentConversat
     description: requireString(record.description, IDENTITY_ERROR, true),
     ...projectEnterpriseFields(record, IDENTITY_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, IDENTITY_ERROR),
-    avatar_seed:
-      record.avatar_seed === undefined
-        ? requireString(record.agent_id, IDENTITY_ERROR)
-        : requireString(record.avatar_seed, IDENTITY_ERROR),
+    avatar_seed: projectAvatarSeed(record, IDENTITY_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, IDENTITY_ERROR),
   };
 }

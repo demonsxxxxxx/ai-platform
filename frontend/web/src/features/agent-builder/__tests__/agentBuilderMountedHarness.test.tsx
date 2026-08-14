@@ -863,3 +863,91 @@ test("mounted loading, empty, error, and non-admin states are explicit and safe"
     await React.act(async () => root.unmount());
   }
 });
+
+test("mounted avatar picker changes style, selects a candidate, refreshes choices, and disables safely", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { AgentAvatarPicker } = await import("../AgentAvatarPicker.tsx");
+
+  function Harness({ disabled = false }: { disabled?: boolean }) {
+    const [avatarRef, setAvatarRef] = React.useState<"builtin:agent" | "builtin:assistant" | "builtin:document" | "builtin:research">("builtin:agent");
+    const [avatarSeed, setAvatarSeed] = React.useState("stable-seed");
+    return React.createElement(AgentAvatarPicker, {
+      agentId: "agt_review",
+      avatarRef,
+      avatarSeed,
+      disabled,
+      name: "审核助手",
+      onChange: (update) => {
+        if (update.avatarRef !== undefined) setAvatarRef(update.avatarRef);
+        if (update.avatarSeed !== undefined) setAvatarSeed(update.avatarSeed);
+      },
+    });
+  }
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(Harness));
+      await flush();
+    });
+
+    const robotStyle = container.querySelector(
+      '[aria-label="机器人：适合自动化与技术助手"]',
+    );
+    assert.ok(robotStyle);
+    await React.act(async () => {
+      await reactProps(robotStyle).onClick?.({} as never);
+      await flush();
+    });
+    assert.equal(
+      container
+        .querySelector('[aria-label="机器人：适合自动化与技术助手"]')
+        ?.getAttribute("aria-pressed"),
+      "true",
+    );
+
+    const candidate = container.querySelector('[aria-label="选择第 2 个头像"]');
+    const candidateSource = candidate?.querySelector("img")?.getAttribute("src");
+    assert.ok(candidate && candidateSource);
+    await React.act(async () => {
+      await reactProps(candidate).onClick?.({} as never);
+      await flush();
+    });
+    assert.equal(
+      container
+        .querySelector('[aria-label="当前头像，第 1 个候选"]')
+        ?.querySelector("img")
+        ?.getAttribute("src"),
+      candidateSource,
+    );
+
+    const avatarChoiceSources = () =>
+      container
+        .querySelectorAll("button")
+        .filter((button) => button.getAttribute("aria-label")?.includes("头像"))
+        .map((button) => button.querySelector("img")?.getAttribute("src"));
+    const candidateLabels = container
+      .querySelectorAll("button")
+      .map((button) => button.getAttribute("aria-label"))
+      .filter((label) => label?.includes("头像"));
+    assert.equal(new Set(candidateLabels).size, candidateLabels.length);
+    const beforeRefresh = avatarChoiceSources();
+    await React.act(async () => {
+      await reactProps(findButton(container, "换一批")).onClick?.({} as never);
+      await flush();
+    });
+    const afterRefresh = avatarChoiceSources();
+    assert.notDeepEqual(afterRefresh, beforeRefresh);
+
+    await React.act(async () => {
+      root.render(React.createElement(Harness, { disabled: true }));
+      await flush();
+    });
+    assert.equal(container.querySelector("[data-agent-avatar-picker]")?.disabled, true);
+  } finally {
+    await React.act(async () => root.unmount());
+  }
+});
