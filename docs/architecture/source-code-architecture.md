@@ -528,6 +528,27 @@ retirement is two bounded changes: first remove the authority entry after its
 condition is proven while keeping the aliases stable; then remove the aliases
 under the next authority. Candidate policy edits never authorize either step.
 
+A legacy public-API cutover is a different, one-shot authority. It MAY let one
+frozen legacy source delete an exact set of locally defined symbols and replace
+every use with one declared bounded-context `api.py` or `events.py` symbol. The
+authority records a one-to-one old/new symbol map, one exact static module
+alias, and the exact owning domain/application module. The source MUST already
+be frozen by an approved migration bridge before the cutover is declared, and
+the activating change MUST strictly shrink that source. The public boundary may
+only expose those symbols as explicit same-name static re-exports from that
+owner; it cannot implement or replace policy locally. The authority may also
+inventory exact now-unused standard-library imports removed with those
+definitions. On activation, the owning module MUST exist and define each
+declared symbol locally exactly once; it cannot pass ownership through another
+import. The checker canonicalizes only those declared attribute
+replacements and requires the rest of the source AST to equal the baseline
+after the declared definitions and imports are removed. It rejects source deletion or rename, partial or extra
+rewrites, retained or rebound legacy symbols, wildcards, dynamic imports,
+private or infrastructure targets, new SQL/control flow/state/functions, and
+exceptions. A cutover creates no compatibility alias and grants no general
+permission to edit the frozen source. After activation the source remains
+frozen until an authority-only change removes the consumed cutover entry.
+
 ## 11. Test architecture
 
 The target test tree mirrors ownership:

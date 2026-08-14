@@ -91,9 +91,39 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
     migration_bridge_sources = sorted(
         {bridge["source_path"] for bridge in policy["migration_bridges"]}
     )
-    for source_path in migration_bridge_sources:
+    cutover_sources = sorted(
+        {cutover["source_path"] for cutover in policy["legacy_api_cutovers"]}
+    )
+    for source_path in sorted(set(migration_bridge_sources) | set(cutover_sources)):
         if not (repo / source_path).exists():
             _write(repo, source_path, "FIXTURE = True\n")
+    for cutover in policy["legacy_api_cutovers"]:
+        source_path = cutover["source_path"]
+        source = (repo / source_path).read_text(encoding="utf-8")
+        imports = "".join(
+            f"from {item['module']} import {item['name']}\n"
+            for item in cutover["removed_imports"]
+        )
+        definitions: list[str] = []
+        for rewrite in cutover["rewrites"]:
+            name = rewrite["old_symbol"]
+            if name.isupper():
+                definitions.append(f"{name} = {{'succeeded'}}")
+            elif name[:1].isupper():
+                definitions.append(f"class {name}:\n    pass")
+            else:
+                definitions.append(f"def {name}(value=None):\n    return value")
+        _write(
+            repo,
+            source_path,
+            imports
+            + source
+            + "\n\n"
+            + "\n\n".join(definitions)
+            + "\n\ndef fixture_cutover_use():\n    return ("
+            + ", ".join(item["old_symbol"] for item in cutover["rewrites"])
+            + ")\n",
+        )
     policy["approved_root_modules"] = sorted(
         {
             "app/__init__.py",
@@ -102,7 +132,7 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
             "app/repositories.py",
             *(
                 source_path
-                for source_path in migration_bridge_sources
+                for source_path in sorted(set(migration_bridge_sources) | set(cutover_sources))
                 if Path(source_path).parent.as_posix() == "app"
             ),
         }
@@ -170,14 +200,18 @@ def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     return _create_readiness_repo(tmp_path, code_governance_test_path="tests/test_code_governance.py")
 
 
-def test_readiness_fixture_materializes_every_migration_bridge_source(
+def test_readiness_fixture_materializes_every_governed_migration_source(
     readiness_repo: tuple[Path, str],
 ) -> None:
     repo, authority = readiness_repo
     policy = json.loads(_git(repo, "show", f"{authority}:architecture-policy.json"))
 
-    for bridge in policy["migration_bridges"]:
-        source_path = bridge["source_path"]
+    governed_sources = {
+        item["source_path"]
+        for key in ("migration_bridges", "legacy_api_cutovers")
+        for item in policy[key]
+    }
+    for source_path in sorted(governed_sources):
         assert _run(
             repo,
             "git",
@@ -1046,6 +1080,73 @@ def test_trusted_architecture_rejects_a_new_app_root_before_candidate_tests(
     assert architecture["exception"]["status"] == "absent"
     assert architecture["exempted_findings"] == []
     assert all(stage["name"] != "responsibility_tests" for stage in payload["stages"])
+
+
+def test_pre_push_accepts_exact_one_shot_legacy_api_cutover(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, base = readiness_repo
+    policy = json.loads(_git(repo, "show", f"{base}:architecture-policy.json"))
+    cutover = policy["legacy_api_cutovers"][0]
+    source_path = repo / cutover["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    for removed in cutover["removed_imports"]:
+        source = source.replace(
+            f"from {removed['module']} import {removed['name']}\n",
+            "",
+            1,
+        )
+    for rewrite in cutover["rewrites"]:
+        old = rewrite["old_symbol"]
+        if old.isupper():
+            definition = f"{old} = {{'succeeded'}}\n\n"
+        elif old[:1].isupper():
+            definition = f"class {old}:\n    pass\n\n"
+        else:
+            definition = f"def {old}(value=None):\n    return value\n\n"
+        source = source.replace(definition, "", 1)
+        source = source.replace(
+            old,
+            f"{cutover['module_alias']}.{rewrite['new_symbol']}",
+        )
+    source_path.write_text(
+        f"import {cutover['public_module']} as {cutover['module_alias']}\n" + source,
+        encoding="utf-8",
+    )
+    target_symbols = sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    _write(
+        repo,
+        f"{cutover['canonical_module'].replace('.', '/')}.py",
+        "\n\n".join(
+            f"def {name}(value=None):\n    return value"
+            if not name.isupper() and not name[:1].isupper()
+            else (
+                f"{name} = {{'succeeded'}}"
+                if name.isupper()
+                else f"class {name}:\n    pass"
+            )
+            for name in target_symbols
+        )
+        + "\n",
+    )
+    _write(
+        repo,
+        f"{cutover['public_module'].replace('.', '/')}.py",
+        f"from {cutover['canonical_module']} import "
+        + ", ".join(f"{name} as {name}" for name in target_symbols)
+        + "\n",
+    )
+    _write(repo, "tests/test_runs_cutover.py", "def test_runs_cutover():\n    assert True\n")
+    head = _commit(repo, "exact public API hard cut")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    assert architecture["status"] == "pass"
 
 
 def test_authority_architecture_snapshot_never_executes_a_candidate_replacement(
