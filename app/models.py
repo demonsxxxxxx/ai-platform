@@ -246,6 +246,16 @@ class AgentProfileDraftRequest(BaseModel):
     allowed_user_ids: list[str] = Field(default_factory=list)
     expected_draft_revision: int = Field(ge=0)
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_retired_file_type_whitelist(cls, value: Any):
+        """Accept rolling old clients without restoring the retired product field."""
+
+        if isinstance(value, dict) and "supported_file_types" in value:
+            value = dict(value)
+            value.pop("supported_file_types", None)
+        return value
+
     @field_validator("welcome_message", "capability_summary", "permissions_and_data_access_notice")
     @classmethod
     def normalize_profile_display_text(cls, value: str):

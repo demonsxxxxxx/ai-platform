@@ -345,6 +345,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
+    assert schema_migrations.schema_checksum() == (
+        "001a851eb94faf5fef73bd240f96eff108b382c53a12ad89c47af0734aa73828"
+    )
     assert (
         "alter table agent_profile_revisions add column if not exists "
         "supported_file_types jsonb not null default '[]'::jsonb"

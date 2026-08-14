@@ -238,6 +238,9 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "capability_summary": definition.capability_summary,
         "recommended_tasks": definition.recommended_tasks,
         "supported_input_types": definition.supported_input_types,
+        # Keep the retired key fixed empty until every stored revision created by
+        # the previous hash contract has aged out of rollback and replay paths.
+        "supported_file_types": [],
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,

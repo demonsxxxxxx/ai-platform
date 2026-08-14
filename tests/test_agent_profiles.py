@@ -249,16 +249,16 @@ def test_agent_profile_rejects_ambiguous_skill_sets(skill_set):
         )
 
 
-def test_agent_profile_rejects_retired_file_type_whitelist_field():
-    from pydantic import ValidationError
+def test_agent_profile_discards_retired_file_type_whitelist_from_rolling_clients():
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            **profile_draft_payload("Private instruction"),
+            "supported_file_types": ["application/pdf"],
+        }
+    )
 
-    with pytest.raises(ValidationError, match="supported_file_types"):
-        AgentProfileDraftRequest.model_validate(
-            {
-                **profile_draft_payload("Private instruction"),
-                "supported_file_types": ["application/pdf"],
-            }
-        )
+    assert "supported_file_types" not in definition.model_dump(mode="json")
+    assert "supported_file_types" not in AgentProfileDraftRequest.model_json_schema()["properties"]
 
 
 def test_legacy_profile_file_type_material_only_verifies_historical_hash():
@@ -279,6 +279,17 @@ def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     assert _revision_hash_matches(row, legacy_hash)
     assert _revision_hash(definition) != legacy_hash
     assert "supported_file_types" not in definition.model_dump(mode="json")
+
+
+def test_new_profile_hash_retains_the_previous_empty_file_type_material():
+    definition = AgentProfileDraftRequest.model_validate(
+        profile_draft_payload("Private instruction")
+    ).model_copy(update={"avatar_seed": "agt_support"})
+
+    assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
+        definition,
+        legacy_supported_file_types=[],
+    )
 
 
 def test_selected_profile_rejects_client_owned_capability_selectors():
@@ -393,6 +404,29 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 }
         ]
     }
+
+
+def test_agent_profile_market_normalizes_unicode_search_before_repository_query(monkeypatch):
+    observed: list[tuple[str | None, str | None]] = []
+
+    async def profiles(_conn, *, principal, query, category):
+        assert principal.tenant_id == "tenant-a"
+        observed.append((query, category))
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+
+    response = TestClient(create_app()).get(
+        "/api/ai/agent-profiles",
+        headers=ordinary_headers(),
+        params={"query": "Ａｕｄｉｔ", "category": "general"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"agent_profiles": []}
+    assert observed == [("Audit", "general")]
 
 
 def test_agent_profile_admin_write_requires_admin(monkeypatch):

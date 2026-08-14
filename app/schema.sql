@@ -416,8 +416,6 @@ create table if not exists agent_profile_revisions (
   capability_summary text not null default '',
   recommended_tasks jsonb not null default '[]'::jsonb,
   supported_input_types jsonb not null default '["text"]'::jsonb,
-  -- Historical hash material only. New product contracts and revisions never
-  -- configure or enforce a profile-level file-type whitelist.
   supported_file_types jsonb not null default '[]'::jsonb,
   expected_outputs jsonb not null default '[]'::jsonb,
   permissions_and_data_access_notice text not null default '',
@@ -644,7 +642,6 @@ alter table agent_profile_revisions add column if not exists starter_prompts jso
 alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
 alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
--- Compatibility storage only. Product/API semantics no longer expose or enforce this value.
 alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';

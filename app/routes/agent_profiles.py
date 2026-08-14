@@ -1,3 +1,5 @@
+import unicodedata
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 
 from app import repositories
@@ -104,11 +106,21 @@ async def list_agent_profiles(
 ) -> AgentProfileCatalogResponse:
     """Return only current-principal-safe published Agent Profile market cards."""
 
+    normalized_query = (
+        unicodedata.normalize("NFKC", query).strip() or None
+        if query is not None
+        else None
+    )
     async with transaction() as conn:
-        if query is None and category is None:
+        if normalized_query is None and category is None:
             profiles = await list_public_profiles(conn, principal=principal)
         else:
-            profiles = await list_public_profiles(conn, principal=principal, query=query, category=category)
+            profiles = await list_public_profiles(
+                conn,
+                principal=principal,
+                query=normalized_query,
+                category=category,
+            )
     return AgentProfileCatalogResponse(agent_profiles=profiles)
 
 
