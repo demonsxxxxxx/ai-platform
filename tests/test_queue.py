@@ -1638,7 +1638,7 @@ async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lease_run_legacy_invalid_payload_removes_queued_metadata(monkeypatch):
+async def test_lease_run_invalid_payload_removes_queued_metadata(monkeypatch):
     raw = '{"run_id": "../bad"}'
     message_id = queue.message_id_for_raw(raw)
     fake = FakeRedis(queued=[raw])
