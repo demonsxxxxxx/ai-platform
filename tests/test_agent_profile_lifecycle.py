@@ -333,6 +333,63 @@ async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monk
     )
     assert calls == ["read"]
 
+
+@pytest.mark.parametrize("invalid_hash", ["", "not-a-sha256", "a" * 63])
+@pytest.mark.asyncio
+async def test_publish_rejects_an_unsigned_multi_skill_draft(monkeypatch, invalid_hash):
+    from app.agent_apps import AgentProfileAuthority
+
+    draft = _profile_row(status="draft", revision=7, content_hash=invalid_hash)
+    draft["skill_set"] = [
+        {"skill_id": "general-chat", "expected_version": "version-a"},
+        {"skill_id": "qa-file-reviewer", "expected_version": "version-b"},
+    ]
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_draft(*_args, **_kwargs):
+        return draft
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("unsigned draft must fail before validation, append, or audit")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        read_draft,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        forbidden,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.publish_draft(
+            object(),
+            principal=_principal(roles=["admin"]),
+            agent_id="agt_support",
+            expected_revision=7,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_revision_integrity_mismatch",
+    )
+
 @pytest.mark.asyncio
 async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identity(monkeypatch):
     from app import repositories
@@ -1430,6 +1487,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
 @pytest.mark.asyncio
 async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admission(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
 
     observed: dict[str, object] = {}
     order: list[str] = []
@@ -1446,8 +1504,15 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         return {"lifecycle_status": "published", "published_revision": 7, "latest_revision": 8}
 
     async def get_revision(*_args, **kwargs):
-        observed["published_lookup"] = kwargs
-        return _profile_row()
+        observed.setdefault("revision_lookups", []).append(kwargs)
+        if kwargs["revision"] == 7:
+            row = _profile_row(revision=7)
+        else:
+            row = _profile_row(status="draft", revision=8)
+            row["name"] = "Unpublished authoring changes"
+            row["instructions"] = "new draft instructions"
+        row["content_hash"] = _revision_hash(_draft_from_row(row))
+        return row
 
     async def append_revision(*_args, **kwargs):
         observed["append"] = kwargs
@@ -1484,6 +1549,18 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     assert observed["append"]["status"] == "withdrawn"
     assert observed["append"]["expected_previous_revision"] == 8
     assert observed["append"]["withdrawn_from_revision"] == 7
+    assert observed["append"]["name"] == "Unpublished authoring changes"
+    assert observed["append"]["instructions"] == "new draft instructions"
+    assert observed["append"]["content_hash"] != "a" * 64
+    assert observed["revision_lookups"] == [
+        {
+            "tenant_id": "tenant-a",
+            "agent_id": "agt_support",
+            "revision": 7,
+            "status": "published",
+        },
+        {"tenant_id": "tenant-a", "agent_id": "agt_support", "revision": 8},
+    ]
     assert observed["withdrawal"] == {"tenant_id": "tenant-a", "agent_id": "agt_support", "revision": 9}
     assert profile.status == "withdrawn"
     assert audit_id == "aud_profile_withdrawn"

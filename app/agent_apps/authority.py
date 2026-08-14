@@ -344,12 +344,14 @@ def _legacy_revision_hash(
 
 
 def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
+    if len(content_hash) != 64 or any(character not in "0123456789abcdef" for character in content_hash):
+        return False
     definition = _draft_from_row(row)
     legacy_supported_input_types = _safe_string_list(row.get("supported_input_types"))
     legacy_supported_file_types = _safe_string_list(
         row.get("legacy_supported_file_types")
     )
-    return content_hash in {
+    candidates = {
         _revision_hash(definition),
         _legacy_skill_set_revision_hash(
             definition,
@@ -362,6 +364,7 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
             legacy_supported_file_types=legacy_supported_file_types,
         ),
     }
+    return content_hash in {candidate for candidate in candidates if candidate}
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
@@ -774,7 +777,24 @@ class AgentProfileAuthority:
         )
         if published_row is None:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
-        definition = _draft_from_row(published_row)
+        latest_revision = int(aggregate["latest_revision"])
+        authoring_row = published_row
+        if latest_revision != expected_revision:
+            authoring_row = await repositories.get_agent_profile_revision(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=agent_id,
+                revision=latest_revision,
+            )
+            if authoring_row is None:
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+        authoring_content_hash = str(authoring_row.get("content_hash") or "")
+        if not _revision_hash_matches(authoring_row, authoring_content_hash):
+            raise HTTPException(
+                status_code=409,
+                detail="agent_profile_revision_integrity_mismatch",
+            )
+        definition = _draft_from_row(authoring_row)
         row = await repositories.create_agent_profile_revision(
             conn,
             tenant_id=principal.tenant_id,
@@ -793,11 +813,11 @@ class AgentProfileAuthority:
             capability_summary=definition.capability_summary,
             recommended_tasks=definition.recommended_tasks,
             supported_input_types=_safe_string_list(
-                published_row.get("supported_input_types")
+                authoring_row.get("supported_input_types")
             )
             or ["text"],
             legacy_supported_file_types=_safe_string_list(
-                published_row.get("legacy_supported_file_types")
+                authoring_row.get("legacy_supported_file_types")
             ),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
@@ -809,9 +829,9 @@ class AgentProfileAuthority:
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
             allowed_user_ids=definition.allowed_user_ids,
-            content_hash=str(published_row["content_hash"]),
+            content_hash=authoring_content_hash,
             created_by=principal.user_id,
-            expected_previous_revision=int(aggregate["latest_revision"]),
+            expected_previous_revision=latest_revision,
             withdrawn_from_revision=expected_revision,
         )
         await repositories.record_agent_profile_withdrawal(
