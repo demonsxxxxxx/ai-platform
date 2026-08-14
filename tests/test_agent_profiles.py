@@ -12,6 +12,7 @@ from app.agent_profiles import (
     resolve_profile_for_admission,
 )
 from app.agent_apps.authority import (
+    _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
     _legacy_skill_set_revision_hash,
     _revision_hash,
     _revision_hash_matches,
@@ -130,7 +131,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
@@ -152,7 +153,6 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         ("starter_prompts", ["Review this request"]),
         ("capability_summary", "Reviews approved requests."),
         ("recommended_tasks", ["Policy review"]),
-        ("supported_input_types", ["text", "file"]),
         ("expected_outputs", ["Review memo"]),
         ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
         ("avatar_asset_id", "file-avatar-a"),
@@ -261,6 +261,17 @@ def test_agent_profile_discards_retired_file_type_whitelist_from_rolling_clients
     assert "supported_file_types" not in AgentProfileDraftRequest.model_json_schema()["properties"]
 
 
+def test_agent_profile_normalizes_legacy_input_mode_to_universal_attachment_access():
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            **profile_draft_payload("Private instruction"),
+            "supported_input_types": ["text"],
+        }
+    )
+
+    assert definition.supported_input_types == ["text", "file"]
+
+
 def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     definition = AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
@@ -281,14 +292,14 @@ def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     assert "supported_file_types" not in definition.model_dump(mode="json")
 
 
-def test_new_profile_hash_retains_the_previous_empty_file_type_material():
+def test_new_profile_hash_is_accepted_by_the_rolling_worker_contract():
     definition = AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
     ).model_copy(update={"avatar_seed": "agt_support"})
 
     assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
         definition,
-        legacy_supported_file_types=[],
+        legacy_supported_file_types=_ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
     )
 
 
@@ -397,7 +408,7 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "starter_prompts": [],
                     "capability_summary": "",
                     "recommended_tasks": [],
-                    "supported_input_types": ["text"],
+                    "supported_input_types": ["text", "file"],
                     "expected_outputs": [],
                     "permissions_and_data_access_notice": "",
                     "published_at": None,

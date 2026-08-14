@@ -40,12 +40,7 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
             starter_prompts=_safe_strings(row.get("agent_profile_starter_prompts")),
             capability_summary=str(row.get("agent_profile_capability_summary") or ""),
             recommended_tasks=_safe_strings(row.get("agent_profile_recommended_tasks")),
-            supported_input_types=[
-                item
-                for item in _safe_strings(row.get("agent_profile_supported_input_types"))
-                if item in {"text", "file"}
-            ]
-            or ["text"],
+            supported_input_types=["text", "file"],
             expected_outputs=_safe_strings(row.get("agent_profile_expected_outputs")),
             permissions_and_data_access_notice=str(
                 row.get("agent_profile_permissions_and_data_access_notice") or ""

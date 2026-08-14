@@ -382,6 +382,7 @@ function AgentMarketCatalog({
                 data-agent-market-search
                 aria-label="搜索专家"
                 className="h-11 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
+                maxLength={160}
                 onChange={(event) => handleSearch(event.target.value)}
                 placeholder="搜索专家名称、能力或任务"
                 type="search"

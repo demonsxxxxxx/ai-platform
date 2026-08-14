@@ -93,7 +93,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,
@@ -162,6 +162,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     from app.models import AgentProfileDraftRequest, SelectedSkillRequest
 
     order: list[str] = []
+    revision_writes: list[dict[str, object]] = []
 
     async def lock_profile(*_args, **_kwargs):
         order.append("advisory_lock")
@@ -174,6 +175,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
 
     async def append_revision(*_args, **kwargs):
         order.append("revision_append")
+        revision_writes.append(kwargs)
         return _profile_row(
             status=kwargs["status"],
             revision=kwargs["expected_previous_revision"] + 1,
@@ -231,6 +233,19 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
+    assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
+    assert revision_writes[-1]["legacy_supported_file_types"] == [
+        "application/*",
+        "audio/*",
+        "chemical/*",
+        "font/*",
+        "image/*",
+        "message/*",
+        "model/*",
+        "multipart/*",
+        "text/*",
+        "video/*",
+    ]
 
     order.clear()
     await authority.publish_draft(
@@ -243,6 +258,19 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
+    assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
+    assert revision_writes[-1]["legacy_supported_file_types"] == [
+        "application/*",
+        "audio/*",
+        "chemical/*",
+        "font/*",
+        "image/*",
+        "message/*",
+        "model/*",
+        "multipart/*",
+        "text/*",
+        "video/*",
+    ]
 
 
 @pytest.mark.asyncio
@@ -705,7 +733,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
             "starter_prompts": [],
             "capability_summary": "",
             "recommended_tasks": [],
-            "supported_input_types": ["text"],
+            "supported_input_types": ["text", "file"],
             "expected_outputs": [],
             "permissions_and_data_access_notice": "",
             "published_at": None,
@@ -1801,7 +1829,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "starter_prompts": [],
         "capability_summary": "",
         "recommended_tasks": [],
-        "supported_input_types": ["text"],
+        "supported_input_types": ["text", "file"],
         "expected_outputs": [],
         "permissions_and_data_access_notice": "",
         "published_at": None,

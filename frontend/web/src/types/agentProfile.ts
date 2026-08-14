@@ -9,7 +9,7 @@ export const AGENT_PROFILE_CATEGORIES = ["general", "support", "writing", "resea
 export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
 
 export const AGENT_PROFILE_CATEGORY_LABELS = {
-  general: "通用助理",
+  general: "通用专家",
   support: "支持服务",
   writing: "内容写作",
   research: "研究分析",
@@ -106,13 +106,13 @@ function projectEnterpriseFields(
   | "permissions_and_data_access_notice"
   | "published_at"
 > {
-  const supportedInputTypes =
+  const receivedSupportedInputTypes =
     record.supported_input_types === undefined
-      ? ["text"]
+      ? ["text", "file"]
       : requireStringList(record.supported_input_types, code);
   if (
-    supportedInputTypes.length === 0 ||
-    supportedInputTypes.some((item) => item !== "text" && item !== "file")
+    receivedSupportedInputTypes.length === 0 ||
+    receivedSupportedInputTypes.some((item) => item !== "text" && item !== "file")
   ) {
     throw new Error(code);
   }
@@ -133,7 +133,7 @@ function projectEnterpriseFields(
       record.recommended_tasks === undefined
         ? []
         : requireStringList(record.recommended_tasks, code),
-    supported_input_types: supportedInputTypes as Array<"text" | "file">,
+    supported_input_types: ["text", "file"],
     expected_outputs:
       record.expected_outputs === undefined
         ? []

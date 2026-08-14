@@ -225,7 +225,7 @@ class AgentProfileDraftRequest(BaseModel):
     capability_summary: str = Field(default="", max_length=4_000)
     recommended_tasks: list[str] = Field(default_factory=list, max_length=12)
     supported_input_types: list[Literal["text", "file"]] = Field(
-        default_factory=lambda: ["text"],
+        default_factory=lambda: ["text", "file"],
         min_length=1,
         max_length=2,
     )
@@ -276,10 +276,8 @@ class AgentProfileDraftRequest(BaseModel):
     @field_validator("supported_input_types")
     @classmethod
     def normalize_supported_input_types(cls, value: list[str]):
-        normalized = list(dict.fromkeys(value))
-        if "file" not in normalized:
-            return normalized
-        return [item for item in ("text", "file") if item in normalized]
+        del value
+        return ["text", "file"]
 
     @field_validator("avatar_asset_id")
     @classmethod
@@ -416,7 +414,9 @@ class AgentProfilePublicProjection(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_input_types: list[Literal["text", "file"]] = Field(
+        default_factory=lambda: ["text", "file"]
+    )
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
@@ -447,7 +447,9 @@ class AgentProfileAdminProjection(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_input_types: list[Literal["text", "file"]] = Field(
+        default_factory=lambda: ["text", "file"]
+    )
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
@@ -538,7 +540,9 @@ class AgentConversationIdentity(BaseModel):
     starter_prompts: list[str] = Field(default_factory=list)
     capability_summary: str = ""
     recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_input_types: list[Literal["text", "file"]] = Field(
+        default_factory=lambda: ["text", "file"]
+    )
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"

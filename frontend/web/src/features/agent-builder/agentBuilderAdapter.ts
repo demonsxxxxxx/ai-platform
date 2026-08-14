@@ -125,7 +125,7 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     starterPrompts: [],
     capabilitySummary: "",
     recommendedTasks: [],
-    supportedInputTypes: ["text"],
+    supportedInputTypes: ["text", "file"],
     expectedOutputs: [],
     permissionsAndDataAccessNotice: "",
     instructions: "",
@@ -268,8 +268,9 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
     editor.starterPrompts.length > 0 ||
     editor.capabilitySummary.trim() ||
     editor.recommendedTasks.length > 0 ||
-    editor.supportedInputTypes.length !== 1 ||
+    editor.supportedInputTypes.length !== 2 ||
     editor.supportedInputTypes[0] !== "text" ||
+    editor.supportedInputTypes[1] !== "file" ||
     editor.expectedOutputs.length > 0 ||
     editor.permissionsAndDataAccessNotice.trim() ||
     editor.instructions.trim() ||
