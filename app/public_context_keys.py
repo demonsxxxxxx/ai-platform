@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 from urllib.parse import unquote, unquote_plus
 
 from app.control_plane_contracts import sanitize_public_payload
@@ -46,6 +45,19 @@ PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES = {
     "secretlikevalues",
     "storagekey",
 }
+CONTEXT_FORBIDDEN_PROJECTION_MARKERS = (
+    "executor_private_payload",
+    "executor_payload",
+    "runtime_private_payload",
+    "private_payload",
+    "raw_storage_key",
+    "storage_key",
+    "sandbox_workdir",
+    "/tmp/",
+    "/home/",
+    "/var/lib/ai-platform",
+    "tenants/default",
+)
 PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES = {
     "artifactid",
     "artifactids",

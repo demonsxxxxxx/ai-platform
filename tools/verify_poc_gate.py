@@ -21,7 +21,11 @@ from urllib import error, request
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.public_context_keys import public_context_input_key_findings, safe_public_context_pack_version
+from app.public_context_keys import (
+    CONTEXT_FORBIDDEN_PROJECTION_MARKERS,
+    public_context_input_key_findings,
+    safe_public_context_pack_version,
+)
 from app.validation import assert_safe_id
 
 
@@ -86,19 +90,6 @@ CONTEXT_RAW_MATERIAL_ID_KEYS = frozenset(
         "included_artifact_ids",
         "included_memory_record_ids",
     }
-)
-CONTEXT_FORBIDDEN_PROJECTION_MARKERS = (
-    "executor_private_payload",
-    "executor_payload",
-    "runtime_private_payload",
-    "private_payload",
-    "raw_storage_key",
-    "storage_key",
-    "sandbox_workdir",
-    "/tmp/",
-    "/" "home/",
-    "/var/lib/ai-platform",
-    "tenants/default",
 )
 CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIASES = frozenset(
     {

@@ -152,6 +152,13 @@ def test_foundation_runtime_concurrency_missing_evidence_fails_closed():
     assert readiness["non_expansion_invariants"]["production_concurrency_increase_allowed"] is False
 
 
+def test_foundation_runtime_concurrency_does_not_depend_on_cli_tools():
+    source = (ROOT / "app/foundation_runtime_concurrency.py").read_text(encoding="utf-8")
+
+    assert "from tools." not in source
+    assert "import tools." not in source
+
+
 def test_foundation_runtime_concurrency_accepts_complete_12_case_evidence():
     readiness = build_foundation_runtime_concurrency_readiness(complete_evidence())
 
