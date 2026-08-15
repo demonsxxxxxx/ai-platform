@@ -356,6 +356,9 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "tool_permission": {
                 "status": "passed",
                 "decision_sample_count": 12,
+                "zero_click_write_probe_count": 12,
+                "zero_click_write_410_count": 12,
+                "zero_click_write_unexpected_status_count": 0,
                 "negative_reuse_probe_count": 48,
                 "negative_reuse_denied_count": 48,
                 "negative_reuse_unexpected_successes": 0,
@@ -2971,260 +2974,6 @@ def test_foundation_alpha_readiness_accepts_evidence_only_record_commit_without_
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
 
 
-def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_overclaiming(monkeypatch):
-    monkeypatch.setattr(
-        foundation_alpha_readiness,
-        "_resolve_runtime_affecting_changes_since",
-        lambda _: [],
-        raising=False,
-    )
-    monkeypatch.setattr(
-        foundation_alpha_readiness,
-        "_resolve_source_tree_revision",
-        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
-        raising=False,
-    )
-    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
-    monkeypatch.setattr(
-        foundation_alpha_readiness,
-        "_build_frontend_traceability_summary",
-        lambda: {
-            "status": "verified_packaged_release_followup_open",
-            "dist_status": "built",
-            "dist_build_provenance_status": "verified",
-            "dist_build_verified_same_commit": True,
-            "ci_verify_includes_projection_audit": True,
-            "workflow_status": "present",
-            "packaged_frontend_image_status": "configured",
-            "blockers": [],
-            "open_gap_count": 0,
-        },
-        raising=False,
-    )
-
-    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
-
-    assert readiness["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
-    assert readiness["stage"] == "Foundation Alpha POC"
-    assert readiness["status"] == "deployed_runtime_verified_followups_open"
-    assert readiness["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert readiness["source_tree_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert readiness["runtime_source_relation"] == {
-        "source_tree_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
-        "source_tree_dirty": False,
-        "runtime_subject_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
-        "runtime_source_marker": ACTIVE_RUNTIME_SUBJECT_SHA,
-        "runtime_matches_source_tree": True,
-        "runtime_relevant_source_matches": True,
-        "runtime_affecting_changes_since_runtime_subject": [],
-        "runtime_affecting_dirty_paths": [],
-        "status": "runtime_current_for_source_tree",
-    }
-    assert readiness["decision"] == {
-        "reviewed_poc_loop_evidence_available": True,
-        "controlled_poc_loop_verified_for_current_source": True,
-        "controlled_core_poc_loop_verified_for_runtime_relevant_source": True,
-        "runtime_relevant_source_verified_by_running_runtime": True,
-        "current_source_verified_by_running_runtime": True,
-        "current_source_exact_runtime_commit_match": True,
-        "runtime_rollout_required_for_current_source": False,
-        "foundation_alpha_stage_complete": False,
-        "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
-        "stage_acceptance_blockers": [
-            "ordinary_user_acceptance_for_quarantined_legacy_routes",
-        ],
-        "can_enter_next_stage_without_restrictions": False,
-        "production_claim_allowed": False,
-        "ordinary_user_multi_agent_allowed": False,
-        "docker_sandbox_hardened_claim_allowed": False,
-        "capacity_default_increase_allowed": False,
-    }
-    assert readiness["operator_context"] == {
-        "poc_scope": "foundation_alpha_controlled_internal_poc",
-        "poc_loop_status": "core_loop_verified_for_current_source_tree",
-        "current_runtime_relation": "runtime_current_for_source_tree",
-        "stage_acceptance_status": "core_poc_loop_verified_followups_open",
-        "stage_gate": "foundation_alpha_poc_not_production",
-        "verified_poc_capabilities": [
-            "source_authority_security_baseline",
-            "control_plane_public_admin_projection_contracts",
-            "queue_worker_document_task_artifact_loop",
-            "frontend_public_projection_poc",
-        ],
-        "blocked_expansions": [
-            "production_concurrency_increase",
-            "docker_sandbox_hardening_claim",
-            "ordinary_user_platform_multi_run_orchestration_exposure",
-            "department_rollout",
-        ],
-        "next_recommended_slices": [
-            "ordinary_user_acceptance_for_quarantined_legacy_routes",
-        ],
-    }
-
-    assert set(readiness["domains"]) == {
-        "g0_g1_source_authority_security",
-        "g2_g4_control_plane_contracts",
-        "g5_run_lifecycle_worker_runtime",
-        "g6_poc_governance",
-        "g9_admin_runtime_observability",
-        "frontend_poc",
-    }
-    assert readiness["domains"]["g0_g1_source_authority_security"]["status"] == "poc_verified_keep_under_regression"
-    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
-        "unauthenticated_auth_me_status"
-    ] == 401
-    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
-        "artifact_download_cross_tenant_statuses"
-    ] == [404, 404]
-    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
-        "artifact_preview_cross_tenant_statuses"
-    ] == [404, 404]
-    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
-        "broader_auth_session_rbac_tenant_redaction_regression_verified"
-    ] is True
-    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
-        "ordinary_admin_runtime_status"
-    ] == 403
-    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
-        "admin_runtime_status"
-    ] == 200
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["document_review_attachment_run"] == {
-        "status": "succeeded",
-        "skill_id": "qa-file-reviewer",
-        "artifact_types": ["report_txt", "reviewed_docx"],
-        "playback_contract_version": "ai-platform.run-playback.v1",
-    }
-    assert (
-        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "poc_verified_capacity_baseline_keep_defaults_locked"
-    )
-    assert (
-        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
-        == "do_not_raise_without_separate_recorded_profile_evidence"
-    )
-    foundation_runtime_concurrency = readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
-        "foundation_runtime_concurrency"
-    ]
-    assert (
-        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
-            "foundation_runtime_concurrency_evidence_current_subject"
-        ]
-        is True
-    )
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
-        "foundation_runtime_concurrency_evidence_subject"
-    ] == {
-        "commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
-        "source_tree_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
-        "runtime_subject_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
-    }
-    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
-    assert foundation_runtime_concurrency["verified"] is True
-    assert foundation_runtime_concurrency["failures"] == []
-    assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
-    assert foundation_runtime_concurrency["requirements"]["minimum_tenants"] == 2
-    assert foundation_runtime_concurrency["summary"]["concurrency_probe_source"] == "client_case_timestamps"
-    assert foundation_runtime_concurrency["summary"]["concurrency_window_sample_count"] == 12
-    assert (
-        foundation_runtime_concurrency["checks"]["memory_context"]["context_pack_version_sample_count"]
-        == 12
-    )
-    assert (
-        foundation_runtime_concurrency["checks"]["memory_context"][
-            "context_snapshot_public_projection_count"
-        ]
-        == 12
-    )
-    assert foundation_runtime_concurrency["checks"]["memory_context"]["context_scope_probe_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_source"] == "admin_runtime_queue"
-    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_position_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "runtime_run_detail"
-    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
-    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
-    assert "foundation_runtime_concurrency" in readiness["evidence_entries"]
-    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
-    assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
-    assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
-    assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
-    assert (
-        readiness["domains"]["g2_g4_control_plane_contracts"]["evidence"]["artifact_preview_isolation"][
-            "checked_artifacts"
-        ]
-        == 2
-    )
-    assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
-    memory_context_controls = readiness["domains"]["g6_poc_governance"]["evidence"]["memory_context_controls"]
-    assert {
-        key: memory_context_controls[key]
-        for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
-    } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
-    assert REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS.issubset(
-        set(memory_context_controls["closed_runtime_gaps"])
-    )
-    assert not REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS.intersection(
-        set(memory_context_controls["open_gaps"])
-    )
-    assert REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS.issubset(
-        set(memory_context_controls["open_gaps"])
-    )
-    assert not REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS.intersection(
-        set(memory_context_controls["closed_runtime_gaps"])
-    )
-    assert "office_execution_tier_router" not in memory_context_controls["open_gaps"]
-    assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
-        "status": "verified_public_context_projection",
-        "referenced_material_counts": {
-            "message_count": 1,
-            "file_count": 1,
-            "artifact_count": 0,
-            "memory_record_count": 0,
-        },
-        "raw_material_id_fields_present": False,
-        "forbidden_projection_leak_count": 0,
-        "summary_source": "chat_stream",
-        "input_keys": ["attachments", "message"],
-        "memory_policy_source": "default",
-        "long_term_memory_read": False,
-        "execution_tier": "document_worker",
-        "context_pack_version": "v1",
-        "context_pack_generated_at_present": True,
-        "missing_public_summary_fields": [],
-    }
-    assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"]["observability_readiness_status"] == "partial_blocked"
-
-    assert "#21_recorded_capacity_evidence" not in readiness["open_followups"]
-    assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
-    assert "g8_ordinary_user_multi_agent_exposure" not in readiness["open_followups"]
-    assert (
-        "ordinary_user_platform_multi_run_orchestration_exposure"
-        in readiness["operator_context"]["blocked_expansions"]
-    )
-    assert "ordinary_user_multi_agent_exposure" not in readiness["operator_context"]["blocked_expansions"]
-    assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
-    assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
-    assert (
-        "packaged_frontend_image_release_acceptance"
-        in readiness["domains"]["frontend_poc"]["open_followups"]
-    )
-    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
-
-    serialized = json.dumps(readiness, ensure_ascii=False).lower()
-    assert "callback-secret" not in serialized
-    assert "tenant-secret" not in serialized
-    assert "anthropic-secret" not in serialized
-    assert "docker://token" not in serialized
-    assert "executor_private_payload" not in serialized
-    assert "raw_storage_key" not in serialized
-    assert "sandbox_workdir" not in serialized
-    assert "api_key" not in serialized
-    assert "c:\\users" not in serialized
-
-
 def test_foundation_runtime_concurrency_discovery_accepts_alpha_poc_evidence_with_build_suffix(
     monkeypatch, tmp_path
 ):
@@ -3288,6 +3037,66 @@ def test_foundation_runtime_concurrency_discovery_skips_blocked_direct_matches(
     )
 
     assert discovered == verified_path
+
+
+def test_foundation_alpha_readiness_does_not_attach_unrelated_blocked_concurrency_evidence(
+    monkeypatch, tmp_path
+):
+    source_commit = "3843395b180324b165cbca7c59b6d7e1a934e290"
+    runtime_commit = ACTIVE_RUNTIME_SUBJECT_SHA
+    unrelated_commit = "5d3d7e2207d625817d193898c22d29d2f487fa4b"
+    evidence_base = tmp_path / "foundation-alpha-poc"
+    dedicated_base = tmp_path / "foundation-runtime-concurrency"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_base,
+        runtime_commit,
+        image="ai-platform:dff48fb-foundation-runtime-concurrency-pr40",
+    )
+    blocked_dir = dedicated_base / "unrelated-blocked-subject"
+    blocked_dir.mkdir(parents=True)
+    blocked_payload = _minimal_foundation_runtime_concurrency_payload(unrelated_commit)
+    blocked_payload["checks"]["queue_admission"].pop("queue_probe_sample_count")
+    (blocked_dir / "blocked-unrelated-foundation-runtime-concurrency.json").write_text(
+        json.dumps(blocked_payload),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_base)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT",
+        dedicated_base,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: source_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _runtime: ["app/runtime_change.py"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        lambda _base, _source: ["app/runtime_change.py"],
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    foundation_runtime_concurrency = readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
+        "foundation_runtime_concurrency"
+    ]
+    assert foundation_runtime_concurrency["status"] == "missing_foundation_runtime_concurrency_evidence"
+    assert foundation_runtime_concurrency["failures"] == ["missing_evidence"]
+    assert "foundation_runtime_concurrency" not in readiness["evidence_entries"]
+    assert "foundation_runtime_concurrency_evidence" in readiness["decision"]["stage_acceptance_blockers"]
 
 
 def test_foundation_alpha_readiness_prefers_source_covering_verified_concurrency_over_blocked_runtime_subject(

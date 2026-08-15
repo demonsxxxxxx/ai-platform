@@ -894,14 +894,6 @@ def _discover_verified_foundation_runtime_concurrency_evidence_for_source(
     return None
 
 
-def _discover_latest_foundation_runtime_concurrency_evidence() -> Path | None:
-    entries = _iter_foundation_runtime_concurrency_evidence()
-    if entries:
-        path, _ = max(entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
-        return path
-    return None
-
-
 def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path]:
     if source_tree_commit != "unknown":
         current_pair = _discover_release_evidence_pair(source_tree_commit)
@@ -2211,10 +2203,6 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     if foundation_runtime_concurrency_evidence_path is None:
         foundation_runtime_concurrency_evidence_path = (
             _discover_latest_verified_foundation_runtime_concurrency_evidence()
-        )
-    if foundation_runtime_concurrency_evidence_path is None:
-        foundation_runtime_concurrency_evidence_path = (
-            _discover_latest_foundation_runtime_concurrency_evidence()
         )
     foundation_runtime_concurrency_payload = (
         _load_json(foundation_runtime_concurrency_evidence_path)
