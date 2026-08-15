@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -122,9 +123,14 @@ _OPEN_GAPS = [
 ]
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_EVIDENCE_ROOT = _ROOT / "docs/release-evidence"
+_FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
-def _runtime_acceptance_is_valid(runtime_acceptance: dict[str, Any]) -> bool:
+def _runtime_acceptance_is_valid(
+    runtime_acceptance: dict[str, Any],
+    *,
+    expected_runtime_subject_sha: str | None = None,
+) -> bool:
     checks = runtime_acceptance.get("checks")
     if not isinstance(checks, dict):
         return False
@@ -132,6 +138,12 @@ def _runtime_acceptance_is_valid(runtime_acceptance: dict[str, Any]) -> bool:
     retention = checks.get("retention_runtime_acceptance")
     if not isinstance(runtime_export, dict) or not isinstance(retention, dict):
         return False
+    source = runtime_acceptance.get("source")
+    subject_matches = expected_runtime_subject_sha is None or (
+        isinstance(source, dict)
+        and source.get("commit_sha") == expected_runtime_subject_sha
+        and source.get("runtime_subject_commit_sha") == expected_runtime_subject_sha
+    )
     return (
         runtime_acceptance.get("schema_version") == "ai-platform.release-evidence-runtime-acceptance.v1"
         and runtime_acceptance.get("ok") is True
@@ -150,6 +162,7 @@ def _runtime_acceptance_is_valid(runtime_acceptance: dict[str, Any]) -> bool:
         and retention.get("requires_review_before_delete") is True
         and retention.get("delete_only_reviewed_redacted_entries") is True
         and retention.get("forbidden_delete_targets_present") is True
+        and subject_matches
     )
 
 
@@ -172,10 +185,13 @@ def _runtime_acceptance_summary(runtime_acceptance: dict[str, Any]) -> dict[str,
     }
 
 
-def load_latest_reviewed_runtime_acceptance(
+def load_reviewed_runtime_acceptance_for_subject(
+    expected_runtime_subject_sha: str,
     evidence_root: Path | None = None,
 ) -> dict[str, Any] | None:
-    """Return the newest reviewed, redacted release-evidence runtime acceptance summary."""
+    """Return reviewed, redacted acceptance bound to one exact runtime subject."""
+    if not _FULL_COMMIT_SHA_PATTERN.fullmatch(expected_runtime_subject_sha):
+        raise ValueError("expected_runtime_subject_sha must be a full lowercase commit SHA")
     root = evidence_root or _DEFAULT_EVIDENCE_ROOT
     if not root.is_dir():
         return None
@@ -197,7 +213,11 @@ def load_latest_reviewed_runtime_acceptance(
         )
         if not isinstance(acceptance, dict):
             continue
-        if not _reviewed_runtime_acceptance_entry_is_valid(payload, acceptance):
+        if not _reviewed_runtime_acceptance_entry_is_valid(
+            payload,
+            acceptance,
+            expected_runtime_subject_sha=expected_runtime_subject_sha,
+        ):
             continue
         sort_key = (str(payload.get("captured_at", "")), path.as_posix())
         candidates.append((sort_key, _runtime_acceptance_summary(acceptance)))
@@ -211,6 +231,8 @@ def load_latest_reviewed_runtime_acceptance(
 def _reviewed_runtime_acceptance_entry_is_valid(
     payload: dict[str, Any],
     acceptance: dict[str, Any],
+    *,
+    expected_runtime_subject_sha: str,
 ) -> bool:
     evidence_ref = payload.get("evidence_ref")
     if not isinstance(evidence_ref, dict):
@@ -222,15 +244,17 @@ def _reviewed_runtime_acceptance_entry_is_valid(
             "controlled_host_runtime_smoke",
             "211_runtime_smoke",
         }
-        and isinstance(commit_sha, str)
-        and commit_sha
+        and commit_sha == expected_runtime_subject_sha
         and payload.get("runtime_subject_commit_sha") == commit_sha
         and payload.get("redaction_scan_status") == "passed"
         and payload.get("review_status") in {"reviewed", "accepted"}
         and evidence_ref.get("verifier") == "tools/verify_release_evidence_runtime_acceptance.py"
         and evidence_ref.get("schema_version") == "ai-platform.release-evidence-runtime-acceptance.v1"
         and evidence_ref.get("result") == "ok:true"
-        and _runtime_acceptance_is_valid(acceptance)
+        and _runtime_acceptance_is_valid(
+            acceptance,
+            expected_runtime_subject_sha=expected_runtime_subject_sha,
+        )
     )
 
 

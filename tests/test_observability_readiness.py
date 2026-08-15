@@ -15,7 +15,7 @@ from app.observability_readiness import (
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import (
     build_release_evidence_readiness,
-    load_latest_reviewed_runtime_acceptance,
+    load_reviewed_runtime_acceptance_for_subject,
 )
 from app.trace_audit_export_readiness import build_trace_audit_export_readiness
 
@@ -399,7 +399,8 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "verified subject commit for the runtime, capacity, frontend, or governance artifact under review"
     )
     assert readiness["evidence_contract"]["field_semantics"]["runtime_subject_commit_sha"] == (
-        "runtime source revision proven by a controlled-host source marker and API/worker image labels for runtime-bound smoke artifacts"
+        "runtime source revision proven by the runtime subject's source marker and API/worker image labels "
+        "for runtime-bound smoke artifacts"
     )
     assert "cannot contain its own final hash" in readiness["evidence_contract"]["field_semantics"]["record_commit_sha"]
     assert readiness["evidence_contract"]["conditional_fields"] == {
@@ -457,9 +458,9 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
     ]
     assert readiness["evidence_contract"]["does_not_close_g9"] is True
     assert readiness["export_acceptance"]["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
-    assert readiness["export_acceptance"]["status"] == "blocked_invalid_evidence"
+    assert readiness["export_acceptance"]["status"] == "ready_for_operator_review"
     assert readiness["export_acceptance"]["export_policy"] == "safe_reviewed_index_only_not_runtime_export"
-    assert readiness["export_acceptance"]["blocked_entry_count"] >= 1
+    assert readiness["export_acceptance"]["blocked_entry_count"] == 0
     assert readiness["export_acceptance"]["safe_entry_count"] >= 1
     assert readiness["export_acceptance"]["does_not_export_raw_runtime_payloads"] is True
     assert readiness["export_acceptance"]["does_not_close_g9"] is True
@@ -516,10 +517,13 @@ def test_release_evidence_readiness_accepts_runtime_acceptance_without_closing_g
     assert "api_key" not in runtime_serialized
 
 
-def test_load_latest_reviewed_runtime_acceptance_returns_safe_summary(tmp_path):
+def test_load_reviewed_runtime_acceptance_for_subject_returns_safe_summary(tmp_path):
     _write_runtime_acceptance_entry(tmp_path)
 
-    acceptance = load_latest_reviewed_runtime_acceptance(tmp_path)
+    acceptance = load_reviewed_runtime_acceptance_for_subject(
+        "948179c73734aa61ed764fb3485f5415fca8f193",
+        tmp_path,
+    )
 
     assert acceptance["schema_version"] == "ai-platform.release-evidence-runtime-acceptance.v1"
     assert acceptance["status"] == "accepted_for_operator_review"
@@ -535,7 +539,9 @@ def test_load_latest_reviewed_runtime_acceptance_returns_safe_summary(tmp_path):
     assert "api_key" not in serialized
 
 
-def test_load_latest_reviewed_runtime_acceptance_rejects_unreviewed_or_failed_entries(tmp_path):
+def test_load_reviewed_runtime_acceptance_for_subject_rejects_unreviewed_or_failed_entries(
+    tmp_path,
+):
     _write_runtime_acceptance_entry(
         tmp_path,
         evidence_id="draft-entry",
@@ -551,7 +557,25 @@ def test_load_latest_reviewed_runtime_acceptance_rejects_unreviewed_or_failed_en
         acceptance=failed_acceptance,
     )
 
-    assert load_latest_reviewed_runtime_acceptance(tmp_path) is None
+    assert (
+        load_reviewed_runtime_acceptance_for_subject(
+            "948179c73734aa61ed764fb3485f5415fca8f193",
+            tmp_path,
+        )
+        is None
+    )
+
+
+def test_load_reviewed_runtime_acceptance_for_subject_rejects_other_runtime_subject(tmp_path):
+    _write_runtime_acceptance_entry(tmp_path)
+
+    assert (
+        load_reviewed_runtime_acceptance_for_subject(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            tmp_path,
+        )
+        is None
+    )
 
 
 def test_release_evidence_readiness_rejects_invalid_runtime_acceptance_without_leaking_payload():
@@ -652,8 +676,8 @@ def test_observability_readiness_includes_release_evidence_contract_without_clos
     assert evidence["export_location"]["path"] == "docs/release-evidence/"
     assert evidence["evidence_contract"]["does_not_close_g9"] is True
     assert evidence["export_acceptance"]["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
-    assert evidence["export_acceptance"]["status"] == "blocked_invalid_evidence"
-    assert evidence["export_acceptance"]["blocked_entry_count"] >= 1
+    assert evidence["export_acceptance"]["status"] == "ready_for_operator_review"
+    assert evidence["export_acceptance"]["blocked_entry_count"] == 0
     assert evidence["export_acceptance"]["does_not_close_g9"] is True
     assert evidence["retention_policy"]["schema_version"] == "ai-platform.release-evidence-retention-policy.v1"
     assert evidence["retention_policy"]["forbidden_delete_targets"] == [
@@ -915,9 +939,39 @@ def test_observability_readiness_cli_outputs_json_without_secret_markers():
     assert "callback-secret" not in result.stdout
 
 
-def test_observability_readiness_cli_uses_reviewed_release_evidence_runtime_acceptance():
+def test_observability_readiness_cli_does_not_treat_historical_evidence_as_current_runtime():
     result = subprocess.run(
         [sys.executable, "tools/observability_readiness.py", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    release_evidence = payload["domains"]["alerts_and_exports"]["evidence"]["release_evidence"]
+
+    assert "runtime_acceptance" not in release_evidence
+    assert "release_evidence_runtime_acceptance" not in payload["domains"]["alerts_and_exports"]["implemented"]
+    assert "release_evidence_runtime_export_acceptance" in payload["open_gaps"]
+    assert "release_evidence_retention_runtime_acceptance" in payload["open_gaps"]
+    assert payload["status"] == "partial_blocked"
+
+
+def test_observability_readiness_cli_loads_only_explicit_runtime_subject(tmp_path):
+    _write_runtime_acceptance_entry(tmp_path)
+    runtime_subject_sha = "948179c73734aa61ed764fb3485f5415fca8f193"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/observability_readiness.py",
+            "--format",
+            "json",
+            "--runtime-subject-sha",
+            runtime_subject_sha,
+            "--evidence-root",
+            str(tmp_path),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -930,9 +984,44 @@ def test_observability_readiness_cli_uses_reviewed_release_evidence_runtime_acce
     assert "release_evidence_runtime_acceptance" in payload["domains"]["alerts_and_exports"]["implemented"]
     assert "release_evidence_runtime_export_acceptance" not in payload["open_gaps"]
     assert "release_evidence_retention_runtime_acceptance" not in payload["open_gaps"]
-    assert payload["status"] == "partial_blocked"
-    assert "source_ref" not in json.dumps(release_evidence["runtime_acceptance"], ensure_ascii=False).lower()
-    assert "evidence_ref" not in json.dumps(release_evidence["runtime_acceptance"], ensure_ascii=False).lower()
+
+
+def test_observability_readiness_cli_rejects_unbound_evidence_root(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/observability_readiness.py",
+            "--format",
+            "json",
+            "--evidence-root",
+            str(tmp_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--evidence-root requires --runtime-subject-sha" in result.stderr
+
+
+def test_observability_readiness_cli_rejects_noncanonical_runtime_subject_sha():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/observability_readiness.py",
+            "--format",
+            "json",
+            "--runtime-subject-sha",
+            "not-a-full-sha",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "must be a full lowercase 40-character commit SHA" in result.stderr
 
 
 def test_error_taxonomy_dashboard_readiness_cli_outputs_json_without_secret_markers():
