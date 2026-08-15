@@ -293,10 +293,41 @@ jobs:
     needs: [frontend, frontend-image]
     if: ${{ always() }}
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.FRONTEND_PYTHON_VERSION }}
+
       - name: Require frontend verification and image provenance
         env:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           IMAGE_RESULT: ${{ needs.frontend-image.result }}
         run: |
-          test "$FRONTEND_RESULT" = "success"
-          test "$IMAGE_RESULT" = "success"
+          python - <<'PY'
+          import os
+
+
+          def require_successful_results(results):
+              unexpected = {
+                  name: result
+                  for name, result in results.items()
+                  if result != "success"
+              }
+              if unexpected:
+                  detail = ", ".join(
+                      f"{name}={result or 'missing'}"
+                      for name, result in sorted(unexpected.items())
+                  )
+                  raise RuntimeError(
+                      f"frontend required dependencies did not succeed: {detail}"
+                  )
+
+
+          if __name__ == "__main__":
+              require_successful_results(
+                  {
+                      "frontend": os.environ.get("FRONTEND_RESULT", ""),
+                      "frontend-image": os.environ.get("IMAGE_RESULT", ""),
+                  }
+              )
+          PY

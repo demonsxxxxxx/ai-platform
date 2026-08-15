@@ -3,6 +3,7 @@ from pathlib import Path
 import tomllib
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,62 @@ PYTEST_COMMAND = (
 PYTHON_TEST_DEPENDENCIES = "python -m pip install pytest pyyaml"
 JSONSCHEMA_CONTRACT_START = "          import importlib.metadata"
 JSONSCHEMA_CONTRACT_END = "          '@ | python -"
+
+
+class UniqueKeyLoader(yaml.BaseLoader):
+    pass
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _workflow_contract(path: Path = WORKFLOW) -> dict[str, object]:
+    payload = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _required_contract_namespace() -> dict[str, object]:
+    workflow = _workflow_contract()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    required = jobs["required"]
+    assert isinstance(required, dict)
+    steps = required["steps"]
+    assert isinstance(steps, list)
+    contract_steps = [
+        step
+        for step in steps
+        if step.get("name") == "Require frontend verification and image provenance"
+    ]
+    assert len(contract_steps) == 1
+    run = contract_steps[0]["run"]
+    assert isinstance(run, str)
+    marker = "python - <<'PY'\n"
+    assert run.startswith(marker)
+    source, terminator = run.removeprefix(marker).rsplit("\nPY", 1)
+    assert terminator.strip() == ""
+    namespace: dict[str, object] = {"__name__": "workflow_contract"}
+    exec(source, namespace)
+    return namespace
 
 
 def _jsonschema_contract_namespace() -> dict[str, object]:
@@ -91,18 +148,25 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
 
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-
-    pull_request_block = workflow.split("pull_request:", 1)[1].split("push:", 1)[0]
-    push_block = workflow.split("push:", 1)[1].split("workflow_dispatch:", 1)[0]
-    assert "branches:" in pull_request_block
-    assert "- main" in pull_request_block
-    assert "paths:" not in pull_request_block
-    assert "branches:" in push_block
-    assert "- main" in push_block
-    assert "paths:" not in push_block
-    assert "name: frontend required" in workflow
-    assert "needs: [frontend, frontend-image]" in workflow
-    assert "if: ${{ always() }}" in workflow
+    contract = _workflow_contract()
+    assert contract["on"] == {
+        "pull_request": {"branches": ["main"]},
+        "push": {"branches": ["main"]},
+        "workflow_dispatch": "",
+    }
+    jobs = contract["jobs"]
+    assert isinstance(jobs, dict)
+    required = jobs["required"]
+    assert isinstance(required, dict)
+    assert required["name"] == "frontend required"
+    assert required["needs"] == ["frontend", "frontend-image"]
+    assert required["if"] == "${{ always() }}"
+    for job_name in [*required["needs"], "required"]:
+        job = jobs[job_name]
+        assert isinstance(job, dict)
+        assert "continue-on-error" not in job
+        for step in job["steps"]:
+            assert "continue-on-error" not in step
 
     assert "corepack pnpm install --frozen-lockfile" in workflow
     assert PYTHON_TEST_DEPENDENCIES in workflow
@@ -184,3 +248,35 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "deploy/ai-platform/.env\"" not in lower
     assert "deploy/ai-platform/.env'" not in lower
     assert "c:\\users" not in lower
+
+
+def test_frontend_ci_workflow_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
+    duplicate = tmp_path / "duplicate.yml"
+    duplicate.write_text(
+        "name: frontend\non:\n  push:\n    branches: [main]\non:\n  pull_request:\n    branches: [main]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(yaml.constructor.ConstructorError, match="duplicate key 'on'"):
+        _workflow_contract(duplicate)
+
+
+@pytest.mark.parametrize("job_name", ["frontend", "frontend-image"])
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled", ""])
+def test_frontend_required_contract_executes_failure_paths(job_name: str, result: str) -> None:
+    namespace = _required_contract_namespace()
+    require_successful_results = namespace["require_successful_results"]
+    assert callable(require_successful_results)
+    results = {"frontend": "success", "frontend-image": "success"}
+    results[job_name] = result
+
+    with pytest.raises(RuntimeError, match=job_name):
+        require_successful_results(results)
+
+
+def test_frontend_required_contract_accepts_only_all_success() -> None:
+    namespace = _required_contract_namespace()
+    require_successful_results = namespace["require_successful_results"]
+    assert callable(require_successful_results)
+
+    require_successful_results({"frontend": "success", "frontend-image": "success"})
