@@ -634,6 +634,18 @@ def test_office_context_readiness_default_subject_requires_a_clean_git_tree(tmp_
     assert _current_source_commit(tmp_path) == ""
 
 
+def test_office_context_readiness_default_subject_fails_closed_when_git_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    def git_unavailable(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr("app.office_context_readiness.subprocess.run", git_unavailable)
+
+    assert _current_source_commit(tmp_path) == ""
+
+
 def test_office_context_readiness_selects_latest_capture_for_exact_subject(tmp_path):
     runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     source_snapshot = {

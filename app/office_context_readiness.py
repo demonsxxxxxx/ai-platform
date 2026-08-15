@@ -567,20 +567,26 @@ def _sandbox_runtime_evidence_summary(
 
 
 def _current_source_commit(repo_root: Path) -> str:
-    status = subprocess.run(
-        ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
     if status.returncode != 0 or status.stdout.strip():
         return ""
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
     commit_sha = result.stdout.strip() if result.returncode == 0 else ""
     return commit_sha if _COMMIT_SHA_PATTERN.fullmatch(commit_sha) is not None else ""
 
