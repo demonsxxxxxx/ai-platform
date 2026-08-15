@@ -1,13 +1,18 @@
+import importlib.util
 import json
 import subprocess
 import sys
 
 import pytest
 
-from app.b6_operations_beta_readiness import (
+from tools.b6_operations_beta_readiness import (
     build_b6_operations_beta_readiness,
     render_b6_operations_beta_readiness_markdown,
 )
+
+
+def test_b6_readiness_is_offline_tooling_not_an_app_module():
+    assert importlib.util.find_spec("app.b6_operations_beta_readiness") is None
 
 
 def test_b6_operations_beta_readiness_exposes_workflow_package_boundaries():

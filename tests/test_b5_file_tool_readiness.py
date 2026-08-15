@@ -1,13 +1,18 @@
+import importlib.util
 import json
 import subprocess
 import sys
 
 import pytest
 
-from app.b5_file_tool_readiness import (
+from tools.b5_file_tool_readiness import (
     build_b5_file_tool_readiness,
     render_b5_file_tool_readiness_markdown,
 )
+
+
+def test_b5_readiness_is_offline_tooling_not_an_app_module():
+    assert importlib.util.find_spec("app.b5_file_tool_readiness") is None
 
 
 def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
