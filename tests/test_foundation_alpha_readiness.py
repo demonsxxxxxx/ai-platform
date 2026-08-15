@@ -2849,56 +2849,26 @@ def test_foundation_alpha_readiness_prefers_source_snapshot_runtime_subject_over
     assert CURRENT_SOURCE_SHA not in readiness["evidence_entries"]["poc_smoke"]
 
 
-def test_foundation_alpha_readiness_falls_back_to_latest_when_configured_runtime_subject_missing(
+def test_release_evidence_resolution_does_not_select_unrelated_latest_pair_when_source_unknown(
     monkeypatch,
     tmp_path,
 ):
     evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
-    smoke_path, auth_path = _write_release_evidence_pair(
+    _write_release_evidence_pair(
         evidence_root,
         CURRENT_SOURCE_SHA,
         image="ai-platform:a3f1d73-foundation-alpha-poc",
         smoke_captured_at="2026-06-11T15:19:22+08:00",
         auth_captured_at="2026-06-11T15:18:58+08:00",
     )
+    default_smoke_path = tmp_path / "configured-runtime-smoke.json"
+    default_auth_path = tmp_path / "configured-runtime-auth.json"
     monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
-    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
-    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
-    monkeypatch.setattr(
-        foundation_alpha_readiness,
-        "_resolve_source_tree_revision",
-        lambda: NEWER_SOURCE_SHA,
-        raising=False,
-    )
-    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
-    monkeypatch.setattr(
-        foundation_alpha_readiness,
-        "_resolve_runtime_affecting_changes_since",
-        lambda _: ["app/routes/runs.py"],
-        raising=False,
-    )
-    monkeypatch.setattr(
-        foundation_alpha_readiness,
-        "_resolve_runtime_affecting_changes_between",
-        lambda _base, _target: ["app/routes/runs.py"],
-        raising=False,
-    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", default_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", default_auth_path, raising=False)
+    resolved = foundation_alpha_readiness._resolve_release_evidence_paths("unknown")
 
-    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
-
-    assert readiness["status"] == "source_synced_runtime_pending_followups_open"
-    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
-    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
-    assert readiness["verified_runtime_subject"] == {
-        "commit_sha": CURRENT_SOURCE_SHA,
-        "image": "ai-platform:a3f1d73-foundation-alpha-poc",
-        "image_id": f"sha256:{CURRENT_SOURCE_SHA[:12]}",
-        "evidence_scope": "reviewed_historical_runtime_evidence",
-    }
-    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
-    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
-    assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["poc_smoke"]
-    assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
+    assert resolved == (default_smoke_path, default_auth_path)
 
 
 def test_foundation_alpha_readiness_accepts_evidence_only_record_commit_without_runtime_rollout(
