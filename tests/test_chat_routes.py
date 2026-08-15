@@ -558,34 +558,19 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
 
 @pytest.mark.parametrize(
-    ("message", "reject", "roles", "request_input", "selector", "manifest_identities"),
+    "message",
     [
-        ("请执行 Bash 命令 pwd", True, [], {}, {}, []),
-        ("请执行 Bash 命令 pwd", True, ["admin"], {}, {}, []),
-        ("请执行 Bash 命令 pwd", True, [], {"message": "hello"}, {}, []),
-        ("请执行 Bash 命令 pwd", True, [], {}, {}, ["Bash"]),
-        (
-            "请执行 Bash 命令 pwd", False, ["admin"], {},
-            {"agent_id": "qa-word-review", "skill_id": "qa-file-reviewer"},
-            ["Bash", "Write"],
-        ),
-        ("只解释 Bash 命令 pwd 是什么，不要执行", False, [], {}, {}, []),
-        ("不要执行 Bash 命令 pwd", False, [], {}, {}, []),
-        ("可以执行 Bash 吗？", False, [], {}, {}, []),
+        "请执行 Bash 命令 pwd",
+        "只解释 Bash 命令 pwd 是什么，不要执行",
+        "不要执行 Bash 命令 pwd",
+        "可以执行 Bash 吗？",
     ],
-    ids=["undeclared", "admin", "override", "noncanonical", "declared", "explanatory", "negative", "question"],
 )
 @pytest.mark.asyncio
-async def test_chat_stream_required_bash_admission_precedes_side_effects(
-    monkeypatch, message, reject, roles, request_input, selector, manifest_identities
+async def test_chat_stream_never_turns_bash_text_into_required_capability(
+    monkeypatch, message
 ):
-    keyed = reject and message == "请执行 Bash 命令 pwd" and not any(
-        (roles, request_input, selector, manifest_identities)
-    )
-    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4" if keyed else None
-    race_id = "854b63f1-89f8-46cb-bc76-bc25891ba717"
-    manifest = snapshot_manifest(selector.get("skill_id", "general-chat"))
-    manifest["builtin_tool_identities"] = manifest_identities
+    manifest = snapshot_manifest("general-chat")
     business = {
         name: AsyncMock(return_value=result)
         for name, result in (
@@ -613,66 +598,12 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
-    request = ChatStreamRequest(
-        message=message, input=request_input, submission_id=submission_id, **selector
-    )
-    race_request = request.model_copy(update={"submission_id": race_id})
-    if keyed:
-        fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-            request=request,
-            principal=principal(),
-            query_agent_id=None,
-            code="required_capability_unavailable",
-        )
-        rejected_row = {
-            "state": "rejected_before_persist",
-            "rejection_code": "required_capability_unavailable",
-            "request_fingerprint_sha256": fingerprint,
-        }
-        ledger_principal = AsyncMock()
-        monkeypatch.setattr(
-            repository_module,
-            "get_chat_submission",
-            AsyncMock(side_effect=[None, rejected_row, rejected_row, None]),
-        )
-        monkeypatch.setattr(repository_module, "ensure_submission_principal", ledger_principal)
-        monkeypatch.setattr(
-            repository_module,
-            "claim_chat_submission",
-            AsyncMock(side_effect=[
-                ({"state": "resolving"}, True), ({"state": "resolving"}, True),
-                (rejected_row, False), (rejected_row, False),
-            ]),
-        )
-        monkeypatch.setattr(repository_module, "finalize_chat_submission", AsyncMock())
+    request = ChatStreamRequest(message=message)
 
-    if reject:
-        async def rejected(call_request):
-            with pytest.raises(HTTPException) as exc_info:
-                await chat_stream(call_request, principal=principal(roles=roles))
-            return exc_info.value.status_code, exc_info.value.detail
-
-        first = await rejected(request)
-        if keyed:
-            replay = await rejected(request)
-            mismatch = await rejected(request.model_copy(update={"message": "请执行 Bash 命令 whoami"}))
-            race = await rejected(race_request)
-            public_detail = _chat_submission_http_error(
-                status_code=403, code="required_capability_unavailable"
-            ).detail
-            assert first == replay == race == (403, public_detail)
-            assert mismatch == (409, "submission_payload_mismatch")
-            assert ledger_principal.await_count == 4
-            assert authorize.await_count == 0
-        else:
-            assert first[0] == 403 and first[1]["detail_code"] == "required_capability_unavailable"
-        assert not any(mock.await_count for mock in business.values())
-        return
-    assert (await chat_stream(request, principal=principal(roles=roles))).status == "queued"
+    assert (await chat_stream(request, principal=principal())).status == "queued"
     business["create_run"].assert_awaited_once()
     business["create_tool_permission_request"].assert_not_awaited()
-    declaration = enqueue.await_args.args[0]["input"].get("_required_capability_declaration")
-    assert (declaration or {}).get("canonical_identity") == ("Bash" if selector else None)
+    assert "_required_capability_declaration" not in enqueue.await_args.args[0]["input"]
 
 
 def test_submission_code_accepts_only_bounded_required_capability_detail_code():

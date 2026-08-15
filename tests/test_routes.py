@@ -3459,7 +3459,10 @@ async def test_deleted_session_run_context_and_lease_deny_before_reads_or_writes
         deleted_session_run_is_not_authorized,
     )
     monkeypatch.setattr(repository_module, "list_context_snapshots", forbidden_child_operation)
-    monkeypatch.setattr(repository_module, "create_sandbox_lease", forbidden_child_operation)
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease",
+        forbidden_child_operation,
+    )
     monkeypatch.setattr(repository_module, "append_event", forbidden_child_operation)
 
     with pytest.raises(HTTPException) as context_exc:

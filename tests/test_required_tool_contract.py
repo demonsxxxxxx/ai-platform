@@ -1,12 +1,15 @@
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 
+from app.execution_boundary import ExecutionBoundaryDecision
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    RequiredCapabilityDecision,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
+    ToolInvocationEvidence,
     completion_decision,
     declaration_from_payload,
     parse_required_tool_declaration,
@@ -14,6 +17,9 @@ from app.required_tool_contract import (
     required_builtin_capability_subjects,
     required_tool_authorization_for_run,
     selected_capability_completion_decision,
+    validate_tool_invocation_evidence,
+    with_boundary_sandbox_local_tool_subjects,
+    with_sandbox_local_tool_capability_subjects,
 )
 
 
@@ -104,6 +110,129 @@ def test_required_builtin_subject_never_mints_undeclared_authority_and_rejects_f
             existing_subjects=[],
             active=True,
             distributed=True,
+        )
+
+
+def test_real_sandbox_replaces_local_tool_authority_once():
+    subjects = with_sandbox_local_tool_capability_subjects(
+        [
+            {"identity": "Read", "registered": True},
+            {"identity": "Bash", "command_isolation": "sibling-tool-sandbox-v1"},
+            {"identity": "Bash", "command_isolation": "minimal-environment-v1"},
+        ],
+        sandbox_provider="opensandbox",
+    )
+
+    assert [subject["identity"] for subject in subjects] == [
+        "Read",
+        "Glob",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ]
+    bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
+    assert bash_subject["registered"] is True
+    assert bash_subject["active"] is True
+    assert bash_subject["distributed"] is True
+    assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
+    assert bash_subject["workspace_contract"] == "ai-platform.skill-workspace.v1"
+
+
+def test_sandbox_local_tools_use_credential_free_docker_sibling_for_bash():
+    subjects = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="docker",
+    )
+    bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
+
+    assert bash_subject["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert bash_subject["execution_strategy"] == "sdk_native"
+
+
+def test_sandbox_local_tool_subjects_reject_non_real_provider():
+    with pytest.raises(RequiredToolContractError, match="sandbox_bash_provider_invalid"):
+        with_sandbox_local_tool_capability_subjects([], sandbox_provider="fake")
+
+
+def _boundary(*, real: bool, fail_closed: bool = False) -> ExecutionBoundaryDecision:
+    return ExecutionBoundaryDecision(
+        requires_real_sandbox=real,
+        accepted_providers=frozenset({"docker", "opensandbox"}) if real else frozenset(),
+        permission_policy="sandbox_brokered" if real else "adapter_managed",
+        evidence_source="sandbox_runtime" if real else "",
+        evidence_class="runtime_lease_projection" if real else "",
+        local_sdk_allowed=False,
+        fail_closed=fail_closed,
+        reason="test",
+    )
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [_boundary(real=False), _boundary(real=True, fail_closed=True)],
+)
+def test_non_real_or_fail_closed_boundary_strips_all_sandbox_local_capabilities(decision):
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [
+            {"identity": "Read", "write_capable": False},
+            {"identity": "Bash", "write_capable": True},
+            {"identity": "custom-write", "write_capable": True},
+            {"identity": "Write", "write_capable": False},
+        ],
+        decision=decision,
+        sandbox_provider="opensandbox",
+    )
+
+    assert subjects == []
+
+
+def test_real_boundary_adds_all_local_tools_after_sanitizing_existing_authority():
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [
+            {"identity": "mcp__catalog__search", "write_capable": False},
+            {"identity": "custom-write", "write_capable": True},
+        ],
+        decision=_boundary(real=True),
+        sandbox_provider="opensandbox",
+    )
+
+    assert [subject["identity"] for subject in subjects] == [
+        "mcp__catalog__search",
+        "Read",
+        "Glob",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ]
+
+
+def test_tool_invocation_evidence_requires_attempt_bound_started_to_terminal_sequence():
+    started = ToolInvocationEvidence.from_executor_private_payload(
+        binding=_binding(),
+        tool_call_id="call-a",
+        canonical_identity="Bash",
+        lifecycle_phase="started",
+    )
+    completed = ToolInvocationEvidence.from_executor_private_payload(
+        binding=_binding(),
+        tool_call_id="call-a",
+        canonical_identity="Bash",
+        lifecycle_phase="completed",
+    )
+
+    assert validate_tool_invocation_evidence(
+        [asdict(started), asdict(completed)], binding=_binding()
+    ) == [asdict(started), asdict(completed)]
+    with pytest.raises(RequiredToolContractError, match="tool_invocation_evidence_mismatch"):
+        validate_tool_invocation_evidence([asdict(started)], binding=_binding())
+    with pytest.raises(RequiredToolContractError, match="tool_invocation_evidence_mismatch"):
+        validate_tool_invocation_evidence(
+            [asdict(started), asdict(completed)],
+            binding=_binding(attempt_id="other-attempt"),
         )
 
 
@@ -243,7 +372,7 @@ def test_completion_is_run_attempt_bound_and_fails_closed_without_exact_evidence
     valid_evidence = {
         "schema_version": "ai-platform.required-capability-evidence.v1",
         **_binding(),
-        "tool_call_id": None,
+        "tool_call_id": "bash-call-a",
         "capability_kind": "builtin",
         "canonical_identity": "Bash",
         "lifecycle_phase": "completed",
@@ -273,6 +402,12 @@ def test_completion_is_run_attempt_bound_and_fails_closed_without_exact_evidence
         authorization=authorized,
         binding=_binding(),
         evidence={**valid_evidence, "attempt_id": "qat-stale"},
+    ).reason == "required_tool_completion_evidence_mismatch"
+    assert completion_decision(
+        declaration=declaration,
+        authorization=authorized,
+        binding=_binding(),
+        evidence={**valid_evidence, "tool_call_id": None},
     ).reason == "required_tool_completion_evidence_mismatch"
     assert completion_decision(
         declaration=declaration,
@@ -323,6 +458,34 @@ def test_authorized_skill_and_mcp_declarations_keep_distinct_canonical_identitie
     assert skill.declaration_sha256 != mcp.declaration_sha256
     assert declaration_from_payload(skill.to_payload()) == skill
     assert declaration_from_payload(mcp.to_payload()) == mcp
+
+
+def test_executor_private_payload_binds_completed_builtin_to_exact_attempt():
+    declaration = _declaration()
+
+    evidence = RequiredCapabilityEvidence.from_executor_private_payload(
+        declaration=declaration,
+        binding=_binding(),
+        tool_call_id="bash-call-a",
+    )
+
+    assert evidence.capability_kind == "builtin"
+    assert evidence.canonical_identity == "Bash"
+    assert evidence.lifecycle_phase == "completed"
+    assert evidence.lifecycle_status == "succeeded"
+    assert evidence.evidence_source == "executor_private_payload"
+    assert evidence.trust_basis == "attempt_bound_tool_invocation"
+    assert completion_decision(
+        declaration=declaration,
+        authorization=RequiredCapabilityDecision(
+            True,
+            "required_tool_currently_authorized",
+            "builtin",
+            "Bash",
+        ),
+        binding=_binding(),
+        evidence=evidence.__dict__,
+    ).allowed is True
 
 
 @pytest.mark.parametrize(
@@ -597,3 +760,48 @@ def test_selected_capability_sequence_requires_same_call_binding_and_every_ident
     assert not selected_capability_completion_decision(
         declarations=[skill, skill], binding=_binding(), evidence=valid[:2]
     ).allowed
+
+    shared_call = [
+        _selected_evidence(skill, "invocation_requested", call_id="shared-call"),
+        _selected_evidence(skill, "completed", call_id="shared-call"),
+        _selected_evidence(mcp, "invocation_requested", call_id="shared-call"),
+        _selected_evidence(mcp, "completed", call_id="shared-call"),
+    ]
+    assert not selected_capability_completion_decision(
+        declarations=[skill, mcp], binding=_binding(), evidence=shared_call
+    ).allowed
+
+
+@pytest.mark.parametrize(
+    "call_id",
+    [
+        "   ",
+        " call-with-padding ",
+        "x" * 513,
+        "call\nwith-control",
+        "call\x7fwith-del",
+        "call\x85with-c1",
+        "call\u202ewith-bidi",
+        "call-with-unicode-\u8c03\u7528",
+    ],
+)
+def test_capability_and_local_tool_evidence_reject_noncanonical_call_ids(call_id):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    with pytest.raises(RequiredToolContractError):
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=_binding(),
+            tool_call_id=call_id,
+            lifecycle_phase="invocation_requested",
+        )
+    with pytest.raises(RequiredToolContractError):
+        ToolInvocationEvidence.from_executor_private_payload(
+            binding=_binding(),
+            tool_call_id=call_id,
+            canonical_identity="Bash",
+            lifecycle_phase="started",
+        )

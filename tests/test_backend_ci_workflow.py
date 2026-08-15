@@ -49,7 +49,16 @@ AGENT_SKILL_CONTRACT_TESTS = (
 )
 BACKEND_TEST_SHARDS = {
     "sandbox-runtime": (
+        "tests/test_claude_agent_sdk_installed_contract.py",
+        "tests/test_claude_agent_sdk_runner.py",
+        "tests/test_claude_agent_worker_adapter.py",
+        "tests/test_required_tool_contract.py",
+        "tests/test_intent_router.py",
+        "tests/test_public_answer_stream.py",
+        "tests/test_sandbox_executor_app.py",
+        "tests/test_settings.py",
         "tests/test_sandbox_container_provider.py",
+        "tests/test_opensandbox_live_credential_isolation.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
         "tests/test_sandbox_runtime_evidence_script.py",
@@ -149,7 +158,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     }
     assert actual_shards == BACKEND_TEST_SHARDS
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 28
+    assert len(all_selectors) == len(set(all_selectors)) == 37
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step

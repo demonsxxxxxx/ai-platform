@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from app import repositories
 from app.db import transaction
 from app.execution_boundary import (
     REAL_SANDBOX_PROVIDERS,
@@ -22,7 +21,6 @@ from app.runtime.sandbox.container_provider import (
     ContainerCleanupFailedError,
     ContainerProvider,
     ExecutorHealthTimeoutError,
-    OpenSandboxContainerProvider,
     OpenSandboxStartupFailedError,
     SandboxRuntimeError,
     create_container_provider,
@@ -34,6 +32,7 @@ from app.runtime.sandbox.creation_claim import (
     SandboxCreationScope,
     acquire_sandbox_creation_claim,
 )
+from app.runtime.sandbox import lease_repository as sandbox_lease_repository
 from app.runtime.sandbox.contracts import (
     ContainerLease,
     ExecutorTaskRequest,
@@ -114,8 +113,10 @@ class SandboxRuntime:
             lambda token_id: derive_callback_token(self.settings.sandbox_callback_token, token_id)
         )
         self.record_lease = record_lease or self._record_runtime_lease
+        self._uses_default_lease_recorder = record_lease is None
         self.release_lease = release_lease or self._release_runtime_lease
         self.creation_claim_factory = creation_claim_factory
+        self._lease_record_connections: dict[str, Any] = {}
 
     async def _emit(self, sink: EventSink | None, event: AgentEvent) -> None:
         if sink is None:
@@ -129,15 +130,24 @@ class SandboxRuntime:
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
+        lease_record_id: str | None = None,
     ) -> str | None:
-        result = self.record_lease(lease, request, workspace)
+        if self._uses_default_lease_recorder:
+            result = self._record_runtime_lease(
+                lease,
+                request,
+                workspace,
+                lease_record_id=lease_record_id,
+            )
+        else:
+            result = self.record_lease(lease, request, workspace)
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, dict) and result.get("id"):
             return str(result["id"])
         if isinstance(result, str) and result:
             return result
-        return None
+        return lease_record_id
 
     async def _call_release_lease(self, lease: ContainerLease, reason: str, lease_record_id: str | None = None) -> None:
         if len(inspect.signature(self.release_lease).parameters) >= 3:
@@ -174,6 +184,8 @@ class SandboxRuntime:
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
+        *,
+        lease_record_id: str | None = None,
     ) -> str | None:
         runtime_container_id = str(lease.container_id or "").strip()
         runtime_container_name = str(lease.container_name or "").strip()
@@ -301,40 +313,65 @@ class SandboxRuntime:
                 "authorized_native_tool_scope_sha256",
             ):
                 lease_payload[f"governed_egress_{proof_field}"] = governed_egress_proof[proof_field]
+        try:
+            async with transaction() as conn:
+                if lease_record_id is not None:
+                    self._lease_record_connections[lease_record_id] = conn
+                row = await sandbox_lease_repository.create_sandbox_lease(
+                    conn,
+                    tenant_id=lease.tenant_id,
+                    workspace_id=lease.workspace_id,
+                    user_id=lease.user_id,
+                    session_id=lease.session_id,
+                    run_id=lease.run_id,
+                    attempt_id=request.attempt_id,
+                    trace_id=request.trace_id,
+                    sandbox_mode=lease.sandbox_mode,
+                    provider=lease.provider,
+                    browser_enabled=lease.browser_enabled,
+                    ttl_seconds=1800,
+                    resource_limits_json=request.resource_limits,
+                    user_visible_payload_json=workspace.user_visible_payload(),
+                    lease_payload_json=lease_payload,
+                    runtime_container_id=runtime_container_id,
+                    runtime_container_name=runtime_container_name,
+                    runtime_executor_url=runtime_executor_url,
+                    runtime_workspace_container_path=runtime_workspace_container_path,
+                    lease_id=lease_record_id,
+                )
+        finally:
+            if lease_record_id is not None:
+                self._lease_record_connections.pop(lease_record_id, None)
+        return str(row.get("id")) if isinstance(row, dict) and row.get("id") else None
+
+    def _force_finish_lease_record(self, lease_record_id: str | None) -> bool:
+        if lease_record_id is None:
+            return False
+        connection = self._lease_record_connections.get(lease_record_id)
+        pgconn = getattr(connection, "pgconn", None)
+        finish = getattr(pgconn, "finish", None)
+        if not callable(finish):
+            return False
+        finish()
+        return True
+
+    async def _release_runtime_lease(self, lease: ContainerLease, reason: str, lease_record_id: str | None = None) -> None:
+        if not lease_record_id:
+            return
+        attempt_id = str(lease.labels.get("ai-platform.attempt_id") or "").strip() or None
         async with transaction() as conn:
-            row = await repositories.create_sandbox_lease(
+            await sandbox_lease_repository.fence_sandbox_lease_release(
                 conn,
                 tenant_id=lease.tenant_id,
                 workspace_id=lease.workspace_id,
                 user_id=lease.user_id,
                 session_id=lease.session_id,
                 run_id=lease.run_id,
-                attempt_id=request.attempt_id,
-                trace_id=request.trace_id,
+                attempt_id=attempt_id,
+                lease_id=lease_record_id,
                 sandbox_mode=lease.sandbox_mode,
                 provider=lease.provider,
                 browser_enabled=lease.browser_enabled,
-                ttl_seconds=1800,
-                resource_limits_json=request.resource_limits,
-                user_visible_payload_json=workspace.user_visible_payload(),
-                lease_payload_json=lease_payload,
-                runtime_container_id=runtime_container_id,
-                runtime_container_name=runtime_container_name,
-                runtime_executor_url=runtime_executor_url,
-                runtime_workspace_container_path=runtime_workspace_container_path,
-            )
-        return str(row.get("id")) if isinstance(row, dict) and row.get("id") else None
-
-    async def _release_runtime_lease(self, lease: ContainerLease, reason: str, lease_record_id: str | None = None) -> None:
-        if not lease_record_id:
-            return
-        async with transaction() as conn:
-            await repositories.release_sandbox_lease(
-                conn,
-                tenant_id=lease.tenant_id,
-                user_id=lease.user_id,
-                run_id=lease.run_id,
-                lease_id=lease_record_id,
                 reason=reason,
             )
 
@@ -402,23 +439,173 @@ class SandboxRuntime:
         workspace = self.workspace_manager.prepare(request)
         lease_started_at = time.monotonic()
         lease_record_id: str | None = None
+        lease: ContainerLease | None = None
+        lease_record_uncertain = False
+        cleanup_timeout_seconds = max(
+            float(
+                getattr(
+                    self.settings,
+                    "sandbox_container_start_timeout_seconds",
+                    30,
+                )
+                or 30
+            ),
+            0.001,
+        )
+
+        def consume_background_task(task: asyncio.Task[Any]) -> None:
+            try:
+                task.exception()
+            except BaseException:
+                pass
+
+        async def await_bounded_task(task: asyncio.Task[Any]) -> Any:
+            cancellation: asyncio.CancelledError | None = None
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + cleanup_timeout_seconds
+            while not task.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    task.cancel()
+                    task.add_done_callback(consume_background_task)
+                    raise TimeoutError("sandbox cleanup timed out")
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=remaining,
+                    )
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        cancellation = exc
+                except TimeoutError:
+                    task.cancel()
+                    task.add_done_callback(consume_background_task)
+                    raise TimeoutError("sandbox cleanup timed out") from None
+            result = task.result()
+            if cancellation is not None:
+                raise cancellation
+            return result
 
         async def create_and_record_lease() -> ContainerLease:
-            nonlocal lease_record_id
+            nonlocal lease, lease_record_id, lease_record_uncertain
             lease = await self.provider.create_or_reuse(request, workspace)
+            if self._uses_default_lease_recorder:
+                lease_record_id = sandbox_lease_repository.new_lease_id()
+            record_task = asyncio.create_task(
+                self._call_record_lease(
+                    lease,
+                    request,
+                    workspace,
+                    lease_record_id,
+                )
+            )
             try:
-                lease_record_id = await self._call_record_lease(lease, request, workspace)
+                lease_record_id = await asyncio.shield(record_task)
+            except asyncio.CancelledError:
+                try:
+                    lease_record_id = await await_bounded_task(record_task)
+                except TimeoutError:
+                    lease_record_uncertain = True
+                    force_finished = (
+                        self._uses_default_lease_recorder
+                        and self._force_finish_lease_record(lease_record_id)
+                    )
+                    if force_finished and not record_task.done():
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(record_task),
+                                timeout=cleanup_timeout_seconds,
+                            )
+                        except BaseException:
+                            pass
+                except Exception:
+                    pass
+                raise
             except BaseException as exc:
                 stop_result = await self.provider.stop(lease, reason="lease_record_failed")
                 if stop_result.status == "failed":
                     raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
+                if lease_record_id is not None:
+                    try:
+                        await self._call_release_lease(
+                            lease,
+                            "lease_record_failed",
+                            lease_record_id,
+                        )
+                    except Exception as release_exc:
+                        raise SandboxRuntimeCleanupError(
+                            reason="lease_record_failed",
+                            stop_result=StopResult(
+                                container_id=lease.container_id,
+                                status="failed",
+                                message="sandbox lease release fence failed",
+                            ),
+                        ) from release_exc
                 raise
             return lease
 
+        async def compensate_created_lease(reason: str) -> None:
+            if lease is None:
+                return
+            try:
+                stop_result = await self.provider.stop(lease, reason=reason)
+            except Exception:
+                stop_result = StopResult(
+                    container_id=lease.container_id,
+                    status="failed",
+                    message="sandbox provider stop raised",
+                )
+            if stop_result.status == "failed":
+                raise SandboxRuntimeCleanupError(
+                    reason=reason,
+                    stop_result=stop_result,
+                )
+            try:
+                await self._call_release_lease(
+                    lease,
+                    reason,
+                    lease_record_id,
+                )
+            except Exception as release_exc:
+                raise SandboxRuntimeCleanupError(
+                    reason=reason,
+                    stop_result=StopResult(
+                        container_id=lease.container_id,
+                        status="failed",
+                        message="sandbox lease release failed",
+                    ),
+                ) from release_exc
+            if lease_record_uncertain and lease_record_id is None:
+                raise SandboxRuntimeCleanupError(
+                    reason=reason,
+                    stop_result=StopResult(
+                        container_id=lease.container_id,
+                        status="failed",
+                        message="sandbox lease persistence outcome is uncertain",
+                    ),
+                )
+
+        async def run_compensation(reason: str) -> None:
+            cleanup_task = asyncio.create_task(compensate_created_lease(reason))
+            try:
+                await await_bounded_task(cleanup_task)
+            except TimeoutError as exc:
+                raise SandboxRuntimeCleanupError(
+                    reason=reason,
+                    stop_result=StopResult(
+                        container_id=lease.container_id if lease is not None else "unknown",
+                        status="failed",
+                        message="sandbox cleanup timed out",
+                    ),
+                ) from exc
+
         try:
-            if isinstance(self.provider, OpenSandboxContainerProvider) or getattr(self.provider, "provider_name", "") == "opensandbox":
+            claim_provider = str(
+                getattr(self.provider, "provider_name", "") or ""
+            ).strip().lower()
+            if claim_provider in REAL_SANDBOX_PROVIDERS:
                 claim_scope = SandboxCreationScope(
-                    provider="opensandbox",
+                    provider=claim_provider,
                     tenant_id=request.tenant_id,
                     workspace_id=request.workspace_id,
                     user_id=request.user_id,
@@ -432,12 +619,22 @@ class SandboxRuntime:
                 )
                 async with self.creation_claim_factory(claim_scope, timeout_seconds=timeout_seconds) as claim:
                     if claim.active_lease_exists:
-                        raise ContainerStartFailedError("OpenSandbox exact-attempt lease is already active")
+                        raise ContainerStartFailedError(
+                            "Sandbox exact-attempt lease is already active"
+                        )
                     lease = await create_and_record_lease()
             else:
                 lease = await create_and_record_lease()
+        except asyncio.CancelledError as exc:
+            if lease is not None:
+                try:
+                    await run_compensation("creation_claim_cancelled")
+                except SandboxRuntimeCleanupError as cleanup_exc:
+                    raise cleanup_exc from exc
+            raise
         except SandboxCreationClaimError as exc:
-            raise ContainerStartFailedError("OpenSandbox creation claim is unavailable") from exc
+            await run_compensation("creation_claim_release_failed")
+            raise ContainerStartFailedError("Sandbox creation claim is unavailable") from exc
         except OpenSandboxStartupFailedError as exc:
             self._log_opensandbox_startup_evidence(request, exc.private_evidence)
             raise
@@ -533,6 +730,9 @@ class SandboxRuntime:
 
             callback_token_id = self._lease_callback_token_id(lease, attempt_id=request.attempt_id)
             task_request = ExecutorTaskRequest(
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
                 session_id=request.session_id,
                 run_id=request.run_id,
                 attempt_id=request.attempt_id,
@@ -555,9 +755,16 @@ class SandboxRuntime:
                 expected_run_id=request.run_id,
             )
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
-            collection_started = True
-            await self.provider.collect_workspace(lease, request, workspace)
-            collection_succeeded = True
+            cleanup_timed_out = (
+                str(response.get("status") or "") == "failed"
+                and str(response.get("error_code") or "") == "executor_cleanup_timeout"
+            )
+            if cleanup_timed_out:
+                await stop_and_release_owned("executor_cleanup_timeout")
+            else:
+                collection_started = True
+                await self.provider.collect_workspace(lease, request, workspace)
+                collection_succeeded = True
         except BaseException as exc:
             validation_rejected = validation_started and not validation_succeeded
             staging_rejected = staging_started and not staging_succeeded

@@ -34,6 +34,7 @@ class PublicAnswerStreamGate:
         self._published_text = False
         self._public_answer_text = ""
         self._sealed = False
+        self._deferred_until_finish = False
         self._released_after_verified_capability = False
         self._failed = (
             not callable(sanitizer)
@@ -64,6 +65,8 @@ class PublicAnswerStreamGate:
             return ()
         if not text:
             return ()
+        if self._deferred_until_finish:
+            return ()
         self._accepted_text = True
         self._extend_logical_view(text)
         candidate = self._project(self._pending + text)
@@ -87,6 +90,8 @@ class PublicAnswerStreamGate:
             return
         if private_replacements is not None:
             self._add_replacements(private_replacements)
+        if self._deferred_until_finish:
+            return
         self._sealed = True
         self._released_after_verified_capability = False
         if self._failed or self._logical_overflowed:
@@ -103,6 +108,15 @@ class PublicAnswerStreamGate:
             or len(self._pending) > self._max_sealed_chars
         ):
             self._fail()
+
+    def defer_until_finish(self) -> None:
+        """Discard interim text and project only the authoritative terminal answer."""
+
+        if self._failed or self._finished:
+            return
+        self._pending = ""
+        self._logical_view = ""
+        self._deferred_until_finish = True
 
     def release_after_verified_capability(self) -> None:
         """Allow new text only after the caller has verified capability completion.

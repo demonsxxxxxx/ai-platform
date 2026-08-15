@@ -539,7 +539,7 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     assert container_provider._native_tool_required(runtime_request)
 
 
-def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
+def test_worker_keeps_bash_available_without_required_completion():
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
@@ -573,8 +573,6 @@ def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
         subjects=subjects,
         admin_bypass=False,
     )
-    declaration = declaration_from_input(payload.input)
-
     missing = worker_module.required_tool_completion_for_run(
         payload=payload,
         run_identity={
@@ -588,42 +586,11 @@ def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
         authorization=authorization,
         executor_payload={},
     )
-    valid = worker_module.required_tool_completion_for_run(
-        payload=payload,
-        run_identity={
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-a",
-        },
-        attempt_id="qat-test-attempt",
-        authorization=authorization,
-        executor_payload={
-            "required_capability_evidence": {
-                "schema_version": "ai-platform.required-capability-evidence.v1",
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "attempt_id": "qat-test-attempt",
-                "tool_call_id": None,
-                "capability_kind": "builtin",
-                "canonical_identity": "Bash",
-                "lifecycle_phase": "completed",
-                "lifecycle_status": "succeeded",
-                "evidence_source": "executor_private_payload",
-                "trust_basis": "attempt_bound_tool_invocation",
-                "public_label": "controlled_execution_capability",
-                "public_status": "succeeded",
-                "declaration_sha256": declaration.declaration_sha256,
-            }
-        },
-    )
-
-    assert missing.reason == "required_tool_completion_evidence_missing"
-    assert valid.allowed is True
+    assert declaration_from_input(payload.input) is None
+    assert authorization.allowed is True
+    assert authorization.reason == "required_tool_not_declared"
+    assert missing.allowed is True
+    assert missing.reason == "required_tool_not_declared"
 
 
 def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
@@ -981,7 +948,7 @@ def default_cancel_not_requested(monkeypatch):
             **kwargs,
         }
 
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease, raising=False)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease, raising=False)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -1134,7 +1101,11 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
             "execution_kind": "harness_chat",
             "skill_id": None,
             "file_ids": [],
-            "input": {"message": "hello", "mcp_tool_ids": ["search-a"]},
+            "input": {
+                "message": "hello",
+                "mcp_tool_ids": ["search-a"],
+                "execution_tier": "sdk_only_writing",
+            },
             "executor_type": "claude-agent-worker",
             "schema_version": "ai-platform.run-payload.v2",
         }
@@ -1169,6 +1140,11 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
         "_reauthorize_mcp_capabilities",
         fake_reauthorize_mcp,
     )
+    monkeypatch.setattr(
+        worker_module,
+        "get_settings",
+        lambda: types.SimpleNamespace(sandbox_container_provider="opensandbox"),
+    )
 
     result = await worker_module._reauthorize_worker_capabilities(
         object(),
@@ -1183,7 +1159,21 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
 
     assert result is sentinel
     assert captured["requested_tool_ids"] == ["search-a"]
-    assert captured["tool_policy_subjects"] == []
+    assert [
+        subject["identity"] for subject in captured["tool_policy_subjects"]
+    ] == ["Read", "Glob", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
+    bash_subject = next(
+        subject
+        for subject in captured["tool_policy_subjects"]
+        if subject["identity"] == "Bash"
+    )
+    assert bash_subject["allowed_parameter_keys"] == [
+        "command",
+        "timeout",
+        "description",
+    ]
+    assert bash_subject["required_parameter_keys"] == ["command"]
+    assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
 
 
 def test_locked_harness_run_reconstructs_null_skill_identity():
@@ -1566,7 +1556,10 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
         captured.update(kwargs)
         return types.SimpleNamespace(requires_real_sandbox=False)
 
-    monkeypatch.setattr(worker_module, "decide_execution_boundary", decide)
+    monkeypatch.setattr(
+        "app.execution_boundary.decide_execution_boundary",
+        decide,
+    )
     payload = QueueRunPayload.model_validate(
         {
             key: value
@@ -2902,7 +2895,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -3038,7 +3031,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3094,7 +3087,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
 
@@ -3138,7 +3131,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
@@ -3191,7 +3184,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -3248,7 +3241,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
@@ -3355,7 +3348,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": StreamingAdapter()}))
@@ -3474,7 +3467,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3664,7 +3657,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3738,7 +3731,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     with pytest.raises(RuntimeError, match="terminal write failed"):
@@ -5127,7 +5120,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5372,7 +5365,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6970,7 +6963,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         "app.worker.repositories.get_context_snapshot_for_worker",
         get_context_snapshot_for_worker,
     )
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
@@ -8500,7 +8493,7 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     raw = base_payload(
@@ -8519,7 +8512,7 @@ def _task6_assert_no_executor_calls(calls):
 
 
 @pytest.mark.asyncio
-async def test_worker_required_bash_undeclared_by_locked_manifest_fails_before_adapter(monkeypatch):
+async def test_worker_bash_text_does_not_create_required_capability(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"message": "请执行 Bash 命令 pwd"},
@@ -8528,20 +8521,16 @@ async def test_worker_required_bash_undeclared_by_locked_manifest_fails_before_a
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_tool_unavailable"
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
+    assert outcome.status == "succeeded"
+    assert any(call[0] == "adapter" for call in calls)
+    assert not any(
+        call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
         for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
-    assert denied_event["payload"]["capability_id"] == "Bash"
-    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
 
 
 @pytest.mark.asyncio
-async def test_worker_admin_required_declared_bash_uses_independent_ordinary_scope(monkeypatch):
+async def test_worker_admin_bash_text_does_not_require_completion_evidence(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"message": "请执行 Bash 命令 pwd"},
@@ -8555,15 +8544,14 @@ async def test_worker_admin_required_declared_bash_uses_independent_ordinary_sco
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_tool_completion_evidence_missing"
+    assert outcome.status == "succeeded"
     assert any(call[0] == "registry_get" for call in calls)
     assert any(call[0] == "adapter" for call in calls)
 
 
 @pytest.mark.parametrize("restriction", ["department", "hidden", "disabled"])
 @pytest.mark.asyncio
-async def test_worker_admin_required_declared_bash_denies_bypass_only_scope_before_adapter(
+async def test_worker_admin_bash_text_does_not_replay_retired_required_scope(
     monkeypatch,
     restriction,
 ):
@@ -8585,15 +8573,12 @@ async def test_worker_admin_required_declared_bash_denies_bypass_only_scope_befo
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_tool_unavailable"
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
+    assert outcome.status == "succeeded"
+    assert any(call[0] == "adapter" for call in calls)
+    assert not any(
+        call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
         for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
-    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
 
 
 @pytest.mark.asyncio
