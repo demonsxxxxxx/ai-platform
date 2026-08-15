@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from app.office_context_readiness import (
+    _current_source_commit,
     build_office_context_readiness,
     render_office_context_readiness_markdown,
 )
@@ -203,6 +204,7 @@ def _write_office_runtime_entry(
     image: str = "ai-platform:pr44-s2-verifier-20260616083334",
     source_tree_dirty: bool = True,
     source_snapshot: dict | None = None,
+    captured_at: str = "2026-06-16T08:36:40+08:00",
 ) -> None:
     evidence_dir = repo_root / "docs" / "release-evidence" / "office-context-runtime" / evidence_dir_name
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -215,7 +217,7 @@ def _write_office_runtime_entry(
         "issue_refs": ["#22"],
         "pr_refs": pr_refs if pr_refs is not None else ["#44"],
         "artifact_kind": artifact_kind,
-        "captured_at": "2026-06-16T08:36:40+08:00",
+        "captured_at": captured_at,
         "source_ref": {
             "branch": source_branch,
             "runtime_source_marker": runtime_source_marker,
@@ -249,7 +251,7 @@ def _write_office_runtime_entry(
     (evidence_dir / f"{evidence_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> None:
+def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> str:
     runtime_subject_sha = "1234567890abcdef1234567890abcdef12345678"
     _write_office_runtime_entry(
         repo_root,
@@ -313,6 +315,7 @@ def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> None:
             "runtime_affecting_dirty_paths": [],
         },
     )
+    return runtime_subject_sha
 
 
 def test_office_context_readiness_defines_safe_context_pack_contract_without_enabling_runtime(tmp_path):
@@ -521,9 +524,12 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
 
 
 def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_reviewed_evidence(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["open_gaps"] == []
@@ -579,6 +585,107 @@ def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_revie
     assert readiness["policy"]["does_not_expand_multi_agent_beta"] is True
 
 
+def test_office_context_readiness_does_not_close_gaps_for_another_runtime_subject(tmp_path):
+    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    current_subject = "abcdef1234567890abcdef1234567890abcdef12"
+
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=current_subject,
+    )
+
+    assert readiness["evaluated_runtime_subject"] == current_subject
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
+    ]
+    assert readiness["closed_runtime_gaps"] == []
+    assert readiness["runtime_acceptance_evidence"] == {}
+
+
+def test_office_context_readiness_default_subject_requires_a_clean_git_tree(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "office-readiness@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Office Readiness Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    marker = tmp_path / "marker.txt"
+    marker.write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=tmp_path, check=True, capture_output=True)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert _current_source_commit(tmp_path) == expected_commit
+
+    marker.write_text("dirty\n", encoding="utf-8")
+
+    assert _current_source_commit(tmp_path) == ""
+
+
+def test_office_context_readiness_selects_latest_capture_for_exact_subject(tmp_path):
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    source_snapshot = {
+        "schema_version": "ai-platform.source-snapshot.v1",
+        "source_tree_commit_sha": runtime_subject_sha,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": runtime_subject_sha,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+    }
+    for evidence_id, evidence_dir_name, captured_at, run_id in [
+        ("executor-new", "a-new", "2026-06-18T08:36:40+08:00", "run-new"),
+        ("executor-old", "z-old", "2026-06-17T08:36:40+08:00", "run-old"),
+    ]:
+        _write_office_runtime_entry(
+            tmp_path,
+            evidence_id=evidence_id,
+            artifact_kind="executor_context_pack_runtime_acceptance",
+            verifier="scripts/verify_executor_context_pack.py",
+            runtime_key="executor_context_pack_runtime_acceptance",
+            runtime_payload={
+                **_valid_executor_context_pack_evidence(),
+                "run_id": run_id,
+            },
+            verifier_checks=[
+                "check_executor_context_pack_evidence",
+                "check_no_secret_leakage",
+            ],
+            evidence_dir_name=evidence_dir_name,
+            commit_sha=runtime_subject_sha,
+            runtime_subject_commit_sha=runtime_subject_sha,
+            pr_refs=[],
+            source_branch="main",
+            runtime_source_marker=runtime_subject_sha,
+            image=f"ai-platform:{runtime_subject_sha}",
+            source_tree_dirty=False,
+            source_snapshot=source_snapshot,
+            captured_at=captured_at,
+        )
+
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
+
+    executor_evidence = readiness["runtime_acceptance_evidence"][
+        "executor_context_pack_runtime_acceptance"
+    ]
+    assert executor_evidence["evidence_id"] == "executor-new"
+    assert executor_evidence["run_id"] == "run-new"
+
+
 def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack_evidence(tmp_path):
     runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
     _write_office_runtime_entry(
@@ -613,7 +720,10 @@ def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "partial_blocked"
     assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
@@ -673,7 +783,10 @@ def test_office_context_readiness_accepts_future_main_executor_context_pack_evid
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
     executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_runtime_acceptance"]
@@ -704,7 +817,10 @@ def test_office_context_readiness_rejects_executor_context_evidence_without_sour
         source_tree_dirty=False,
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == [
         "executor_context_pack_runtime_acceptance",
@@ -744,7 +860,10 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == [
         "executor_context_pack_runtime_acceptance",
@@ -784,7 +903,10 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == [
         "executor_context_pack_runtime_acceptance",
@@ -794,7 +916,7 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
 
 
 def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_path = (
         tmp_path
         / "docs/release-evidence/office-context-runtime/current/executor-live.json"
@@ -803,14 +925,17 @@ def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
     payload["review_status"] = "draft"
     evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == ["executor_context_pack_runtime_acceptance"]
     assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
 
 
 def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input_keys(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_path = (
         tmp_path
         / "docs/release-evidence/office-context-runtime/current/executor-live.json"
@@ -825,7 +950,10 @@ def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input
     ]
     evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "partial_blocked"
     assert readiness["open_gaps"] == ["executor_context_pack_runtime_acceptance"]
@@ -833,14 +961,17 @@ def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input
 
 
 def test_office_context_readiness_requires_current_runtime_evidence_binding(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_root = tmp_path / "docs/release-evidence/office-context-runtime"
     for evidence_path in evidence_root.rglob("*.json"):
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
         payload["source_ref"]["branch"] = "feature"
         evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "partial_blocked"
     assert readiness["open_gaps"] == [
@@ -852,7 +983,7 @@ def test_office_context_readiness_requires_current_runtime_evidence_binding(tmp_
 
 
 def test_office_context_readiness_rejects_incomplete_sandbox_hardening_evidence(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_path = next(
         (
             tmp_path
@@ -865,7 +996,10 @@ def test_office_context_readiness_rejects_incomplete_sandbox_hardening_evidence(
     sandbox_payload["hardening"].pop("cached_lease_revalidation")
     evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
     assert readiness["closed_runtime_gaps"] == ["executor_context_pack_runtime_acceptance"]
