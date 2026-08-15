@@ -95,6 +95,10 @@ Rules:
    explicit independent-subject check.
 5. GitHub check success is reported as CI evidence only.
 
+Required pytest integration lanes write JUnit XML and run
+`tools/require_zero_junit_skips.py` against that exact report. A missing,
+malformed, empty, or skipped report fails the lane.
+
 ## 5. Runtime readiness boundary
 
 Code in `app/` may expose readiness only when it observes the running process or
@@ -131,8 +135,8 @@ being reported as completed before the executable evidence exists.
 | --- | --- | --- | --- |
 | `tests/test_lambchat_streaming_replay.py` | Entire module unconditionally skipped as retired PostgreSQL-poll transport. | delete | Completed in the isolated retirement batch; canonical SSE v2.1 tests remain. Publish only after the backend workflow writer is serialized. |
 | 19 retired PG-poll tests in `tests/test_lambchat_frontend_compat.py` | A dynamic fixture skipped named retired tests while retaining their bodies. | delete | Completed in the isolated retirement batch; focused LambChat/SSE tests passed. Publish only after overlap audit. |
-| `tests/test_streaming_postgres.py` | Selected by backend required, but all six tests skip when `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` is absent; the workflow does not provide it. | required PostgreSQL integration | Pending PR #1067 terminal state. Provide a real service/DSN and fail when any selected test skips. |
-| real-Redis test in `tests/test_streaming_redis.py` | Selected by backend required, but skips when `AI_PLATFORM_SSE_REDIS_TEST_URL` is absent; the workflow does not provide it. | required Redis integration | Pending PR #1067 terminal state. Provide Redis and enforce zero skips. |
+| `tests/test_streaming_postgres.py` | Selected by backend required, but all six tests skip when `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` is absent; the workflow does not provide it. | required PostgreSQL integration | Pending PR #1067 terminal state. Provide a real service/DSN and enforce the generated report with `tools/require_zero_junit_skips.py`. |
+| real-Redis test in `tests/test_streaming_redis.py` | Selected by backend required, but skips when `AI_PLATFORM_SSE_REDIS_TEST_URL` is absent; the workflow does not provide it. | required Redis integration | Pending PR #1067 terminal state. Provide Redis and enforce the generated report with `tools/require_zero_junit_skips.py`. |
 | PostgreSQL interleaving test in `tests/test_repositories.py` | Selected by backend required but skips without `AI_PLATFORM_S0A_SCHEMA_TEST_DSN`. | required PostgreSQL integration | Move into the same real-service lane; do not treat the general repository shard as integration proof until then. |
 | `tests/test_agent_profiles_postgres.py` | Required job provisions PostgreSQL and missing DSN in GitHub Actions raises instead of skipping. | retain required integration | Current positive reference for fail-closed integration topology. |
 | other `*_postgres.py` opt-in suites | Schema, retention, streaming-schema, persistence-limit, capability-distribution, and MCP PostgreSQL suites are not selected by any workflow. | explicit external acceptance or owned CI lane | Pending owner/lane assignment. They MUST NOT be cited as CI evidence while unselected. |

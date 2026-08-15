@@ -18,6 +18,7 @@ PYTEST_COMMAND = (
     "tests/test_packaging_publish_workflow.py "
     "tests/test_release_image_manifest.py "
     "tests/test_release_authority.py "
+    "tests/test_require_zero_junit_skips.py "
     "tests/test_runtime_launch_script.py "
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
