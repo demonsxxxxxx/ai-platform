@@ -190,6 +190,80 @@ def test_docker_environment_keeps_proxy_but_rejects_daemon_override(
     assert "DOCKER_HOST" not in environment and "DOCKER_CONTEXT" not in environment
 
 
+def test_runner_keeps_default_trimmed_output_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        quickstart.subprocess,
+        "run",
+        lambda *_args, **_kwargs: quickstart.subprocess.CompletedProcess(
+            ["command"], 0, stdout="  value \r\n"
+        ),
+    )
+
+    assert quickstart.Runner().run(["command"], output=True) == "value"
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_inspect_preserves_empty_source_commit_field(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line_ending: str
+) -> None:
+    root = tmp_path / "managed"
+    expected_config = ",".join(
+        str(root / "releases" / COMMIT / path) for path in quickstart.COMPOSE_FILES
+    )
+    stdout = "\t".join(
+        (
+            "",
+            "postgres:16",
+            "0",
+            "running",
+            "healthy",
+            quickstart.PROJECT,
+            "postgres",
+            expected_config,
+        )
+    ) + line_ending
+    calls: list[list[str]] = []
+
+    def run(command: object, **_kwargs: object) -> quickstart.subprocess.CompletedProcess[str]:
+        calls.append(list(command))
+        return quickstart.subprocess.CompletedProcess(list(command), 0, stdout=stdout)
+
+    monkeypatch.setattr(quickstart.subprocess, "run", run)
+    release = quickstart.Quickstart(tmp_path, root)
+    release.docker = ["docker"]
+
+    assert release._inspect("postgres") == [
+        "",
+        "postgres:16",
+        "0",
+        "running",
+        "healthy",
+        quickstart.PROJECT,
+        "postgres",
+        expected_config,
+    ]
+    assert len(calls) == 1
+    assert calls[0][:4] == [
+        "docker",
+        "container",
+        "inspect",
+        "ai-platform-postgres",
+    ]
+    assert calls[0][-2] == "--format"
+    assert calls[0][-1] == "\t".join((
+        '{{index .Config.Labels "ai-platform.source-commit"}}',
+        "{{.Config.Image}}",
+        "{{.RestartCount}}",
+        "{{.State.Status}}",
+        "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+        '{{index .Config.Labels "com.docker.compose.project"}}',
+        '{{index .Config.Labels "com.docker.compose.service"}}',
+        '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
+    ))
+
+
 @pytest.mark.parametrize("extra_service", [False, True])
 def test_current_runtime_requires_exact_internal_test_topology(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_service: bool
