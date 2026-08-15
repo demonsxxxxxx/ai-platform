@@ -18,7 +18,7 @@ import stat
 import subprocess
 import time
 from typing import Any, Sequence
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener, urlopen
 
 
 MANAGED_ROOT = Path("/data/ai-platform-internal-test")
@@ -30,6 +30,7 @@ COMPOSE_FILES = (
 BACKEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-backend"
 FRONTEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-frontend"
 ORIGIN_URL = "https://github.com/demonsxxxxxx/ai-platform.git"
+OPENSANDBOX_HEALTH_URL = "http://172.18.0.1:8080/health"
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
@@ -58,7 +59,8 @@ class Subject:
 class Runner:
     def run(self, command: Sequence[str], *, cwd: Path | None = None,
             output: bool = False, timeout: int = 300,
-            environment: dict[str, str] | None = None) -> str:
+            environment: dict[str, str] | None = None,
+            strip_output: bool = True) -> str:
         command_env = dict(os.environ if environment is None else environment)
         command_env["GIT_TERMINAL_PROMPT"] = "0"
         result = subprocess.run(
@@ -69,7 +71,9 @@ class Runner:
         )
         if result.returncode:
             raise QuickstartError("command failed")
-        return result.stdout.strip() if output else ""
+        if not output:
+            return ""
+        return result.stdout.strip() if strip_output else result.stdout.rstrip("\r\n")
 
 
 def _load_subject(path: Path, managed_root: Path | None = None) -> Subject:
@@ -170,6 +174,10 @@ def _docker_environment() -> dict[str, str]:
     return {key: os.environ[key] for key in allowed if key in os.environ}
 
 
+def _direct_urlopen(url: str, *, timeout: int):
+    return build_opener(ProxyHandler({})).open(url, timeout=timeout)
+
+
 def _interrupt(*_args: object) -> None:
     raise KeyboardInterrupt
 
@@ -215,7 +223,7 @@ class Quickstart:
         ))
         fields = self.runner.run(
             [*self.docker, "container", "inspect", f"ai-platform-{service}", "--format", fmt],
-            output=True, timeout=30, environment=_docker_environment(),
+            output=True, timeout=30, environment=_docker_environment(), strip_output=False,
         ).split("\t")
         if len(fields) != 8:
             raise QuickstartError("runtime metadata is invalid")
@@ -347,7 +355,7 @@ class Quickstart:
                 raise QuickstartError("runtime image mismatch")
         if self.runner.run(["systemctl", "is-active", "opensandbox.service"], output=True, timeout=15) != "active":
             raise QuickstartError("OpenSandbox is not active")
-        with urlopen("http://127.0.0.1:8080/health", timeout=10) as response:
+        with _direct_urlopen(OPENSANDBOX_HEALTH_URL, timeout=10) as response:
             if response.status != 200 or len(response.read(65537)) > 65536:
                 raise QuickstartError("OpenSandbox health failed")
 

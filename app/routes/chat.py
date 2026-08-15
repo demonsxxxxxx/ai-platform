@@ -534,30 +534,6 @@ async def _persist_pre_persistence_rejection(
             )
 
 
-async def _load_existing_chat_submission(
-    *,
-    principal: AuthPrincipal,
-    submission_id: str | None,
-    request_fingerprint: str | None,
-) -> ChatStreamResponse | None:
-    if submission_id is None or request_fingerprint is None:
-        return None
-    async with transaction() as conn:
-        existing = await repositories.get_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=submission_id,
-        )
-    if existing is None:
-        return None
-    if _is_preledger_recovery_tombstone(existing, principal=principal):
-        return _chat_stream_response_from_submission(existing)
-    if existing.get("request_fingerprint_sha256") != request_fingerprint:
-        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-    return _chat_stream_response_from_submission(existing)
-
-
 async def _admit_chat_submission(
     *,
     principal: AuthPrincipal,

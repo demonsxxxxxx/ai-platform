@@ -190,6 +190,80 @@ def test_docker_environment_keeps_proxy_but_rejects_daemon_override(
     assert "DOCKER_HOST" not in environment and "DOCKER_CONTEXT" not in environment
 
 
+def test_runner_keeps_default_trimmed_output_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        quickstart.subprocess,
+        "run",
+        lambda *_args, **_kwargs: quickstart.subprocess.CompletedProcess(
+            ["command"], 0, stdout="  value \r\n"
+        ),
+    )
+
+    assert quickstart.Runner().run(["command"], output=True) == "value"
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_inspect_preserves_empty_source_commit_field(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line_ending: str
+) -> None:
+    root = tmp_path / "managed"
+    expected_config = ",".join(
+        str(root / "releases" / COMMIT / path) for path in quickstart.COMPOSE_FILES
+    )
+    stdout = "\t".join(
+        (
+            "",
+            "postgres:16",
+            "0",
+            "running",
+            "healthy",
+            quickstart.PROJECT,
+            "postgres",
+            expected_config,
+        )
+    ) + line_ending
+    calls: list[list[str]] = []
+
+    def run(command: object, **_kwargs: object) -> quickstart.subprocess.CompletedProcess[str]:
+        calls.append(list(command))
+        return quickstart.subprocess.CompletedProcess(list(command), 0, stdout=stdout)
+
+    monkeypatch.setattr(quickstart.subprocess, "run", run)
+    release = quickstart.Quickstart(tmp_path, root)
+    release.docker = ["docker"]
+
+    assert release._inspect("postgres") == [
+        "",
+        "postgres:16",
+        "0",
+        "running",
+        "healthy",
+        quickstart.PROJECT,
+        "postgres",
+        expected_config,
+    ]
+    assert len(calls) == 1
+    assert calls[0][:4] == [
+        "docker",
+        "container",
+        "inspect",
+        "ai-platform-postgres",
+    ]
+    assert calls[0][-2] == "--format"
+    assert calls[0][-1] == "\t".join((
+        '{{index .Config.Labels "ai-platform.source-commit"}}',
+        "{{.Config.Image}}",
+        "{{.RestartCount}}",
+        "{{.State.Status}}",
+        "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+        '{{index .Config.Labels "com.docker.compose.project"}}',
+        '{{index .Config.Labels "com.docker.compose.service"}}',
+        '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
+    ))
+
+
 @pytest.mark.parametrize("extra_service", [False, True])
 def test_current_runtime_requires_exact_internal_test_topology(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_service: bool
@@ -356,6 +430,86 @@ def test_http_protocol_error_is_normalized_for_rollback(
 
     with pytest.raises(quickstart.QuickstartError, match="health did not converge"):
         release._wait_health(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
+
+
+def test_health_probes_installed_opensandbox_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = quickstart.Quickstart(tmp_path)
+    subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    requested_urls: list[str] = []
+
+    monkeypatch.setattr(
+        release,
+        "_http_json",
+        lambda path: (
+            {"status": "ok"}
+            if path.endswith("/health")
+            else {"status": "ready", "runtime_commit": COMMIT}
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_inspect",
+        lambda service: [
+            COMMIT if service in {"api", "worker", "frontend"} else "",
+            FRONTEND if service == "frontend" else BACKEND,
+            "0",
+            "running",
+            "none" if service == "worker" else "healthy",
+            quickstart.PROJECT,
+            service,
+            "config",
+        ],
+    )
+    monkeypatch.setattr(release.runner, "run", lambda *_args, **_kwargs: "active")
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    def open_health(url: str, *, timeout: int) -> Response:
+        assert timeout == 10
+        requested_urls.append(url)
+        return Response()
+
+    monkeypatch.setattr(quickstart, "_direct_urlopen", open_health)
+
+    release._health(subject)
+
+    assert requested_urls == ["http://172.18.0.1:8080/health"]
+
+
+def test_direct_health_probe_ignores_process_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_handlers: list[quickstart.ProxyHandler] = []
+
+    class Opener:
+        def open(self, url: str, *, timeout: int) -> object:
+            assert url == quickstart.OPENSANDBOX_HEALTH_URL
+            assert timeout == 10
+            return object()
+
+    def build_direct_opener(handler: quickstart.ProxyHandler) -> Opener:
+        observed_handlers.append(handler)
+        return Opener()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://10.56.0.224:7897")
+    monkeypatch.setattr(quickstart, "build_opener", build_direct_opener)
+
+    quickstart._direct_urlopen(quickstart.OPENSANDBOX_HEALTH_URL, timeout=10)
+
+    assert len(observed_handlers) == 1
+    assert observed_handlers[0].proxies == {}
 
 
 def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands(

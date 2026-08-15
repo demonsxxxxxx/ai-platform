@@ -2347,18 +2347,9 @@ def _docker_network_options(network: Any) -> dict[str, str]:
     return {str(key): str(value).lower() for key, value in raw_options.items()}
 
 
-def _docker_network_has_no_masquerade(network: Any) -> bool:
-    options = _docker_network_options(network)
-    return options.get("com.docker.network.bridge.enable_ip_masquerade") == "false"
-
-
 def _docker_network_authoritative_attrs(network: Any) -> dict[str, Any]:
     attrs = network.get("attrs") if isinstance(network, dict) else getattr(network, "attrs", None)
     return dict(attrs) if isinstance(attrs, dict) else {}
-
-
-def _is_versioned_internal_network_name(name: str) -> bool:
-    return bool(re.fullmatch(r"[a-z0-9][a-z0-9_.-]*-internal-v[1-9][0-9]*", name))
 
 
 def _docker_governed_network_identity(network: Any, configured_name: str) -> tuple[str, str]:
