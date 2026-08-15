@@ -212,26 +212,45 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     }
     assert build_inputs["provenance"] == "false"
 
-    text = _workflow_text()
     assert "secrets." not in build_inputs["build-args"]
     assert "github.token" not in build_inputs["build-args"]
-    assert "password: ${{ github.token }}" in text
-    assert "TRIVY_SEVERITY: HIGH,CRITICAL" in text
-    assert "exit-code: '0'" in text
-    assert "exit-code: '1'" in text
-    assert "ignore-unfixed: false" in text
-    assert "ignore-unfixed: true" in text
-    assert "version: v0.70.0" in text
-    assert "trivy-version:" not in text
-    assert "syft-version: v1.50.0" in text
-    assert "cosign-release: v3.1.3" in text
-    assert "version: v0.36.1" in text
-    assert "cosign verify" in text
-    assert "cosign verify-attestation" in text
-    assert '--cert-identity "$CERTIFICATE_IDENTITY"' in text
-    assert '--source-digest "$SOURCE_COMMIT"' in text
-    assert "--source-ref refs/heads/main" in text
-    assert "--deny-self-hosted-runners" in text
+    login = next(step for step in steps if step.get("name") == "Log in to GHCR")
+    buildx = next(step for step in steps if step.get("name") == "Set up Buildx")
+    sbom = next(step for step in steps if step.get("name") == "Generate SPDX SBOM")
+    inventory = next(
+        step
+        for step in steps
+        if step.get("name") == "Inventory all published digest vulnerabilities"
+    )
+    scan = next(
+        step
+        for step in steps
+        if step.get("name") == "Scan published digest for fixable vulnerabilities"
+    )
+    cosign = next(step for step in steps if step.get("name") == "Install cosign")
+    verify = next(
+        step for step in steps if step.get("name") == "Verify signature and attestations"
+    )
+
+    assert login["with"]["password"] == "${{ github.token }}"
+    assert workflow["env"]["TRIVY_SEVERITY"] == "HIGH,CRITICAL"
+    assert inventory["with"]["exit-code"] == "0"
+    assert inventory["with"]["ignore-unfixed"] == "false"
+    assert inventory["with"]["version"] == "v0.70.0"
+    assert scan["with"]["exit-code"] == "1"
+    assert scan["with"]["ignore-unfixed"] == "true"
+    assert scan["with"]["version"] == "v0.70.0"
+    assert "trivy-version" not in inventory["with"]
+    assert "trivy-version" not in scan["with"]
+    assert sbom["with"]["syft-version"] == "v1.50.0"
+    assert cosign["with"]["cosign-release"] == "v3.1.3"
+    assert buildx["with"]["version"] == "v0.36.1"
+    assert "cosign verify \\" in verify["run"]
+    assert "cosign verify-attestation \\" in verify["run"]
+    assert '--cert-identity "$CERTIFICATE_IDENTITY"' in verify["run"]
+    assert '--source-digest "$SOURCE_COMMIT"' in verify["run"]
+    assert "--source-ref refs/heads/main" in verify["run"]
+    assert "--deny-self-hosted-runners" in verify["run"]
 
 
 def test_trivy_inventory_and_fixable_failure_reports_are_run_bound_and_untrusted():
@@ -590,20 +609,36 @@ def test_spdx_binding_failure_uploads_only_untrusted_run_bound_diagnostics():
 
 
 def test_artifact_and_evidence_names_bind_run_attempt():
-    text = _workflow_text()
+    workflow = _workflow()
+    publish_steps = workflow["jobs"]["publish"]["steps"]
+    release_steps = workflow["jobs"]["release-manifest"]["steps"]
+    subject_upload = next(
+        step for step in publish_steps if step.get("name") == "Upload subject evidence"
+    )
+    evidence_upload = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Upload ready release image evidence"
+    )
+    subject_record = next(
+        step for step in publish_steps if step.get("name") == "Create subject evidence record"
+    )
 
     assert (
         "release-image-subject-${{ github.sha }}-${{ github.run_id }}-"
         "${{ github.run_attempt }}-${{ matrix.role }}"
-    ) in text
+        == subject_upload["with"]["name"]
+    )
     assert (
         "release-image-evidence-${{ github.sha }}-${{ github.run_id }}-"
         "${{ github.run_attempt }}"
-    ) in text
+        == evidence_upload["with"]["name"]
+    )
     assert (
         "github-artifact://release-image-subject-$SOURCE_COMMIT-$GITHUB_RUN_ID-"
         "$GITHUB_RUN_ATTEMPT-${{ matrix.role }}/trivy-${{ matrix.role }}.json"
-    ) in text
+        in subject_record["run"]
+    )
 
 
 def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evidence():
