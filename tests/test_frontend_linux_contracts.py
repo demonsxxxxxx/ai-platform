@@ -1,6 +1,15 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
+
+import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the required frontend-image contract lane runs on Linux",
+)
 
 
 FRONTEND_HEALTHCHECK_FILE_PATHS = (
