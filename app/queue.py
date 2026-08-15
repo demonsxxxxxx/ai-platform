@@ -753,47 +753,6 @@ return cjson.encode({status = "dead_lettered"})
 """
 
 
-RECORD_LEGACY_LEASE_WITH_FENCE_SCRIPT = """
--- ai-platform:record-legacy-lease-with-fence:v1
-local processing_key = KEYS[1]
-local queued_key = KEYS[2]
-local processing_meta_key = KEYS[3]
-local retry_meta_key = KEYS[4]
-local worker_heartbeat_key = KEYS[5]
-local queued_meta_key = KEYS[6]
-local queued_run_index_key = KEYS[7]
-local queued_order_key = KEYS[8]
-local queued_sequence_key = KEYS[9]
-local fence_key = KEYS[10]
-
-local raw = ARGV[1]
-if redis.call("exists", fence_key) == 1 then
-  redis.call("lrem", processing_key, 1, raw)
-  local message_id = ARGV[2]
-  local run_index_field = ARGV[6]
-  local ok, metadata = pcall(cjson.decode, ARGV[3])
-  if ok and type(metadata) == "table" then
-    local sequence = redis.call("incr", queued_sequence_key)
-    metadata["sequence"] = sequence
-    metadata["raw"] = raw
-    redis.call("rpush", queued_key, raw)
-    redis.call("hset", queued_meta_key, message_id, cjson.encode(metadata))
-    redis.call("hset", queued_run_index_key, run_index_field, cjson.encode({message_id}))
-    redis.call("zadd", queued_order_key, sequence, message_id)
-  end
-  return cjson.encode({status = "reconciliation_fenced"})
-end
-local message_id = ARGV[2]
-local metadata_json = ARGV[3]
-local worker_id = ARGV[4]
-local now = ARGV[5]
-redis.call("hset", processing_meta_key, message_id, metadata_json)
-redis.call("hset", retry_meta_key, message_id, metadata_json)
-redis.call("hset", worker_heartbeat_key, worker_id, now)
-return cjson.encode({status = "leased"})
-"""
-
-
 HEARTBEAT_WITH_FENCE_SCRIPT = """
 -- ai-platform:heartbeat-run-with-fence:v1
 local raw_metadata = redis.call("hget", KEYS[1], ARGV[1])
@@ -1824,55 +1783,6 @@ async def get_run_queue_position(*, tenant_id: str, run_id: str) -> int | None:
         await redis.aclose()
 
 
-async def _record_legacy_lease_with_fence(
-    redis: Redis,
-    keys: QueueKeys,
-    *,
-    raw: str,
-    message_id: str,
-    payload: dict[str, Any],
-    attempts: int,
-    worker_id: str,
-    now: float,
-) -> bool:
-    """Atomically record legacy lease ownership or yield to a reconciliation fence."""
-
-    metadata = {
-        "message_id": message_id,
-        "raw": raw,
-        "attempts": attempts,
-        "leased_at": now,
-        "heartbeat_at": now,
-        "worker_id": worker_id,
-        "run_id": payload["run_id"],
-        "tenant_id": payload["tenant_id"],
-        "user_id": payload["user_id"],
-    }
-    result = _decode_redis_script_result(
-        await redis.eval(
-            RECORD_LEGACY_LEASE_WITH_FENCE_SCRIPT,
-            10,
-            keys.processing,
-            keys.queued,
-            keys.processing_meta,
-            keys.retry_meta,
-            keys.worker_heartbeat,
-            keys.queued_meta,
-            keys.queued_run_index,
-            keys.queued_order,
-            keys.queued_sequence,
-            reconciliation_fence_key(tenant_id=str(payload["tenant_id"]), run_id=str(payload["run_id"])),
-            raw,
-            message_id,
-            json.dumps(metadata, ensure_ascii=False),
-            worker_id,
-            now,
-            queued_run_index_field(tenant_id=str(payload["tenant_id"]), run_id=str(payload["run_id"])),
-        )
-    )
-    return str(result.get("status") or "") == "leased"
-
-
 async def _requeue_run_with_fence(
     redis: Redis,
     keys: QueueKeys,
@@ -2009,54 +1919,6 @@ async def _delete_queued_metadata_for_payload(
     await redis.zrem(keys.queued_order, message_id)
 
 
-async def _delete_queued_metadata_for_message_id(redis: Redis, keys: QueueKeys, *, message_id: str) -> None:
-    raw_metadata = await redis.hget(keys.queued_meta, message_id)
-    if raw_metadata:
-        try:
-            metadata = json.loads(raw_metadata)
-        except (TypeError, json.JSONDecodeError):
-            metadata = {}
-        tenant_id = str(metadata.get("tenant_id") or "")
-        run_id = str(metadata.get("run_id") or "")
-        if tenant_id and run_id:
-            await _remove_message_id_from_run_index(
-                redis,
-                keys,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                message_id=message_id,
-            )
-    await redis.hdel(keys.queued_meta, message_id)
-    await redis.zrem(keys.queued_order, message_id)
-
-
-async def _dead_letter_invalid_queue_payload(
-    redis: Redis,
-    keys: QueueKeys,
-    *,
-    raw: str,
-    message_id: str,
-    attempts: int,
-    worker_id: str,
-    remove_from_key: str,
-    error_message: str,
-) -> None:
-    await redis.lrem(remove_from_key, 1, raw)
-    await redis.rpush(
-        keys.dead_letter,
-        _dead_letter_json(
-            raw=raw,
-            error_code="invalid_queue_payload",
-            error_message=error_message,
-            attempts=attempts,
-            worker_id=worker_id,
-        ),
-    )
-    await _trim_dead_letters(redis, keys)
-    await redis.hdel(keys.retry_meta, message_id)
-    await _delete_queued_metadata_for_message_id(redis, keys, message_id=message_id)
-
-
 async def _dead_letter_invalid_queued_payload_atomic(
     redis: Redis,
     keys: QueueKeys,
@@ -2090,20 +1952,6 @@ async def _dead_letter_invalid_queued_payload_atomic(
     if str(decoded.get("status") or "") == "dead_lettered":
         await _trim_dead_letters(redis, keys)
     return decoded
-
-
-async def _lease_run_legacy(
-    redis: Redis,
-    keys: QueueKeys,
-    *,
-    timeout_seconds: int = 5,
-    worker_id: str = "worker",
-    max_processing_runs: int | None = None,
-) -> QueueMessage | None:
-    """Fail closed: non-atomic BRPOPLPUSH leasing is intentionally disabled."""
-
-    del redis, keys, timeout_seconds, worker_id, max_processing_runs
-    return None
 
 
 async def _lease_run_with_quota(
