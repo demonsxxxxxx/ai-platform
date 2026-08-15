@@ -1,7 +1,5 @@
 import json
 import inspect
-from pathlib import Path
-import re
 import subprocess
 import sys
 
@@ -4414,26 +4412,6 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
         text=True,
     )
     assert "# ai-platform Foundation Alpha POC Readiness" in markdown_result.stdout
-
-
-def test_committed_c701974_release_evidence_commands_do_not_include_secret_env_assignments():
-    evidence_root = (
-        Path("docs/release-evidence/foundation-alpha-poc")
-        / "c701974f5d66b54ff9255b5d033ee4f0ce3d8bb8"
-    )
-    secret_assignment = re.compile(
-        r"\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|AUTHORIZATION)[A-Z0-9_]*=<redacted>",
-        re.IGNORECASE,
-    )
-    offenders = []
-
-    for evidence_file in sorted(evidence_root.glob("*.json")):
-        payload = json.loads(evidence_file.read_text(encoding="utf-8"))
-        command = str(payload.get("evidence_ref", {}).get("command", ""))
-        if secret_assignment.search(command):
-            offenders.append(evidence_file.as_posix())
-
-    assert offenders == []
 
 
 def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_dependencies_are_unavailable(monkeypatch):

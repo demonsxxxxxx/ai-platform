@@ -223,21 +223,30 @@ def _redact_command(command: str) -> str:
     except ValueError:
         return str(_redact_runtime_value("path", command))
     redacted: list[str] = []
-    redact_next = False
+    redact_next: str | None = None
     for token in tokens:
         if redact_next:
-            key, sep, value = token.partition("=")
-            if sep and _looks_like_path(value):
-                redacted.append(f"{key}=<redacted-path>")
+            if redact_next == "secret":
+                redacted.append("<redacted-secret>")
             else:
-                redacted.append("<redacted-path>")
-            redact_next = False
+                key, sep, value = token.partition("=")
+                if sep and _looks_like_path(value):
+                    redacted.append(f"{key}=<redacted-path>")
+                else:
+                    redacted.append("<redacted-path>")
+            redact_next = None
             continue
         if token in _COMMAND_PATH_FLAGS:
             redacted.append(token)
-            redact_next = True
+            redact_next = "path"
             continue
         flag, sep, value = token.partition("=")
+        normalized_flag = flag.lstrip("-").replace("-", "_").lower()
+        if any(part in normalized_flag for part in _SECRET_KEY_PARTS):
+            redacted.append("<redacted-secret-arg>")
+            if not sep:
+                redact_next = "secret"
+            continue
         if sep and flag in _COMMAND_PATH_FLAGS:
             redacted.append(f"{flag}=<redacted-path>")
             continue

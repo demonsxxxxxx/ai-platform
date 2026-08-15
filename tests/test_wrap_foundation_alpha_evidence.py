@@ -353,6 +353,43 @@ def test_redacts_host_paths_from_wrapped_command():
     assert "--runtime-check-payload frc=<redacted-path>" in command
 
 
+def test_redacts_secret_assignments_and_flags_from_wrapped_command():
+    verifier_output = {
+        "schema_version": "ai-platform.poc-gate.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "checks": {"lambchat_frontend": {"status": 200}},
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="redacted-command-secrets",
+        verifier="tools/verify_poc_gate.py",
+        artifact_kind="211_runtime_smoke",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-16T22:45:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command=(
+            "API_KEY=<redacted> python3 tools/verify_poc_gate.py "
+            "--callback-token secret-value --authorization=Bearer-secret"
+        ),
+        review_status="reviewed",
+    )
+
+    command = entry["evidence_ref"]["command"]
+    assert "API_KEY" not in command
+    assert "callback-token" not in command
+    assert "authorization" not in command.lower()
+    assert "secret-value" not in command
+    assert "Bearer-secret" not in command
+    assert command.count("<redacted-secret-arg>") == 3
+    assert "<redacted-secret>" in command
+
+
 def test_redacts_host_paths_from_source_ref_image_labels():
     labels = image_labels()
     labels.update(
