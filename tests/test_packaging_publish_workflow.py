@@ -1,7 +1,10 @@
 import re
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tests.support.yaml_contracts import load_unique_yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,12 +12,29 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-packaging-publish.yml"
 WORKFLOW_ROOT = ROOT / ".github" / "workflows"
 
 
-def _workflow_text() -> str:
-    return WORKFLOW.read_text(encoding="utf-8")
+def _workflow_text(path: Path = WORKFLOW) -> str:
+    return path.read_text(encoding="utf-8")
 
 
-def _workflow() -> dict[str, object]:
-    return yaml.load(_workflow_text(), Loader=yaml.BaseLoader)
+def _workflow(path: Path = WORKFLOW) -> dict[str, object]:
+    payload = load_unique_yaml(_workflow_text(path))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def test_publish_workflow_rejects_duplicate_mapping_keys(tmp_path: Path):
+    workflow = tmp_path / "publish.yml"
+    workflow.write_text(
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-24.04\n"
+        "  publish:\n"
+        "    runs-on: self-hosted\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(yaml.constructor.ConstructorError, match="duplicate key 'publish'"):
+        _workflow(workflow)
 
 
 def test_publish_is_reachable_only_from_trusted_main_events():
