@@ -10,6 +10,7 @@ RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
 S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_ARCHITECTURE = ROOT / "docs/architecture/source-code-architecture.md"
+CI_TEST_READINESS_GOVERNANCE = ROOT / "docs/architecture/ci-test-readiness-governance.md"
 SOURCE_ARCHITECTURE_ADR = ROOT / "docs/adr/0006-domain-first-modular-monolith.md"
 
 
@@ -27,6 +28,7 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
         "architecture/source-code-architecture.md",
+        "architecture/ci-test-readiness-governance.md",
         "adr/0006-domain-first-modular-monolith.md",
         "operations/release-operations-runbook.md",
         "operations/s72-opensandbox-gateway-runbook.md",
@@ -107,6 +109,47 @@ def test_source_architecture_authority_has_required_sections_and_anchors():
     assert "decision_issue: 962" in adr
     assert "API, worker, executor, and maintenance entrypoints" in adr
     assert "sandbox entrypoints" not in adr
+
+
+def test_ci_test_readiness_governance_separates_evidence_and_tracks_completion():
+    governance = read(CI_TEST_READINESS_GOVERNANCE)
+    governance_flat = " ".join(governance.split())
+    architecture = read(SOURCE_ARCHITECTURE)
+    headings = {
+        line.strip()
+        for line in governance.splitlines()
+        if line.startswith("## ")
+    }
+
+    assert "[`ci-test-readiness-governance.md`](ci-test-readiness-governance.md)" in architecture
+    assert "Authority baseline audited: `6c010079782afe30ada5f75c44600939f0381b13`" in governance
+    assert {
+        "## 2. Evidence levels",
+        "## 3. Target test model",
+        "## 4. Required CI topology",
+        "## 5. Runtime readiness boundary",
+        "## 6. Unified disposition ledger",
+        "## 8. Completion criteria for this governance program",
+    } <= headings
+    for evidence_level in (
+        "| Source |",
+        "| Focused test |",
+        "| CI/build |",
+        "| Packaged image |",
+        "| Deployment |",
+        "| Runtime |",
+        "| External acceptance |",
+    ):
+        assert evidence_level in governance
+    for contract in (
+        "A missing required service is a CI failure, not a skip",
+        "MUST NOT be scanned by a live health endpoint",
+        "Completion proof / remaining exit",
+        "required integration suites cannot pass by skipping missing dependencies",
+        "required aggregators execute tested failure paths",
+        "the final ledger has no unowned `audit and assign` entries",
+    ):
+        assert contract in governance_flat
 
 
 def test_governance_rules_keep_status_and_release_authority_out_of_history_docs():

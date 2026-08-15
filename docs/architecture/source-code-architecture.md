@@ -8,6 +8,12 @@ The keywords **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 Existing paths that predate this contract are migration exceptions, not
 precedent for new code.
 
+CI, test classification, runtime readiness, historical evidence, and external
+acceptance are governed by
+[`ci-test-readiness-governance.md`](ci-test-readiness-governance.md). That
+contract is a disposition ledger; it does not convert a planned deletion or a
+green source check into deployment or runtime proof.
+
 ## 1. Architectural objective
 
 AI Platform is a domain-first modular monolith with several explicit process

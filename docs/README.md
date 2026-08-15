@@ -19,6 +19,9 @@ does not represent deployed runtime state.
   package tree, dependency direction, naming, compatibility, deletion proof,
   and strangler migration contract. ADR 0006 records the decision and rejected
   alternatives.
+- `architecture/ci-test-readiness-governance.md` defines evidence levels,
+  required-test ownership, runtime/offline readiness boundaries, and the
+  disposition ledger for obsolete tests and historical evidence.
 - `architecture/single-enterprise-data-lifecycle.md` defines the fixed
   single-enterprise identity scope, datastore ownership, versioned schema
   lifecycle, bounded reads, retention workflow, and PostgreSQL payload limits.
