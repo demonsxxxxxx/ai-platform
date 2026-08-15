@@ -1513,7 +1513,7 @@ group by r.id;
     )
 
 
-def check_auth_audit(container: str, db_user: str, db_name: str, allow_missing: bool) -> Gate:
+def check_auth_audit(container: str, db_user: str, db_name: str) -> Gate:
     sql = """
 select json_build_object(
   'count', count(*),
@@ -1531,18 +1531,6 @@ where action = 'auth.login'
 """
     rows = psql_rows(container, db_user, db_name, sql)
     evidence = rows[0] if rows else {"count": 0}
-    raw_sql = """
-select json_build_object(
-  'all_auth_login_count', count(*),
-  'latest_any_user_id', (array_agg(user_id order by created_at desc))[1],
-  'latest_any_payload', (array_agg(payload_json order by created_at desc))[1]
-)::text
-from audit_logs
-where action = 'auth.login';
-"""
-    raw_rows = psql_rows(container, db_user, db_name, raw_sql)
-    if raw_rows:
-        evidence.update(raw_rows[0])
     count = int(evidence.get("count") or 0)
     ordinary_user_count = int(evidence.get("ordinary_user_count") or 0)
     admin_user_count = int(evidence.get("admin_user_count") or 0)
@@ -1561,9 +1549,6 @@ where action = 'auth.login';
         missing_requirements.append("admin_company_login_audit")
     if missing_requirements:
         evidence["missing_requirements"] = missing_requirements
-    if allow_missing and not ok:
-        evidence["allowed_missing_for_partial_gate"] = True
-        ok = True
     return Gate("company_login_audit", ok, evidence)
 
 
@@ -1578,7 +1563,6 @@ def main() -> int:
     parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
-    parser.add_argument("--allow-missing-auth-audit", action="store_true")
     parser.add_argument("--upload-run-wait-seconds", type=int, default=45)
     parser.add_argument("--word-review-run-wait-seconds", type=int, default=90)
     args = parser.parse_args()
@@ -1631,7 +1615,7 @@ def main() -> int:
             bool(word_review_gate.evidence.get("context_snapshot_public_projection", {}).get("ok")),
             word_review_gate.evidence.get("context_snapshot_public_projection", {}),
         ),
-        check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db, args.allow_missing_auth_audit),
+        check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db),
     ]
     result = {
         "ok": all(gate.ok for gate in gates),

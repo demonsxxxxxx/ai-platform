@@ -1989,8 +1989,11 @@ def test_upload_attachment_chat_rejects_success_without_worker_start(monkeypatch
     assert gate.evidence["run_accepted_by_worker"] is False
 
 
-def test_auth_audit_gate_reports_raw_login_diagnostics(monkeypatch):
+def test_auth_audit_gate_ignores_unscoped_login_rows(monkeypatch):
+    observed_sql = []
+
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        observed_sql.append(sql)
         if "payload_json->>'source' = 'company-login'" in sql:
             return [
                 {
@@ -2001,24 +2004,18 @@ def test_auth_audit_gate_reports_raw_login_diagnostics(monkeypatch):
                     "latest_payload": None,
                 }
             ]
-        if "where action = 'auth.login'" in sql:
-            return [
-                {
-                    "all_auth_login_count": 2,
-                    "latest_any_user_id": "user001",
-                    "latest_any_payload": {"source": "legacy-login"},
-                }
-            ]
         raise AssertionError(sql)
 
     monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
-    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db", allow_missing=False)
+    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db")
 
     assert gate.ok is False
     assert gate.evidence["count"] == 0
-    assert gate.evidence["all_auth_login_count"] == 2
-    assert gate.evidence["latest_any_user_id"] == "user001"
+    assert len(observed_sql) == 1
+    assert "payload_json->>'source' = 'company-login'" in observed_sql[0]
+    assert "latest_any_user_id" not in gate.evidence
+    assert "latest_any_payload" not in gate.evidence
     assert gate.evidence["missing_requirements"] == [
         "ordinary_company_login_audit",
         "admin_company_login_audit",
@@ -2043,18 +2040,10 @@ def test_auth_audit_gate_returns_boolean_ok_for_valid_company_login(monkeypatch)
                     "latest_payload": payload,
                 }
             ]
-        if "where action = 'auth.login'" in sql:
-            return [
-                {
-                    "all_auth_login_count": 2,
-                    "latest_any_user_id": "ZX2834",
-                    "latest_any_payload": payload,
-                }
-            ]
         raise AssertionError(sql)
 
     monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
-    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db", allow_missing=False)
+    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db")
 
     assert gate.ok is True
