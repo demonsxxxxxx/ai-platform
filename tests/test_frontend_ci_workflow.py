@@ -8,18 +8,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
+BACKEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 LOCK = ROOT / "uv.lock"
 PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py "
-    "tests/test_backend_ci_workflow.py "
-    "tests/test_packaging_publish_workflow.py "
-    "tests/test_release_image_manifest.py "
-    "tests/test_release_authority.py "
     "tests/test_require_zero_junit_skips.py "
-    "tests/test_runtime_launch_script.py "
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
@@ -29,6 +25,13 @@ LINUX_PYTEST_COMMAND = (
 PYTHON_TEST_DEPENDENCIES = "python -m pip install pytest pyyaml"
 JSONSCHEMA_CONTRACT_START = "          import importlib.metadata"
 JSONSCHEMA_CONTRACT_END = "          '@ | python -"
+BACKEND_OWNED_STATIC_SUITES = {
+    "tests/test_backend_ci_workflow.py",
+    "tests/test_packaging_publish_workflow.py",
+    "tests/test_release_image_manifest.py",
+    "tests/test_release_authority.py",
+    "tests/test_runtime_launch_script.py",
+}
 
 
 class UniqueKeyLoader(yaml.BaseLoader):
@@ -152,6 +155,7 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
 
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
     contract = _workflow_contract()
     assert contract["on"] == {
         "pull_request": {"branches": ["main"]},
@@ -181,6 +185,10 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "verify_installed_jsonschema_version(locked_jsonschema)" in workflow
     assert PYTEST_COMMAND in workflow
     assert LINUX_PYTEST_COMMAND in workflow
+    for suite in BACKEND_OWNED_STATIC_SUITES:
+        assert suite not in PYTEST_COMMAND
+        assert suite not in workflow
+        assert suite in backend_workflow
     assert "tests/test_governance_readiness.py" not in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
     assert "corepack pnpm run ci:verify" in workflow
