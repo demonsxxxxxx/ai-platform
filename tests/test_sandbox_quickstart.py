@@ -252,6 +252,16 @@ def test_inspect_preserves_empty_source_commit_field(
         "ai-platform-postgres",
     ]
     assert calls[0][-2] == "--format"
+    assert calls[0][-1] == "\t".join((
+        '{{index .Config.Labels "ai-platform.source-commit"}}',
+        "{{.Config.Image}}",
+        "{{.RestartCount}}",
+        "{{.State.Status}}",
+        "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+        '{{index .Config.Labels "com.docker.compose.project"}}',
+        '{{index .Config.Labels "com.docker.compose.service"}}',
+        '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
+    ))
 
 
 @pytest.mark.parametrize("extra_service", [False, True])
