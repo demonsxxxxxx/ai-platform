@@ -493,19 +493,6 @@ async def _sdk_user_prompt_stream(
         }
 
 
-def _append_result_text(texts: list[str], result: str | None) -> None:
-    result_text = (result or "").strip()
-    if not result_text:
-        return
-    current_text = "\n".join(texts).strip()
-    if result_text == current_text or current_text.endswith(result_text):
-        return
-    if current_text and result_text.startswith(current_text):
-        texts[:] = [result_text]
-        return
-    texts.append(result_text)
-
-
 def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
     sanitized = sanitize_public_payload(payload)
     if isinstance(sanitized, dict):
