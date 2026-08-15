@@ -58,7 +58,8 @@ class Subject:
 class Runner:
     def run(self, command: Sequence[str], *, cwd: Path | None = None,
             output: bool = False, timeout: int = 300,
-            environment: dict[str, str] | None = None) -> str:
+            environment: dict[str, str] | None = None,
+            strip_output: bool = True) -> str:
         command_env = dict(os.environ if environment is None else environment)
         command_env["GIT_TERMINAL_PROMPT"] = "0"
         result = subprocess.run(
@@ -69,7 +70,9 @@ class Runner:
         )
         if result.returncode:
             raise QuickstartError("command failed")
-        return result.stdout.strip() if output else ""
+        if not output:
+            return ""
+        return result.stdout.strip() if strip_output else result.stdout.rstrip("\r\n")
 
 
 def _load_subject(path: Path, managed_root: Path | None = None) -> Subject:
@@ -215,7 +218,7 @@ class Quickstart:
         ))
         fields = self.runner.run(
             [*self.docker, "container", "inspect", f"ai-platform-{service}", "--format", fmt],
-            output=True, timeout=30, environment=_docker_environment(),
+            output=True, timeout=30, environment=_docker_environment(), strip_output=False,
         ).split("\t")
         if len(fields) != 8:
             raise QuickstartError("runtime metadata is invalid")
