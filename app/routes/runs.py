@@ -618,12 +618,6 @@ def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | Non
     return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
 
-def _run_execution_input(run: dict[str, Any]) -> dict[str, Any]:
-    input_json = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
-    execution_input = input_json.get("input") if isinstance(input_json.get("input"), dict) else input_json
-    return execution_input if isinstance(execution_input, dict) else {}
-
-
 async def prepare_copied_run_for_queue(
     conn,
     *,
