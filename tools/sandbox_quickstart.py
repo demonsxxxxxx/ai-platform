@@ -18,7 +18,7 @@ import stat
 import subprocess
 import time
 from typing import Any, Sequence
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener, urlopen
 
 
 MANAGED_ROOT = Path("/data/ai-platform-internal-test")
@@ -30,6 +30,7 @@ COMPOSE_FILES = (
 BACKEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-backend"
 FRONTEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-frontend"
 ORIGIN_URL = "https://github.com/demonsxxxxxx/ai-platform.git"
+OPENSANDBOX_HEALTH_URL = "http://172.18.0.1:8080/health"
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
@@ -171,6 +172,10 @@ def _docker_environment() -> dict[str, str]:
         *PROXY_ENVIRONMENT,
     )
     return {key: os.environ[key] for key in allowed if key in os.environ}
+
+
+def _direct_urlopen(url: str, *, timeout: int):
+    return build_opener(ProxyHandler({})).open(url, timeout=timeout)
 
 
 def _interrupt(*_args: object) -> None:
@@ -350,7 +355,7 @@ class Quickstart:
                 raise QuickstartError("runtime image mismatch")
         if self.runner.run(["systemctl", "is-active", "opensandbox.service"], output=True, timeout=15) != "active":
             raise QuickstartError("OpenSandbox is not active")
-        with urlopen("http://127.0.0.1:8080/health", timeout=10) as response:
+        with _direct_urlopen(OPENSANDBOX_HEALTH_URL, timeout=10) as response:
             if response.status != 200 or len(response.read(65537)) > 65536:
                 raise QuickstartError("OpenSandbox health failed")
 

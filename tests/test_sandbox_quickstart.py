@@ -432,6 +432,86 @@ def test_http_protocol_error_is_normalized_for_rollback(
         release._wait_health(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
+def test_health_probes_installed_opensandbox_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = quickstart.Quickstart(tmp_path)
+    subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    requested_urls: list[str] = []
+
+    monkeypatch.setattr(
+        release,
+        "_http_json",
+        lambda path: (
+            {"status": "ok"}
+            if path.endswith("/health")
+            else {"status": "ready", "runtime_commit": COMMIT}
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_inspect",
+        lambda service: [
+            COMMIT if service in {"api", "worker", "frontend"} else "",
+            FRONTEND if service == "frontend" else BACKEND,
+            "0",
+            "running",
+            "none" if service == "worker" else "healthy",
+            quickstart.PROJECT,
+            service,
+            "config",
+        ],
+    )
+    monkeypatch.setattr(release.runner, "run", lambda *_args, **_kwargs: "active")
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    def open_health(url: str, *, timeout: int) -> Response:
+        assert timeout == 10
+        requested_urls.append(url)
+        return Response()
+
+    monkeypatch.setattr(quickstart, "_direct_urlopen", open_health)
+
+    release._health(subject)
+
+    assert requested_urls == ["http://172.18.0.1:8080/health"]
+
+
+def test_direct_health_probe_ignores_process_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_handlers: list[quickstart.ProxyHandler] = []
+
+    class Opener:
+        def open(self, url: str, *, timeout: int) -> object:
+            assert url == quickstart.OPENSANDBOX_HEALTH_URL
+            assert timeout == 10
+            return object()
+
+    def build_direct_opener(handler: quickstart.ProxyHandler) -> Opener:
+        observed_handlers.append(handler)
+        return Opener()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://10.56.0.224:7897")
+    monkeypatch.setattr(quickstart, "build_opener", build_direct_opener)
+
+    quickstart._direct_urlopen(quickstart.OPENSANDBOX_HEALTH_URL, timeout=10)
+
+    assert len(observed_handlers) == 1
+    assert observed_handlers[0].proxies == {}
+
+
 def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
