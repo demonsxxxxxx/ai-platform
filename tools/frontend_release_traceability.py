@@ -42,14 +42,20 @@ STATIC_FRONTEND_PYTEST_COMMAND = (
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
+LINUX_FRONTEND_PYTEST_COMMAND = (
+    "python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp"
+)
 WORKFLOW_STEP_COMMANDS = {
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
     "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
+    "Install Linux contract test dependencies": "python -m pip install pytest",
+    "Verify Linux frontend healthcheck contract": LINUX_FRONTEND_PYTEST_COMMAND,
 }
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "python -m pip install pytest pyyaml",
     STATIC_FRONTEND_PYTEST_COMMAND,
+    LINUX_FRONTEND_PYTEST_COMMAND,
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
     "python tools/deploy_frontend_static.py --help",
