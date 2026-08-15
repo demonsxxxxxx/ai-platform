@@ -1,8 +1,8 @@
 # CI, Test, and Readiness Governance
 
-Status: normative repository contract  
-Owner: platform architecture  
-Authority baseline audited: `6c010079782afe30ada5f75c44600939f0381b13`  
+Status: normative repository contract
+Owner: platform architecture
+Authority baseline audited: `6c010079782afe30ada5f75c44600939f0381b13`
 Ledger refreshed: 2026-08-15
 
 ## 1. Purpose
