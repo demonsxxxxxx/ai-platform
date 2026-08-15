@@ -45,6 +45,7 @@ EXPECTED_RUNTIME_EVIDENCE_REQUIRED = {
         "cleanup proves no elevated container or mount remains after cancel or failure",
     ],
 }
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_verifier():
@@ -1387,14 +1388,16 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardeni
 
 
 def test_b2_release_evidence_redacts_host_workspace_roots():
-    evidence_root = Path("docs/release-evidence/b2-sandbox")
+    evidence_root = REPO_ROOT / "docs/release-evidence/b2-sandbox"
+    evidence_paths = list(evidence_root.rglob("*.json"))
 
     leaked = [
         str(path)
-        for path in evidence_root.rglob("*.json")
+        for path in evidence_paths
         if "/tmp/ai-platform-opensandbox-workspaces" in path.read_text(encoding="utf-8")
     ]
 
+    assert evidence_paths
     assert leaked == []
 
 

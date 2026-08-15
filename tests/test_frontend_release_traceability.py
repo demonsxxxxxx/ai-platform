@@ -472,6 +472,56 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     assert trace["workflow"]["missing_path_filters"] == []
 
 
+def test_frontend_release_traceability_rejects_commands_in_the_wrong_job_or_comments(
+    tmp_path,
+):
+    frontend_root = tmp_path / "frontend" / "web"
+    write_frontend_package(frontend_root)
+    workflow_root = tmp_path / ".github" / "workflows"
+    workflow_root.mkdir(parents=True)
+    (workflow_root / "ai-platform-frontend.yml").write_text(
+        "jobs:\n"
+        "  unrelated:\n"
+        "    steps:\n"
+        "      - name: Verify static frontend Python contracts\n"
+        f"        run: {EXPECTED_WORKFLOW_PYTEST}\n"
+        "# corepack pnpm install --frozen-lockfile\n",
+        encoding="utf-8",
+    )
+
+    trace = build_frontend_release_traceability(repo_root=tmp_path)
+
+    assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["missing_commands"]
+    assert (
+        "corepack pnpm install --frozen-lockfile"
+        in trace["workflow"]["missing_commands"]
+    )
+    assert (
+        "Verify static frontend Python contracts"
+        in trace["workflow"]["missing_step_commands"]
+    )
+
+
+def test_frontend_release_traceability_rejects_duplicate_workflow_keys(tmp_path):
+    frontend_root = tmp_path / "frontend" / "web"
+    write_frontend_package(frontend_root)
+    workflow_root = tmp_path / ".github" / "workflows"
+    workflow_root.mkdir(parents=True)
+    (workflow_root / "ai-platform-frontend.yml").write_text(
+        "jobs:\n"
+        "  frontend:\n"
+        "    steps: []\n"
+        "  frontend:\n"
+        "    steps: []\n",
+        encoding="utf-8",
+    )
+
+    trace = build_frontend_release_traceability(repo_root=tmp_path)
+
+    assert trace["workflow"]["status"] == "present_with_policy_gaps"
+    assert trace["workflow"]["blockers"][0] == "frontend_workflow_yaml_invalid"
+
+
 @pytest.mark.parametrize(
     "dockerfile",
     [
