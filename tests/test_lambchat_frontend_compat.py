@@ -1229,6 +1229,91 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
     assert "qa-word-review" not in str(answer_payloads)
 
 
+def test_lambchat_history_fold_preserves_split_identifier_across_pages():
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-paged-identifier",
+        "trace_id": "trace-paged-identifier",
+        "agent_id": "qa-word-review",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+    }
+
+    def delta_event(event_id, sequence, delta):
+        return {
+            "id": event_id,
+            "trace_id": "trace-paged-identifier",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": sequence,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": delta,
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+            "created_at": f"2026-07-30T00:00:0{sequence}Z",
+        }
+
+    first_page, fold_state = _compatibility_events_for_run_page(
+        run,
+        [delta_event("evt-page-a", 1, "已开始，general-")],
+        [],
+        principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+        include_terminal=False,
+    )
+    second_page, _ = _compatibility_events_for_run_page(
+        {
+            **run,
+            "status": "succeeded",
+            "result_json": {"message": "已开始，general-chat 完成。"},
+            "finished_at": "2026-07-30T00:00:03Z",
+        },
+        [delta_event("evt-page-b", 2, "chat 完成。")],
+        [],
+        principal,
+        fold_state=fold_state,
+        include_terminal=True,
+    )
+    answer_payloads = [
+        record.stream_data
+        for record in [*first_page, *second_page]
+        if record.stream_event_type == "message:chunk"
+    ]
+    deltas = [
+        payload["content"]
+        for payload in answer_payloads
+        if payload["projection_kind"] == "assistant_delta"
+    ]
+    final = next(
+        payload
+        for payload in answer_payloads
+        if payload["projection_kind"] == "assistant_final"
+    )
+
+    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert "general-chat" not in str(answer_payloads)
+    assert "qa-word-review" not in str(answer_payloads)
+
+
 def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         assert user_id == "user-a"

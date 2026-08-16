@@ -124,6 +124,7 @@ class _CompatibilityFoldState:
 
     has_strict_public_execution: bool
     seen_public_lifecycle_singletons: frozenset[str]
+    answer_projection_state: tuple[str, str, bool] = ("", "", False)
 
 
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
@@ -642,12 +643,16 @@ def _compatibility_events_for_run_page(
         enumerate(run_events),
         key=lambda item: _event_sequence_sort_key(item[1], item[0]),
     )
-    answer_projector = PublicChatAnswerStreamProjector(run)
+    answer_projector = PublicChatAnswerStreamProjector(
+        run,
+        fold_state.answer_projection_state,
+    )
     final_answer_event = next(
         (
             event
             for _, event in reversed(ordered_events)
-            if status in {"succeeded", "failed", "cancelled"}
+            if include_terminal
+            and status in {"succeeded", "failed", "cancelled"}
             and str(event.get("event_type") or "") == "assistant_delta"
             and _chat_event_marked_visible(event)
             and event_visible_to_principal(event, principal)
@@ -910,6 +915,7 @@ def _compatibility_events_for_run_page(
     return compatibility_events, _CompatibilityFoldState(
         has_strict_public_execution=has_strict_public_execution,
         seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
+        answer_projection_state=answer_projector.state,
     )
 
 
@@ -1444,6 +1450,48 @@ async def chat_status(
     return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
 
 
+async def _restore_chat_answer_projector(
+    bridge: RedisStreamBridge,
+    *,
+    run: dict[str, Any],
+    tenant_scope_value: str,
+    run_id: str,
+    stream_incarnation: int,
+    through_redis_id: str,
+) -> PublicChatAnswerStreamProjector:
+    """Rebuild private stream projection state through one proven resume cursor."""
+    projector = PublicChatAnswerStreamProjector(run)
+    if through_redis_id == "0-0":
+        return projector
+    after = "0-0"
+    saw_stream_open = False
+    while after != through_redis_id:
+        previous_after = after
+        entries = await bridge.read(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+            after_redis_id=after,
+            block_ms=1,
+        )
+        if not entries:
+            raise StreamContractError("stream_projection_history_unavailable")
+        for entry in entries:
+            after = entry.cursor.redis_id
+            envelope = entry.envelope
+            if not saw_stream_open:
+                if envelope.event_type != "stream_open":
+                    raise StreamContractError("stream_projection_history_unavailable")
+                saw_stream_open = True
+            elif envelope.event_type == "assistant_text_delta":
+                projector.push(envelope.payload["delta"])
+            if after == through_redis_id:
+                return projector
+        if after == previous_after:
+            raise StreamContractError("stream_projection_history_unavailable")
+    return projector
+
+
 @router.get("/chat/sessions/{session_id}/stream")
 async def chat_session_stream(
     session_id: str,
@@ -1498,13 +1546,27 @@ async def chat_session_stream(
     except StreamTransportUnavailable as exc:
         await bridge.aclose()
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
+    try:
+        answer_projector = await _restore_chat_answer_projector(
+            bridge,
+            run=initial_run,
+            tenant_scope_value=authority.tenant_scope,
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            through_redis_id=resume.after_redis_id or "0-0",
+        )
+    except StreamContractError as exc:
+        await bridge.aclose()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StreamTransportUnavailable as exc:
+        await bridge.aclose()
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
         terminal_status: str | None = None
         terminal_event_id: str | None = None
-        answer_projector = PublicChatAnswerStreamProjector(initial_run)
         last_answer_event_id: str | None = None
         last_answer_cursor_id: str | None = None
 

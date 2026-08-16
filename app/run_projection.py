@@ -201,10 +201,17 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
     return content if content.strip() else ""
 
 
+PublicChatAnswerStreamState = tuple[str, str, bool]
+
+
 class PublicChatAnswerStreamProjector:
     """Incrementally project answer text without exposing split identifiers."""
 
-    def __init__(self, run: dict[str, object]) -> None:
+    def __init__(
+        self,
+        run: dict[str, object],
+        state: PublicChatAnswerStreamState | None = None,
+    ) -> None:
         self._run = run
         self._identifiers = tuple(
             identifier
@@ -214,9 +221,11 @@ class PublicChatAnswerStreamProjector:
             )
             if identifier
         )
-        self._raw = ""
-        self._emitted = ""
-        self._blocked = False
+        self._raw, self._emitted, self._blocked = state or ("", "", False)
+
+    @property
+    def state(self) -> PublicChatAnswerStreamState:
+        return self._raw, self._emitted, self._blocked
 
     @property
     def has_emitted(self) -> bool:
