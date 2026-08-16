@@ -95,6 +95,7 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.filesystem_contract import encode_execd_mode
+from app.platform.sandbox.model_credentials import prepare_opensandbox_executor_environment
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupFailure,
     OpenSandboxStartupOperations,
@@ -4909,18 +4910,17 @@ class OpenSandboxContainerProvider:
             egress_bases=_opensandbox_runtime_egress_bases(settings, capability),
             workspace_container_path=workspace.workspace_container_path,
         )
-        environment = {
-            key: value
-            for key, value in environment.items()
-            if key
-            not in {
-                "OPENAI_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN",
-                "ANTHROPIC_API_KEY",
-                "MODEL_CATALOG_JSON",
-            }
-        }
-        _assert_no_raw_model_credentials_in_environment(environment, settings)
+        environment, credential_free_environment = prepare_opensandbox_executor_environment(
+            environment,
+            forward_model_credentials=bool(
+                getattr(settings, "opensandbox_internal_test_forward_model_credentials", False)
+            )
+            and _is_internal_test_opensandbox(settings),
+        )
+        _assert_no_raw_model_credentials_in_environment(
+            credential_free_environment,
+            settings,
+        )
         kwargs = {
             "image": _opensandbox_image(settings),
             "timeout": timedelta(seconds=max(int(getattr(settings, "opensandbox_timeout_seconds", 1800) or 1800), 1)),
