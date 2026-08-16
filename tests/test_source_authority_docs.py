@@ -49,6 +49,7 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     workflow_flat = " ".join(workflow.split())
 
     assert "## Change Control" in agents
+    assert re.search(r"`AGENTS\.md` is .*repository coding authority", agents)
     assert "## Change Contract" in workflow
     assert re.search(
         r"Before non-mechanical implementation, the (?:issue|persistent-task)",
@@ -57,8 +58,14 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     assert re.search(r"PR links .* prior record", workflow_flat)
     assert "single repository coding authority" in claude_flat
     assert "must not duplicate or weaken it" in claude_flat
+    assert "(AGENTS.md)" in claude
+    assert (
+        "docs/agent-rules/github-issue-pr-workflow.md#change-contract" in claude
+    )
     assert "falsifiable regression" in workflow
     assert "cannot prove the contract existed before coding" in workflow
+    assert re.search(r"Only risk categories .* non-applicable", workflow_flat)
+    assert re.search(r"bare `N/A`.*does not satisfy", workflow_flat)
     for heading in (
         "## Subject and scope",
         "## Behavior and decision",
@@ -72,6 +79,7 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
         "Actual diff reconciled with scope:",
         "Before/after, failure, and compatibility behavior:",
         "Falsifiable regression proof:",
+        "Required and observed build, packaging, or integration path:",
         "Focused commands and observed results:",
         "Evidence ceiling and evidence not observed:",
         "rollback when required:",

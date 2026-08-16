@@ -41,9 +41,9 @@ reconciles it with the actual diff:
   categories not applicable instead of producing boilerplate;
 - genuine alternatives and why they lost; use the separate-design rule above
   when rationale needs durable architecture authority;
-- acceptance criteria, a falsifiable regression test, required assembled path,
-  evidence ceiling, documentation impact, rollback when relevant, and facts
-  that stop or reopen design.
+- acceptance criteria, a falsifiable regression test, the required build,
+  packaging, or integration path, evidence ceiling, documentation impact,
+  rollback when relevant, and facts that stop or reopen design.
 
 Read-only exploration may resolve missing fields. Revise the contract before
 changing owner or paths; unrelated findings become separate work. A source-only

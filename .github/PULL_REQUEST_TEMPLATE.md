@@ -21,7 +21,7 @@
   evidence, review, and rollback, give observed facts or explain why the field
   does not apply; a bare `N/A` is not an answer.
 - Falsifiable regression proof:
-- Required and observed assembled path:
+- Required and observed build, packaging, or integration path:
 - Focused commands and observed results:
 - CI/build, packaged-artifact, deployment/runtime, or external evidence:
 - Evidence ceiling and evidence not observed:
@@ -34,4 +34,5 @@
       as assembled or external evidence.
 - [ ] Pending, skipped, historical, different-SHA, source-only, and runtime
       evidence retain distinct labels.
-- [ ] `Closes`/`Fixes` is used only when merge satisfies acceptance and review.
+- [ ] `Closes`/`Fixes` is used only when merge satisfies acceptance, review,
+      and required runtime criteria.
