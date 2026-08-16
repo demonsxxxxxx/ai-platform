@@ -28,8 +28,9 @@ of expanding an unrelated product PR.
 
 ## Change Contract
 
-Before non-mechanical implementation, the issue, PR, or persistent-task dispatch
-records one compact Change Contract:
+Before non-mechanical implementation, the issue or persistent-task dispatch
+records one compact Change Contract. The PR links that prior record and
+reconciles it with the actual diff:
 
 - observable problem and single owning authority;
 - repository/worktree, branch, full base/head SHA when available, writable and

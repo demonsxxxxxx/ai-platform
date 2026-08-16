@@ -48,6 +48,8 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
 
     assert "## Change Control" in agents
     assert "## Change Contract" in workflow
+    assert "issue or persistent-task dispatch" in workflow
+    assert "PR links that prior record" in workflow
     assert "single repository coding authority" in claude_flat
     assert "must not duplicate or weaken it" in claude_flat
     assert "falsifiable regression test" in workflow

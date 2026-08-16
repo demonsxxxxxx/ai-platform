@@ -61,8 +61,9 @@ roadmap or Controller Current rather than this durable entry file.
 ## Change Control
 
 - Before non-mechanical edits, record the Change Contract required by
-  `docs/agent-rules/github-issue-pr-workflow.md` in the issue, PR, or persistent
-  task. Read-only exploration may fill missing fields, but coding waits for a
+  `docs/agent-rules/github-issue-pr-workflow.md` in the issue or persistent
+  task; the PR links and reconciles that prior record. Read-only exploration may
+  fill missing fields, but coding waits for a
   known owner, bounded paths, invariants, acceptance, regression proof, evidence
   ceiling, and stop conditions.
 - Revise the contract before expanding scope. Every behavior change needs a
