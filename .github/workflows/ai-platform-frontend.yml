@@ -167,7 +167,7 @@ jobs:
           python -c "import jsonschema"
 
       - name: Verify static frontend Python contracts
-        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_packaging_publish_workflow.py tests/test_release_image_manifest.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
+        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_require_zero_junit_skips.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
 
       - name: Verify static frontend deploy helper
         run: python tools/deploy_frontend_static.py --help
@@ -195,6 +195,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Set up Python for Linux contracts
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.FRONTEND_PYTHON_VERSION }}
+
+      - name: Install Linux contract test dependencies
+        run: python -m pip install pytest
+
+      - name: Verify Linux frontend healthcheck contract
+        run: python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp
 
       - name: Resolve image source repository
         run: |
@@ -293,10 +304,41 @@ jobs:
     needs: [frontend, frontend-image]
     if: ${{ always() }}
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.FRONTEND_PYTHON_VERSION }}
+
       - name: Require frontend verification and image provenance
         env:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           IMAGE_RESULT: ${{ needs.frontend-image.result }}
         run: |
-          test "$FRONTEND_RESULT" = "success"
-          test "$IMAGE_RESULT" = "success"
+          python - <<'PY'
+          import os
+
+
+          def require_successful_results(results):
+              unexpected = {
+                  name: result
+                  for name, result in results.items()
+                  if result != "success"
+              }
+              if unexpected:
+                  detail = ", ".join(
+                      f"{name}={result or 'missing'}"
+                      for name, result in sorted(unexpected.items())
+                  )
+                  raise RuntimeError(
+                      f"frontend required dependencies did not succeed: {detail}"
+                  )
+
+
+          if __name__ == "__main__":
+              require_successful_results(
+                  {
+                      "frontend": os.environ.get("FRONTEND_RESULT", ""),
+                      "frontend-image": os.environ.get("IMAGE_RESULT", ""),
+                  }
+              )
+          PY

@@ -159,9 +159,6 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         assert kwargs["skill_manifests"]
         assert kwargs["release_decision"]
 
-    async def authorize_persisted_run(*_args, **_kwargs):
-        return None
-
     async def reauthorize_pinned_run(*_args, **_kwargs):
         return None
 
@@ -200,11 +197,6 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(
         "app.repositories.validate_run_skill_snapshots_for_dispatch",
         validate_source_snapshots,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.routes.runs._authorize_persisted_run_for_queue",
-        authorize_persisted_run,
         raising=False,
     )
     monkeypatch.setattr(

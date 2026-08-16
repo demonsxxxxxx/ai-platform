@@ -578,7 +578,8 @@ def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
     assert '[sys.executable, "-m", "pip", "install", ruff_requirement]' in install_step
     assert "*test_dependencies" not in install_step
     assert '["project"]["dependencies"]' not in install_step
-    assert "tests/test_backend_ci_workflow.py" in workflow
+    assert "tests/test_backend_ci_workflow.py" not in workflow
+    assert "tests/test_backend_ci_workflow.py" in WORKFLOW.read_text(encoding="utf-8")
 
     resolver = _frontend_ruff_requirement_resolver()
     assert resolver(test_dependencies) == "ruff==0.11.13"

@@ -1,13 +1,18 @@
+import importlib.util
 import json
 import subprocess
 import sys
 
 import pytest
 
-from app.b5_file_tool_readiness import (
+from tools.b5_file_tool_readiness import (
     build_b5_file_tool_readiness,
     render_b5_file_tool_readiness_markdown,
 )
+
+
+def test_b5_readiness_is_offline_tooling_not_an_app_module():
+    assert importlib.util.find_spec("app.b5_file_tool_readiness") is None
 
 
 def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
@@ -59,11 +64,19 @@ def test_b5_file_tool_readiness_markdown_is_operator_readable():
     assert "does not close B5/G6/G7/G9" in markdown
 
 
-def test_b5_file_tool_readiness_markdown_fails_closed_on_boundary_regression():
+@pytest.mark.parametrize(
+    "field",
+    [
+        "does_not_claim_deployed_runtime_verified",
+        "does_not_close_b5_g6_g7_g9",
+        "does_not_enable_product_beta",
+    ],
+)
+def test_b5_file_tool_readiness_markdown_fails_closed_on_boundary_regression(field):
     readiness = build_b5_file_tool_readiness()
-    readiness["claim_boundary"]["does_not_claim_deployed_runtime_verified"] = False
+    readiness["claim_boundary"][field] = False
 
-    with pytest.raises(RuntimeError, match="b5_claim_boundary_regression"):
+    with pytest.raises(RuntimeError, match=rf"b5_claim_boundary_regression:{field}"):
         render_b5_file_tool_readiness_markdown(readiness)
 
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from pathlib import Path
+import re
+import subprocess
 from typing import Any
 
 from app.public_context_keys import public_context_input_key_findings
@@ -9,6 +12,7 @@ from app.public_context_keys import public_context_input_key_findings
 
 SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
 GATE_NAME = "G6/G9/#22 Office Context Pack Architecture"
+_GIT_COMMAND_TIMEOUT_SECONDS = 5
 _ALLOWED_CONTEXT_SOURCES = [
     "uploaded_source_documents",
     "previous_generated_artifacts",
@@ -88,6 +92,8 @@ _OPEN_GAPS = [
     "executor_context_pack_runtime_acceptance",
     "sandbox_cold_start_latency_split_runtime_acceptance",
 ]
+
+_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 _IMPLEMENTED_CONTROLS = [
     "source_level_context_pack_contract",
@@ -561,36 +567,98 @@ def _sandbox_runtime_evidence_summary(
     }
 
 
-def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
+def _current_source_commit(repo_root: Path) -> str:
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if status.returncode != 0 or status.stdout.strip():
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    commit_sha = result.stdout.strip() if result.returncode == 0 else ""
+    return commit_sha if _COMMIT_SHA_PATTERN.fullmatch(commit_sha) is not None else ""
+
+
+def _captured_at(payload: dict[str, Any]) -> datetime | None:
+    value = payload.get("captured_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        captured_at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return captured_at if captured_at.tzinfo is not None else None
+
+
+def _runtime_acceptance_evidence(
+    repo_root: Path,
+    *,
+    runtime_subject_sha: str,
+) -> dict[str, dict[str, Any]]:
+    if _COMMIT_SHA_PATTERN.fullmatch(runtime_subject_sha) is None:
+        return {}
     evidence_root = repo_root / _RUNTIME_EVIDENCE_ROOT
     if not evidence_root.exists():
         return {}
-    summaries: dict[str, dict[str, Any]] = {}
+    candidates: dict[str, list[tuple[datetime, str, dict[str, Any]]]] = {}
     for path in sorted(evidence_root.rglob("*.json")):
         payload = _load_json(path)
         if payload is None:
+            continue
+        captured_at = _captured_at(payload)
+        if captured_at is None:
             continue
         executor_summary = _executor_context_evidence_summary(
             payload,
             path=path,
             repo_root=repo_root,
         )
-        if executor_summary is not None:
-            summaries["executor_context_pack_runtime_acceptance"] = executor_summary
+        if executor_summary is not None and executor_summary["runtime_subject"] == runtime_subject_sha:
+            candidates.setdefault("executor_context_pack_runtime_acceptance", []).append(
+                (captured_at, path.as_posix(), executor_summary)
+            )
         sandbox_summary = _sandbox_runtime_evidence_summary(
             payload,
             path=path,
             repo_root=repo_root,
         )
-        if sandbox_summary is not None:
-            summaries["sandbox_cold_start_latency_split_runtime_acceptance"] = sandbox_summary
-    return summaries
+        if sandbox_summary is not None and sandbox_summary["runtime_subject"] == runtime_subject_sha:
+            candidates.setdefault("sandbox_cold_start_latency_split_runtime_acceptance", []).append(
+                (captured_at, path.as_posix(), sandbox_summary)
+            )
+    return {
+        artifact_kind: max(entries, key=lambda entry: (entry[0], entry[1]))[2]
+        for artifact_kind, entries in candidates.items()
+    }
 
 
-def build_office_context_readiness(repo_root: Path | None = None) -> dict[str, Any]:
+def build_office_context_readiness(
+    repo_root: Path | None = None,
+    *,
+    runtime_subject_sha: str | None = None,
+) -> dict[str, Any]:
     """Build the #22 context-pack baseline and reviewed runtime evidence status."""
     root = (repo_root or _ROOT).resolve()
-    runtime_acceptance_evidence = _runtime_acceptance_evidence(root)
+    expected_runtime_subject = runtime_subject_sha or _current_source_commit(root)
+    runtime_acceptance_evidence = _runtime_acceptance_evidence(
+        root,
+        runtime_subject_sha=expected_runtime_subject,
+    )
     open_gaps = [gap for gap in _OPEN_GAPS if gap not in runtime_acceptance_evidence]
     closed_runtime_gaps = [gap for gap in _OPEN_GAPS if gap in runtime_acceptance_evidence]
     if "executor_context_pack_runtime_acceptance" in closed_runtime_gaps:
@@ -619,6 +687,7 @@ def build_office_context_readiness(repo_root: Path | None = None) -> dict[str, A
         "gate": GATE_NAME,
         "issue": "#22",
         "status": "partial_blocked" if open_gaps else "runtime_acceptance_recorded",
+        "evaluated_runtime_subject": expected_runtime_subject or None,
         "policy": {
             "default_office_execution_tier": "sdk_only_writing",
             "lightweight_office_tasks_start_sandbox_by_default": False,

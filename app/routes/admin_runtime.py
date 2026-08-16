@@ -3,8 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capacity_baseline import build_capacity_baseline
 from app.error_taxonomy import summarize_error_categories
-from app.governance_readiness import build_governance_readiness
-from app.observability_readiness import build_observability_readiness
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
@@ -74,61 +72,14 @@ def _sanitize_dict(value: object) -> dict[str, object]:
     return cleaned if isinstance(cleaned, dict) else {}
 
 
-def _governance_overview_projection(settings: object) -> dict[str, object]:
-    readiness = _sanitize_dict(build_governance_readiness(settings))
-    domains = readiness.get("domains")
-    if not isinstance(domains, dict):
-        return readiness
-    skill_governance = domains.get("skill_governance")
-    if not isinstance(skill_governance, dict):
-        return readiness
-    evidence = skill_governance.get("evidence")
-    if not isinstance(evidence, dict):
-        return readiness
-    dashboard = evidence.get("admin_skill_release_dashboard")
-    if isinstance(dashboard, dict):
-        evidence["admin_skill_release_dashboard"] = {
-            key: value for key, value in dashboard.items() if key != "dashboard_contract"
-        }
-    return readiness
-
-
-def _observability_readiness_overview_projection(settings: object) -> dict[str, object]:
-    readiness = _sanitize_dict(build_observability_readiness(settings))
-    domains = readiness.get("domains")
-    if not isinstance(domains, dict):
-        return readiness
-    alerts = domains.get("alerts_and_exports")
-    if not isinstance(alerts, dict):
-        return readiness
-    evidence = alerts.get("evidence")
-    if not isinstance(evidence, dict):
-        return readiness
-    release_evidence = evidence.get("release_evidence")
-    if not isinstance(release_evidence, dict):
-        return readiness
-    export_acceptance = release_evidence.get("export_acceptance")
-    if isinstance(export_acceptance, dict):
-        evidence_summary_keys = {
-            "schema_version",
-            "gate",
-            "status",
-            "export_policy",
-            "evidence_root",
-            "entry_count",
-            "safe_entry_count",
-            "blockers",
-            "blocked_entry_count",
-            "excluded_entry_count",
-            "safe_entry_fields",
-            "open_gaps",
-            "does_not_export_raw_runtime_payloads",
-            "does_not_close_g9",
-        }
-        release_evidence["export_acceptance"] = {
-            key: value for key, value in export_acceptance.items() if key in evidence_summary_keys
-        }
-    return readiness
+def _offline_readiness_reference(*, command: str) -> dict[str, object]:
+    return {
+        "schema_version": "ai-platform.offline-readiness-reference.v1",
+        "status": "not_evaluated_in_runtime",
+        "runtime_evaluated": False,
+        "command": command,
+        "evidence_boundary": "offline_source_and_release_evidence_not_current_runtime_health",
+    }
 
 
 def _drop_overview_forbidden_keys(value: object) -> object:
@@ -732,8 +683,10 @@ async def admin_runtime_overview(
         "sandbox": sandbox,
         "observability": _sanitize_observability_summary(observability_summary),
         "capacity": capacity,
-        "governance": _governance_overview_projection(get_settings()),
-        "observability_readiness": _observability_readiness_overview_projection(get_settings()),
+        "governance": _offline_readiness_reference(command="python tools/governance_readiness.py"),
+        "observability_readiness": _offline_readiness_reference(
+            command="python tools/observability_readiness.py"
+        ),
         "database_pool": database_pool,
         "admission": admission,
         "backpressure": _backpressure_snapshot(

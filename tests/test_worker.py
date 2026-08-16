@@ -983,7 +983,6 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease, raising=False)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
-    monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         ragflow_skill = skill_id == "ragflow-knowledge-search"

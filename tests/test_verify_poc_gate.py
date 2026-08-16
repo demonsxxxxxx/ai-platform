@@ -1989,36 +1989,31 @@ def test_upload_attachment_chat_rejects_success_without_worker_start(monkeypatch
     assert gate.evidence["run_accepted_by_worker"] is False
 
 
-def test_auth_audit_gate_reports_raw_login_diagnostics(monkeypatch):
+def test_auth_audit_gate_ignores_unscoped_login_rows(monkeypatch):
+    observed_sql = []
+
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        observed_sql.append(sql)
         if "payload_json->>'source' = 'company-login'" in sql:
             return [
                 {
                     "count": 0,
                     "ordinary_user_count": 0,
                     "admin_user_count": 0,
-                    "latest_user_id": None,
-                    "latest_payload": None,
-                }
-            ]
-        if "where action = 'auth.login'" in sql:
-            return [
-                {
-                    "all_auth_login_count": 2,
-                    "latest_any_user_id": "user001",
-                    "latest_any_payload": {"source": "legacy-login"},
                 }
             ]
         raise AssertionError(sql)
 
     monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
-    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db", allow_missing=False)
+    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db")
 
     assert gate.ok is False
     assert gate.evidence["count"] == 0
-    assert gate.evidence["all_auth_login_count"] == 2
-    assert gate.evidence["latest_any_user_id"] == "user001"
+    assert len(observed_sql) == 1
+    assert "payload_json->>'source' = 'company-login'" in observed_sql[0]
+    assert "latest_any_user_id" not in gate.evidence
+    assert "latest_any_payload" not in gate.evidence
     assert gate.evidence["missing_requirements"] == [
         "ordinary_company_login_audit",
         "admin_company_login_audit",
@@ -2027,34 +2022,27 @@ def test_auth_audit_gate_reports_raw_login_diagnostics(monkeypatch):
 
 def test_auth_audit_gate_returns_boolean_ok_for_valid_company_login(monkeypatch):
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
-        payload = {
-            "source": "company-login",
-            "work_id": "ZX2834",
-            "permissions": ["agent:use"],
-            "is_admin": True,
-        }
         if "payload_json->>'source' = 'company-login'" in sql:
             return [
                 {
                     "count": 2,
                     "ordinary_user_count": 1,
                     "admin_user_count": 1,
-                    "latest_user_id": "ZX2834",
-                    "latest_payload": payload,
-                }
-            ]
-        if "where action = 'auth.login'" in sql:
-            return [
-                {
-                    "all_auth_login_count": 2,
-                    "latest_any_user_id": "ZX2834",
-                    "latest_any_payload": payload,
+                    "latest_user_id": "sensitive-user-id",
+                    "latest_payload": {"permissions": ["sensitive-permission"]},
                 }
             ]
         raise AssertionError(sql)
 
     monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
-    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db", allow_missing=False)
+    gate = verify_poc_gate.check_auth_audit("postgres", "user", "db")
 
     assert gate.ok is True
+    assert gate.evidence == {
+        "count": 2,
+        "ordinary_user_count": 1,
+        "admin_user_count": 1,
+    }
+    assert "user_id" not in gate.evidence
+    assert "payload" not in gate.evidence

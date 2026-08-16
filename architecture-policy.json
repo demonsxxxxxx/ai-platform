@@ -107,8 +107,6 @@
     "app/auth_sessions.py",
     "app/b1_memory_context_readiness.py",
     "app/b2_sandbox_readiness.py",
-    "app/b5_file_tool_readiness.py",
-    "app/b6_operations_beta_readiness.py",
     "app/backend_stage_closure_evidence.py",
     "app/capabilities.py",
     "app/capability_distribution.py",
