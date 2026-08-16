@@ -6,10 +6,15 @@ does not represent deployed runtime state.
 ## Governance
 
 - `../AGENTS.md` defines repository-local operating constraints.
+- `agent-rules/change-contract.md` defines the pre-implementation scope,
+  invariants, evidence, and stop conditions required before an Agent earns
+  write authority.
 - `agent-rules/multi-agent-context-workflow.md` defines ownership, leases, and
   handoff.
 - `agent-rules/github-issue-pr-workflow.md` defines issue, PR, review, and
   closure evidence.
+- `decision-notes/README.md` defines lightweight durable rationale for choices
+  that outlive a PR without establishing a new platform architecture authority.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
   single business authority and defines the Harness replacement seam.
 - `architecture/expert-agent-service-workbench.md` defines the Agent-first

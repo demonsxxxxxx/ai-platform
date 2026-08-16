@@ -6,6 +6,10 @@ AGENTS = ROOT / "AGENTS.md"
 DOCS_INDEX = ROOT / "docs/README.md"
 MULTI_AGENT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
+CHANGE_CONTRACT = ROOT / "docs/agent-rules/change-contract.md"
+DECISION_NOTES = ROOT / "docs/decision-notes/README.md"
+PULL_REQUEST_TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
+CLAUDE = ROOT / "CLAUDE.md"
 RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
 S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
@@ -18,6 +22,13 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def markdown_section(document: str, heading: str) -> str:
+    marker = f"## {heading}\n"
+    start = document.index(marker) + len(marker)
+    next_heading = document.find("\n## ", start)
+    return document[start:] if next_heading == -1 else document[start:next_heading]
+
+
 def test_documentation_index_names_the_only_durable_authority_surfaces():
     index = read(DOCS_INDEX)
 
@@ -27,6 +38,8 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
     for relative_path in (
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
+        "agent-rules/change-contract.md",
+        "decision-notes/README.md",
         "architecture/source-code-architecture.md",
         "architecture/ci-test-readiness-governance.md",
         "adr/0006-domain-first-modular-monolith.md",
@@ -35,6 +48,74 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         "release-evidence/README.md",
     ):
         assert relative_path in index
+
+
+def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
+    agents = read(AGENTS)
+    claude = read(CLAUDE)
+    contract = read(CHANGE_CONTRACT)
+    workflow = read(GITHUB_WORKFLOW)
+    decision_notes = read(DECISION_NOTES)
+    pull_request_template = read(PULL_REQUEST_TEMPLATE)
+
+    for authority_path in (CHANGE_CONTRACT, DECISION_NOTES, PULL_REQUEST_TEMPLATE, CLAUDE):
+        assert authority_path.is_file()
+
+    coding_control = markdown_section(agents, "Change Design And Coding Control")
+    assert "docs/agent-rules/change-contract.md" in coding_control
+    assert "Repository coding instructions live in this `AGENTS.md`" in coding_control
+    assert "single repository coding authority" in claude
+    assert "AGENTS.md" in claude
+    assert "CLAUDE.md` is the single repository coding authority" not in claude
+
+    for required_contract_field in (
+        "**Problem**",
+        "**Owner**",
+        "**Exact subject**",
+        "**Writable paths**",
+        "**Forbidden paths**",
+        "**Invariants**",
+        "**Alternatives considered**",
+        "**Regression proof**",
+        "**Stop conditions**",
+    ):
+        assert required_contract_field in contract
+    assert "would fail if the regression existed" in contract
+    assert "self-authored checklist evidence" in contract
+    assert "change-contract.md" in workflow
+
+    assert "Alternatives considered" in decision_notes
+    assert "not current authority" in decision_notes
+    expected_template_fields = {
+        "Linked subject": (
+            "Issue:",
+            "Change Contract location:",
+            "Repository/worktree:",
+            "Branch:",
+            "Exact base SHA (full 40 hex):",
+            "Candidate head SHA (full 40 hex):",
+            "Runtime subject, when relevant:",
+        ),
+        "Problem and owner": ("Observable problem:", "Owning authority/module:"),
+        "Scope": ("Writable paths:", "Forbidden paths:", "Explicitly out of scope:"),
+        "Behavior and invariants": ("Before/after behavior:", "Acceptance criteria:", "invariants preserved:"),
+        "Decision": ("Alternatives considered and why they lost:", "Documentation and ADR/architecture/Decision Note impact:"),
+        "Verification": (
+            "Regression proof that can falsify this change:",
+            "Required assembled/runtime proof for the claimed acceptance:",
+            "Declared evidence ceiling:",
+            "Evidence not observed:",
+        ),
+        "Review and recovery": ("Rollback/recovery, when required:", "Declared stop conditions:", "contract revisions:"),
+        "Accuracy checklist": ("actual diff stays within", "claims for reviewers and gates to verify"),
+    }
+    for heading, fields in expected_template_fields.items():
+        section = " ".join(markdown_section(pull_request_template, heading).split())
+        for field in fields:
+            assert field in section
+
+    assert "Agent self-reported output" in pull_request_template
+    assert "Template text and checked boxes are claims for reviewers and gates to verify" in " ".join(workflow.split())
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():

@@ -18,9 +18,16 @@ of expanding an unrelated product PR.
 
 - The linked issue and PR are normally the plan, change description, and durable
   status record. Do not create a spec/plan/status trio by default.
+- A non-mechanical change records the fields required by
+  `change-contract.md` in its issue, PR, or persistent-task dispatch before
+  implementation. The contract grants a bounded write scope; it is not a new
+  repository status document.
 - Create a separate design for security, auth or authorization, tenant isolation,
   release, deployment, runtime, persistence, concurrency, public contracts, or
   infrastructure decisions that need durable explanation.
+- Use `../decision-notes/README.md` only for focused rationale that must outlive
+  the issue or PR and is not already owned by an ADR, architecture document, or
+  source contract.
 - Record blockers and evidence on the issue or PR. Historical evidence cannot
   prove current readiness.
 - Do not create repository status pages, phase ledgers, or manual-release logs
@@ -45,12 +52,18 @@ Never promote an earlier label without observing the additional evidence.
 An issue records scope, acceptance criteria, verification and review
 requirements, runtime requirement when relevant, and known blockers.
 
+- Before code changes, the Change Contract identifies the observable problem,
+  owner, exact base, writable and forbidden paths, behavior delta, invariants,
+  alternatives, regression proof, evidence ceiling, and stop conditions.
 - Keep one coherent PR per issue or acceptance boundary and use an issue-linked
   branch.
 - Direct commits to `main` require an explicit user request or documented
   operational exception, with the same evidence recorded afterward.
 - A PR states its linked subject, changed behavior/modules, tests observed,
   review state, docs impact, and runtime evidence or why it is unnecessary.
+- The PR reconciles its declared writable paths with the actual diff and records
+  scope revisions. Template text and checked boxes are claims for reviewers and
+  gates to verify; they are not evidence by themselves.
 - Use `Closes #N` or `Fixes #N` only when the merge will satisfy all acceptance,
   review, and required runtime criteria. Otherwise link without auto-close.
 
