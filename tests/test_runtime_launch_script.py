@@ -486,7 +486,7 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
 
-def test_opensandbox_internal_test_overlay_keeps_risk_profile_without_raw_credentials():
+def test_opensandbox_internal_test_overlay_explicitly_forwards_model_credentials():
     import yaml
 
     overlay = yaml.safe_load(OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8"))
@@ -498,7 +498,7 @@ def test_opensandbox_internal_test_overlay_keeps_risk_profile_without_raw_creden
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert "OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS" not in environment
+        assert environment["OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS"] == "true"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""

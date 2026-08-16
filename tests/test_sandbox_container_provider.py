@@ -1831,23 +1831,24 @@ def test_opensandbox_rejects_local_executor_image_id_outside_exact_internal_test
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_never_forwards_model_credentials(monkeypatch):
+async def test_opensandbox_internal_test_explicitly_forwards_model_credentials(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
 
-    class LegacyCredentialForwardingSettings(InternalTestOpenSandboxSettings):
+    class CredentialForwardingSettings(InternalTestOpenSandboxSettings):
         opensandbox_internal_test_forward_model_credentials = True
         model_catalog_json = '[{"id":"deepseek-v4-flash","api_key":"catalog-secret"}]'
 
-    settings = LegacyCredentialForwardingSettings()
+    settings = CredentialForwardingSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     provider = opensandbox_provider()
 
     lease = await provider.create_or_reuse(request(), workspace())
 
     environment = FakeOpenSandbox.created[0]["env"]
-    assert "OPENAI_API_KEY" not in environment
-    assert "ANTHROPIC_AUTH_TOKEN" not in environment
+    assert environment["OPENAI_API_KEY"] == settings.openai_api_key
+    assert environment["ANTHROPIC_AUTH_TOKEN"] == settings.anthropic_auth_token
+    assert "ANTHROPIC_API_KEY" not in environment
     assert "MODEL_CATALOG_JSON" not in environment
     assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["metadata"]
     assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["metadata"]
