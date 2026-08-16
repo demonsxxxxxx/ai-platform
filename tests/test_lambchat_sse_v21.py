@@ -151,6 +151,244 @@ async def test_v21_stream_uses_native_redis_cursor_and_never_reads_pg_deltas(
 
 
 @pytest.mark.asyncio
+async def test_v21_stream_projects_identifier_split_across_redis_deltas(monkeypatch):
+    patch_authority(monkeypatch)
+
+    async def get_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        }
+
+    rows = (
+        entry(
+            "1-0",
+            "sev-open",
+            "stream_open",
+            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
+        ),
+        entry(
+            "2-0",
+            "sev-delta-a",
+            "assistant_text_delta",
+            {"delta": "已开始处理，general-"},
+        ),
+        entry(
+            "3-0",
+            "sev-delta-b",
+            "assistant_text_delta",
+            {"delta": "chat 已完成。"},
+        ),
+        entry(
+            "4-0",
+            "sev-terminal",
+            "terminal",
+            {
+                "event_id": "sev-terminal",
+                "hydrate_required": True,
+                "status": "succeeded",
+            },
+        ),
+        entry("5-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
+    )
+
+    class Bridge:
+        async def resolve_resume(self, **kwargs):
+            return ResumeDecision("0-0", None)
+
+        async def read(self, **kwargs):
+            return rows
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
+    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert "general-chat" not in body
+    assert "qa-word-review" not in body
+    assert "general-agent" in body
+    assert '"content": "已开始处理，general-agent 已完成。"' in body
+
+
+@pytest.mark.asyncio
+async def test_v21_resume_rebuilds_split_identifier_projection_state(monkeypatch):
+    patch_authority(monkeypatch)
+
+    async def get_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        }
+
+    retained = (
+        entry(
+            "1-0",
+            "sev-open",
+            "stream_open",
+            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
+        ),
+        entry(
+            "2-0",
+            "sev-delta-safe",
+            "assistant_text_delta",
+            {"delta": "已开始处理，"},
+        ),
+        entry(
+            "3-0",
+            "sev-delta-prefix",
+            "assistant_text_delta",
+            {"delta": "general-"},
+        ),
+        entry(
+            "4-0",
+            "sev-progress",
+            "semantic_stage",
+            {"event": "run_event", "data": {"content": "处理中"}},
+        ),
+    )
+    resumed = (
+        entry(
+            "5-0",
+            "sev-delta-suffix",
+            "assistant_text_delta",
+            {"delta": "chat 已完成。"},
+        ),
+        entry(
+            "6-0",
+            "sev-terminal",
+            "terminal",
+            {
+                "event_id": "sev-terminal",
+                "hydrate_required": True,
+                "status": "succeeded",
+            },
+        ),
+        entry("7-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
+    )
+
+    class Bridge:
+        async def resolve_resume(self, **kwargs):
+            assert kwargs["last_event_id"] == "run-a:1:4-0"
+            return ResumeDecision("4-0", None)
+
+        async def read(self, **kwargs):
+            if kwargs["after_redis_id"] == "0-0":
+                return retained
+            if kwargs["after_redis_id"] == "4-0":
+                return resumed
+            raise AssertionError(f"unexpected cursor: {kwargs['after_redis_id']}")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
+    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        last_event_id="run-a:1:4-0",
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert "general-chat" not in body
+    assert "qa-word-review" not in body
+    assert "已开始处理" not in body
+    assert '"content": "general-agent 已完成。"' in body
+
+
+@pytest.mark.asyncio
+async def test_v21_terminal_flushes_pending_identifier_after_stable_delta(monkeypatch):
+    patch_authority(monkeypatch)
+
+    async def get_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        }
+
+    rows = (
+        entry(
+            "1-0",
+            "sev-open",
+            "stream_open",
+            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
+        ),
+        entry(
+            "2-0",
+            "sev-delta-safe",
+            "assistant_text_delta",
+            {"delta": "已完成，"},
+        ),
+        entry(
+            "3-0",
+            "sev-delta-pending",
+            "assistant_text_delta",
+            {"delta": "general-chat"},
+        ),
+        entry(
+            "4-0",
+            "sev-terminal",
+            "terminal",
+            {
+                "event_id": "sev-terminal",
+                "hydrate_required": True,
+                "status": "succeeded",
+            },
+        ),
+        entry("5-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
+    )
+
+    class Bridge:
+        async def resolve_resume(self, **kwargs):
+            return ResumeDecision("0-0", None)
+
+        async def read(self, **kwargs):
+            return rows
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
+    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert "general-chat" not in body
+    assert "qa-word-review" not in body
+    assert '"content": "已完成，"' in body
+    assert '"content": "general-agent"' in body
+    assert "id: run-a:1:2-0" in body
+    assert "id: run-a:1:3-0" in body
+
+
+@pytest.mark.asyncio
 async def test_v21_stream_maps_committed_execution_projection_from_redis(monkeypatch):
     patch_authority(monkeypatch)
     committed = {

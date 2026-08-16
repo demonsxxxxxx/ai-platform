@@ -44,6 +44,7 @@ from app.routes.runs import (
 )
 from app.run_projection import (
     CHAT_PUBLIC_PROJECTION_VERSION,
+    PublicChatAnswerStreamProjector,
     public_chat_answer_text,
     public_chat_terminal_projection,
     public_terminal_detail,
@@ -123,6 +124,7 @@ class _CompatibilityFoldState:
 
     has_strict_public_execution: bool
     seen_public_lifecycle_singletons: frozenset[str]
+    answer_projection_state: tuple[str, str, bool] = ("", "", False)
 
 
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
@@ -309,6 +311,9 @@ def _strict_typed_chat_event_product(
     run: dict[str, Any],
     event: dict[str, Any],
     principal: AuthPrincipal,
+    *,
+    answer_projector: PublicChatAnswerStreamProjector | None = None,
+    final_answer_delta: bool = False,
 ) -> _StrictChatEventProduct | None:
     """Retain only exact answer deltas or reconstructed permission cards for Chat.
 
@@ -343,7 +348,11 @@ def _strict_typed_chat_event_product(
         if len(page.events) != 1:
             return None
         delta = page.events[0]
-        content = public_chat_answer_text(run, delta.delta)
+        content = (
+            answer_projector.push(delta.delta, final=final_answer_delta)
+            if answer_projector is not None
+            else public_chat_answer_text(run, delta.delta)
+        )
         if not content:
             return None
         return _StrictChatEventProduct(
@@ -548,9 +557,18 @@ def _assistant_delta_projection(
     run: dict[str, Any],
     event: dict[str, Any],
     principal: AuthPrincipal,
+    *,
+    answer_projector: PublicChatAnswerStreamProjector | None = None,
+    final_answer_delta: bool = False,
 ) -> dict[str, object] | None:
     """Return a sanitized delta frame without carrying any executor payload."""
-    typed_product = _strict_typed_chat_event_product(run, event, principal)
+    typed_product = _strict_typed_chat_event_product(
+        run,
+        event,
+        principal,
+        answer_projector=answer_projector,
+        final_answer_delta=final_answer_delta,
+    )
     if typed_product is None or typed_product.kind != "assistant_delta":
         return None
     return typed_product.payload
@@ -621,6 +639,26 @@ def _compatibility_events_for_run_page(
         "run_started",
     }
     seen_public_lifecycle_singletons = set(fold_state.seen_public_lifecycle_singletons)
+    ordered_events = sorted(
+        enumerate(run_events),
+        key=lambda item: _event_sequence_sort_key(item[1], item[0]),
+    )
+    answer_projector = PublicChatAnswerStreamProjector(
+        run,
+        fold_state.answer_projection_state,
+    )
+    final_answer_event = next(
+        (
+            event
+            for _, event in reversed(ordered_events)
+            if include_terminal
+            and status in {"succeeded", "failed", "cancelled"}
+            and str(event.get("event_type") or "") == "assistant_delta"
+            and _chat_event_marked_visible(event)
+            and event_visible_to_principal(event, principal)
+        ),
+        None,
+    )
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -657,10 +695,7 @@ def _compatibility_events_for_run_page(
             )
         )
 
-    for position, event in sorted(
-        enumerate(run_events),
-        key=lambda item: _event_sequence_sort_key(item[1], item[0]),
-    ):
+    for position, event in ordered_events:
         raw_event_type = str(event.get("event_type") or "")
         if raw_event_type in CHAT_STREAM_TERMINAL_EVENT_TYPES:
             continue
@@ -713,7 +748,13 @@ def _compatibility_events_for_run_page(
         } & set(raw_payload):
             continue
         if raw_event_type == "assistant_delta":
-            delta = _assistant_delta_projection(run, event, principal)
+            delta = _assistant_delta_projection(
+                run,
+                event,
+                principal,
+                answer_projector=answer_projector,
+                final_answer_delta=event is final_answer_event,
+            )
             if delta is None:
                 continue
             compatibility_events.append(
@@ -874,6 +915,7 @@ def _compatibility_events_for_run_page(
     return compatibility_events, _CompatibilityFoldState(
         has_strict_public_execution=has_strict_public_execution,
         seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
+        answer_projection_state=answer_projector.state,
     )
 
 
@@ -1408,6 +1450,48 @@ async def chat_status(
     return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
 
 
+async def _restore_chat_answer_projector(
+    bridge: RedisStreamBridge,
+    *,
+    run: dict[str, Any],
+    tenant_scope_value: str,
+    run_id: str,
+    stream_incarnation: int,
+    through_redis_id: str,
+) -> PublicChatAnswerStreamProjector:
+    """Rebuild private stream projection state through one proven resume cursor."""
+    projector = PublicChatAnswerStreamProjector(run)
+    if through_redis_id == "0-0":
+        return projector
+    after = "0-0"
+    saw_stream_open = False
+    while after != through_redis_id:
+        previous_after = after
+        entries = await bridge.read(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+            after_redis_id=after,
+            block_ms=1,
+        )
+        if not entries:
+            raise StreamContractError("stream_projection_history_unavailable")
+        for entry in entries:
+            after = entry.cursor.redis_id
+            envelope = entry.envelope
+            if not saw_stream_open:
+                if envelope.event_type != "stream_open":
+                    raise StreamContractError("stream_projection_history_unavailable")
+                saw_stream_open = True
+            elif envelope.event_type == "assistant_text_delta":
+                projector.push(envelope.payload["delta"])
+            if after == through_redis_id:
+                return projector
+        if after == previous_after:
+            raise StreamContractError("stream_projection_history_unavailable")
+    return projector
+
+
 @router.get("/chat/sessions/{session_id}/stream")
 async def chat_session_stream(
     session_id: str,
@@ -1462,12 +1546,29 @@ async def chat_session_stream(
     except StreamTransportUnavailable as exc:
         await bridge.aclose()
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
+    try:
+        answer_projector = await _restore_chat_answer_projector(
+            bridge,
+            run=initial_run,
+            tenant_scope_value=authority.tenant_scope,
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            through_redis_id=resume.after_redis_id or "0-0",
+        )
+    except StreamContractError as exc:
+        await bridge.aclose()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StreamTransportUnavailable as exc:
+        await bridge.aclose()
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
         terminal_status: str | None = None
         terminal_event_id: str | None = None
+        last_answer_event_id: str | None = None
+        last_answer_cursor_id: str | None = None
 
         async def publish_pending_terminal() -> None:
             async with transaction() as conn:
@@ -1549,6 +1650,13 @@ async def chat_session_stream(
                             entry.cursor.event_id,
                         )
                     elif envelope.event_type == "assistant_text_delta":
+                        last_answer_event_id = envelope.event_id
+                        last_answer_cursor_id = entry.cursor.event_id
+                        projected_delta = answer_projector.push(
+                            envelope.payload["delta"]
+                        )
+                        if not projected_delta:
+                            continue
                         yield _sse(
                             "message:chunk",
                             {
@@ -1556,11 +1664,25 @@ async def chat_session_stream(
                                 "event_id": envelope.event_id,
                                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
                                 "projection_kind": "assistant_delta",
-                                "content": envelope.payload["delta"],
+                                "content": projected_delta,
                             },
                             entry.cursor.event_id,
                         )
                     elif envelope.event_type == "terminal":
+                        if last_answer_event_id and last_answer_cursor_id:
+                            final_delta = answer_projector.flush()
+                            if final_delta:
+                                yield _sse(
+                                    "message:chunk",
+                                    {
+                                        "run_id": run_id,
+                                        "event_id": last_answer_event_id,
+                                        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                                        "projection_kind": "assistant_delta",
+                                        "content": final_delta,
+                                    },
+                                    last_answer_cursor_id,
+                                )
                         terminal_status = str(envelope.payload["status"])
                         terminal_event_id = envelope.event_id
                         yield _sse(

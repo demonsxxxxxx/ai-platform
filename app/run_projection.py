@@ -16,7 +16,9 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
 from app.projection_redaction import (
+    PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
     public_agent_id_for_projection,
     required_tool_public_detail,
@@ -103,6 +105,8 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
 
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 
+RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
+
 def public_terminal_projection(
     status: object,
     error_code: object = None,
@@ -150,7 +154,12 @@ def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
 
 
 def public_chat_answer_text(run: dict[str, object], value: object) -> str:
-    """Sanitize terminal and delta text with the run-owned identifier policy."""
+    """Sanitize terminal and delta text with the run-owned identifier policy.
+
+    Identifier tokens are replaced with stable public labels when one is known,
+    otherwise redacted. A private or unprojectable answer is never fabricated
+    into a success message: an empty result propagates to the caller.
+    """
     content = sanitize_public_text(value)
     if not content:
         return ""
@@ -158,7 +167,6 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
     raw_agent_id = str(run.get("agent_id") or "")
     skill_capability_id = capability_id_from_skill(raw_skill_id)
     agent_capability_id = capability_id_from_skill(None, raw_agent_id)
-    run_capability_id = skill_capability_id or agent_capability_id
     public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
     identifiers = (
         (raw_skill_id, skill_capability_id),
@@ -173,24 +181,94 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
             matched_identifiers.append(
                 (identifier, identifier_capability_id, token_pattern)
             )
-    if (
-        matched_identifiers
-        and raw_skill_id
-        and raw_agent_id
-        and skill_capability_id != agent_capability_id
-    ):
-        return ""
     for identifier, identifier_capability_id, token_pattern in matched_identifiers:
+        replacement = None
+        if identifier_capability_id:
+            replacement = PUBLIC_AGENT_ID_BY_CAPABILITY.get(identifier_capability_id)
         if (
-            not run_capability_id
-            or identifier_capability_id != run_capability_id
-            or not public_agent_id
+            not replacement
+            and public_agent_id
+            and public_agent_id != raw_agent_id
+            and public_agent_id != raw_skill_id
         ):
-            return ""
-        if public_agent_id != identifier:
-            content = token_pattern.sub(public_agent_id, content)
+            replacement = public_agent_id
+        if replacement:
+            content = token_pattern.sub(replacement, content)
+        else:
+            redaction_pattern = re.compile(rf"\s*{token_pattern.pattern}\s*")
+            content = redaction_pattern.sub("", content)
     content = sanitize_public_text(content)
     return content if content.strip() else ""
+
+
+PublicChatAnswerStreamState = tuple[str, str, bool]
+
+
+class PublicChatAnswerStreamProjector:
+    """Incrementally project answer text without exposing split identifiers."""
+
+    def __init__(
+        self,
+        run: dict[str, object],
+        state: PublicChatAnswerStreamState | None = None,
+    ) -> None:
+        self._run = run
+        self._identifiers = tuple(
+            identifier
+            for identifier in (
+                str(run.get("skill_id") or ""),
+                str(run.get("agent_id") or ""),
+            )
+            if identifier
+        )
+        self._raw, self._emitted, self._blocked = state or ("", "", False)
+
+    @property
+    def state(self) -> PublicChatAnswerStreamState:
+        return self._raw, self._emitted, self._blocked
+
+    def _unstable_suffix_length(self) -> int:
+        unstable = 0
+        token_character = re.compile(r"[\w.:\-]")
+        for identifier in self._identifiers:
+            for length in range(1, min(len(identifier), len(self._raw)) + 1):
+                if not self._raw.endswith(identifier[:length]):
+                    continue
+                start = len(self._raw) - length
+                if start and token_character.fullmatch(self._raw[start - 1]):
+                    continue
+                unstable = max(unstable, length)
+        for marker in FORBIDDEN_PUBLIC_MARKERS:
+            for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
+                if self._raw.endswith(marker[:length]):
+                    unstable = max(unstable, length)
+        return unstable
+
+    def push(self, value: object, *, final: bool = False) -> str:
+        if self._blocked:
+            return ""
+        if value is not None:
+            self._raw += str(value)
+        projected = public_chat_answer_text(self._run, self._raw)
+        unstable = 0 if final else self._unstable_suffix_length()
+        if unstable:
+            if self._emitted and not projected.startswith(self._emitted):
+                self._blocked = True
+            return ""
+        stable = projected
+        if (
+            not stable.startswith(self._emitted)
+            or (stable and not projected.startswith(stable))
+            or (self._emitted and not projected.startswith(self._emitted))
+        ):
+            self._blocked = True
+            return ""
+        delta = stable[len(self._emitted) :]
+        self._emitted = stable
+        return delta
+
+    def flush(self) -> str:
+        return self.push("", final=True)
 
 
 def _chat_terminal_answer_candidate(run: dict[str, object]) -> object:
@@ -206,16 +284,29 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
     """Build the sole versioned Chat payload for a terminal run state."""
     status = normalize_run_status(str(run.get("status") or ""))
     if status == "succeeded":
-        content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run)) or "任务完成"
+        content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run))
+        if content:
+            return {
+                "event_type": "message:chunk",
+                "payload": {
+                    "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                    "projection_kind": "assistant_final",
+                    "content": content,
+                },
+                "message": content,
+                "event_payload": {},
+                "severity": "info",
+            }
         return {
-            "event_type": "message:chunk",
+            "event_type": "final_detail",
             "payload": {
                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                "projection_kind": "assistant_final",
-                "content": content,
+                "detail_kind": "result_unavailable",
+                "detail_code": "result_unavailable",
+                "message": RESULT_UNAVAILABLE_MESSAGE,
             },
-            "message": content,
-            "event_payload": {},
+            "message": RESULT_UNAVAILABLE_MESSAGE,
+            "event_payload": {"detail_code": "result_unavailable"},
             "severity": "info",
         }
     terminal = public_terminal_projection(status, run.get("error_code"))

@@ -122,7 +122,7 @@ const ACTIONABLE_PUBLIC_STATUS_PATTERN =
   /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed|cancel/i;
 
 interface PublicTerminalPresentation {
-  detailKind: "failed" | "cancelled";
+  detailKind: "failed" | "cancelled" | "result_unavailable";
   message: string;
   stage: string;
   severity: "info" | "warning" | "error";
@@ -193,6 +193,16 @@ function publicTerminalPresentation(
         defaultValue: "任务已取消。取消前已产生的公开内容仍会保留。",
       }),
       stage: "terminal",
+      severity: "warning",
+    },
+    result_unavailable: {
+      detailKind: "result_unavailable",
+      message: i18n.t("chat.runTerminal.resultUnavailable", {
+        defaultValue: "本次执行未能生成可展示的回复内容。",
+      }),
+      stage: "terminal",
+      // Warning keeps the card visible: informational run_status parts are
+      // hidden from the transcript unless the event_type is actionable.
       severity: "warning",
     },
   };
