@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -6,6 +7,8 @@ AGENTS = ROOT / "AGENTS.md"
 DOCS_INDEX = ROOT / "docs/README.md"
 MULTI_AGENT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
+PULL_REQUEST_TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
+CLAUDE = ROOT / "CLAUDE.md"
 RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
 S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
@@ -35,6 +38,60 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         "release-evidence/README.md",
     ):
         assert relative_path in index
+
+
+def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
+    agents = read(AGENTS)
+    claude = read(CLAUDE)
+    workflow = read(GITHUB_WORKFLOW)
+    pull_request_template = read(PULL_REQUEST_TEMPLATE)
+    claude_flat = " ".join(claude.split())
+    workflow_flat = " ".join(workflow.split())
+
+    assert "## Change Control" in agents
+    assert re.search(r"`AGENTS\.md` is .*repository coding authority", agents)
+    assert "## Change Contract" in workflow
+    assert re.search(
+        r"Before non-mechanical implementation, the (?:issue|persistent-task)",
+        workflow_flat,
+    )
+    assert re.search(r"PR links .* prior record", workflow_flat)
+    assert "single repository coding authority" in claude_flat
+    assert "must not duplicate or weaken it" in claude_flat
+    assert "(AGENTS.md)" in claude
+    assert (
+        "docs/agent-rules/github-issue-pr-workflow.md#change-contract" in claude
+    )
+    assert "falsifiable regression" in workflow
+    assert "cannot prove the contract existed before coding" in workflow
+    assert re.search(r"Only risk categories .* non-applicable", workflow_flat)
+    assert re.search(r"bare `N/A`.*does not satisfy", workflow_flat)
+    for heading in (
+        "## Subject and scope",
+        "## Behavior and decision",
+        "## Evidence and recovery",
+        "## Accuracy",
+    ):
+        assert heading in pull_request_template
+    for required_field in (
+        "Issue / Change Contract:",
+        "Full base SHA / candidate head SHA:",
+        "Actual diff reconciled with scope:",
+        "Before/after, failure, and compatibility behavior:",
+        "Falsifiable regression proof:",
+        "Required and observed build, packaging, or integration path:",
+        "Focused commands and observed results:",
+        "Evidence ceiling and evidence not observed:",
+        "rollback when required:",
+    ):
+        assert required_field in pull_request_template
+    assert "`N/A` is reserved for the risk categories" in pull_request_template
+    assert "a bare `N/A` is not an answer" in pull_request_template
+    template_flat = " ".join(pull_request_template.split())
+    assert re.search(
+        r"`Closes`/`Fixes`.*acceptance, review,.*required runtime criteria",
+        template_flat,
+    )
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():

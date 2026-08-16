@@ -58,6 +58,20 @@ roadmap or Controller Current rather than this durable entry file.
   evidence under `docs/release-evidence/`; they never establish current runtime
   state without fresh verification.
 
+## Change Control
+
+- Before non-mechanical edits, record the Change Contract required by
+  `docs/agent-rules/github-issue-pr-workflow.md` in the issue or persistent
+  task; the PR links and reconciles that prior record. Read-only exploration may
+  fill missing fields, but coding waits for a
+  known owner, bounded paths, invariants, acceptance, regression proof, evidence
+  ceiling, and stop conditions.
+- Revise the contract before expanding scope. Every behavior change needs a
+  falsifiable owning test; claim assembled or runtime behavior only after
+  observing that path. Template text and Agent self-report are not evidence.
+- `AGENTS.md` is repository coding authority. Product Agent.md content belongs
+  to the Agent Profile/Workspace domain and is not implementation authority.
+
 ## Delivery Workflow
 
 Use GitHub issues and pull requests as the default closure loop for goal-sized
