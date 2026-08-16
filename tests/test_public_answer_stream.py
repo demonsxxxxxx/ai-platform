@@ -191,6 +191,22 @@ def test_sealed_answer_over_bound_fails_closed_without_truncation():
     assert finished.chunks == () and finished.final_text == ""
 
 
+def test_deferred_terminal_answer_does_not_inherit_sealed_buffer_limit():
+    gate = _gate()
+    gate.defer_until_finish()
+    gate.seal({CALL_ID: "tool invocation"})
+
+    assert gate.accept("discarded interim " + ("x" * 256)) == ()
+    finished = gate.finish(
+        final_text=f"terminal {CALL_ID} " + ("y" * 256),
+        release=True,
+    )
+
+    assert gate.failed is False
+    assert finished.final_text == "terminal tool invocation " + ("y" * 256)
+    assert finished.chunks == (finished.final_text,)
+
+
 def test_unsafe_sanitizer_result_fails_closed_without_raw_text():
     gate = _gate()
 

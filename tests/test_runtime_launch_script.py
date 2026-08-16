@@ -456,6 +456,7 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
         environment = overlay["services"][service_name]["environment"]
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
+        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
         for required in (
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
             "SANDBOX_RUNTIME_SUBJECT",
@@ -485,7 +486,7 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
 
-def test_opensandbox_internal_test_overlay_is_explicit_direct_and_has_no_gateway_contract():
+def test_opensandbox_internal_test_overlay_keeps_risk_profile_without_raw_credentials():
     import yaml
 
     overlay = yaml.safe_load(OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8"))
@@ -497,8 +498,8 @@ def test_opensandbox_internal_test_overlay_is_explicit_direct_and_has_no_gateway
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert environment["OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS"] == "true"
-        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "false"
+        assert "OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS" not in environment
+        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""
         assert "SANDBOX_EGRESS_PROOF_SIGNING_KEY" not in environment

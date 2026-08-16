@@ -46,9 +46,16 @@ from app.public_execution import (
     public_execution_phase_progress_payload,
 )
 from app.required_tool_contract import (
+    REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    REQUIRED_CAPABILITY_EVIDENCE_KEY,
+    SANDBOX_LOCAL_TOOL_IDENTITIES,
+    TOOL_INVOCATION_EVIDENCE_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
+    ToolInvocationEvidence,
+    canonical_tool_call_id,
+    declaration_from_payload,
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
@@ -331,20 +338,14 @@ def _public_capability_label(
 def _evidence_binding(request: ExecutorTaskRequest) -> dict[str, str]:
     """Return the authoritative request binding required by evidence factories."""
 
-    binding = request.config.get("context_retrieval_scope")
-    if not isinstance(binding, dict):
-        return {}
-    expected = {
-        "tenant_id": binding.get("tenant_id"),
-        "workspace_id": binding.get("workspace_id"),
-        "user_id": binding.get("user_id"),
+    return {
+        "tenant_id": request.tenant_id,
+        "workspace_id": request.workspace_id,
+        "user_id": request.user_id,
         "session_id": request.session_id,
         "run_id": request.run_id,
         "attempt_id": request.attempt_id,
     }
-    if any(not isinstance(value, str) or not value for value in expected.values()):
-        return {}
-    return {key: str(value) for key, value in expected.items()}
 
 
 class _ExecutorCleanupError(RuntimeError):
@@ -996,6 +997,7 @@ def _controlled_skill_result(
         "executor_mode": "platform_controlled_runner",
         "used_skills": [],
         "used_skills_source": "none",
+        TOOL_INVOCATION_EVIDENCE_KEY: [],
     }
     if error_code:
         result.update(error_code=error_code, error_message=message)
@@ -1129,6 +1131,7 @@ async def _run_selected_authorized_file_skill(
         "used_skills": [skill_id],
         "used_skills_source": "platform_controlled_runner",
         "capability_evidence": capability_evidence,
+        TOOL_INVOCATION_EVIDENCE_KEY: [],
     }
 
 
@@ -1305,6 +1308,47 @@ async def _default_executor_runner(
         await emit_event(_PlatformExecutionPhaseFact("skill_staging", "started"))
         await emit_event(_PlatformExecutionPhaseFact("skill_staging", "completed"))
     model_id = str(request.config.get("model") or "") or None
+    bash_subject = next(
+        (
+            subject
+            for subject in _task_tool_policy_subjects(request)
+            if subject.get("identity") == "Bash"
+        ),
+        None,
+    )
+    try:
+        required_capability_declaration = declaration_from_payload(
+            (bash_subject or {}).get(REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY)
+        )
+    except RequiredToolContractError:
+        return {
+            "status": "failed",
+            "message": "Required capability declaration is invalid",
+            "error_code": "required_tool_declaration_mismatch",
+            "error_message": "Required capability declaration is invalid",
+            "sdk_used": False,
+            "executor_mode": "required_capability_declaration_invalid",
+            "attachment_parser_evidence": parser_evidence,
+        }
+    required_tool_invocation_states: dict[tuple[str, str], str] = {}
+    required_capability_evidence: dict[str, Any] | None = None
+    tool_invocation_evidence: list[dict[str, Any]] = []
+    bound_capability_evidence: list[dict[str, Any]] = []
+    invocation_states: dict[tuple[str, str, str], str] = {}
+    invocation_owners: dict[str, str] = {}
+    capability_evidence_error = {"code": ""}
+    capability_evidence_lock = asyncio.Lock()
+
+    def reject_capability_evidence(error_code: str) -> bool:
+        capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
+        return False
+
+    def claim_invocation_id(invocation_id: str, owner: str, error_code: str) -> bool:
+        current_owner = invocation_owners.get(invocation_id)
+        if current_owner is not None and current_owner != owner:
+            return reject_capability_evidence(error_code)
+        invocation_owners[invocation_id] = owner
+        return True
 
     async def on_text(delta: str) -> None:
         if not delta or capability_evidence_error["code"]:
@@ -1314,32 +1358,117 @@ async def _default_executor_runner(
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
         del skill_name, metadata
 
-    async def on_tool_lifecycle(fact: dict[str, str]) -> None:
-        """Forward only a mapped server-owned lifecycle fact to the request projector."""
+    async def bind_tool_lifecycle(fact: dict[str, str]) -> bool:
+        nonlocal required_capability_evidence
 
         if capability_evidence_error["code"]:
-            return
+            return False
         tool_name = str(fact.get("tool_name") or "")
         if tool_name not in _PUBLIC_TOOL_LIFECYCLE_NAMES:
-            return
-        await emit_event(
-            _PrivateExecutionFact(
-                fact={
-                    "invocation_id": str(fact.get("invocation_id") or ""),
-                    "tool_name": tool_name,
-                    "lifecycle": str(fact.get("lifecycle") or ""),
-                },
-            )
+            return False
+        invocation_id = canonical_tool_call_id(fact.get("invocation_id")) or ""
+        lifecycle = str(fact.get("lifecycle") or "")
+        is_required_tool = (
+            required_capability_declaration is not None
+            and tool_name == required_capability_declaration.canonical_identity
         )
+        lifecycle_error = (
+            "required_tool_completion_evidence_mismatch"
+            if is_required_tool
+            else "tool_invocation_evidence_mismatch"
+        )
+        is_governed_bash = bash_subject is not None and tool_name == "Bash"
+        is_governed_tool = (
+            tool_name in SANDBOX_LOCAL_TOOL_IDENTITIES or tool_name == "MCP"
+        )
+        if invocation_id and not claim_invocation_id(
+            invocation_id,
+            f"tool:{tool_name}",
+            lifecycle_error,
+        ):
+            if is_governed_bash:
+                required_capability_evidence = None
+            return False
+        if is_governed_tool and (
+            not invocation_id or lifecycle not in {"started", "completed", "failed"}
+        ):
+            required_capability_evidence = None
+            reject_capability_evidence(lifecycle_error)
+            return False
+        try:
+            acknowledged = await emit_event(
+                _PrivateExecutionFact(
+                    fact={
+                        "invocation_id": invocation_id,
+                        "tool_name": tool_name,
+                        "lifecycle": lifecycle,
+                    },
+                )
+            )
+        except Exception:
+            if is_governed_tool:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
+            return False
+        if not is_governed_tool:
+            return acknowledged is True
+        if acknowledged is not True or not invocation_id:
+            required_capability_evidence = None
+            reject_capability_evidence(lifecycle_error)
+            return False
+        invocation_key = (tool_name, invocation_id)
+        current_state = required_tool_invocation_states.get(invocation_key)
+        if lifecycle == "started":
+            if current_state is not None:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
+                return False
+            required_tool_invocation_states[invocation_key] = "started"
+        elif lifecycle in {"completed", "failed"}:
+            if current_state != "started":
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
+                return False
+            required_tool_invocation_states[invocation_key] = lifecycle
+            if lifecycle == "completed" and is_required_tool:
+                required_capability_evidence = asdict(
+                    RequiredCapabilityEvidence.from_executor_private_payload(
+                        declaration=required_capability_declaration,
+                        binding=_evidence_binding(request),
+                        tool_call_id=invocation_id,
+                    )
+                )
+        if is_governed_bash:
+            try:
+                tool_invocation_evidence.append(
+                    asdict(
+                        ToolInvocationEvidence.from_executor_private_payload(
+                            binding=_evidence_binding(request),
+                            tool_call_id=invocation_id,
+                            canonical_identity=tool_name,
+                            lifecycle_phase=lifecycle,
+                        )
+                    )
+                )
+            except RequiredToolContractError:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
+                return False
+        if lifecycle == "failed" and is_required_tool:
+            required_capability_evidence = None
+            reject_capability_evidence("required_tool_completion_evidence_mismatch")
+            return False
+        return True
 
-    bound_capability_evidence: list[dict[str, Any]] = []
-    invocation_states: dict[tuple[str, str, str], str] = {}
-    capability_evidence_error = {"code": ""}
-    capability_evidence_lock = asyncio.Lock()
+    async def on_tool_lifecycle(fact: dict[str, str]) -> bool:
+        """Bind and forward a mapped lifecycle fact under the shared call-id fence."""
 
-    def reject_capability_evidence(error_code: str) -> bool:
-        capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
-        return False
+        try:
+            async with capability_evidence_lock:
+                return await bind_tool_lifecycle(fact)
+        except asyncio.CancelledError:
+            poison_capability_evidence()
+            raise
 
     def poison_capability_evidence() -> None:
         # No await: one event-loop turn invalidates a suspended lock owner before it can commit.
@@ -1381,6 +1510,12 @@ async def _default_executor_runner(
             evidence.canonical_identity,
             str(evidence.tool_call_id or ""),
         )
+        if not claim_invocation_id(
+            str(evidence.tool_call_id or ""),
+            f"capability:{evidence.capability_kind}:{evidence.canonical_identity}",
+            "capability_lifecycle_sequence_invalid",
+        ):
+            return False
         current_state = invocation_states.get(invocation_key)
         invalid_sequence = (
             evidence.lifecycle_phase == "invocation_requested" and current_state is not None
@@ -1465,6 +1600,13 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
+    if required_capability_declaration is not None:
+        required_tool_states = set(required_tool_invocation_states.values())
+        if "started" in required_tool_states or "completed" not in required_tool_states:
+            required_capability_evidence = None
+            reject_capability_evidence("required_tool_completion_evidence_mismatch")
+    elif any(state == "started" for state in required_tool_invocation_states.values()):
+        reject_capability_evidence("tool_invocation_evidence_mismatch")
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",
@@ -1485,7 +1627,10 @@ async def _default_executor_runner(
         "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
         "attachment_parser_evidence": parser_evidence,
         "capability_evidence": bound_capability_evidence,
+        TOOL_INVOCATION_EVIDENCE_KEY: tool_invocation_evidence,
     }
+    if required_capability_evidence is not None:
+        response[REQUIRED_CAPABILITY_EVIDENCE_KEY] = required_capability_evidence
     if error:
         raw_error = str(error)
         response["error_code"] = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
@@ -1497,12 +1642,15 @@ async def _default_executor_runner(
         response["status"] = "failed"
         response["message"] = ""
         response["error_code"] = capability_evidence_error["code"]
-        response["error_message"] = (
-            "Capability lifecycle callback was not acknowledged"
-            if capability_evidence_error["code"] == "capability_callback_not_acknowledged"
-            else "Capability lifecycle sequence is invalid"
-        )
+        if capability_evidence_error["code"] == "capability_callback_not_acknowledged":
+            response["error_message"] = "Capability lifecycle callback was not acknowledged"
+        elif capability_evidence_error["code"] == "required_tool_completion_evidence_mismatch":
+            response["error_message"] = "Required capability completion evidence is invalid"
+        else:
+            response["error_message"] = "Capability lifecycle sequence is invalid"
         response["capability_evidence"] = []
+        response[TOOL_INVOCATION_EVIDENCE_KEY] = []
+        response.pop(REQUIRED_CAPABILITY_EVIDENCE_KEY, None)
     return response
 
 
@@ -1722,7 +1870,7 @@ def create_executor_app(
                 agent_event = event.public_event
                 agent_events = event.public_events(public_execution_projector)
                 if not agent_events:
-                    return True
+                    return False
                 event_type = event.type
                 active_progress = active_progress_identity(event)
                 if active_progress is not None and active_progress[2] in {"completed", "failed"}:
@@ -1999,6 +2147,8 @@ def create_executor_app(
             "sdk_turn_diagnostics",
             "attachment_parser_evidence",
             "capability_evidence",
+            REQUIRED_CAPABILITY_EVIDENCE_KEY,
+            TOOL_INVOCATION_EVIDENCE_KEY,
         ):
             if key in runner_result and runner_result[key] is not None:
                 response[key] = runner_result[key]

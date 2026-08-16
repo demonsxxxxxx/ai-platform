@@ -10,6 +10,14 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxEx
 from app.tool_permission_lifecycle import tool_permission_budget
 
 
+def executor_identity() -> dict[str, str]:
+    return {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+    }
+
+
 def lease() -> ContainerLease:
     return ContainerLease(
         container_id="exec-run-a",
@@ -380,6 +388,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
     )
     client = SandboxExecutorClient(post_json=post_json)
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -507,6 +516,7 @@ async def test_executor_client_preserves_http_200_reported_failure():
         }
 
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -578,6 +588,7 @@ async def test_executor_client_uses_normal_deadline_without_permission_wait(monk
         lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 120.0})(),
     )
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -604,6 +615,7 @@ async def test_executor_client_connects_to_pinned_ip_without_transmitting_privat
 
     client = SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0)
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -659,6 +671,7 @@ async def test_executor_client_rejects_unsafe_private_connect_metadata_without_d
 
     client = SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0)
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -693,6 +706,7 @@ async def test_executor_client_allows_explicit_timeout_override():
 
     client = SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0)
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -712,6 +726,7 @@ async def test_executor_client_allows_explicit_timeout_override():
 @pytest.mark.asyncio
 async def test_executor_client_deadline_and_cancellation_never_return_an_accepted_result():
     request = ExecutorTaskRequest(
+        **executor_identity(),
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",

@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     ai_platform_runtime_commit: str = Field(default="")
     sandbox_callback_host_gateway: str = Field(default="host.docker.internal")
     sandbox_container_start_timeout_seconds: int = Field(default=30)
+    sandbox_cleanup_timeout_seconds: int = Field(default=30)
     sandbox_executor_health_timeout_seconds: int = Field(default=60)
     opensandbox_domain: str = Field(default="127.0.0.1:8080")
     opensandbox_protocol: str = Field(default="http")
@@ -77,7 +78,6 @@ class Settings(BaseSettings):
     opensandbox_external_egress_anthropic_base_url: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
     opensandbox_expected_network_mode: Literal["none", "bridge"] = Field(default="none")
-    opensandbox_internal_test_forward_model_credentials: bool = Field(default=False)
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
@@ -326,16 +326,6 @@ class Settings(BaseSettings):
             and self.opensandbox_expected_network_mode == "bridge"
         ):
             raise ValueError("internal_test_opensandbox_profile_invalid")
-        if self.opensandbox_internal_test_forward_model_credentials:
-            if not (
-                self.deployment_environment == "test"
-                and self.sandbox_container_provider == "opensandbox"
-                and self.sandbox_security_profile == "internal-test"
-                and self.opensandbox_expected_network_mode == "bridge"
-            ):
-                raise ValueError("opensandbox_internal_test_model_credentials_invalid")
-            if not self.openai_api_key.strip() or not self.anthropic_auth_token.strip():
-                raise ValueError("opensandbox_internal_test_model_credentials_required")
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")

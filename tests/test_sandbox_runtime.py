@@ -9,13 +9,14 @@ from typing import Any
 import pytest
 
 from app.file_parser_contracts import build_attachment_preprocessing_contract
+from app.repositories import RepositoryConflictError
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
@@ -1248,20 +1249,16 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
         )
         return {"id": "lease-created-a"}
 
-    async def release_sandbox_lease(conn, **kwargs):
+    async def fence_sandbox_lease_release(conn, **kwargs):
         calls.append(("release_one", kwargs["lease_id"], kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released"}
 
-    async def release_active_sandbox_leases_for_run(*args, **kwargs):
-        raise AssertionError("runtime must not release every active lease for the run")
-
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.repositories.release_active_sandbox_leases_for_run",
-        release_active_sandbox_leases_for_run,
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        fence_sandbox_lease_release,
     )
 
     runtime = SandboxRuntime(
@@ -1406,8 +1403,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -1488,7 +1485,7 @@ async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_with
     )
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
     workspace = runtime.workspace_manager.prepare(runtime_request)
 
@@ -1692,8 +1689,8 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -1705,7 +1702,10 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
     with pytest.raises(ValueError, match="incomplete_runtime_handle"):
         await runtime.submit(request(sandbox_mode="ephemeral"))
 
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0][0] == "release"
+    assert calls[0][1].startswith("lease_")
+    assert calls[0][2] == "lease_record_failed"
 
 
 @pytest.mark.asyncio
@@ -1857,8 +1857,8 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -1893,6 +1893,9 @@ async def test_executor_client_posts_private_executor_headers():
     response = await client.execute(
         "http://executor.test/",
         ExecutorTaskRequest(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
             session_id="session-a",
             run_id="run-a",
             attempt_id="qat_test-executor-attempt",
@@ -1910,10 +1913,13 @@ async def test_executor_client_posts_private_executor_headers():
         (
             "http://executor.test/v1/tasks/execute",
             {
-                    "session_id": "session-a",
-                    "run_id": "run-a",
-                    "attempt_id": "qat_test-executor-attempt",
-                    "prompt": "hello",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "attempt_id": "qat_test-executor-attempt",
+                "prompt": "hello",
                 "callback_url": "http://callback.test",
                 "callback_token_id": "cbt_run-a",
                 "callback_token": "callback-secret",
@@ -2043,6 +2049,183 @@ async def test_runtime_stops_live_container_when_lease_recording_fails(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_runtime_fences_default_lease_when_commit_confirmation_is_lost(tmp_path, monkeypatch):
+    calls = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_container_provider = "fake"
+
+    async def create_sandbox_lease(_conn, **kwargs):
+        calls.append(("commit_lost", kwargs["lease_id"]))
+        raise RuntimeError("commit confirmation lost")
+
+    async def fence_sandbox_lease_release(_conn, **kwargs):
+        calls.append(("fence", kwargs["lease_id"], kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.new_lease_id",
+        lambda: "lease-preallocated",
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        fence_sandbox_lease_release,
+    )
+    provider = FakeContainerProvider(executor_url="http://executor.test")
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=provider,
+        execute_task=lambda *_args, **_kwargs: pytest.fail(
+            "executor must not run when lease persistence is uncertain"
+        ),
+        callback_token_resolver=lambda _token_id: "secret-token",
+    )
+
+    with pytest.raises(RuntimeError, match="commit confirmation lost"):
+        await runtime.submit(request())
+
+    assert calls == [
+        ("commit_lost", "lease-preallocated"),
+        ("fence", "lease-preallocated", "lease_record_failed"),
+    ]
+    assert await provider.list_runtime_containers({}) == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path, monkeypatch):
+    record_started = asyncio.Event()
+    record_finished = asyncio.Event()
+    release_fenced = asyncio.Event()
+    state = {"status": None, "connection_force_finished": False}
+
+    class PgConnection:
+        def finish(self):
+            state["connection_force_finished"] = True
+
+    class Connection:
+        pgconn = PgConnection()
+
+    @asynccontextmanager
+    async def late_record_transaction():
+        yield Connection()
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_container_provider = "fake"
+        sandbox_container_start_timeout_seconds = 60
+        sandbox_cleanup_timeout_seconds = 0.01
+
+    async def create_sandbox_lease(_conn, **kwargs):
+        record_started.set()
+        try:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release_fenced.wait()
+            if state["status"] == "released":
+                raise RepositoryConflictError("lease id is release-fenced")
+            state["status"] = "active"
+            return {"id": kwargs["lease_id"], "status": "active"}
+        finally:
+            record_finished.set()
+
+    async def fence_sandbox_lease_release(_conn, **kwargs):
+        state["status"] = "released"
+        release_fenced.set()
+        return {"id": kwargs["lease_id"], "status": "released"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", late_record_transaction)
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.new_lease_id",
+        lambda: "lease-preallocated",
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        fence_sandbox_lease_release,
+    )
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=lambda *_args, **_kwargs: pytest.fail(
+            "executor must not run after cancelled lease persistence"
+        ),
+        callback_token_resolver=lambda _token_id: "secret-token",
+    )
+
+    task = asyncio.create_task(runtime.submit(request()))
+    await record_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(record_finished.wait(), timeout=0.5)
+    await asyncio.sleep(0)
+
+    assert state["status"] == "released"
+    assert state["connection_force_finished"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sandbox_mode", ["ephemeral", "persistent"])
+async def test_runtime_cleanup_timeout_force_stops_all_sandbox_modes_before_return(
+    tmp_path,
+    sandbox_mode,
+):
+    calls = []
+
+    class RecordingProvider(FakeContainerProvider):
+        async def collect_workspace(self, lease, runtime_request, workspace):
+            calls.append(("collect", lease.container_id))
+
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", reason))
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        return {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_cleanup_timeout",
+            "error_message": "Executor cleanup timed out",
+        }
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    provider = RecordingProvider(executor_url="http://executor.test")
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=provider,
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: "lease-a",
+        release_lease=release_lease,
+    )
+
+    result = await runtime.submit(request(sandbox_mode=sandbox_mode))
+
+    assert result.status == "failed"
+    assert calls == [
+        ("stop", "executor_cleanup_timeout"),
+        ("release", "executor_cleanup_timeout", "lease-a"),
+    ]
+    assert await provider.list_runtime_containers({}) == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_surfaces_cleanup_failure_when_lease_recording_stop_fails(tmp_path):
     calls = []
 
@@ -2069,6 +2252,34 @@ async def test_runtime_surfaces_cleanup_failure_when_lease_recording_stop_fails(
         await runtime.submit(request(sandbox_mode="persistent"))
 
     assert calls == [("stop", "lease_record_failed")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_lease_record_error_when_provider_stop_raises(tmp_path):
+    class StopRaisesProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            raise RuntimeError("stop unavailable")
+
+    async def fail_record_lease(lease, request, workspace):
+        raise RuntimeError("db unavailable")
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopRaisesProvider(executor_url="http://executor.test"),
+        execute_task=lambda *_args, **_kwargs: pytest.fail(
+            "executor must not run when lease recording fails"
+        ),
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=fail_record_lease,
+    )
+
+    with pytest.raises(SandboxRuntimeCleanupError) as raised:
+        await runtime.submit(request(sandbox_mode="persistent"))
+
+    assert raised.value.reason == "lease_record_failed"
+    assert raised.value.stop_result.message == "sandbox provider stop raised"
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert str(raised.value.__cause__) == "db unavailable"
 
 
 @pytest.mark.asyncio

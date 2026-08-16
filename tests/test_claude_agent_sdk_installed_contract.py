@@ -7,10 +7,15 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert installed_version == "0.2.130"
 
     import claude_agent_sdk as sdk
+    from claude_agent_sdk.types import (
+        PreToolUseHookSpecificOutput,
+        SyncHookJSONOutput,
+    )
 
-    assert installed_version == "0.2.130"
     assert {"prompt", "options", "transport"}.issubset(signature(sdk.query).parameters)
     assert {"matcher", "hooks", "timeout"}.issubset(signature(sdk.HookMatcher).parameters)
+    assert "hookSpecificOutput" in SyncHookJSONOutput.__annotations__
+    assert "updatedInput" in PreToolUseHookSpecificOutput.__annotations__
 
     async def hook(_input, _tool_use_id, _context):
         return {}

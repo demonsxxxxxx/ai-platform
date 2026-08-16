@@ -22,6 +22,11 @@ from app.platform.postgres.errors import (
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
 from app.runs.api import RunTerminalizationProgress
+from app.platform.postgres.sandbox_leases import (
+    SandboxLeaseReleaseScopeMismatchError,
+    create_sandbox_lease,
+    fence_sandbox_lease_release,
+)
 from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
@@ -33,7 +38,6 @@ from app.repositories import (
     count_active_runs_for_user,
     create_artifact,
     create_context_snapshot,
-    create_sandbox_lease,
     create_tool_permission_request,
     create_run,
     admin_delete_memory_record,
@@ -9581,6 +9585,7 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
         resource_limits_json={"max_seconds": 60},
         user_visible_payload_json={"workspace": "/workspace"},
         lease_payload_json={"purpose": "test"},
+        lease_id="lease-fixed",
     )
     await renew_sandbox_lease(
         conn,
@@ -9594,11 +9599,225 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
     create_sql, create_params = conn.calls[0]
     renew_sql, renew_params = conn.calls[1]
     assert "sandbox_leases" in create_sql
+    assert create_params[0] == "lease-fixed"
     assert "now() + (%s * interval '1 second')" in create_sql
     assert 600 in create_params
     assert "status = 'active'" in renew_sql
     assert "(expires_at is null or expires_at > now())" in renew_sql
     assert renew_params == (900, "tenant-a", "user-a", "run-a", "lease-a")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_release_fence_is_durable_before_or_after_insert():
+    row = {
+        "id": "lease-a",
+        "tenant_id": "tenant-a",
+        "status": "released",
+    }
+    conn = SingleRowConnection(row)
+
+    result = await fence_sandbox_lease_release(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        sandbox_mode="ephemeral",
+        provider="docker",
+        browser_enabled=False,
+        reason="lease_record_failed",
+    )
+
+    assert result == row
+    assert "insert into sandbox_leases" in conn.sql
+    assert "on conflict (id) do update" in conn.sql
+    assert "set status = 'released'" in conn.sql
+    assert "coalesce(sandbox_leases.attempt_id, '') = coalesce(excluded.attempt_id, '')" in conn.sql
+    assert conn.params == (
+        "lease-a",
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "session-a",
+        "run-a",
+        "attempt-a",
+        "ephemeral",
+        "docker",
+        False,
+        "lease_record_failed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_release_fence_rejects_id_scope_collision():
+    with pytest.raises(
+        SandboxLeaseReleaseScopeMismatchError,
+        match="sandbox_lease_release_scope_mismatch",
+    ):
+        await fence_sandbox_lease_release(
+            SingleRowConnection(None),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-collision",
+            sandbox_mode="ephemeral",
+            provider="docker",
+            browser_enabled=False,
+            reason="lease_record_failed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_release_fence_serializes_with_postgres_insert():
+    dsn = _run_control_postgres_dsn()
+    schema_name = f"sandbox_lease_fence_{uuid.uuid4().hex}"
+    observer = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    creator: psycopg.AsyncConnection | None = None
+    releaser: psycopg.AsyncConnection | None = None
+    fence_task: asyncio.Task | None = None
+    try:
+        await observer.execute(
+            psycopg_sql.SQL("create schema {}").format(
+                psycopg_sql.Identifier(schema_name)
+            )
+        )
+        await observer.execute(
+            psycopg_sql.SQL(
+                """
+                create table {}.sandbox_leases (
+                  id text primary key,
+                  tenant_id text not null,
+                  workspace_id text not null,
+                  user_id text not null,
+                  session_id text not null,
+                  run_id text not null,
+                  attempt_id text,
+                  trace_id text not null default '',
+                  sandbox_mode text not null,
+                  provider text not null,
+                  status text not null default 'active',
+                  browser_enabled boolean not null default false,
+                  resource_limits_json jsonb not null default '{}'::jsonb,
+                  user_visible_payload_json jsonb not null default '{}'::jsonb,
+                  lease_payload_json jsonb not null default '{}'::jsonb,
+                  runtime_container_id text,
+                  runtime_container_name text,
+                  runtime_executor_url text,
+                  runtime_workspace_container_path text,
+                  runtime_handle_verified_at timestamptz,
+                  heartbeat_at timestamptz,
+                  expires_at timestamptz,
+                  released_at timestamptz,
+                  release_reason text not null default '',
+                  created_at timestamptz not null default now(),
+                  updated_at timestamptz not null default now()
+                )
+                """
+            ).format(psycopg_sql.Identifier(schema_name))
+        )
+        creator = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        releaser = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        for connection in (creator, releaser):
+            await connection.execute(
+                psycopg_sql.SQL("set search_path to {}").format(
+                    psycopg_sql.Identifier(schema_name)
+                )
+            )
+            await connection.commit()
+        creator_pid = int(
+            (await (await creator.execute("select pg_backend_pid() as pid")).fetchone())["pid"]
+        )
+        releaser_pid = int(
+            (await (await releaser.execute("select pg_backend_pid() as pid")).fetchone())["pid"]
+        )
+        await creator.commit()
+        await releaser.commit()
+
+        await create_sandbox_lease(
+            creator,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={"attempt_id": "attempt-a"},
+            lease_id="lease-race-a",
+        )
+        fence_task = asyncio.create_task(
+            fence_sandbox_lease_release(
+                releaser,
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id="user-a",
+                session_id="session-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                lease_id="lease-race-a",
+                sandbox_mode="ephemeral",
+                provider="fake",
+                browser_enabled=False,
+                reason="lease_record_failed",
+            )
+        )
+        blocking_deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            cursor = await observer.execute(
+                "select %s = any(pg_blocking_pids(%s)) as blocked",
+                (creator_pid, releaser_pid),
+            )
+            if (await cursor.fetchone())["blocked"]:
+                break
+            if asyncio.get_running_loop().time() >= blocking_deadline:
+                raise AssertionError(
+                    "release fence did not block behind the active insert"
+                )
+            await asyncio.sleep(0.02)
+
+        await creator.commit()
+        fenced = await asyncio.wait_for(fence_task, timeout=5)
+        await releaser.commit()
+        assert fenced["status"] == "released"
+        cursor = await observer.execute(
+            psycopg_sql.SQL(
+                "select status, release_reason from {}.sandbox_leases where id = %s"
+            ).format(psycopg_sql.Identifier(schema_name)),
+            ("lease-race-a",),
+        )
+        assert await cursor.fetchone() == {
+            "status": "released",
+            "release_reason": "lease_record_failed",
+        }
+    finally:
+        if fence_task is not None and not fence_task.done():
+            fence_task.cancel()
+        if creator is not None:
+            await creator.close()
+        if releaser is not None:
+            await releaser.close()
+        await observer.execute(
+            psycopg_sql.SQL("drop schema if exists {} cascade").format(
+                psycopg_sql.Identifier(schema_name)
+            )
+        )
+        await observer.close()
 
 
 @pytest.mark.asyncio
@@ -9643,7 +9862,7 @@ async def test_real_sandbox_lease_requires_attempt_and_complete_runtime_handle()
 async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
     conn = RecordingConnection()
 
-    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+    with pytest.raises(ValueError, match="sandbox_lease_attempt_binding_mismatch"):
         await create_sandbox_lease(
             conn,
             tenant_id="tenant-a",
@@ -9663,6 +9882,29 @@ async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
         )
 
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_insert_requires_returned_persisted_row():
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RuntimeError, match="sandbox_lease_insert_returning_missing"):
+        await create_sandbox_lease(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={},
+        )
 
 
 @pytest.mark.asyncio

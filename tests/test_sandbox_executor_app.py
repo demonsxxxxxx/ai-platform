@@ -21,7 +21,15 @@ from app.file_parser_contracts import (
     build_attachment_preprocessing_contract,
 )
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
-from app.required_tool_contract import RequiredCapabilityDeclaration
+from app.required_tool_contract import (
+    REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    REQUIRED_CAPABILITY_EVIDENCE_KEY,
+    TOOL_INVOCATION_EVIDENCE_KEY,
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    ToolInvocationEvidence,
+    parse_required_tool_declaration,
+)
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
@@ -44,6 +52,9 @@ def task_payload(
     callback_base_url: str = TRUSTED_CALLBACK_BASE_URL,
 ) -> dict[str, object]:
     return {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
         "attempt_id": "qat-attempt-a",
@@ -340,6 +351,321 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("terminal_lifecycle", "expects_evidence"),
+    [("completed", True), ("failed", False)],
+)
+async def test_executor_binds_only_completed_required_bash_lifecycle(
+    monkeypatch,
+    tmp_path,
+    terminal_lifecycle,
+    expects_evidence,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "started"}
+        )
+        await lifecycle(
+            {
+                "tool_name": "Bash",
+                "invocation_id": "bash-call-1",
+                "lifecycle": terminal_lifecycle,
+            }
+        )
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    evidence = result.get(REQUIRED_CAPABILITY_EVIDENCE_KEY)
+    assert (evidence is not None) is expects_evidence
+    if expects_evidence:
+        record = RequiredCapabilityEvidence.from_payload(evidence)
+        assert record.tool_call_id == "bash-call-1"
+        assert record.run_id == request.run_id
+        assert record.attempt_id == request.attempt_id
+    else:
+        assert result["status"] == "failed"
+        assert result["error_code"] == "required_tool_completion_evidence_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_lifecycle", ["completed", "failed"])
+async def test_executor_records_optional_bash_lifecycle_without_requiring_invocation(
+    monkeypatch,
+    tmp_path,
+    terminal_lifecycle,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "started"}
+        )
+        await lifecycle(
+            {
+                "tool_name": "Bash",
+                "invocation_id": "bash-call-1",
+                "lifecycle": terminal_lifecycle,
+            }
+        )
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [{"identity": "Bash"}]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+    evidence = [
+        ToolInvocationEvidence.from_payload(item)
+        for item in result[TOOL_INVOCATION_EVIDENCE_KEY]
+    ]
+    assert [item.lifecycle_phase for item in evidence] == [
+        "started",
+        terminal_lifecycle,
+    ]
+    assert {item.attempt_id for item in evidence} == {request.attempt_id}
+    assert {item.tool_call_id for item in evidence} == {"bash-call-1"}
+
+
+@pytest.mark.asyncio
+async def test_executor_optional_bash_can_complete_without_invocation(monkeypatch, tmp_path):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    async def fake_run_claude_agent_sdk(**_kwargs):
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [{"identity": "Bash"}]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert result[TOOL_INVOCATION_EVIDENCE_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_executor_binds_bash_evidence_without_optional_context_retrieval_scope(
+    monkeypatch,
+    tmp_path,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        assert await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-no-context", "lifecycle": "started"}
+        )
+        assert await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-no-context", "lifecycle": "completed"}
+        )
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"].pop("context_retrieval_scope")
+    raw["config"]["tool_policy_subjects"] = [{"identity": "Bash"}]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    evidence = [
+        ToolInvocationEvidence.from_payload(item)
+        for item in result[TOOL_INVOCATION_EVIDENCE_KEY]
+    ]
+    assert [(item.tool_call_id, item.lifecycle_phase) for item in evidence] == [
+        ("bash-call-no-context", "started"),
+        ("bash-call-no-context", "completed"),
+    ]
+    assert {(item.tenant_id, item.workspace_id, item.user_id) for item in evidence} == {
+        ("tenant-a", "workspace-a", "user-a")
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lifecycle_events",
+    [
+        [
+            ("bash-call-1", "started"),
+            ("bash-call-1", "completed"),
+            ("bash-call-1", "failed"),
+        ],
+        [
+            ("bash-call-1", "started"),
+            ("bash-call-1", "completed"),
+            ("bash-call-1", "completed"),
+        ],
+        [
+            ("bash-call-1", "started"),
+            ("bash-call-1", "failed"),
+            ("bash-call-1", "completed"),
+        ],
+        [
+            ("bash-call-1", "started"),
+            ("bash-call-1", "completed"),
+            ("bash-call-2", "started"),
+            ("bash-call-2", "failed"),
+        ],
+    ],
+)
+async def test_executor_rejects_conflicting_required_bash_lifecycle(
+    monkeypatch,
+    tmp_path,
+    lifecycle_events,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        for invocation_id, phase in lifecycle_events:
+            await lifecycle(
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": invocation_id,
+                    "lifecycle": phase,
+                }
+            )
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "required_tool_completion_evidence_mismatch"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_unacknowledged_required_bash_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "started"}
+        )
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(event):
+        return not isinstance(event, executor_app._PrivateExecutionFact)
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "required_tool_completion_evidence_mismatch"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
+
+def test_executor_http_response_preserves_private_required_capability_evidence(tmp_path):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    evidence = RequiredCapabilityEvidence.from_executor_private_payload(
+        declaration=declaration,
+        binding={
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "attempt_id": "qat-attempt-a",
+        },
+        tool_call_id="bash-call-1",
+    ).__dict__
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        return {
+            "status": "completed",
+            "message": "done",
+            REQUIRED_CAPABILITY_EVIDENCE_KEY: evidence,
+        }
+
+    client = create_test_client(tmp_path, executor_runner=executor_runner)
+    response = client.post(
+        "/v1/tasks/execute",
+        json=task_payload(),
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()[REQUIRED_CAPABILITY_EVIDENCE_KEY] == evidence
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("configured_value", "expected"),
     [(None, True), (0, True), ("false", True), (False, False), (True, True)],
 )
@@ -611,6 +937,163 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     assert "tool-call-1" not in json.dumps(capability_events)
 
 
+@pytest.mark.parametrize(
+    ("first_owner", "expected_error_code"),
+    [
+        ("mcp", "tool_invocation_evidence_mismatch"),
+        ("bash", "capability_lifecycle_sequence_invalid"),
+    ],
+)
+def test_executor_rejects_call_id_reused_across_mcp_and_bash(
+    tmp_path,
+    monkeypatch,
+    first_owner,
+    expected_error_code,
+):
+    callbacks = []
+    acknowledgements = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        async def record_mcp():
+            return await kwargs["on_capability_evidence"](
+                sdk_mcp_evidence(
+                    "mcp__tenant-server__search", "shared-call-id", "invocation_requested"
+                )
+            )
+
+        async def record_bash():
+            return await kwargs["on_tool_lifecycle"](
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": "shared-call-id",
+                    "lifecycle": "started",
+                }
+            )
+
+        recorders = (record_mcp, record_bash) if first_owner == "mcp" else (record_bash, record_mcp)
+        for record in recorders:
+            acknowledgements.append(await record())
+        return sdk_result("must not qualify")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda _url, payload, _token: callbacks.append(payload) or callback_ack(payload),
+    )
+    raw = selected_mcp_task_payload()
+    raw["config"]["tool_policy_subjects"].append({"identity": "Bash"})
+
+    body = client.post(
+        "/v1/tasks/execute",
+        json=raw,
+        headers=auth_headers(),
+    ).json()
+
+    assert acknowledgements == [True, False]
+    assert body["status"] == "failed"
+    assert body["error_code"] == expected_error_code
+    assert body["capability_evidence"] == []
+    assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
+    public_events = public_execution_events(callbacks)
+    assert [event["type"] for event in public_events] == ["execution_step"]
+
+
+def test_executor_rejects_call_id_reused_across_write_and_mcp(tmp_path, monkeypatch):
+    acknowledgements = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        acknowledgements.append(
+            await kwargs["on_tool_lifecycle"](
+                {
+                    "tool_name": "Write",
+                    "invocation_id": "shared-local-call-id",
+                    "lifecycle": "started",
+                }
+            )
+        )
+        acknowledgements.append(
+            await kwargs["on_capability_evidence"](
+                sdk_mcp_evidence(
+                    "mcp__tenant-server__search",
+                    "shared-local-call-id",
+                    "invocation_requested",
+                )
+            )
+        )
+        return sdk_result("must not qualify")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    raw = selected_mcp_task_payload()
+    raw["config"]["tool_policy_subjects"].append({"identity": "Write"})
+    body = create_test_client(
+        tmp_path,
+        callback_sender=lambda _url, payload, _token: callback_ack(payload),
+    ).post(
+        "/v1/tasks/execute",
+        json=raw,
+        headers=auth_headers(),
+    ).json()
+
+    assert acknowledgements == [True, False]
+    assert body["status"] == "failed"
+    assert body["error_code"] == "capability_lifecycle_sequence_invalid"
+    assert body["capability_evidence"] == []
+    assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
+
+
+@pytest.mark.parametrize("tool_name", ["Read", "Write"])
+def test_executor_rejects_incomplete_non_bash_local_tool(
+    tmp_path,
+    monkeypatch,
+    tool_name,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        assert await kwargs["on_tool_lifecycle"](
+            {
+                "tool_name": tool_name,
+                "invocation_id": "incomplete-local-call",
+                "lifecycle": "started",
+            }
+        )
+        return sdk_result("must not qualify")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    raw = selected_mcp_task_payload()
+    raw["config"]["tool_policy_subjects"].append({"identity": tool_name})
+    body = create_test_client(
+        tmp_path,
+        callback_sender=lambda _url, payload, _token: callback_ack(payload),
+    ).post(
+        "/v1/tasks/execute",
+        json=raw,
+        headers=auth_headers(),
+    ).json()
+
+    assert body["status"] == "failed"
+    assert body["message"] == ""
+    assert body["error_code"] == "tool_invocation_evidence_mismatch"
+    assert body["capability_evidence"] == []
+    assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
+
+
 def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp_path):
     callbacks = []
 
@@ -760,6 +1243,61 @@ async def test_executor_rejects_unknown_capability_identity_without_inference(mo
     assert result["error_code"] == "capability_lifecycle_sequence_invalid"
     assert result["capability_evidence"] == []
     assert events
+    assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invocation_id",
+    [
+        "x" * 513,
+        "local\ncall",
+        "local\x7fcall",
+        "local\x85call",
+        "local\u202ecall",
+        "local-\u8c03\u7528",
+    ],
+)
+async def test_executor_rejects_unpersistable_local_tool_invocation_id(
+    monkeypatch,
+    tmp_path,
+    invocation_id,
+):
+    acknowledgements = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        acknowledgements.append(
+            await kwargs["on_tool_lifecycle"](
+                {
+                    "tool_name": "Write",
+                    "invocation_id": invocation_id,
+                    "lifecycle": "started",
+                }
+            )
+        )
+        return sdk_result()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    request = ExecutorTaskRequest.model_validate(task_payload())
+    events = []
+
+    async def emit_event(event):
+        events.append(event)
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert acknowledgements == [False]
+    assert result["status"] == "failed"
+    assert result["message"] == ""
+    assert result["error_code"] == "tool_invocation_evidence_mismatch"
     assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
 
 
@@ -1374,6 +1912,7 @@ shutil.copyfile(source, output / \"translated.docx\")
     assert body["executor_mode"] == "platform_controlled_runner"
     assert body["used_skills"] == ["baoyu-translate"]
     assert body["used_skills_source"] == "platform_controlled_runner"
+    assert body["tool_invocation_evidence"] == []
     assert [item["lifecycle_phase"] for item in body["capability_evidence"]] == [
         "invocation_requested",
         "completed",

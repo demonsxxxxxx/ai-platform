@@ -141,50 +141,6 @@ def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selecti
     )
 
     assert settings.sandbox_security_profile == "internal-test"
-    assert settings.opensandbox_internal_test_forward_model_credentials is False
-
-
-def test_internal_test_opensandbox_model_credentials_require_explicit_bounded_opt_in():
-    settings = Settings(
-        _env_file=None,
-        deployment_environment="test",
-        sandbox_container_provider="opensandbox",
-        sandbox_security_profile="internal-test",
-        opensandbox_expected_network_mode="bridge",
-        opensandbox_internal_test_forward_model_credentials=True,
-        openai_api_key="openai-test-credential",
-        anthropic_auth_token="anthropic-test-credential",
-    )
-
-    assert settings.opensandbox_internal_test_forward_model_credentials is True
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"sandbox_security_profile": "governed"},
-        {"deployment_environment": "development"},
-        {"sandbox_container_provider": "docker"},
-        {"opensandbox_expected_network_mode": "none"},
-        {"openai_api_key": ""},
-        {"anthropic_auth_token": ""},
-    ],
-)
-def test_internal_test_opensandbox_model_credentials_reject_unbounded_or_incomplete_opt_in(
-    overrides,
-):
-    values = {
-        "deployment_environment": "test",
-        "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "internal-test",
-        "opensandbox_expected_network_mode": "bridge",
-        "opensandbox_internal_test_forward_model_credentials": True,
-        "openai_api_key": "openai-test-credential",
-        "anthropic_auth_token": "anthropic-test-credential",
-        **overrides,
-    }
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, **values)
 
 
 @pytest.mark.parametrize(

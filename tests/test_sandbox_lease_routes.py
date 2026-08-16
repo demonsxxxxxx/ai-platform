@@ -89,7 +89,7 @@ def test_create_sandbox_lease_records_run_scoped_lease_and_event(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.create_sandbox_lease", fake_create_sandbox_lease)
+    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease", fake_create_sandbox_lease)
     monkeypatch.setattr("app.routes.sandbox_leases.repositories.append_event", fake_append_event)
     client = TestClient(create_app())
 
@@ -149,7 +149,7 @@ def test_public_create_never_persists_an_unverified_active_real_provider_lease(m
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.create_sandbox_lease", fake_create_sandbox_lease)
+    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease", fake_create_sandbox_lease)
     monkeypatch.setattr("app.routes.sandbox_leases.repositories.append_event", fake_append_event)
     client = TestClient(create_app())
 

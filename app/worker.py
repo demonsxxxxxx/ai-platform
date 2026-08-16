@@ -42,7 +42,10 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
-from app.execution_boundary import decide_execution_boundary
+from app.execution_boundary import (
+    decide_worker_execution_boundary as _worker_execution_boundary_decision,
+    ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox,
+)
 from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
@@ -57,8 +60,10 @@ from app.required_tool_contract import (
     builtin_capability_subjects,
     required_tool_authorization_for_run,
     required_tool_completion_for_run,
+    with_boundary_sandbox_local_tool_subjects,
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.executor_client import (
     SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,
@@ -1592,7 +1597,10 @@ async def _reauthorize_worker_capabilities(
                 tuple(decisions),
                 denial,
             )
-        tool_policy_subjects: list[dict[str, Any]] = []
+        tool_policy_subjects = with_boundary_sandbox_local_tool_subjects(
+            [], decision=_worker_execution_boundary_decision(payload),
+            sandbox_provider=get_settings().sandbox_container_provider,
+        )
         required_tool_decision = required_tool_authorization_for_run(
             payload=payload,
             run_identity=run_identity,
@@ -1777,6 +1785,10 @@ async def _reauthorize_worker_capabilities(
             if authorized_skill_catalog is not None
             else [run_identity["skill_id"]]
         ),
+    )
+    tool_policy_subjects = with_boundary_sandbox_local_tool_subjects(
+        tool_policy_subjects, decision=_worker_execution_boundary_decision(payload),
+        sandbox_provider=get_settings().sandbox_container_provider,
     )
     required_tool_decision = required_tool_authorization_for_run(
         payload=payload,
@@ -2060,24 +2072,6 @@ def _runtime_sandbox_workspace_payload() -> dict[str, str]:
     }
 
 
-def _context_execution_tier(context_snapshot: dict[str, Any]) -> str:
-    value = context_snapshot.get("execution_tier")
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _ordinary_run_uses_runtime_sandbox(
-    payload: QueueRunPayload,
-    *,
-    context_snapshot: dict[str, Any],
-) -> bool:
-    return decide_execution_boundary(
-        executor_type=payload.executor_type,
-        execution_mode=str(payload.input.get("execution_mode") or ""),
-        execution_tier=_context_execution_tier(context_snapshot),
-        mcp_requires_sandbox=bool(repositories.extract_run_mcp_tool_ids(payload.input)),
-    ).requires_real_sandbox
-
-
 def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:
     sandbox_provider = str(result.executor_payload.get("sandbox_provider") or "").strip()
     runtime_terminal_status = str(result.executor_payload.get("runtime_terminal_status") or "").strip().lower()
@@ -2099,7 +2093,7 @@ async def _create_worker_runtime_sandbox_lease(
     }
     if worker_id:
         lease_payload["worker_id"] = worker_id
-    row = await repositories.create_sandbox_lease(
+    row = await sandbox_lease_repository.create_sandbox_lease(
         conn,
         tenant_id=run_identity["tenant_id"],
         workspace_id=run_identity["workspace_id"],

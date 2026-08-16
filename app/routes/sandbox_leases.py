@@ -10,6 +10,7 @@ from app.models import SandboxLeaseReleaseRequest, SandboxLeaseRenewRequest, San
 from app.repositories import RepositoryNotFoundError
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 
 router = APIRouter()
 
@@ -75,7 +76,7 @@ async def create_sandbox_lease(
             if run is None:
                 raise RepositoryNotFoundError("run_not_found")
             trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
-            row = await repositories.create_sandbox_lease(
+            row = await sandbox_lease_repository.create_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=str(run["workspace_id"]),

@@ -85,7 +85,6 @@ from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.required_tool_contract import (
     attach_required_tool_declaration,
-    declaration_from_input,
     public_required_tool_detail,
 )
 from app.run_admission_policy import (
@@ -1501,7 +1500,6 @@ async def chat_stream(
             redact_public=not is_ai_admin(principal),
         )
         run_input = attach_required_tool_declaration(run_input)
-        required_tool_declaration = declaration_from_input(run_input)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
@@ -2116,37 +2114,6 @@ async def chat_stream(
                 agent_profile_execution_input = {
                     **admitted_agent_profile.private_execution_input,
                 }
-            if (
-                required_tool_declaration is not None
-                and required_tool_declaration.capability_kind == "builtin"
-            ):
-                if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=public_required_tool_detail("unavailable"),
-                    )
-                primary_manifest = next(
-                    (
-                        manifest
-                        for manifest in skill_manifests
-                        if isinstance(manifest, dict)
-                        and str(manifest.get("skill_id") or "") == resolved_skill_id
-                    ),
-                    None,
-                )
-                try:
-                    canonical_builtin_identities = (
-                        repositories.canonical_builtin_tool_identities(primary_manifest)
-                        if isinstance(primary_manifest, dict)
-                        else []
-                    )
-                except RepositoryConflictError:
-                    canonical_builtin_identities = []
-                if required_tool_declaration.canonical_identity not in canonical_builtin_identities:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=public_required_tool_detail("unavailable"),
-                    )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             queue_payload = _validate_queue_payload_for_enqueue(

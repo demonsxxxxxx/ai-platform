@@ -14,7 +14,13 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
+from app.execution_boundary import ExecutionBoundaryDecision
+from app.skills.execution_profiles import (
+    NATIVE_COMMAND_ISOLATION,
+    OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
+    SDK_NATIVE,
+    SKILL_WORKSPACE_CONTRACT_VERSION,
+)
 from app.tool_policy import evaluate_tool_policy
 
 REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION = (
@@ -23,8 +29,10 @@ REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION = (
 REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION = (
     "ai-platform.required-capability-evidence.v1"
 )
+TOOL_INVOCATION_EVIDENCE_SCHEMA_VERSION = "ai-platform.tool-invocation-evidence.v1"
 REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY = "_required_capability_declaration"
 REQUIRED_CAPABILITY_EVIDENCE_KEY = "required_capability_evidence"
+TOOL_INVOCATION_EVIDENCE_KEY = "tool_invocation_evidence"
 CANONICAL_REQUIRED_TOOL_IDENTITY = "Bash"
 _BINDING_FIELDS = (
     "tenant_id",
@@ -57,6 +65,35 @@ _EVIDENCE_LIFECYCLE_PAIRS = frozenset(
         ("failed", "failed"),
     }
 )
+_TOOL_INVOCATION_LIFECYCLE_STATUS = {
+    "started": "invoking",
+    "completed": "succeeded",
+    "failed": "failed",
+}
+
+
+def canonical_tool_call_id(value: object) -> str | None:
+    """Return one exact printable-ASCII callback identity, bounded in bytes."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+    ):
+        return None
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    if len(encoded) > 512 or any(byte < 33 or byte > 126 for byte in encoded):
+        return None
+    return value
+
+
+def _valid_tool_call_id(value: object) -> bool:
+    return canonical_tool_call_id(value) is not None
+
+
 _SAFE_PUBLIC_LABEL = "controlled_execution_capability"
 _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
 _AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
@@ -182,7 +219,7 @@ class RequiredCapabilityEvidence:
         _validate_declaration(declaration)
         if declaration.capability_kind not in {"skill", "mcp"}:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if not isinstance(tool_call_id, str) or not tool_call_id:
+        if not _valid_tool_call_id(tool_call_id):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
@@ -222,7 +259,7 @@ class RequiredCapabilityEvidence:
         }
         if any(not isinstance(value, str) or not value for value in values.values()):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if not isinstance(tool_call_id, str) or not tool_call_id:
+        if not _valid_tool_call_id(tool_call_id):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         if lifecycle_phase is None:
             if not isinstance(succeeded, bool):
@@ -267,7 +304,7 @@ class RequiredCapabilityEvidence:
         values = {field: binding.get(field) for field in _BINDING_FIELDS}
         if any(not isinstance(value, str) or not value for value in values.values()):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if not isinstance(tool_call_id, str) or not tool_call_id:
+        if not _valid_tool_call_id(tool_call_id):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
@@ -284,6 +321,39 @@ class RequiredCapabilityEvidence:
             trust_basis=PROCESS_BOUND_TRUST_BASIS,
             public_label=_SAFE_PUBLIC_LABEL,
             public_status=lifecycle_status,
+            declaration_sha256=declaration.declaration_sha256,
+        )
+
+    @classmethod
+    def from_executor_private_payload(
+        cls,
+        *,
+        declaration: RequiredCapabilityDeclaration,
+        binding: Mapping[str, object],
+        tool_call_id: str,
+    ) -> RequiredCapabilityEvidence:
+        """Bind one completed builtin invocation inside the trusted executor."""
+
+        _validate_declaration(declaration)
+        if declaration.capability_kind != "builtin":
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        values = {field: binding.get(field) for field in _BINDING_FIELDS}
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if not _valid_tool_call_id(tool_call_id):
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        return cls(
+            schema_version=REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
+            **{field: str(values[field]) for field in _BINDING_FIELDS},
+            tool_call_id=tool_call_id,
+            capability_kind="builtin",
+            canonical_identity=declaration.canonical_identity,
+            lifecycle_phase="completed",
+            lifecycle_status="succeeded",
+            evidence_source="executor_private_payload",
+            trust_basis="attempt_bound_tool_invocation",
+            public_label=_SAFE_PUBLIC_LABEL,
+            public_status="succeeded",
             declaration_sha256=declaration.declaration_sha256,
         )
 
@@ -311,7 +381,7 @@ class RequiredCapabilityEvidence:
         if any(not isinstance(value.get(field), str) or not value.get(field) for field in string_fields):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         tool_call_id = value.get("tool_call_id")
-        if tool_call_id is not None and (not isinstance(tool_call_id, str) or not tool_call_id):
+        if not _valid_tool_call_id(tool_call_id):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         evidence = cls(
             schema_version=str(value.get("schema_version") or ""),
@@ -341,10 +411,6 @@ class RequiredCapabilityEvidence:
             or evidence.public_status != evidence.lifecycle_status
             or (evidence.evidence_source, evidence.trust_basis)
             not in _EVIDENCE_TRUST_MATRIX[evidence.capability_kind]
-            or (
-                evidence.evidence_source != "executor_private_payload"
-                and evidence.tool_call_id is None
-            )
         ):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         return evidence
@@ -366,6 +432,118 @@ class RequiredCapabilityDecision:
         """Expose the canonical identity to existing worker integration code."""
 
         return self.canonical_identity
+
+
+@dataclass(frozen=True)
+class ToolInvocationEvidence:
+    """One actual local-tool lifecycle fact bound to a run attempt and call id."""
+
+    schema_version: str
+    tenant_id: str
+    workspace_id: str
+    user_id: str
+    session_id: str
+    run_id: str
+    attempt_id: str
+    tool_call_id: str
+    canonical_identity: str
+    lifecycle_phase: str
+    lifecycle_status: str
+    evidence_source: str
+    trust_basis: str
+
+    @classmethod
+    def from_executor_private_payload(
+        cls,
+        *,
+        binding: Mapping[str, object],
+        tool_call_id: str,
+        canonical_identity: str,
+        lifecycle_phase: str,
+    ) -> "ToolInvocationEvidence":
+        values = {field: binding.get(field) for field in _BINDING_FIELDS}
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        if not _valid_tool_call_id(tool_call_id):
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        if canonical_identity != CANONICAL_REQUIRED_TOOL_IDENTITY:
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        lifecycle_status = _TOOL_INVOCATION_LIFECYCLE_STATUS.get(lifecycle_phase)
+        if lifecycle_status is None:
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        return cls(
+            schema_version=TOOL_INVOCATION_EVIDENCE_SCHEMA_VERSION,
+            **{field: str(values[field]) for field in _BINDING_FIELDS},
+            tool_call_id=tool_call_id,
+            canonical_identity=canonical_identity,
+            lifecycle_phase=lifecycle_phase,
+            lifecycle_status=lifecycle_status,
+            evidence_source="executor_private_payload",
+            trust_basis="attempt_bound_tool_invocation",
+        )
+
+    @classmethod
+    def from_payload(cls, value: object) -> "ToolInvocationEvidence":
+        expected_keys = {
+            "schema_version",
+            *_BINDING_FIELDS,
+            "tool_call_id",
+            "canonical_identity",
+            "lifecycle_phase",
+            "lifecycle_status",
+            "evidence_source",
+            "trust_basis",
+        }
+        if not isinstance(value, dict) or set(value) != expected_keys:
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        if any(not isinstance(value.get(field), str) or not value.get(field) for field in expected_keys):
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        if not _valid_tool_call_id(value.get("tool_call_id")):
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        evidence = cls(**{field: str(value[field]) for field in expected_keys})
+        expected_status = _TOOL_INVOCATION_LIFECYCLE_STATUS.get(
+            evidence.lifecycle_phase
+        )
+        if (
+            evidence.schema_version != TOOL_INVOCATION_EVIDENCE_SCHEMA_VERSION
+            or evidence.canonical_identity != CANONICAL_REQUIRED_TOOL_IDENTITY
+            or evidence.lifecycle_status != expected_status
+            or evidence.evidence_source != "executor_private_payload"
+            or evidence.trust_basis != "attempt_bound_tool_invocation"
+        ):
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        return evidence
+
+
+def validate_tool_invocation_evidence(
+    value: object,
+    *,
+    binding: Mapping[str, object],
+) -> list[dict[str, str]]:
+    """Validate exact started-to-terminal Bash lifecycles returned by a sandbox."""
+
+    if not isinstance(value, list):
+        raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+    states: dict[tuple[str, str], str] = {}
+    normalized: list[dict[str, str]] = []
+    for raw in value:
+        evidence = ToolInvocationEvidence.from_payload(raw)
+        if not _binding_matches(asdict(evidence), binding):
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        key = (evidence.canonical_identity, evidence.tool_call_id)
+        current = states.get(key)
+        if evidence.lifecycle_phase == "started":
+            if current is not None:
+                raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+            states[key] = "started"
+        elif current != "started":
+            raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+        else:
+            states[key] = evidence.lifecycle_phase
+        normalized.append(asdict(evidence))
+    if any(state == "started" for state in states.values()):
+        raise RequiredToolContractError("tool_invocation_evidence_mismatch")
+    return normalized
 
 
 def _canonical_json_sha256(value: Mapping[str, object]) -> str:
@@ -480,17 +658,14 @@ def declaration_from_input(input_payload: object) -> RequiredCapabilityDeclarati
         return None
     if REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY in input_payload:
         return declaration_from_payload(input_payload.get(REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY))
-    return parse_required_tool_declaration(input_payload.get("message"))
+    return None
 
 
 def attach_required_tool_declaration(input_payload: dict[str, Any]) -> dict[str, Any]:
-    """Replace caller carriers with one server-derived declaration from its message."""
+    """Strip retired caller/builtin carriers from newly admitted run input."""
 
     rebuilt = dict(input_payload)
     rebuilt.pop(REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY, None)
-    declaration = parse_required_tool_declaration(rebuilt.get("message"))
-    if declaration is not None:
-        rebuilt[REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY] = declaration.to_payload()
     return rebuilt
 
 
@@ -513,6 +688,18 @@ _BUILTIN_CAPABILITY_PARAMETERS = {
     "WebSearch": (["query"], ["query"]),
     "Skill": (["skill"], ["skill"]),
 }
+SANDBOX_LOCAL_TOOL_IDENTITIES = (
+    "Read",
+    "Glob",
+    "LS",
+    "Bash",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+)
+_SANDBOX_WRITE_TOOL_IDENTITIES = frozenset(
+    {"Bash", "Write", "Edit", "NotebookEdit"}
+)
 
 
 def builtin_capability_subjects(
@@ -640,6 +827,89 @@ def _builtin_subject(
         "command_isolation": str((profile or {}).get("command_isolation") or "none"),
         "workspace_contract": str((profile or {}).get("workspace_contract") or ""),
     }
+
+
+def with_sandbox_local_tool_capability_subjects(
+    existing_subjects: list[dict[str, Any]],
+    *,
+    sandbox_provider: str,
+    required_declaration: RequiredCapabilityDeclaration | None = None,
+) -> list[dict[str, Any]]:
+    """Grant Claude Code local tools only inside a real sandbox boundary."""
+
+    if sandbox_provider == "docker":
+        command_isolation = NATIVE_COMMAND_ISOLATION
+    elif sandbox_provider == "opensandbox":
+        command_isolation = OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION
+    else:
+        raise RequiredToolContractError("sandbox_bash_provider_invalid")
+
+    subjects = [
+        dict(subject)
+        for subject in existing_subjects
+        if str(subject.get("identity") or "") not in SANDBOX_LOCAL_TOOL_IDENTITIES
+    ]
+    if required_declaration is not None:
+        _validate_declaration(required_declaration)
+        if (
+            required_declaration.capability_kind != "builtin"
+            or required_declaration.canonical_identity
+            != CANONICAL_REQUIRED_TOOL_IDENTITY
+        ):
+            raise RequiredToolContractError("required_tool_declaration_mismatch")
+    for identity in SANDBOX_LOCAL_TOOL_IDENTITIES:
+        allowed_keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
+        subject = _builtin_subject(
+            identity=identity,
+            active=True,
+            distributed=True,
+            allowed_parameter_keys=allowed_keys,
+            required_parameter_keys=required_keys,
+            allowed_skill_names=[],
+            profile={
+                "strategy": SDK_NATIVE,
+                "command_isolation": (
+                    command_isolation
+                    if identity == CANONICAL_REQUIRED_TOOL_IDENTITY
+                    else "sandbox-process-v1"
+                ),
+                "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+            },
+        )
+        if (
+            required_declaration is not None
+            and identity == CANONICAL_REQUIRED_TOOL_IDENTITY
+        ):
+            subject[REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY] = (
+                required_declaration.to_payload()
+            )
+        subjects.append(subject)
+    return subjects
+
+
+def with_boundary_sandbox_local_tool_subjects(
+    existing_subjects: list[dict[str, Any]],
+    *,
+    decision: ExecutionBoundaryDecision,
+    sandbox_provider: object,
+) -> list[dict[str, Any]]:
+    sanitized_subjects = [
+        dict(subject)
+        for subject in existing_subjects
+        if str(subject.get("identity") or "") not in SANDBOX_LOCAL_TOOL_IDENTITIES
+        and subject.get("write_capable") is not True
+    ]
+    provider = str(sandbox_provider or "")
+    if (
+        decision.fail_closed
+        or not decision.requires_real_sandbox
+        or provider not in decision.accepted_providers
+    ):
+        return sanitized_subjects
+    return with_sandbox_local_tool_capability_subjects(
+        sanitized_subjects,
+        sandbox_provider=provider,
+    )
 
 
 def required_builtin_capability_subjects(
@@ -803,6 +1073,16 @@ def selected_capability_completion_decision(
         (record.capability_kind, record.canonical_identity)
         for record in records
     }
+    call_owners: dict[str, tuple[str, str]] = {}
+    for record in records:
+        owner = (record.capability_kind, record.canonical_identity)
+        if call_owners.setdefault(record.tool_call_id, owner) != owner:
+            return RequiredCapabilityDecision(
+                False,
+                "required_tool_completion_evidence_mismatch",
+                record.capability_kind,
+                record.canonical_identity,
+            )
     if not records:
         declaration = declarations[0]
         return RequiredCapabilityDecision(
@@ -976,3 +1256,111 @@ def public_required_tool_detail(status: str) -> dict[str, str]:
         "detail_code": "required_capability_required",
         "message": "此任务需要受控执行能力。",
     }
+
+
+_RUNTIME_EVIDENCE_MISMATCH = "tool_invocation_evidence_mismatch"
+
+
+@dataclass(frozen=True)
+class RuntimeToolEvidenceValidation:
+    """Private executor evidence normalized for one worker result."""
+
+    tool_invocation_evidence: list[dict[str, str]]
+    required_capability_evidence: dict[str, object] | None
+    error_code: str | None
+
+    def private_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            TOOL_INVOCATION_EVIDENCE_KEY: self.tool_invocation_evidence,
+        }
+        if self.required_capability_evidence is not None:
+            payload[REQUIRED_CAPABILITY_EVIDENCE_KEY] = (
+                self.required_capability_evidence
+            )
+        return payload
+
+
+def validate_runtime_tool_evidence(
+    executor_response: Mapping[str, object],
+    *,
+    binding: Mapping[str, object],
+    capability_evidence: object,
+    capability_error: str | None,
+) -> RuntimeToolEvidenceValidation:
+    """Normalize local-tool evidence and enforce one owner for every call ID."""
+
+    validation_error: str | None = None
+    try:
+        tool_invocations = validate_tool_invocation_evidence(
+            executor_response.get(TOOL_INVOCATION_EVIDENCE_KEY),
+            binding=binding,
+        )
+    except RequiredToolContractError:
+        tool_invocations = []
+        validation_error = _RUNTIME_EVIDENCE_MISMATCH
+
+    required_evidence = executor_response.get(REQUIRED_CAPABILITY_EVIDENCE_KEY)
+    owner_error = _runtime_evidence_owner_error(
+        capability_evidence=capability_evidence,
+        tool_invocation_evidence=tool_invocations,
+        required_capability_evidence=required_evidence,
+    )
+    return RuntimeToolEvidenceValidation(
+        tool_invocation_evidence=tool_invocations,
+        required_capability_evidence=(
+            dict(required_evidence) if isinstance(required_evidence, dict) else None
+        ),
+        error_code=validation_error or capability_error or owner_error,
+    )
+
+
+def _runtime_evidence_owner_error(
+    *,
+    capability_evidence: object,
+    tool_invocation_evidence: list[dict[str, str]],
+    required_capability_evidence: object,
+) -> str | None:
+    owners: dict[str, tuple[str, str]] = {}
+
+    def claim(call_id: str, owner: tuple[str, str]) -> bool:
+        return owners.setdefault(call_id, owner) == owner
+
+    try:
+        if not isinstance(capability_evidence, list):
+            raise RequiredToolContractError(_RUNTIME_EVIDENCE_MISMATCH)
+        for raw in capability_evidence:
+            record = RequiredCapabilityEvidence.from_payload(raw)
+            if not claim(
+                record.tool_call_id,
+                (record.capability_kind, record.canonical_identity),
+            ):
+                return _RUNTIME_EVIDENCE_MISMATCH
+
+        completed_local_calls: set[tuple[str, str]] = set()
+        for raw in tool_invocation_evidence:
+            call_id = str(raw.get("tool_call_id") or "")
+            identity = str(raw.get("canonical_identity") or "")
+            if not claim(call_id, ("builtin", identity)):
+                return _RUNTIME_EVIDENCE_MISMATCH
+            if raw.get("lifecycle_phase") == "completed":
+                completed_local_calls.add((identity, call_id))
+
+        if required_capability_evidence is not None:
+            record = RequiredCapabilityEvidence.from_payload(
+                required_capability_evidence
+            )
+            if (
+                record.capability_kind != "builtin"
+                or record.lifecycle_phase != "completed"
+                or record.lifecycle_status != "succeeded"
+                or not claim(
+                    record.tool_call_id,
+                    (record.capability_kind, record.canonical_identity),
+                )
+                or (record.canonical_identity, record.tool_call_id)
+                not in completed_local_calls
+            ):
+                return _RUNTIME_EVIDENCE_MISMATCH
+    except RequiredToolContractError:
+        return _RUNTIME_EVIDENCE_MISMATCH
+    return None

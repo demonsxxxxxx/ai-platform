@@ -45,9 +45,10 @@ from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     build_skill_prompt,
-    internal_context_tool_policy_subjects,
     project_sdk_turn_diagnostics,
+    runtime_tool_policy_subjects as _runtime_tool_policy_subjects,
     run_claude_agent_sdk,
+    sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
@@ -66,6 +67,7 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     selected_capability_completion_decision,
+    validate_runtime_tool_evidence,
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
@@ -1462,7 +1464,11 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
-            tool_policy_subjects=_runtime_tool_policy_subjects(payload, runtime_context_manifest),
+            tool_policy_subjects=_sandbox_runtime_tool_policy_subjects(
+                payload,
+                runtime_context_manifest,
+                sandbox_provider=str(settings.sandbox_container_provider),
+            ),
             input_message=prepared.prompt,
             system_prompt=prepared.system_prompt,
             file_ids=payload.file_ids,
@@ -1666,6 +1672,20 @@ class ClaudeAgentWorkerAdapter:
             capability_evidence,
             available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
         )
+        runtime_tool_evidence = validate_runtime_tool_evidence(
+            executor_response,
+            binding={
+                "tenant_id": payload.tenant_id,
+                "workspace_id": payload.workspace_id,
+                "user_id": payload.user_id,
+                "session_id": payload.session_id,
+                "run_id": payload.run_id,
+                "attempt_id": payload.attempt_id,
+            },
+            capability_evidence=capability_evidence,
+            capability_error=selected_capability_error,
+        )
+        selected_capability_error = runtime_tool_evidence.error_code
         runtime_sdk_result = type(
             "RuntimeSdkResult",
             (),
@@ -1708,6 +1728,7 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_timings": sandbox_timings,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
             "capability_evidence": capability_evidence,
+            **runtime_tool_evidence.private_payload(),
         }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -2466,33 +2487,6 @@ def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object
         },
         {"step_key": "verify", "role": "verify", "depends_on": ["execute"], "skill_ids": [], "mcp_tool_ids": []},
     ]
-
-
-def _context_retrieval_tool_names(context_manifest: dict[str, Any] | None) -> list[str]:
-    return available_context_retrieval_tools(context_manifest)
-
-
-def _runtime_tool_policy_subjects(
-    payload: RunPayload,
-    context_manifest: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    value = payload.input.get("_runtime_tool_policy_subjects")
-    subjects = (
-        [
-            dict(item)
-            for item in value
-            if isinstance(item, dict)
-            and not str(item.get("identity") or "").startswith("mcp__ai-platform-context__")
-        ]
-        if isinstance(value, list)
-        else []
-    )
-    subjects.extend(
-        internal_context_tool_policy_subjects(
-            _context_retrieval_tool_names(context_manifest)
-        )
-    )
-    return subjects
 
 
 def _string_list(value: object) -> list[str]:
