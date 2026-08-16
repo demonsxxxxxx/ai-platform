@@ -10,7 +10,7 @@ from app.models import SandboxLeaseReleaseRequest, SandboxLeaseRenewRequest, San
 from app.repositories import RepositoryNotFoundError
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
-from app.runtime.sandbox import lease_repository as sandbox_lease_repository
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 
 router = APIRouter()
 

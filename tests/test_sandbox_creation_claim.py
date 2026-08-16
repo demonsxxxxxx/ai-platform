@@ -301,6 +301,28 @@ async def test_creation_claim_session_cleanup_has_a_hard_deadline():
 
 
 @pytest.mark.asyncio
+async def test_creation_claim_force_close_failure_keeps_cleanup_timeout_visible():
+    store = _ClaimStore()
+    store.release_waits = True
+
+    async def connect_without_force_finish():
+        connection = _ClaimConnection(store)
+        connection.pgconn = object()
+        return connection
+
+    with pytest.raises(
+        SandboxCreationClaimError,
+        match="sandbox creation claim release failed",
+    ):
+        async with acquire_sandbox_creation_claim(
+            _scope(),
+            timeout_seconds=0.01,
+            connection_factory=connect_without_force_finish,
+        ):
+            pass
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("body_outcome", ["cancelled", "failed"])
 async def test_creation_claim_cleanup_timeout_overrides_body_outcome(body_outcome):
     store = _ClaimStore()

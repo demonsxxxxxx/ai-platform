@@ -52,9 +52,10 @@ async def create_sandbox_lease(
             runtime_workspace_container_path,
         )
     )
-    if (attempt_id and lease_payload_json.get("attempt_id") != attempt_id) or (
-        provider in {"docker", "opensandbox"}
-        and (not attempt_id or not runtime_handle_verified)
+    if attempt_id and lease_payload_json.get("attempt_id") != attempt_id:
+        raise ValueError("sandbox_lease_attempt_binding_mismatch")
+    if provider in {"docker", "opensandbox"} and (
+        not attempt_id or not runtime_handle_verified
     ):
         raise ValueError("sandbox_runtime_handle_required")
     cursor = await connection.execute(
@@ -99,30 +100,9 @@ async def create_sandbox_lease(
         ),
     )
     row = await cursor.fetchone()
-    return row or {
-        "id": lease_id,
-        "tenant_id": tenant_id,
-        "workspace_id": workspace_id,
-        "user_id": user_id,
-        "session_id": session_id,
-        "run_id": run_id,
-        "attempt_id": attempt_id,
-        "trace_id": trace_id,
-        "sandbox_mode": sandbox_mode,
-        "provider": provider,
-        "status": "active",
-        "browser_enabled": browser_enabled,
-        "resource_limits_json": resource_limits_json,
-        "user_visible_payload_json": user_visible_payload_json,
-        "lease_payload_json": lease_payload_json,
-        "runtime_container_id": runtime_container_id,
-        "runtime_container_name": runtime_container_name,
-        "runtime_executor_url": runtime_executor_url,
-        "runtime_workspace_container_path": runtime_workspace_container_path,
-        "runtime_handle_verified_at": (
-            "platform-verified" if runtime_handle_verified else None
-        ),
-    }
+    if row is None:
+        raise RuntimeError("sandbox_lease_insert_returning_missing")
+    return row
 
 
 async def fence_sandbox_lease_release(

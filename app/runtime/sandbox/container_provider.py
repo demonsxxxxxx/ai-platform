@@ -41,7 +41,7 @@ from app.runtime.sandbox.contracts import (
     WorkspaceLease,
     build_trusted_callback_target,
 )
-from app.runtime.sandbox.docker_governed_network import (
+from app.platform.sandbox.docker_governed_network import (
     DockerGovernedEgressAdmission as _DockerGovernedEgressAdmission,
     GOVERNED_DOCKER_NETWORK_OWNER as _GOVERNED_DOCKER_NETWORK_OWNER,
     attach_api_callback_witness as _attach_api_callback_witness,
@@ -61,7 +61,7 @@ from app.runtime.sandbox.docker_governed_network import (
     governed_egress_proof_key_id as _governed_egress_proof_key_id,
     runtime_release_commit as _runtime_release_commit,
 )
-from app.runtime.sandbox.errors import (
+from app.platform.sandbox.errors import (
     ContainerCleanupFailedError,
     ContainerStartFailedError,
     DockerPermissionDeniedError,
@@ -3052,7 +3052,7 @@ class DockerContainerProvider:
                     return False
                 shutil.rmtree(socket_path.parent)
             return True
-        except OSError:
+        except (OSError, ContainerStartFailedError):
             return False
 
     async def _probe_native_tool_before_deadline(self, container: Any, deadline: float) -> bool:

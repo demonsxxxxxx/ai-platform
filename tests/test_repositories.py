@@ -22,7 +22,7 @@ from app.platform.postgres.errors import (
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
 from app.runs.api import RunTerminalizationProgress
-from app.runtime.sandbox.lease_repository import (
+from app.platform.postgres.sandbox_leases import (
     SandboxLeaseReleaseScopeMismatchError,
     create_sandbox_lease,
     fence_sandbox_lease_release,
@@ -9777,16 +9777,19 @@ async def test_sandbox_lease_release_fence_serializes_with_postgres_insert():
                 reason="lease_record_failed",
             )
         )
-        for _ in range(300):
+        blocking_deadline = asyncio.get_running_loop().time() + 10
+        while True:
             cursor = await observer.execute(
                 "select %s = any(pg_blocking_pids(%s)) as blocked",
                 (creator_pid, releaser_pid),
             )
             if (await cursor.fetchone())["blocked"]:
                 break
-            await asyncio.sleep(0)
-        else:
-            raise AssertionError("release fence did not block behind the active insert")
+            if asyncio.get_running_loop().time() >= blocking_deadline:
+                raise AssertionError(
+                    "release fence did not block behind the active insert"
+                )
+            await asyncio.sleep(0.02)
 
         await creator.commit()
         fenced = await asyncio.wait_for(fence_task, timeout=5)
@@ -9859,7 +9862,7 @@ async def test_real_sandbox_lease_requires_attempt_and_complete_runtime_handle()
 async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
     conn = RecordingConnection()
 
-    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+    with pytest.raises(ValueError, match="sandbox_lease_attempt_binding_mismatch"):
         await create_sandbox_lease(
             conn,
             tenant_id="tenant-a",
@@ -9879,6 +9882,29 @@ async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
         )
 
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_insert_requires_returned_persisted_row():
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RuntimeError, match="sandbox_lease_insert_returning_missing"):
+        await create_sandbox_lease(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={},
+        )
 
 
 @pytest.mark.asyncio

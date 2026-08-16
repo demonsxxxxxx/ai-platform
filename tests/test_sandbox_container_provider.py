@@ -4539,6 +4539,16 @@ def test_native_tool_absence_requires_authoritative_container_lookup():
     assert not container_provider._is_authoritative_container_not_found_error(
         RuntimeError("container not found")
     )
+
+
+def test_native_tool_socket_removal_fails_closed_without_attempt_identity():
+    import app.runtime.sandbox.container_provider as container_provider
+
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=FakeDockerClient
+    )
+
+    assert provider._remove_native_tool_socket(workspace()) is False
     assert container_provider._is_authoritative_container_not_found_error(
         RuntimeError(
             "404 Client Error for http://docker/containers/native-tool-run/json: Not Found"

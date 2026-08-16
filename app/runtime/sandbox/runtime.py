@@ -32,7 +32,7 @@ from app.runtime.sandbox.creation_claim import (
     SandboxCreationScope,
     acquire_sandbox_creation_claim,
 )
-from app.runtime.sandbox import lease_repository as sandbox_lease_repository
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.contracts import (
     ContainerLease,
     ExecutorTaskRequest,
@@ -506,6 +506,7 @@ class SandboxRuntime:
                     lease_record_id = await await_bounded_task(record_task)
                 except TimeoutError:
                     lease_record_uncertain = True
+                    record_task.add_done_callback(consume_background_task)
                     force_finished = (
                         self._uses_default_lease_recorder
                         and self._force_finish_lease_record(lease_record_id)
@@ -522,7 +523,19 @@ class SandboxRuntime:
                     pass
                 raise
             except BaseException as exc:
-                stop_result = await self.provider.stop(lease, reason="lease_record_failed")
+                try:
+                    stop_result = await self.provider.stop(
+                        lease,
+                        reason="lease_record_failed",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    stop_result = StopResult(
+                        container_id=lease.container_id,
+                        status="failed",
+                        message="sandbox provider stop raised",
+                    )
                 if stop_result.status == "failed":
                     raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
                 if lease_record_id is not None:

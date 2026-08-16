@@ -13,7 +13,7 @@ from app.runtime.sandbox.contracts import (
     ContainerLease,
     build_trusted_callback_target,
 )
-from app.runtime.sandbox.errors import GovernedEgressAdmissionError
+from app.platform.sandbox.errors import GovernedEgressAdmissionError
 
 GOVERNED_DOCKER_CALLBACK_ALIAS = "api.sandbox.internal"
 GOVERNED_DOCKER_API_RELEASE_OWNER = "repo-local-compose"

@@ -52,9 +52,6 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
-from app.runtime_tool_evidence import (
-    validate_runtime_tool_evidence,
-)
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     MaterializedAttachmentFact,
@@ -70,6 +67,7 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     selected_capability_completion_decision,
+    validate_runtime_tool_evidence,
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (

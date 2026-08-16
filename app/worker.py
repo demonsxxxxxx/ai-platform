@@ -63,7 +63,7 @@ from app.required_tool_contract import (
     with_boundary_sandbox_local_tool_subjects,
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
-from app.runtime.sandbox import lease_repository as sandbox_lease_repository
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.executor_client import (
     SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,

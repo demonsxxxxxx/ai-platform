@@ -122,9 +122,11 @@ async def _await_cleanup_task(
         remaining = deadline - loop.time()
         if remaining <= 0:
             task.cancel()
-            force_finish()
             task.add_done_callback(_consume_background_task)
-            raise TimeoutError("sandbox creation claim cleanup timed out")
+            try:
+                force_finish()
+            finally:
+                raise TimeoutError("sandbox creation claim cleanup timed out")
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
         except asyncio.CancelledError as exc:
@@ -132,9 +134,11 @@ async def _await_cleanup_task(
                 cancellation = exc
         except TimeoutError:
             task.cancel()
-            force_finish()
             task.add_done_callback(_consume_background_task)
-            raise TimeoutError("sandbox creation claim cleanup timed out") from None
+            try:
+                force_finish()
+            finally:
+                raise TimeoutError("sandbox creation claim cleanup timed out") from None
     try:
         task.result()
     except BaseException:

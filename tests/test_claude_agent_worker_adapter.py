@@ -42,6 +42,7 @@ from app.file_parser_contracts import (
     ParsedAttachmentContext,
 )
 from app.required_tool_contract import (
+    REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     TOOL_INVOCATION_EVIDENCE_KEY,
     RequiredCapabilityDeclaration,
@@ -4565,7 +4566,7 @@ def test_sandbox_bash_subject_is_available_without_required_declaration():
     assert bash_subject["active"] is True
     assert bash_subject["write_capable"] is True
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
-    assert "_required_capability_declaration" not in bash_subject
+    assert REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY not in bash_subject
 
 
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():

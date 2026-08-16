@@ -16,7 +16,7 @@ from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, S
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
@@ -2102,6 +2102,7 @@ async def test_runtime_fences_default_lease_when_commit_confirmation_is_lost(tmp
 @pytest.mark.asyncio
 async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path, monkeypatch):
     record_started = asyncio.Event()
+    record_finished = asyncio.Event()
     release_fenced = asyncio.Event()
     state = {"status": None, "connection_force_finished": False}
 
@@ -2125,13 +2126,16 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
     async def create_sandbox_lease(_conn, **kwargs):
         record_started.set()
         try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            await release_fenced.wait()
-        if state["status"] == "released":
-            raise RepositoryConflictError("lease id is release-fenced")
-        state["status"] = "active"
-        return {"id": kwargs["lease_id"], "status": "active"}
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release_fenced.wait()
+            if state["status"] == "released":
+                raise RepositoryConflictError("lease id is release-fenced")
+            state["status"] = "active"
+            return {"id": kwargs["lease_id"], "status": "active"}
+        finally:
+            record_finished.set()
 
     async def fence_sandbox_lease_release(_conn, **kwargs):
         state["status"] = "released"
@@ -2166,6 +2170,7 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    await asyncio.wait_for(record_finished.wait(), timeout=0.5)
     await asyncio.sleep(0)
 
     assert state["status"] == "released"
@@ -2246,6 +2251,34 @@ async def test_runtime_surfaces_cleanup_failure_when_lease_recording_stop_fails(
         await runtime.submit(request(sandbox_mode="persistent"))
 
     assert calls == [("stop", "lease_record_failed")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_lease_record_error_when_provider_stop_raises(tmp_path):
+    class StopRaisesProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            raise RuntimeError("stop unavailable")
+
+    async def fail_record_lease(lease, request, workspace):
+        raise RuntimeError("db unavailable")
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopRaisesProvider(executor_url="http://executor.test"),
+        execute_task=lambda *_args, **_kwargs: pytest.fail(
+            "executor must not run when lease recording fails"
+        ),
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=fail_record_lease,
+    )
+
+    with pytest.raises(SandboxRuntimeCleanupError) as raised:
+        await runtime.submit(request(sandbox_mode="persistent"))
+
+    assert raised.value.reason == "lease_record_failed"
+    assert raised.value.stop_result.message == "sandbox provider stop raised"
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert str(raised.value.__cause__) == "db unavailable"
 
 
 @pytest.mark.asyncio
