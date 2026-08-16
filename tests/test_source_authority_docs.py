@@ -87,6 +87,11 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
         assert required_field in pull_request_template
     assert "`N/A` is reserved for the risk categories" in pull_request_template
     assert "a bare `N/A` is not an answer" in pull_request_template
+    template_flat = " ".join(pull_request_template.split())
+    assert re.search(
+        r"`Closes`/`Fixes`.*acceptance, review,.*required runtime criteria",
+        template_flat,
+    )
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():
