@@ -172,8 +172,9 @@ def native_tool_name(
     run_id: str = "run-a",
     attempt_id: str = "qat-test-attempt",
 ) -> str:
-    attempt_key = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:24]
-    return f"native-tool-{run_id}-{attempt_key}"
+    from app.runtime.sandbox.container_provider import _native_tool_container_name
+
+    return _native_tool_container_name(run_id, attempt_id)
 
 
 def trusted_skill_mount_stub(selected_workspace: WorkspaceLease) -> SimpleNamespace:
@@ -7609,6 +7610,48 @@ async def test_docker_provider_stop_runs_blocking_sdk_cleanup_off_event_loop(mon
     assert event_loop_progressed is True
     release.set()
     assert (await stop_task).status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_stale_cleanup_does_not_forget_new_attempt_lease():
+    from app.runtime.sandbox.container_provider import (
+        DockerContainerProvider,
+        _lease_from_request,
+    )
+
+    provider = DockerContainerProvider(docker_client_factory=FakeDockerClient)
+    stale = _lease_from_request(
+        "docker",
+        request(),
+        workspace(),
+        executor_url="http://executor.test",
+    )
+    replacement = stale.model_copy(
+        update={
+            "run_id": "run-new",
+            "labels": {
+                **stale.labels,
+                "ai-platform.run_id": "run-new",
+                "ai-platform.attempt_id": "attempt-new",
+            },
+        }
+    )
+    provider._remember_lease(stale)
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+
+    def finish_stale_cleanup() -> None:
+        cleanup_started.set()
+        cleanup_release.wait(timeout=1)
+        provider._forget_lease(stale)
+
+    cleanup_task = asyncio.create_task(asyncio.to_thread(finish_stale_cleanup))
+    assert await asyncio.to_thread(cleanup_started.wait, 1) is True
+    provider._remember_lease(replacement)
+    cleanup_release.set()
+    await cleanup_task
+
+    assert provider._cached_lease_for_run("run-new") is replacement
 
 
 @pytest.mark.asyncio

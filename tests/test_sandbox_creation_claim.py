@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 import pytest
 
@@ -130,12 +131,8 @@ def _scope():
 
 def test_creation_claim_key_serializes_attempts_for_the_same_run():
     first = _scope()
-    second = SandboxCreationScope(
-        **{**first.__dict__, "attempt_id": "attempt-b"}
-    )
-    other_run = SandboxCreationScope(
-        **{**first.__dict__, "run_id": "run-b"}
-    )
+    second = replace(first, attempt_id="attempt-b")
+    other_run = replace(first, run_id="run-b")
 
     assert first.canonical_key() == second.canonical_key()
     assert first.canonical_key() != other_run.canonical_key()

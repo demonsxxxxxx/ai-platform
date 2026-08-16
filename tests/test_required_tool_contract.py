@@ -223,10 +223,19 @@ def test_tool_invocation_evidence_requires_attempt_bound_started_to_terminal_seq
         canonical_identity="Bash",
         lifecycle_phase="completed",
     )
+    failed = ToolInvocationEvidence.from_executor_private_payload(
+        binding=_binding(),
+        tool_call_id="call-a",
+        canonical_identity="Bash",
+        lifecycle_phase="failed",
+    )
 
     assert validate_tool_invocation_evidence(
         [asdict(started), asdict(completed)], binding=_binding()
     ) == [asdict(started), asdict(completed)]
+    assert validate_tool_invocation_evidence(
+        [asdict(started), asdict(failed)], binding=_binding()
+    ) == [asdict(started), asdict(failed)]
     with pytest.raises(RequiredToolContractError, match="tool_invocation_evidence_mismatch"):
         validate_tool_invocation_evidence([asdict(started)], binding=_binding())
     with pytest.raises(RequiredToolContractError, match="tool_invocation_evidence_mismatch"):

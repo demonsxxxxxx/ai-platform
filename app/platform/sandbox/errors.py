@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.runtime.sandbox import readiness_evidence
+from app.runtime.sandbox import readiness_evidence as readiness_contracts
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidence,
     OpenSandboxStartupEvidenceCarrier,
@@ -83,15 +83,24 @@ class ContainerCleanupFailedError(SandboxRuntimeError):
         self,
         message: str = "Container cleanup failed",
         *,
-        readiness_evidence: readiness_evidence.ExecutorReadinessEvidence | None = None,
+        readiness_evidence: readiness_contracts.ExecutorReadinessEvidence | None = None,
         cleanup_subject: dict[str, str] | None = None,
     ) -> None:
         super().__init__("container_cleanup_failed", message)
-        self.readiness_evidence = readiness_evidence
+        self.readiness_evidence: readiness_contracts.ExecutorReadinessEvidence | None = (
+            readiness_evidence
+        )
         self.cleanup_subject = cleanup_subject
 
 
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
-    def __init__(self, message: str = "Executor health timeout", *, readiness_evidence=None) -> None:
+    def __init__(
+        self,
+        message: str = "Executor health timeout",
+        *,
+        readiness_evidence: readiness_contracts.ExecutorReadinessEvidence | None = None,
+    ) -> None:
         super().__init__("executor_health_timeout", message)
-        self.readiness_evidence = readiness_evidence
+        self.readiness_evidence: readiness_contracts.ExecutorReadinessEvidence | None = (
+            readiness_evidence
+        )

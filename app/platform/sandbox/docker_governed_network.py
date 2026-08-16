@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -18,6 +19,8 @@ from app.platform.sandbox.errors import GovernedEgressAdmissionError
 GOVERNED_DOCKER_CALLBACK_ALIAS = "api.sandbox.internal"
 GOVERNED_DOCKER_API_RELEASE_OWNER = "repo-local-compose"
 GOVERNED_DOCKER_NETWORK_OWNER = "sandbox-runtime-governed-egress-v2"
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -294,8 +297,11 @@ def attach_api_callback_witness(network: Any, api_container: Any) -> None:
         raise GovernedEgressAdmissionError() from None
     try:
         connect(api_container, aliases=[GOVERNED_DOCKER_CALLBACK_ALIAS])
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug(
+            "Docker API callback witness is already attached or unavailable",
+            extra={"error_type": type(exc).__name__},
+        )
 
 
 def docker_network_attachment(

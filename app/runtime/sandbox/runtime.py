@@ -445,7 +445,7 @@ class SandboxRuntime:
             float(
                 getattr(
                     self.settings,
-                    "sandbox_container_start_timeout_seconds",
+                    "sandbox_cleanup_timeout_seconds",
                     30,
                 )
                 or 30

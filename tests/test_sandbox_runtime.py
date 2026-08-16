@@ -2121,7 +2121,8 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_container_provider = "fake"
-        sandbox_container_start_timeout_seconds = 0.01
+        sandbox_container_start_timeout_seconds = 60
+        sandbox_cleanup_timeout_seconds = 0.01
 
     async def create_sandbox_lease(_conn, **kwargs):
         record_started.set()

@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     ai_platform_runtime_commit: str = Field(default="")
     sandbox_callback_host_gateway: str = Field(default="host.docker.internal")
     sandbox_container_start_timeout_seconds: int = Field(default=30)
+    sandbox_cleanup_timeout_seconds: int = Field(default=30)
     sandbox_executor_health_timeout_seconds: int = Field(default=60)
     opensandbox_domain: str = Field(default="127.0.0.1:8080")
     opensandbox_protocol: str = Field(default="http")

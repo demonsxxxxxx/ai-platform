@@ -15,6 +15,7 @@ import shlex
 import shutil
 import socket
 import stat
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -2874,6 +2875,7 @@ class DockerContainerProvider:
         monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._leases: dict[str, ContainerLease] = {}
+        self._leases_lock = threading.Lock()
         self._docker_client_factory = docker_client_factory
         self._health_probe = health_probe or default_executor_health_probe
         self._identity_probe = identity_probe or default_executor_identity_probe
@@ -2881,6 +2883,36 @@ class DockerContainerProvider:
         self._native_tool_probe = native_tool_probe or _default_native_tool_probe
         self._monotonic = monotonic or time.monotonic
         self._client: Any | None = None
+
+    @staticmethod
+    def _same_tracked_lease(
+        tracked: ContainerLease,
+        expected: ContainerLease,
+    ) -> bool:
+        return (
+            tracked.container_id == expected.container_id
+            and tracked.tenant_id == expected.tenant_id
+            and tracked.workspace_id == expected.workspace_id
+            and tracked.user_id == expected.user_id
+            and tracked.session_id == expected.session_id
+            and tracked.run_id == expected.run_id
+            and tracked.labels.get("ai-platform.attempt_id")
+            == expected.labels.get("ai-platform.attempt_id")
+        )
+
+    def _remember_lease(self, lease: ContainerLease) -> None:
+        with self._leases_lock:
+            self._leases[lease.container_id] = lease
+
+    def _remember_lease_if_absent(self, lease: ContainerLease) -> None:
+        with self._leases_lock:
+            self._leases.setdefault(lease.container_id, lease)
+
+    def _forget_lease(self, lease: ContainerLease) -> None:
+        with self._leases_lock:
+            tracked = self._leases.get(lease.container_id)
+            if tracked is not None and self._same_tracked_lease(tracked, lease):
+                self._leases.pop(lease.container_id, None)
 
     def assert_available(self) -> None:
         if self._docker_client_factory is None and docker is None:
@@ -2931,7 +2963,7 @@ class DockerContainerProvider:
     def _cleanup_container_or_track(self, container: Any, lease: ContainerLease) -> None:
         if _stop_and_remove_container(container):
             return
-        self._leases[lease.container_id] = lease
+        self._remember_lease(lease)
         raise ContainerCleanupFailedError("container cleanup could not be confirmed")
 
     def _remove_owned_governed_network(self, lease: ContainerLease) -> bool:
@@ -2939,6 +2971,14 @@ class DockerContainerProvider:
         if not str(lease.labels.get("ai-platform.attempt_id") or "").strip():
             # Pre-fence/foreign leases cannot identify an attempt-owned bridge,
             # so there is no exact resource this cleanup path may remove.
+            _logger.warning(
+                "Skipping governed Docker network cleanup without an attempt binding",
+                extra={
+                    "provider": self.provider_name,
+                    "container_id": lease.container_id,
+                    "run_id": lease.run_id,
+                },
+            )
             return True
         try:
             network = self._get_client().networks.get(_governed_docker_network_name(lease))
@@ -3150,7 +3190,7 @@ class DockerContainerProvider:
         network_removed = self._remove_owned_governed_network(lease) if primary_removed else False
         if primary_removed and native_removed and socket_removed and network_removed:
             return
-        self._leases[lease.container_id] = lease
+        self._remember_lease(lease)
         raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
 
     def _cleanup_runtime_pair_for_error(self, container: Any, native: Any, lease: ContainerLease, cause: BaseException, evidence: readiness_evidence.ExecutorReadinessEvidence | None = None) -> BaseException:
@@ -3205,10 +3245,10 @@ class DockerContainerProvider:
             if str(lease.labels.get("ai-platform.native_tool_required") or "") == "true"
             else True
         )
-        self._leases.pop(lease.container_id, None)
+        self._forget_lease(lease)
         if native_removed and primary_removed and socket_removed:
             return
-        self._leases[lease.container_id] = lease
+        self._remember_lease(lease)
         raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
 
     async def _admit_native_tool_reuse(self, lease: ContainerLease, timeout_seconds: float) -> None:
@@ -3491,7 +3531,11 @@ class DockerContainerProvider:
 
     def _cached_lease_for_run(self, run_id: str) -> ContainerLease | None:
         """Return the sole tracked Docker lease for a run, keyed by real container ID."""
-        return next((lease for lease in self._leases.values() if lease.run_id == run_id), None)
+        with self._leases_lock:
+            return next(
+                (lease for lease in self._leases.values() if lease.run_id == run_id),
+                None,
+            )
 
     @staticmethod
     def _is_exact_owned_remote_container(
@@ -3547,12 +3591,12 @@ class DockerContainerProvider:
         ):
             if remembered_lease is None:
                 if not self._remove_owned_governed_network(bootstrap_lease):
-                    self._leases.setdefault(bootstrap_lease.container_id, bootstrap_lease)
+                    self._remember_lease_if_absent(bootstrap_lease)
                     raise ContainerCleanupFailedError(
                         "governed network cleanup could not be confirmed"
                     ) from None
                 raise ContainerStartFailedError("deterministic Docker container is occupied")
-            self._leases.pop(remembered_lease.container_id, None)
+            self._forget_lease(remembered_lease)
             raise ContainerStartFailedError("deterministic Docker container identity mismatch")
         tracked_id = str(getattr(container, "id", "") or "").strip()
         candidate = (
@@ -3584,7 +3628,7 @@ class DockerContainerProvider:
                 self._owned_native_tool_container(candidate),
                 candidate,
             )
-            self._leases.pop(candidate.container_id, None)
+            self._forget_lease(candidate)
             return None
         candidate.labels.update(expected_labels)
         status = _container_status_from_labels(container)
@@ -3594,7 +3638,7 @@ class DockerContainerProvider:
                 self._owned_native_tool_container(candidate),
                 candidate,
             )
-            self._leases.pop(candidate.container_id, None)
+            self._forget_lease(candidate)
             return None
         recovered = await self._reuse_existing_container(candidate, timeout_seconds, endpoint)
         if recovered is None:
@@ -3638,14 +3682,14 @@ class DockerContainerProvider:
                 if primary_removed
                 else False
             )
-            self._leases.pop(existing.container_id, None)
+            self._forget_lease(existing)
             if not (
                 native_removed
                 and primary_removed
                 and socket_removed
                 and network_removed
             ):
-                self._leases[existing.container_id] = existing
+                self._remember_lease(existing)
                 raise ContainerCleanupFailedError(
                     "runtime container pair cleanup could not be confirmed"
                 )
@@ -3682,9 +3726,9 @@ class DockerContainerProvider:
                     self._owned_native_tool_container(cleanup_lease),
                     cleanup_lease,
                 )
-                self._leases.pop(cleanup_lease.container_id, None)
+                self._forget_lease(cleanup_lease)
             elif not self._remove_owned_governed_network(cleanup_lease):
-                self._leases.setdefault(cleanup_lease.container_id, cleanup_lease)
+                self._remember_lease_if_absent(cleanup_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
         owned_resources = _DockerOwnedResourceScope(self, bootstrap_lease)
@@ -3726,16 +3770,16 @@ class DockerContainerProvider:
                     if existing_native_tool_required
                     else True
                 )
-                self._leases.pop(existing.container_id, None)
+                self._forget_lease(existing)
                 owned_resources.lease = existing
                 try:
                     if native_removed and primary_removed and socket_removed:
                         owned_resources.abort()
                 except ContainerCleanupFailedError:
-                    self._leases[existing.container_id] = existing
+                    self._remember_lease(existing)
                     raise
                 if not (native_removed and primary_removed and socket_removed):
-                    self._leases[existing.container_id] = existing
+                    self._remember_lease(existing)
                     raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
                 raise ContainerStartFailedError("cached lease runtime profile mismatch")
         if existing is not None:
@@ -3773,7 +3817,7 @@ class DockerContainerProvider:
                         raise cleanup_exc from exc
                     raise
             if recovered_existing is not None:
-                self._leases[recovered_existing.container_id] = recovered_existing
+                self._remember_lease(recovered_existing)
                 return recovered_existing
 
         recovered = await self._recover_remote_docker_lease(
@@ -3809,7 +3853,7 @@ class DockerContainerProvider:
                         raise cleanup_exc from exc
                     raise
         if recovered is not None:
-            self._leases[recovered.container_id] = recovered
+            self._remember_lease(recovered)
             return recovered
         # Recovery can remove an invalid remote lease and its per-lease
         # network. Re-run admission so cold creation never uses a stale
@@ -3824,7 +3868,7 @@ class DockerContainerProvider:
         except GovernedEgressAdmissionError:
             egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.PREFLIGHT_TOPOLOGY)
             if not self._remove_owned_governed_network(bootstrap_lease):
-                self._leases.setdefault(bootstrap_lease.container_id, bootstrap_lease)
+                self._remember_lease_if_absent(bootstrap_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
         cold_start_started_at = self._monotonic()
@@ -3921,7 +3965,7 @@ class DockerContainerProvider:
             try:
                 submitted_primary = resolve_submitted_primary_container()
             except ContainerCleanupFailedError as cleanup_exc:
-                self._leases.setdefault(bootstrap_lease.container_id, bootstrap_lease)
+                self._remember_lease_if_absent(bootstrap_lease)
                 raise cleanup_exc from exc
             self._cleanup_runtime_pair_for_error(
                 submitted_primary,
@@ -3943,7 +3987,7 @@ class DockerContainerProvider:
             try:
                 submitted_primary = resolve_submitted_primary_container()
             except ContainerCleanupFailedError as cleanup_exc:
-                self._leases.setdefault(bootstrap_lease.container_id, bootstrap_lease)
+                self._remember_lease_if_absent(bootstrap_lease)
                 raise cleanup_exc from exc
             self._cleanup_runtime_pair_for_error(
                 submitted_primary,
@@ -4094,7 +4138,7 @@ class DockerContainerProvider:
         )
         lease.container_id = bootstrap_lease.container_id
         lease.labels.update(bootstrap_lease.labels)
-        self._leases[lease.container_id] = lease
+        self._remember_lease(lease)
         return lease
 
     async def validate_for_dispatch(
@@ -4194,7 +4238,7 @@ class DockerContainerProvider:
                 self._owned_native_tool_container(lease),
                 lease,
             )
-            self._leases.pop(lease.container_id, None)
+            self._forget_lease(lease)
             if isinstance(exc, GovernedEgressAdmissionError):
                 raise
             raise GovernedEgressAdmissionError() from None
@@ -4249,9 +4293,9 @@ class DockerContainerProvider:
         if not primary_failed:
             network_failed = not self._remove_owned_governed_network(lease)
         if primary_failed or native_failed or network_failed:
-            self._leases.setdefault(lease.container_id, lease)
+            self._remember_lease_if_absent(lease)
             return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
-        self._leases.pop(lease.container_id, None)
+        self._forget_lease(lease)
         return StopResult(container_id=lease.container_id, status=primary_status, message=reason)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:

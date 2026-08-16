@@ -948,7 +948,10 @@ def default_cancel_not_requested(monkeypatch):
             **kwargs,
         }
 
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease, raising=False)
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):

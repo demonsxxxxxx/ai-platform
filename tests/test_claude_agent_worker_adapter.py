@@ -267,7 +267,14 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         },
         "bash-call-1",
     )
-    denied = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe", "cwd": "other"}})
+    denied = await hook(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo safe", "cwd": "other"},
+            "tool_use_id": "bash-call-2",
+        },
+        "bash-call-2",
+    )
     assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert lifecycle_facts == [("bash-call-1", "started")]
@@ -2424,7 +2431,7 @@ async def test_worker_rejects_parser_file_absent_from_dispatched_manifest(monkey
 
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: type("S", (), {})(),
+        lambda: type("S", (), {"sandbox_container_provider": "docker"})(),
     )
 
     result = await adapter._submit_prepared_run_to_sandbox_runtime(
@@ -3515,7 +3522,7 @@ def test_sandbox_runtime_missing_provider_does_not_fallback_to_settings(monkeypa
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: type("S", (), {"sandbox_container_provider": "docker"})(),
+        lambda: type("S", (), {})(),
     )
 
     result = adapter._executor_result_from_sandbox_runtime(
