@@ -82,11 +82,22 @@ def test_b6_operations_beta_readiness_markdown_is_operator_readable_and_gap_firs
     assert "does not claim support handoff" in markdown
 
 
-def test_b6_operations_beta_readiness_markdown_fails_closed_on_beta_boundary_regression():
+@pytest.mark.parametrize(
+    "field",
+    [
+        "does_not_create_product_beta",
+        "does_not_create_department_rollout",
+        "does_not_claim_deployed_runtime_verified",
+        "does_not_close_b6_g9_g10",
+        "does_not_claim_owner_signoff",
+        "does_not_claim_support_handoff",
+    ],
+)
+def test_b6_operations_beta_readiness_markdown_fails_closed_on_boundary_regression(field):
     readiness = build_b6_operations_beta_readiness()
-    readiness["claim_boundary"]["does_not_create_product_beta"] = False
+    readiness["claim_boundary"][field] = False
 
-    with pytest.raises(RuntimeError, match="b6_product_beta_boundary_regression"):
+    with pytest.raises(RuntimeError, match=rf"b6_claim_boundary_regression:{field}"):
         render_b6_operations_beta_readiness_markdown(readiness)
 
 

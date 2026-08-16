@@ -93,8 +93,31 @@ WORKFLOW_COMMAND_JOBS = {
 }
 
 
+def _validate_workflow_contract_mappings(
+    workflow_commands: list[str],
+    workflow_command_jobs: dict[str, str],
+    workflow_step_commands: dict[str, str],
+    workflow_step_jobs: dict[str, str],
+) -> None:
+    command_keys = set(workflow_commands)
+    if len(command_keys) != len(workflow_commands) or command_keys != set(
+        workflow_command_jobs
+    ):
+        raise RuntimeError("frontend_workflow_command_job_mapping_mismatch")
+    if set(workflow_step_commands) != set(workflow_step_jobs):
+        raise RuntimeError("frontend_workflow_step_job_mapping_mismatch")
+
+
+_validate_workflow_contract_mappings(
+    WORKFLOW_COMMANDS,
+    WORKFLOW_COMMAND_JOBS,
+    WORKFLOW_STEP_COMMANDS,
+    WORKFLOW_STEP_JOBS,
+)
+
+
 class UniqueKeyLoader(yaml.BaseLoader):
-    pass
+    """Reject duplicate keys while preserving every YAML scalar as text."""
 
 
 def _construct_unique_mapping(loader, node, deep=False):

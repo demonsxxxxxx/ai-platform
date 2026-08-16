@@ -8,6 +8,11 @@ import pytest
 
 from tools.frontend_release_traceability import DIST_BUILD_PROVENANCE_FILENAME
 from tools.frontend_release_traceability import (
+    WORKFLOW_COMMANDS,
+    WORKFLOW_COMMAND_JOBS,
+    WORKFLOW_STEP_COMMANDS,
+    WORKFLOW_STEP_JOBS,
+    _validate_workflow_contract_mappings,
     build_frontend_release_traceability,
     render_frontend_release_traceability_markdown,
 )
@@ -45,6 +50,30 @@ EXPECTED_LINUX_WORKFLOW_PYTEST = (
     "python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp"
 )
 PARSER_DIRECTIVE = re.compile(r"^\s*#\s*([A-Za-z][A-Za-z0-9_-]*)\s*=.*$")
+
+
+def test_frontend_release_traceability_mapping_keys_are_exact() -> None:
+    _validate_workflow_contract_mappings(
+        WORKFLOW_COMMANDS,
+        WORKFLOW_COMMAND_JOBS,
+        WORKFLOW_STEP_COMMANDS,
+        WORKFLOW_STEP_JOBS,
+    )
+
+    with pytest.raises(RuntimeError, match="command_job_mapping_mismatch"):
+        _validate_workflow_contract_mappings(
+            [*WORKFLOW_COMMANDS, "unexpected duplicate or unmapped command"],
+            WORKFLOW_COMMAND_JOBS,
+            WORKFLOW_STEP_COMMANDS,
+            WORKFLOW_STEP_JOBS,
+        )
+    with pytest.raises(RuntimeError, match="step_job_mapping_mismatch"):
+        _validate_workflow_contract_mappings(
+            WORKFLOW_COMMANDS,
+            WORKFLOW_COMMAND_JOBS,
+            {**WORKFLOW_STEP_COMMANDS, "Unexpected step": "true"},
+            WORKFLOW_STEP_JOBS,
+        )
 
 
 def leading_dockerfile_parser_directives(dockerfile: str) -> set[str]:

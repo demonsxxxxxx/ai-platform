@@ -618,7 +618,12 @@ def test_office_context_readiness_default_subject_requires_a_clean_git_tree(tmp_
     marker = tmp_path / "marker.txt"
     marker.write_text("clean\n", encoding="utf-8")
     subprocess.run(["git", "add", "marker.txt"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-m", "fixture"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
     expected_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=tmp_path,
@@ -638,8 +643,9 @@ def test_office_context_readiness_default_subject_fails_closed_when_git_is_unava
     monkeypatch,
     tmp_path,
 ):
-    def git_unavailable(*_args, **_kwargs):
-        raise subprocess.CalledProcessError(128, "git")
+    def git_unavailable(*_args, **kwargs):
+        assert kwargs["timeout"] == 5
+        raise FileNotFoundError("git")
 
     monkeypatch.setattr("app.office_context_readiness.subprocess.run", git_unavailable)
 

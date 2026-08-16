@@ -157,7 +157,6 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
 
     assert "corepack pnpm install --frozen-lockfile" in workflow
     assert PYTHON_TEST_DEPENDENCIES in workflow
-    assert "python -m pip install pytest" in workflow
     assert "locked_jsonschema_version(Path(\"uv.lock\"))" in workflow
     assert "verify_installed_jsonschema_version(locked_jsonschema)" in workflow
     assert PYTEST_COMMAND in workflow

@@ -15,8 +15,7 @@ def test_watch_poc_gate_runs_strict_gate_after_auth_audit_is_ready(monkeypatch):
     ]
     strict_gate_calls: list[list[str]] = []
 
-    def fake_check_auth_audit(container: str, db_user: str, db_name: str, allow_missing: bool):
-        assert allow_missing is False
+    def fake_check_auth_audit(container: str, db_user: str, db_name: str):
         return polls.pop(0)
 
     def fake_run_strict_gate(extra_args: list[str]) -> int:
@@ -38,7 +37,7 @@ def test_watch_poc_gate_runs_strict_gate_after_auth_audit_is_ready(monkeypatch):
 def test_watch_poc_gate_times_out_without_running_strict_gate(monkeypatch):
     strict_gate_calls: list[list[str]] = []
 
-    def fake_check_auth_audit(container: str, db_user: str, db_name: str, allow_missing: bool):
+    def fake_check_auth_audit(container: str, db_user: str, db_name: str):
         return Gate("company_login_audit", False, {"all_auth_login_count": 0})
 
     monkeypatch.setattr(watch_poc_gate.verify_poc_gate, "check_auth_audit", fake_check_auth_audit)

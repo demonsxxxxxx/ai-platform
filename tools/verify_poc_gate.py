@@ -1518,9 +1518,7 @@ def check_auth_audit(container: str, db_user: str, db_name: str) -> Gate:
 select json_build_object(
   'count', count(*),
   'ordinary_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = false),
-  'admin_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = true),
-  'latest_user_id', (array_agg(user_id order by created_at desc))[1],
-  'latest_payload', (array_agg(payload_json order by created_at desc))[1]
+  'admin_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = true)
 )::text
 from audit_logs
 where action = 'auth.login'
@@ -1530,18 +1528,16 @@ where action = 'auth.login'
   and payload_json ? 'is_admin';
 """
     rows = psql_rows(container, db_user, db_name, sql)
-    evidence = rows[0] if rows else {"count": 0}
-    count = int(evidence.get("count") or 0)
-    ordinary_user_count = int(evidence.get("ordinary_user_count") or 0)
-    admin_user_count = int(evidence.get("admin_user_count") or 0)
-    payload = evidence.get("latest_payload") if isinstance(evidence.get("latest_payload"), dict) else {}
-    ok = (
-        count > 0
-        and ordinary_user_count > 0
-        and admin_user_count > 0
-        and payload.get("source") == "company-login"
-        and bool(payload.get("work_id"))
-    )
+    row = rows[0] if rows else {}
+    count = int(row.get("count") or 0)
+    ordinary_user_count = int(row.get("ordinary_user_count") or 0)
+    admin_user_count = int(row.get("admin_user_count") or 0)
+    evidence = {
+        "count": count,
+        "ordinary_user_count": ordinary_user_count,
+        "admin_user_count": admin_user_count,
+    }
+    ok = count > 0 and ordinary_user_count > 0 and admin_user_count > 0
     missing_requirements = []
     if ordinary_user_count <= 0:
         missing_requirements.append("ordinary_company_login_audit")

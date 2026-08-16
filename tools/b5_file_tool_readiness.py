@@ -147,8 +147,13 @@ def render_b5_file_tool_readiness_markdown(readiness: dict[str, Any]) -> str:
         "- does not close B5/G6/G7/G9",
         "- does not enable product beta",
     ]
-    if not boundary.get("does_not_claim_deployed_runtime_verified"):
-        raise RuntimeError("b5_claim_boundary_regression")
+    for field in (
+        "does_not_claim_deployed_runtime_verified",
+        "does_not_close_b5_g6_g7_g9",
+        "does_not_enable_product_beta",
+    ):
+        if boundary.get(field) is not True:
+            raise RuntimeError(f"b5_claim_boundary_regression:{field}")
     return (
         "# ai-platform B5 File/Tool Readiness\n\n"
         f"Schema: `{readiness['schema_version']}`\n\n"

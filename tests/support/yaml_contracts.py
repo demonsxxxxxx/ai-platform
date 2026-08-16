@@ -2,7 +2,7 @@ import yaml
 
 
 class UniqueKeyLoader(yaml.BaseLoader):
-    pass
+    """Reject duplicate keys while preserving every YAML scalar as text."""
 
 
 def _construct_unique_mapping(loader, node, deep=False):

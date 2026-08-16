@@ -12,6 +12,7 @@ from app.public_context_keys import public_context_input_key_findings
 
 SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
 GATE_NAME = "G6/G9/#22 Office Context Pack Architecture"
+_GIT_COMMAND_TIMEOUT_SECONDS = 5
 _ALLOWED_CONTEXT_SOURCES = [
     "uploaded_source_documents",
     "previous_generated_artifacts",
@@ -573,6 +574,7 @@ def _current_source_commit(repo_root: Path) -> str:
             check=False,
             capture_output=True,
             text=True,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -584,6 +586,7 @@ def _current_source_commit(repo_root: Path) -> str:
             check=False,
             capture_output=True,
             text=True,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

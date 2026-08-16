@@ -2000,8 +2000,6 @@ def test_auth_audit_gate_ignores_unscoped_login_rows(monkeypatch):
                     "count": 0,
                     "ordinary_user_count": 0,
                     "admin_user_count": 0,
-                    "latest_user_id": None,
-                    "latest_payload": None,
                 }
             ]
         raise AssertionError(sql)
@@ -2024,20 +2022,14 @@ def test_auth_audit_gate_ignores_unscoped_login_rows(monkeypatch):
 
 def test_auth_audit_gate_returns_boolean_ok_for_valid_company_login(monkeypatch):
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
-        payload = {
-            "source": "company-login",
-            "work_id": "ZX2834",
-            "permissions": ["agent:use"],
-            "is_admin": True,
-        }
         if "payload_json->>'source' = 'company-login'" in sql:
             return [
                 {
                     "count": 2,
                     "ordinary_user_count": 1,
                     "admin_user_count": 1,
-                    "latest_user_id": "ZX2834",
-                    "latest_payload": payload,
+                    "latest_user_id": "sensitive-user-id",
+                    "latest_payload": {"permissions": ["sensitive-permission"]},
                 }
             ]
         raise AssertionError(sql)
@@ -2047,3 +2039,10 @@ def test_auth_audit_gate_returns_boolean_ok_for_valid_company_login(monkeypatch)
     gate = verify_poc_gate.check_auth_audit("postgres", "user", "db")
 
     assert gate.ok is True
+    assert gate.evidence == {
+        "count": 2,
+        "ordinary_user_count": 1,
+        "admin_user_count": 1,
+    }
+    assert "user_id" not in gate.evidence
+    assert "payload" not in gate.evidence

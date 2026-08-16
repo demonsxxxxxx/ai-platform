@@ -37,22 +37,33 @@ def require_zero_junit_skips(report_path: str | Path) -> dict[str, int | str]:
     except (OSError, UnicodeError, ET.ParseError) as exc:
         raise JUnitContractError(f"JUnit report is unreadable or malformed: {path}") from exc
 
-    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    suites = list(root.iter("testsuite"))
     if not suites:
         raise JUnitContractError("JUnit report contains no testsuite")
+    leaf_suites = [suite for suite in suites if not list(suite.findall("testsuite"))]
 
     test_count = 0
-    declared_skip_count = 0
+    leaf_declared_skip_count = 0
+    all_declared_skip_counts = []
     for index, suite in enumerate(suites):
-        test_count += _non_negative_int(suite.attrib.get("tests"), field="tests", suite_index=index)
-        declared_skip_count += _non_negative_int(
+        skipped = _non_negative_int(
             suite.attrib.get("skipped", "0"),
             field="skipped",
             suite_index=index,
         )
+        all_declared_skip_counts.append(skipped)
+        if suite in leaf_suites:
+            test_count += _non_negative_int(
+                suite.attrib.get("tests"), field="tests", suite_index=index
+            )
+            leaf_declared_skip_count += skipped
     if test_count == 0:
         raise JUnitContractError("required test report contains zero tests")
 
+    declared_skip_count = max(
+        leaf_declared_skip_count,
+        max(all_declared_skip_counts, default=0),
+    )
     skipped_elements = sum(1 for _ in root.iter("skipped"))
     if declared_skip_count or skipped_elements:
         raise JUnitContractError(
@@ -64,7 +75,7 @@ def require_zero_junit_skips(report_path: str | Path) -> dict[str, int | str]:
         "status": "pass",
         "tests": test_count,
         "skipped": 0,
-        "testsuites": len(suites),
+        "testsuites": len(leaf_suites),
     }
 
 

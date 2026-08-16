@@ -47,7 +47,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.postgres_container,
             args.postgres_user,
             args.postgres_db,
-            allow_missing=False,
         )
         last_evidence = gate.evidence
         print(json.dumps({"poll": poll, "auth_gate_ok": gate.ok, "evidence": gate.evidence}, ensure_ascii=False), flush=True)

@@ -12,6 +12,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_HEALTHCHECK_FILE_PATHS = (
     "/usr/share/nginx/html/index.html",
     "/usr/share/nginx/html/manifest.json",
@@ -26,7 +27,7 @@ FRONTEND_NGINX_BASE = (
 
 
 def _frontend_healthcheck_command() -> str:
-    dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "frontend/web/Dockerfile").read_text(encoding="utf-8")
     runtime_dockerfile = dockerfile.split(FRONTEND_NGINX_BASE, 1)[1]
     healthcheck = next(
         line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
@@ -88,7 +89,7 @@ def test_frontend_healthcheck_file_predicate_fails_closed_before_http_probes(
 
     for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
         relative_path = Path(path).relative_to("/usr/share/nginx/html")
-        for failure_case in ("missing", "empty", "unreadable", "directory"):
+        for failure_case in ("missing", "empty", "restricted_mode", "directory"):
             failure_root = tmp_path / f"{relative_path.stem}-{failure_case}"
             _write_frontend_healthcheck_files(failure_root)
             failure_path = failure_root / relative_path
@@ -96,7 +97,7 @@ def test_frontend_healthcheck_file_predicate_fails_closed_before_http_probes(
                 failure_path.unlink()
             elif failure_case == "empty":
                 failure_path.write_bytes(b"")
-            elif failure_case == "unreadable":
+            elif failure_case == "restricted_mode":
                 failure_path.chmod(0o600)
             else:
                 failure_path.unlink()
@@ -107,3 +108,14 @@ def test_frontend_healthcheck_file_predicate_fails_closed_before_http_probes(
             )
             assert failure_result.returncode != 0
             assert not failure_http_probe_log.exists()
+
+
+def test_frontend_healthcheck_command_is_independent_of_current_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert _frontend_healthcheck_command().startswith(
+        "test -f /usr/share/nginx/html/index.html"
+    )

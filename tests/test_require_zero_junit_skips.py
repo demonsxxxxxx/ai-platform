@@ -33,6 +33,47 @@ def test_required_junit_accepts_executed_zero_skip_suites(tmp_path: Path) -> Non
     }
 
 
+def test_required_junit_counts_nested_leaf_suites_once(tmp_path: Path) -> None:
+    report = _write_report(
+        tmp_path,
+        '<testsuites><testsuite name="aggregate" tests="2" skipped="0">'
+        '<testsuite name="leaf" tests="2" skipped="0"/>'
+        "</testsuite></testsuites>",
+    )
+
+    assert require_zero_junit_skips(report) == {
+        "status": "pass",
+        "tests": 2,
+        "skipped": 0,
+        "testsuites": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            '<testsuites><testsuite name="aggregate" tests="1" skipped="1">'
+            '<testsuite name="leaf" tests="1" skipped="0"/>'
+            "</testsuite></testsuites>"
+        ),
+        (
+            '<testsuites><testsuite name="aggregate" tests="1" skipped="1">'
+            '<testsuite name="leaf" tests="1" skipped="1"/>'
+            "</testsuite></testsuites>"
+        ),
+    ],
+)
+def test_required_junit_rejects_nested_declared_skips_without_double_counting(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    report = _write_report(tmp_path, body)
+
+    with pytest.raises(JUnitContractError, match="declared=1"):
+        require_zero_junit_skips(report)
+
+
 @pytest.mark.parametrize(
     ("body", "message"),
     [

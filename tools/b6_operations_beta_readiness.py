@@ -220,8 +220,17 @@ def build_b6_operations_beta_readiness() -> dict[str, Any]:
 
 def render_b6_operations_beta_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render B6 readiness as operator-readable Markdown."""
-    if not readiness["claim_boundary"].get("does_not_create_product_beta"):
-        raise RuntimeError("b6_product_beta_boundary_regression")
+    boundary = readiness["claim_boundary"]
+    for field in (
+        "does_not_create_product_beta",
+        "does_not_create_department_rollout",
+        "does_not_claim_deployed_runtime_verified",
+        "does_not_close_b6_g9_g10",
+        "does_not_claim_owner_signoff",
+        "does_not_claim_support_handoff",
+    ):
+        if boundary.get(field) is not True:
+            raise RuntimeError(f"b6_claim_boundary_regression:{field}")
     package_fields = "\n".join(
         f"- {field}" for field in readiness["required_workflow_package"]["required_fields"]
     )
