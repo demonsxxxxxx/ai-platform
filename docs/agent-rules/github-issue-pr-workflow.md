@@ -18,20 +18,36 @@ of expanding an unrelated product PR.
 
 - The linked issue and PR are normally the plan, change description, and durable
   status record. Do not create a spec/plan/status trio by default.
-- A non-mechanical change records the fields required by
-  `change-contract.md` in its issue, PR, or persistent-task dispatch before
-  implementation. The contract grants a bounded write scope; it is not a new
-  repository status document.
 - Create a separate design for security, auth or authorization, tenant isolation,
   release, deployment, runtime, persistence, concurrency, public contracts, or
   infrastructure decisions that need durable explanation.
-- Use `../decision-notes/README.md` only for focused rationale that must outlive
-  the issue or PR and is not already owned by an ADR, architecture document, or
-  source contract.
 - Record blockers and evidence on the issue or PR. Historical evidence cannot
   prove current readiness.
 - Do not create repository status pages, phase ledgers, or manual-release logs
   for an active change. The issue or PR is the durable status record.
+
+## Change Contract
+
+Before non-mechanical implementation, the issue, PR, or persistent-task dispatch
+records one compact Change Contract:
+
+- observable problem and single owning authority;
+- repository/worktree, branch, full base/head SHA when available, writable and
+  forbidden paths, and explicit non-goals;
+- behavior delta including failure/compatibility decisions, plus security,
+  tenant, transaction, queue, lifecycle, persistence, event, sandbox, and public
+  projection invariants;
+- genuine alternatives and why they lost; use the separate-design rule above
+  when rationale needs durable architecture authority;
+- acceptance criteria, a falsifiable regression test, required assembled path,
+  evidence ceiling, documentation impact, rollback when relevant, and facts
+  that stop or reopen design.
+
+Read-only exploration may resolve missing fields. Revise the contract before
+changing owner or paths; unrelated findings become separate work. A source-only
+change may stop at focused-test evidence when it claims no assembled or runtime
+behavior. PR text and checkboxes are claims to verify, not evidence, and a
+candidate-controlled test cannot prove the contract existed before coding.
 
 ## Status Language
 
@@ -52,9 +68,6 @@ Never promote an earlier label without observing the additional evidence.
 An issue records scope, acceptance criteria, verification and review
 requirements, runtime requirement when relevant, and known blockers.
 
-- Before code changes, the Change Contract identifies the observable problem,
-  owner, exact base, writable and forbidden paths, behavior delta, invariants,
-  alternatives, regression proof, evidence ceiling, and stop conditions.
 - Keep one coherent PR per issue or acceptance boundary and use an issue-linked
   branch.
 - Direct commits to `main` require an explicit user request or documented

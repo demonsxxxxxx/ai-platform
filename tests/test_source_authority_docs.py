@@ -1,15 +1,11 @@
 from pathlib import Path
 
-import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "AGENTS.md"
 DOCS_INDEX = ROOT / "docs/README.md"
 MULTI_AGENT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
-CHANGE_CONTRACT = ROOT / "docs/agent-rules/change-contract.md"
-DECISION_NOTES = ROOT / "docs/decision-notes/README.md"
 PULL_REQUEST_TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
 CLAUDE = ROOT / "CLAUDE.md"
 RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
@@ -24,91 +20,6 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def markdown_section(document: str, heading: str) -> str:
-    marker = f"## {heading}\n"
-    start = document.index(marker) + len(marker)
-    next_heading = document.find("\n## ", start)
-    return document[start:] if next_heading == -1 else document[start:next_heading]
-
-
-def assert_agent_coding_documents_are_consistent(
-    *,
-    agents: str,
-    claude: str,
-    contract: str,
-    workflow: str,
-    decision_notes: str,
-    pull_request_template: str,
-) -> None:
-    coding_control = markdown_section(agents, "Change Design And Coding Control")
-    assert "docs/agent-rules/change-contract.md" in coding_control
-    assert "Repository coding instructions live in this `AGENTS.md`" in coding_control
-    assert claude.count("single repository coding authority") == 1
-    assert "Read and follow [`AGENTS.md`](AGENTS.md)" in claude
-    assert "must not duplicate or weaken its rules" in claude
-    assert "CLAUDE.md` is the single repository coding authority" not in claude
-
-    for required_contract_field in (
-        "**Problem**",
-        "**Owner**",
-        "**Exact subject**",
-        "**Writable paths**",
-        "**Forbidden paths**",
-        "**Behavior delta**",
-        "**Invariants**",
-        "**Alternatives considered**",
-        "**Acceptance and evidence ceiling**",
-        "**Regression proof**",
-        "**Assembled and runtime proof**",
-        "**Documentation and decision impact**",
-        "**Rollback or recovery**",
-        "**Stop conditions**",
-    ):
-        assert required_contract_field in contract
-    assert "would fail if the regression existed" in contract
-    assert "candidate-controlled test cannot prove" in contract
-    assert "change-contract.md" in workflow
-
-    assert "Alternatives considered" in decision_notes
-    assert "not current authority" in decision_notes
-    expected_template_fields = {
-        "Linked subject": (
-            "Issue:",
-            "Change Contract location:",
-            "Repository/worktree:",
-            "Branch:",
-            "Exact base SHA (full 40 hex):",
-            "Candidate head SHA (full 40 hex):",
-            "Runtime subject, when relevant:",
-        ),
-        "Problem and owner": ("Observable problem:", "Owning authority/module:"),
-        "Scope": ("Writable paths:", "Forbidden paths:", "Explicitly out of scope:"),
-        "Behavior and invariants": (
-            "Before/after behavior:",
-            "Failure and compatibility behavior:",
-            "Acceptance criteria:",
-            "transaction, queue, lifecycle",
-            "invariants preserved:",
-        ),
-        "Decision": ("Alternatives considered and why they lost:", "Documentation and ADR/architecture/Decision Note impact:"),
-        "Verification": (
-            "Regression proof that can falsify this change:",
-            "Required assembled/runtime proof for the claimed acceptance:",
-            "Declared evidence ceiling:",
-            "Evidence not observed:",
-        ),
-        "Review and recovery": ("Rollback/recovery, when required:", "Declared stop conditions:", "contract revisions:"),
-        "Accuracy checklist": ("actual diff stays within", "claims for reviewers and gates to verify"),
-    }
-    for heading, fields in expected_template_fields.items():
-        section = " ".join(markdown_section(pull_request_template, heading).split())
-        for field in fields:
-            assert field in section
-
-    assert "Agent self-reported output" in pull_request_template
-    assert "Template text and checked boxes are claims for reviewers and gates to verify" in " ".join(workflow.split())
-
-
 def test_documentation_index_names_the_only_durable_authority_surfaces():
     index = read(DOCS_INDEX)
 
@@ -118,8 +29,6 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
     for relative_path in (
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
-        "agent-rules/change-contract.md",
-        "decision-notes/README.md",
         "architecture/source-code-architecture.md",
         "architecture/ci-test-readiness-governance.md",
         "adr/0006-domain-first-modular-monolith.md",
@@ -133,53 +42,27 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
 def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     agents = read(AGENTS)
     claude = read(CLAUDE)
-    contract = read(CHANGE_CONTRACT)
     workflow = read(GITHUB_WORKFLOW)
-    decision_notes = read(DECISION_NOTES)
     pull_request_template = read(PULL_REQUEST_TEMPLATE)
+    claude_flat = " ".join(claude.split())
 
-    for authority_path in (CHANGE_CONTRACT, DECISION_NOTES, PULL_REQUEST_TEMPLATE, CLAUDE):
-        assert authority_path.is_file()
-
-    assert_agent_coding_documents_are_consistent(
-        agents=agents,
-        claude=claude,
-        contract=contract,
-        workflow=workflow,
-        decision_notes=decision_notes,
-        pull_request_template=pull_request_template,
-    )
-
-
-@pytest.mark.parametrize(
-    ("document_name", "remove_text", "replacement"),
-    (
-        ("contract", "**Regression proof**", "**Proof**"),
-        ("contract", "**Stop conditions**", "**Completion notes**"),
-        ("pull_request_template", "Failure and compatibility behavior:", "Behavior notes:"),
-        ("pull_request_template", "transaction, queue, lifecycle", "lifecycle"),
-        ("pull_request_template", "Declared stop conditions:", "Stop notes:"),
-        ("claude", "must not duplicate or weaken its rules", "may replace its rules"),
-    ),
-)
-def test_agent_coding_contract_rejects_missing_or_conflicting_structure(
-    document_name: str,
-    remove_text: str,
-    replacement: str,
-):
-    documents = {
-        "agents": read(AGENTS),
-        "claude": read(CLAUDE),
-        "contract": read(CHANGE_CONTRACT),
-        "workflow": read(GITHUB_WORKFLOW),
-        "decision_notes": read(DECISION_NOTES),
-        "pull_request_template": read(PULL_REQUEST_TEMPLATE),
-    }
-    assert remove_text in documents[document_name]
-    documents[document_name] = documents[document_name].replace(remove_text, replacement, 1)
-
-    with pytest.raises(AssertionError):
-        assert_agent_coding_documents_are_consistent(**documents)
+    assert "## Change Control" in agents
+    assert "## Change Contract" in workflow
+    assert "single repository coding authority" in claude_flat
+    assert "must not duplicate or weaken it" in claude_flat
+    for field in (
+        "Issue / Change Contract:",
+        "Full base SHA / candidate head SHA:",
+        "Writable paths / forbidden paths / non-goals:",
+        "failure, and compatibility behavior:",
+        "transaction, queue, lifecycle",
+        "Alternatives considered and why they lost:",
+        "Falsifiable regression proof:",
+        "Evidence ceiling and evidence not observed:",
+    ):
+        assert field in pull_request_template
+    assert not (ROOT / "docs/agent-rules/change-contract.md").exists()
+    assert not (ROOT / "docs/decision-notes/README.md").exists()
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():

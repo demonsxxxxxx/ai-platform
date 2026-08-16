@@ -58,33 +58,18 @@ roadmap or Controller Current rather than this durable entry file.
   evidence under `docs/release-evidence/`; they never establish current runtime
   state without fresh verification.
 
-## Change Design And Coding Control
+## Change Control
 
-- Before editing a non-mechanical change, establish the Change Contract defined
-  in `docs/agent-rules/change-contract.md`. Keep it in the linked issue, PR, or
-  persistent-task dispatch; do not create a repository status document for it.
-- Do not begin implementation until the contract identifies the observable
-  problem, owning authority, exact base, writable and forbidden paths,
-  invariants, acceptance criteria, regression proof, evidence ceiling, and stop
-  conditions. Read-only exploration may continue to resolve those fields.
-- Record genuine alternatives and why they lost. Use
-  `docs/decision-notes/README.md` only when that rationale must outlive the
-  issue or PR and no current ADR or architecture document already owns it.
-- Treat scope as authority. New findings outside the declared behavior or path
-  set become separate work unless the contract is explicitly revised before
-  editing them. Never hide an architectural expansion inside a bug fix.
-- Every behavior change needs the narrowest test or purpose-built check that
-  would fail for its regression. When acceptance claims model-, browser-,
-  CLI-, worker/SDK-, sandbox-, or external behavior, also verify the nearest
-  real assembled path; a pure source-contract change may stop at focused-test
-  evidence when its Change Contract declares that ceiling. A mock-only helper
-  or an Agent's self-report is not assembled or external evidence.
-- Keep source, focused-test, CI/build, packaged-image, deployment, runtime, and
-  external-acceptance evidence distinct. A PR template field or checkbox is a
-  claim to verify, never evidence by itself.
-- Repository coding instructions live in this `AGENTS.md`. Product Agent.md
-  content belongs to the Agent Profile/Workspace domain and must not be used as
-  repository implementation authority.
+- Before non-mechanical edits, record the Change Contract required by
+  `docs/agent-rules/github-issue-pr-workflow.md` in the issue, PR, or persistent
+  task. Read-only exploration may fill missing fields, but coding waits for a
+  known owner, bounded paths, invariants, acceptance, regression proof, evidence
+  ceiling, and stop conditions.
+- Revise the contract before expanding scope. Every behavior change needs a
+  falsifiable owning test; claim assembled or runtime behavior only after
+  observing that path. Template text and Agent self-report are not evidence.
+- `AGENTS.md` is repository coding authority. Product Agent.md content belongs
+  to the Agent Profile/Workspace domain and is not implementation authority.
 
 ## Delivery Workflow
 
