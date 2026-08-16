@@ -23,9 +23,10 @@
 ## Behavior and invariants
 
 - Before/after behavior:
+- Failure and compatibility behavior:
 - Acceptance criteria:
-- Security, tenant/workspace/user, lifecycle, persistence, event, sandbox, and
-  public-projection invariants preserved:
+- Security, tenant/workspace/user, transaction, queue, lifecycle, persistence,
+  event, sandbox, and public-projection invariants preserved:
 
 ## Decision
 

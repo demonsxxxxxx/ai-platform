@@ -102,6 +102,21 @@ being claimed. A passing test proves only its stated subject. Pending, skipped,
 historical, different-SHA, source-only, or self-authored checklist evidence must
 retain that weaker label.
 
+## Enforcement Boundary
+
+Repository tests may verify that this authority, `AGENTS.md`, `CLAUDE.md`, the
+Issue/PR workflow, and the PR template remain structurally consistent. A
+candidate-controlled test cannot prove that a particular Change Contract was
+complete before implementation, that its free-text claims are true, or that an
+entered SHA names the reviewed subject.
+
+Those facts require current GitHub/task records, exact Git subjects, independent
+review, or a gate executed from accepted authority. Do not describe this
+documentation wiring as enforcement of populated PR content. A future trusted
+gate may validate mechanically observable fields only after its policy is
+accepted on main; it must not let a candidate introduce the policy that
+certifies the same candidate.
+
 ## Contract Revision And Completion
 
 Base movement, a material design change, a new owner, or expanded writable
