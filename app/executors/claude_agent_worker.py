@@ -684,7 +684,7 @@ class ClaudeAgentWorkerAdapter:
                 executor_version=self.executor_version,
                 capabilities=self._run_capabilities(payload),
                 result={
-                    "message": sdk_result.message or "任务完成",
+                    "message": sdk_result.message or "",
                     "sdk_used": True,
                     "sdk_session_id": sdk_result.session_id,
                     "sdk_error": None,
@@ -1863,7 +1863,7 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
             result={
-                "message": str(executor_response.get("message") or "任务完成"),
+                "message": str(executor_response.get("message") or ""),
                 "artifact_count": len(artifacts),
                 "sdk_used": bool(executor_response.get("sdk_used")),
                 "sdk_session_id": executor_response.get("sdk_session_id"),
@@ -2017,7 +2017,7 @@ class ClaudeAgentWorkerAdapter:
                 executor_version=self.executor_version,
                 capabilities=self._run_capabilities(payload),
                 result={
-                    "message": sdk_result.message or "任务完成",
+                    "message": sdk_result.message or "",
                     "artifact_count": len(artifacts),
                     "sdk_used": True,
                     "sdk_session_id": sdk_result.session_id,

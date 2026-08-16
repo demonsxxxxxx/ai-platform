@@ -630,7 +630,7 @@ def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
             "general-agent",
             "x",
             "x 没有 Bash 工具，无法执行。",
-            "任务完成",
+            "没有 Bash 工具，无法执行。",
         ),
         (
             "general-agent",
@@ -678,7 +678,7 @@ def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
             "unknown-agent",
             "unknown-skill",
             "unknown-skill 没有 Bash 工具，无法执行。",
-            "任务完成",
+            "没有 Bash 工具，无法执行。",
         ),
     ],
     ids=[
@@ -724,37 +724,37 @@ def test_lambchat_terminal_answer_uses_trusted_identifier_token_boundaries(
             "qa-word-review",
             "general-chat",
             "general-chat 拒绝执行",
-            "任务完成",
+            "general-agent 拒绝执行",
         ),
         (
             "qa-word-review",
             "general-chat",
             "qa-word-review 拒绝执行",
-            "任务完成",
+            "document-review 拒绝执行",
         ),
         (
             "unknown-agent",
             "general-chat",
             "general-chat 拒绝执行",
-            "任务完成",
+            "general-agent 拒绝执行",
         ),
         (
             "unknown-agent",
             "general-chat",
             "unknown-agent 拒绝执行",
-            "任务完成",
+            "general-agent 拒绝执行",
         ),
         (
             "qa-word-review",
             "unknown-skill",
             "unknown-skill 拒绝执行",
-            "任务完成",
+            "document-review 拒绝执行",
         ),
         (
             "qa-word-review",
             "unknown-skill",
             "qa-word-review 拒绝执行",
-            "任务完成",
+            "document-review 拒绝执行",
         ),
         (
             "qa-word-review",
@@ -766,7 +766,7 @@ def test_lambchat_terminal_answer_uses_trusted_identifier_token_boundaries(
             "",
             "general-chat",
             "general-chat 拒绝执行",
-            "任务完成",
+            "general-agent 拒绝执行",
         ),
     ],
     ids=[
@@ -804,19 +804,21 @@ def test_lambchat_terminal_answer_requires_consistent_identifier_capabilities(
 
 
 @pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "private_marker"),
+    ("agent_id", "skill_id", "message", "private_marker", "expected_detail_code"),
     [
         (
             "general-agent",
             "general-chat",
             "general-chat 拒绝读取 /var/lib/private/answer.txt",
             "/var/",
+            "result_unavailable",
         ),
         (
             "executor_native",
             "custom-skill",
             "custom-skill 拒绝暴露运行时详情",
             "executor_native",
+            None,
         ),
     ],
 )
@@ -825,6 +827,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
     skill_id,
     message,
     private_marker,
+    expected_detail_code,
 ):
     from app.routes.lambchat_compat import _terminal_final_payload
 
@@ -839,10 +842,16 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
     )
 
     assert final_payload is not None
-    _, payload, _ = final_payload
-    assert payload["content"] == "任务完成"
+    event_type, payload, _ = final_payload
     assert private_marker not in str(payload)
     assert skill_id not in str(payload)
+    if expected_detail_code is not None:
+        assert event_type == "final_detail"
+        assert payload["detail_code"] == expected_detail_code
+        assert "content" not in payload
+    else:
+        assert event_type == "message:chunk"
+        assert payload["content"] == "拒绝暴露运行时详情"
 
 
 
@@ -1112,7 +1121,11 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
     records = _compatibility_events_for_run(run, run_events, [], principal)
     history = [record.history_event for record in records]
 
-    terminal_answers = [event["data"] for event in history if event["event_type"] == "message:chunk"]
+    terminal_answers = [
+        event["data"]
+        for event in history
+        if event["event_type"] in {"message:chunk", "final_detail"}
+    ]
     assert terminal_answers == [
         {
             "projection_version": "ai-platform.chat-public-projection.v1",
@@ -1124,10 +1137,11 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
         },
         {
             "projection_version": "ai-platform.chat-public-projection.v1",
-            "projection_kind": "assistant_final",
             "run_id": "run-empty-terminal",
-            "content": "任务完成",
-        }
+            "detail_kind": "result_unavailable",
+            "detail_code": "result_unavailable",
+            "message": "本次执行未能生成可展示的回复内容。",
+        },
     ]
 
 

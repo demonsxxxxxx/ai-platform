@@ -7,6 +7,7 @@ from app.auth import AuthPrincipal
 from app.run_projection import (
     artifact_card,
     progress_for_status,
+    public_chat_answer_text,
     public_chat_terminal_projection,
     public_terminal_projection,
     run_event_response,
@@ -569,3 +570,69 @@ def test_run_projection_returns_only_the_public_execution_event_v1_shape():
     )
     assert raw["schema_version"] != "ai-platform.public-execution-event.v1"
     assert raw.get("kind") not in {"execution_step", "execution_progress", "execution_step_completed"}
+
+
+def test_public_chat_answer_text_retains_answer_when_capabilities_differ():
+    run = {
+        "id": "run-a",
+        "skill_id": "general-chat",
+        "agent_id": "qa-word-review",
+        "status": "succeeded",
+    }
+    content = public_chat_answer_text(
+        run,
+        "使用了 general-chat 完成审阅，样本 q 数据已归档。",
+    )
+
+    assert content == "使用了 general-agent 完成审阅，样本 q 数据已归档。"
+    assert "general-chat" not in content
+    assert "qa-word-review" not in content
+
+
+def test_successful_terminal_projection_without_answer_is_result_unavailable():
+    projection = public_chat_terminal_projection(
+        {
+            "id": "run-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "result_json": {"message": ""},
+        }
+    )
+
+    assert projection is not None
+    assert projection["event_type"] == "final_detail"
+    assert projection["payload"]["detail_kind"] == "result_unavailable"
+    assert projection["payload"]["detail_code"] == "result_unavailable"
+    assert projection["payload"]["message"] == "本次执行未能生成可展示的回复内容。"
+    assert projection["severity"] == "info"
+    assert "任务完成" not in str(projection)
+
+
+def test_live_delta_and_terminal_final_converge_to_same_public_text():
+    run = {
+        "id": "run-a",
+        "agent_id": "qa-word-review",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+    }
+    full_answer = "general-chat 已处理该文档，qa-word-review 审核通过。"
+    delta_fragment = "general-chat 已处理"
+    delta_tail = "该文档，qa-word-review 审核通过。"
+
+    final = public_chat_terminal_projection(
+        {**run, "result_json": {"message": full_answer}}
+    )
+    assert final is not None
+    assert final["event_type"] == "message:chunk"
+    assert final["payload"]["projection_kind"] == "assistant_final"
+
+    assembled = (
+        public_chat_answer_text(run, delta_fragment)
+        + public_chat_answer_text(run, delta_tail)
+    )
+    assert assembled == final["payload"]["content"]
+    assert "general-chat" not in final["payload"]["content"]
+    assert "qa-word-review" not in final["payload"]["content"]
+    assert "general-agent" in final["payload"]["content"]
+    assert "document-review" in final["payload"]["content"]

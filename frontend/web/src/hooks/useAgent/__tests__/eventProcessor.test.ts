@@ -175,6 +175,76 @@ test("marks a cancelled terminal while retaining safe partial output", () => {
   assert.doesNotMatch(JSON.stringify(result), /untrusted|\/home\/private/);
 });
 
+test("projects a result-unavailable terminal as a warning status without fabricating an answer", () => {
+  const terminal = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-no-answer",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "result_unavailable",
+      detail_code: "result_unavailable",
+      message: "本次执行未能生成可展示的回复内容。",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-no-answer",
+  );
+
+  assert.equal(terminal.cancelled, false);
+  const statusParts = getVisibleMessageParts(terminal.parts);
+  assert.deepEqual(
+    statusParts.map((part) => part.type),
+    ["run_status"],
+  );
+  const status = statusParts.at(-1);
+  assert.equal(status?.type, "run_status");
+  if (status?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(status.event_type, "result_unavailable");
+  assert.equal(status.severity, "warning");
+  assert.ok(status.message && status.message.trim().length > 0);
+  assert.equal(terminal.content, status.message);
+  assert.doesNotMatch(JSON.stringify(terminal), /任务完成/);
+});
+
+test("keeps safe partial live output while surfacing a result-unavailable terminal", () => {
+  const terminal = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-no-answer-partial",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "result_unavailable",
+      detail_code: "result_unavailable",
+      message: "本次执行未能生成可展示的回复内容。",
+    },
+    [{ type: "text", content: "已生成的公开片段" }],
+    "已生成的公开片段",
+    [],
+    0,
+    [],
+    false,
+    "run-no-answer-partial",
+  );
+
+  assert.equal(terminal.cancelled, false);
+  assert.equal(terminal.content, "已生成的公开片段");
+  const visibleParts = getVisibleMessageParts(terminal.parts);
+  assert.deepEqual(
+    visibleParts.map((part) => part.type),
+    ["text", "run_status"],
+  );
+  const status = visibleParts.at(-1);
+  assert.equal(status?.type, "run_status");
+  if (status?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(status.event_type, "result_unavailable");
+  assert.equal(status.severity, "warning");
+  assert.ok(status.message && status.message.trim().length > 0);
+  assert.doesNotMatch(JSON.stringify(terminal), /任务完成/);
+});
+
 test("fails closed for unknown or mismatched terminal detail", () => {
   for (const data of [
     {
