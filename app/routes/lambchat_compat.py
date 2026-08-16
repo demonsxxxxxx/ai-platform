@@ -1669,11 +1669,7 @@ async def chat_session_stream(
                             entry.cursor.event_id,
                         )
                     elif envelope.event_type == "terminal":
-                        if (
-                            not answer_projector.has_emitted
-                            and last_answer_event_id
-                            and last_answer_cursor_id
-                        ):
+                        if last_answer_event_id and last_answer_cursor_id:
                             final_delta = answer_projector.flush()
                             if final_delta:
                                 yield _sse(

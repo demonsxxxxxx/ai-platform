@@ -227,10 +227,6 @@ class PublicChatAnswerStreamProjector:
     def state(self) -> PublicChatAnswerStreamState:
         return self._raw, self._emitted, self._blocked
 
-    @property
-    def has_emitted(self) -> bool:
-        return bool(self._emitted)
-
     def _unstable_suffix_length(self) -> int:
         unstable = 0
         token_character = re.compile(r"[\w.:\-]")
@@ -255,8 +251,11 @@ class PublicChatAnswerStreamProjector:
             self._raw += str(value)
         projected = public_chat_answer_text(self._run, self._raw)
         unstable = 0 if final else self._unstable_suffix_length()
-        stable_raw = self._raw[:-unstable] if unstable else self._raw
-        stable = public_chat_answer_text(self._run, stable_raw)
+        if unstable:
+            if self._emitted and not projected.startswith(self._emitted):
+                self._blocked = True
+            return ""
+        stable = projected
         if (
             not stable.startswith(self._emitted)
             or (stable and not projected.startswith(stable))

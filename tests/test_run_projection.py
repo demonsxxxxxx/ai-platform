@@ -673,6 +673,6 @@ def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
     safe_prefix = projector.push("已生成安全摘要。 /va")
     blocked_suffix = projector.push("r/private/result.txt")
 
-    assert safe_prefix == "已生成安全摘要。 "
+    assert safe_prefix == ""
     assert blocked_suffix == ""
     assert projector.flush() == ""
