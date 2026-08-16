@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.run_projection import (
+    PublicChatAnswerStreamProjector,
     artifact_card,
     progress_for_status,
     public_chat_answer_text,
@@ -636,3 +637,42 @@ def test_live_delta_and_terminal_final_converge_to_same_public_text():
     assert "qa-word-review" not in final["payload"]["content"]
     assert "general-agent" in final["payload"]["content"]
     assert "document-review" in final["payload"]["content"]
+
+
+def test_stream_projector_withholds_identifier_until_split_token_is_complete():
+    run = {
+        "id": "run-a",
+        "agent_id": "qa-word-review",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    projector = PublicChatAnswerStreamProjector(run)
+
+    chunks = [
+        projector.push("已开始处理，general-"),
+        projector.push("chat 已完成，qa-word-"),
+        projector.push("review 审核通过。"),
+    ]
+    streamed = "".join(chunks)
+
+    assert streamed == "已开始处理，general-agent 已完成，document-review 审核通过。"
+    assert "general-chat" not in streamed
+    assert "qa-word-review" not in streamed
+    assert projector.flush() == ""
+
+
+def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
+    run = {
+        "id": "run-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    projector = PublicChatAnswerStreamProjector(run)
+
+    safe_prefix = projector.push("已生成安全摘要。 /va")
+    blocked_suffix = projector.push("r/private/result.txt")
+
+    assert safe_prefix == "已生成安全摘要。 "
+    assert blocked_suffix == ""
+    assert projector.flush() == ""

@@ -16,6 +16,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
 from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
@@ -198,6 +199,68 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
             content = redaction_pattern.sub("", content)
     content = sanitize_public_text(content)
     return content if content.strip() else ""
+
+
+class PublicChatAnswerStreamProjector:
+    """Incrementally project answer text without exposing split identifiers."""
+
+    def __init__(self, run: dict[str, object]) -> None:
+        self._run = run
+        self._identifiers = tuple(
+            identifier
+            for identifier in (
+                str(run.get("skill_id") or ""),
+                str(run.get("agent_id") or ""),
+            )
+            if identifier
+        )
+        self._raw = ""
+        self._emitted = ""
+        self._blocked = False
+
+    @property
+    def has_emitted(self) -> bool:
+        return bool(self._emitted)
+
+    def _unstable_suffix_length(self) -> int:
+        unstable = 0
+        token_character = re.compile(r"[\w.:\-]")
+        for identifier in self._identifiers:
+            for length in range(1, min(len(identifier), len(self._raw)) + 1):
+                if not self._raw.endswith(identifier[:length]):
+                    continue
+                start = len(self._raw) - length
+                if start and token_character.fullmatch(self._raw[start - 1]):
+                    continue
+                unstable = max(unstable, length)
+        for marker in FORBIDDEN_PUBLIC_MARKERS:
+            for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
+                if self._raw.endswith(marker[:length]):
+                    unstable = max(unstable, length)
+        return unstable
+
+    def push(self, value: object, *, final: bool = False) -> str:
+        if self._blocked:
+            return ""
+        if value is not None:
+            self._raw += str(value)
+        projected = public_chat_answer_text(self._run, self._raw)
+        unstable = 0 if final else self._unstable_suffix_length()
+        stable_raw = self._raw[:-unstable] if unstable else self._raw
+        stable = public_chat_answer_text(self._run, stable_raw)
+        if (
+            not stable.startswith(self._emitted)
+            or (stable and not projected.startswith(stable))
+            or (self._emitted and not projected.startswith(self._emitted))
+        ):
+            self._blocked = True
+            return ""
+        delta = stable[len(self._emitted) :]
+        self._emitted = stable
+        return delta
+
+    def flush(self) -> str:
+        return self.push("", final=True)
 
 
 def _chat_terminal_answer_candidate(run: dict[str, object]) -> object:

@@ -1145,6 +1145,88 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
     ]
 
 
+def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-split-identifier",
+        "trace_id": "trace-split-identifier",
+        "agent_id": "qa-word-review",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+        "result_json": {"message": "已开始，general-chat 完成。"},
+        "error_code": None,
+        "error_message": None,
+        "finished_at": "2026-07-30T00:00:00Z",
+    }
+    run_events = [
+        {
+            "id": "evt-split-a",
+            "trace_id": "trace-split-identifier",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 1,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": "已开始，general-",
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+            "created_at": "2026-07-30T00:00:00Z",
+        },
+        {
+            "id": "evt-split-b",
+            "trace_id": "trace-split-identifier",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 2,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": "chat 完成。",
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+            "created_at": "2026-07-30T00:00:01Z",
+        },
+    ]
+
+    records = _compatibility_events_for_run(run, run_events, [], principal)
+    answer_payloads = [
+        record.history_event["data"]
+        for record in records
+        if record.history_event["event_type"] == "message:chunk"
+    ]
+    deltas = [
+        payload["content"]
+        for payload in answer_payloads
+        if payload["projection_kind"] == "assistant_delta"
+    ]
+    final = next(
+        payload
+        for payload in answer_payloads
+        if payload["projection_kind"] == "assistant_final"
+    )
+
+    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert "general-chat" not in str(answer_payloads)
+    assert "qa-word-review" not in str(answer_payloads)
 
 
 def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
