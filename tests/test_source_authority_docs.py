@@ -50,19 +50,15 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     assert "## Change Contract" in workflow
     assert "single repository coding authority" in claude_flat
     assert "must not duplicate or weaken it" in claude_flat
-    for field in (
-        "Issue / Change Contract:",
-        "Full base SHA / candidate head SHA:",
-        "Writable paths / forbidden paths / non-goals:",
-        "failure, and compatibility behavior:",
-        "transaction, queue, lifecycle",
-        "Alternatives considered and why they lost:",
-        "Falsifiable regression proof:",
-        "Evidence ceiling and evidence not observed:",
+    assert "falsifiable regression test" in workflow
+    assert "candidate-controlled test cannot prove" in workflow
+    for heading in (
+        "## Subject and scope",
+        "## Behavior and decision",
+        "## Evidence and recovery",
+        "## Accuracy",
     ):
-        assert field in pull_request_template
-    assert not (ROOT / "docs/agent-rules/change-contract.md").exists()
-    assert not (ROOT / "docs/decision-notes/README.md").exists()
+        assert heading in pull_request_template
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():

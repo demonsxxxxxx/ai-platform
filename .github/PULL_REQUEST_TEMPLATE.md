@@ -10,8 +10,7 @@
 
 - Observable problem and owning authority:
 - Before/after, failure, and compatibility behavior:
-- Security, tenant/workspace/user, transaction, queue, lifecycle, persistence,
-  event, sandbox, and public-projection invariants:
+- Applicable invariants and explicitly non-applicable risk categories:
 - Alternatives considered and why they lost:
 - Acceptance criteria and declared stop conditions:
 - Documentation or separate-design impact:

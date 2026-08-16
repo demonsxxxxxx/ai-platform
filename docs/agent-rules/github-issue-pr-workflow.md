@@ -34,9 +34,10 @@ records one compact Change Contract:
 - observable problem and single owning authority;
 - repository/worktree, branch, full base/head SHA when available, writable and
   forbidden paths, and explicit non-goals;
-- behavior delta including failure/compatibility decisions, plus security,
-  tenant, transaction, queue, lifecycle, persistence, event, sandbox, and public
-  projection invariants;
+- behavior delta including failure/compatibility decisions, plus only the
+  security, tenancy, transaction/queue, lifecycle/persistence/event, sandbox,
+  and public-projection invariants the changed risk reaches; mark other
+  categories not applicable instead of producing boilerplate;
 - genuine alternatives and why they lost; use the separate-design rule above
   when rationale needs durable architecture authority;
 - acceptance criteria, a falsifiable regression test, required assembled path,
