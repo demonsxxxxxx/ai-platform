@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -45,15 +46,19 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     workflow = read(GITHUB_WORKFLOW)
     pull_request_template = read(PULL_REQUEST_TEMPLATE)
     claude_flat = " ".join(claude.split())
+    workflow_flat = " ".join(workflow.split())
 
     assert "## Change Control" in agents
     assert "## Change Contract" in workflow
-    assert "issue or persistent-task dispatch" in workflow
-    assert "PR links that prior record" in workflow
+    assert re.search(
+        r"Before non-mechanical implementation, the (?:issue|persistent-task)",
+        workflow_flat,
+    )
+    assert re.search(r"PR links .* prior record", workflow_flat)
     assert "single repository coding authority" in claude_flat
     assert "must not duplicate or weaken it" in claude_flat
-    assert "falsifiable regression test" in workflow
-    assert "candidate-controlled test cannot prove" in workflow
+    assert "falsifiable regression" in workflow
+    assert "cannot prove the contract existed before coding" in workflow
     for heading in (
         "## Subject and scope",
         "## Behavior and decision",
@@ -61,6 +66,19 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
         "## Accuracy",
     ):
         assert heading in pull_request_template
+    for required_field in (
+        "Issue / Change Contract:",
+        "Full base SHA / candidate head SHA:",
+        "Actual diff reconciled with scope:",
+        "Before/after, failure, and compatibility behavior:",
+        "Falsifiable regression proof:",
+        "Focused commands and observed results:",
+        "Evidence ceiling and evidence not observed:",
+        "rollback when required:",
+    ):
+        assert required_field in pull_request_template
+    assert "`N/A` is reserved for the risk categories" in pull_request_template
+    assert "a bare `N/A` is not an answer" in pull_request_template
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():

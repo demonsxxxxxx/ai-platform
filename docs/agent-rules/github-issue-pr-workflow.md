@@ -50,6 +50,9 @@ changing owner or paths; unrelated findings become separate work. A source-only
 change may stop at focused-test evidence when it claims no assembled or runtime
 behavior. PR text and checkboxes are claims to verify, not evidence, and a
 candidate-controlled test cannot prove the contract existed before coding.
+Only risk categories may be marked non-applicable. Behavior, tests, evidence,
+review, and rollback require observed facts or a reasoned applicability
+statement; a bare `N/A` does not satisfy the contract.
 
 ## Status Language
 

@@ -17,6 +17,9 @@
 
 ## Evidence and recovery
 
+- `N/A` is reserved for the risk categories above. For behavior, tests,
+  evidence, review, and rollback, give observed facts or explain why the field
+  does not apply; a bare `N/A` is not an answer.
 - Falsifiable regression proof:
 - Required and observed assembled path:
 - Focused commands and observed results:
