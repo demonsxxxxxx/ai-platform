@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ChatAppContent } from "../../components/layout/AppContent/ChatAppContent";
@@ -79,6 +79,8 @@ export function AgentWorkspaceRoute() {
   const [loadedWorkspace, setLoadedWorkspace] =
     useState<LoadedAgentWorkspace | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const workspaceViewRef = useRef({ phase, loadedWorkspace });
+  workspaceViewRef.current = { phase, loadedWorkspace };
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
     return saved !== null ? saved === "true" : false;
@@ -95,14 +97,18 @@ export function AgentWorkspaceRoute() {
 
   useEffect(() => {
     let active = true;
-    setPhase("loading");
-    setLoadedWorkspace((current) =>
-      current !== null &&
-      current.agentId === agentId &&
-      current.revision === revision
-        ? current
-        : null,
-    );
+    const currentView = workspaceViewRef.current;
+    const retainsMountedWorkspace =
+      currentView.phase === "ready" &&
+      currentView.loadedWorkspace !== null &&
+      currentView.loadedWorkspace.agentId === agentId &&
+      currentView.loadedWorkspace.revision === revision;
+    // A session-only route change keeps canonical Chat mounted while both the
+    // route and Chat layers independently verify the pinned conversation.
+    if (!retainsMountedWorkspace) {
+      setPhase("loading");
+      setLoadedWorkspace(null);
+    }
 
     if (!agentId || !revision || validRevision === undefined) {
       setPhase("unavailable");

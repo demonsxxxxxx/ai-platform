@@ -373,6 +373,8 @@ async def test_upload_accepts_safe_ooxml_and_preserves_storage_contract(monkeypa
         "report.docx ",
         "report.docx.",
         "CON.txt",
+        "CON .txt",
+        "COM1 .log",
         "report?.docx",
         f"{'测' * 84}.docx",
     ],

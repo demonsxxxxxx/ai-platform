@@ -1,4 +1,5 @@
 import codecs
+from dataclasses import dataclass
 import io
 import re
 import unicodedata
@@ -22,7 +23,6 @@ from app.file_preview_contracts import (
     xlsx_preview_identity_from_metadata,
     xlsx_preview_max_bytes,
 )
-from app.file_upload_contracts import UploadFileResponse
 from app.models import (
     FileDeletionResponse,
     SessionInputFileResponse,
@@ -115,6 +115,14 @@ SAFE_RESPONSE_CONTENT_TYPE_PATTERN = re.compile(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class UploadFileResponse:
+    file_id: str
+    name: str
+    sha256: str
+    size_bytes: int
+
+
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
     granted = {item.strip() for item in principal.permissions if item.strip()}
     if is_ai_admin(principal):
@@ -140,7 +148,7 @@ def _normalize_upload_filename(value: str | None) -> str:
     normalized = unicodedata.normalize("NFC", value or "")
     windows_path = PureWindowsPath(normalized)
     posix_path = PurePosixPath(normalized)
-    reserved_basename = normalized.split(".", 1)[0].casefold()
+    reserved_basename = normalized.split(".", 1)[0].rstrip(" ").casefold()
     invalid = (
         not normalized
         or normalized in {".", ".."}

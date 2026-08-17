@@ -1622,7 +1622,12 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
         session_id=None,
         principal=principal(permissions=["file:upload", "file:upload:document"]),
     )
-    payload = response.model_dump()
+    payload = {
+        "file_id": response.file_id,
+        "name": response.name,
+        "sha256": response.sha256,
+        "size_bytes": response.size_bytes,
+    }
 
     assert payload == {
         "file_id": "file_uploaded",

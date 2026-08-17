@@ -871,6 +871,12 @@ class ArtifactCardResponse(BaseModel):
     created_at: Any | None = None
 
 
+class UploadFileResponse(BaseModel):
+    file_id: str
+    sha256: str
+    size_bytes: int
+
+
 class FileDeletionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
