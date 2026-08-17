@@ -121,8 +121,10 @@ authority.
   frame after the old lease deadline; real proxy behavior is externally
   measured.
 - Active appends atomically refresh active-idle TTL. Terminal/end atomically set
-  terminal replay TTL. Creation-time wall clock never expires a still-active
-  stream.
+  terminal replay TTL. Creation time alone does not expire a stream while it
+  continues to emit accepted events within the active-idle window. An active
+  stream inactive beyond that TTL may expire; reconnect then emits an id-less
+  `stream_replay_gap` and the client uses authorized durable hydrate.
 - The terminal PostgreSQL transaction freezes exact terminal/end payload bytes,
   digest, schema, projection version, semantic IDs, and incarnation before any
   terminal Redis publish. Final hydrate replaces the partial fold.
