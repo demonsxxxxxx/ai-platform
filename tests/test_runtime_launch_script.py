@@ -384,6 +384,7 @@ def test_compose_workspace_init_is_narrow_and_blocks_api_and_worker_until_succes
     assert init["network_mode"] == "none"
     assert init["read_only"] is True
     assert init["restart"] == "no"
+    assert init["ulimits"] == {"nofile": {"soft": 65536, "hard": 65536}}
     assert init["cap_drop"] == ["ALL"]
     assert set(init["cap_add"]) == {"CHOWN", "DAC_READ_SEARCH", "SETUID", "SETGID"}
     assert init["entrypoint"] == ["python", "-m", "app.runtime.sandbox.workspace_permissions"]
