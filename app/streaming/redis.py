@@ -49,6 +49,11 @@ SSE_STREAM_TERMINAL_TTL_MS = 7200000
 SSE_STREAM_READ_COUNT = 128
 SSE_STREAM_BLOCK_MS = 15000
 SSE_AUTHORITY_LEASE_SECONDS = 15
+_REDIS_CONNECT_TIMEOUT_SECONDS = 2
+_REDIS_PUBLISH_TIMEOUT_SECONDS = 5
+_REDIS_BLOCKING_TIMEOUT_SECONDS = (
+    min(SSE_STREAM_BLOCK_MS, SSE_AUTHORITY_LEASE_SECONDS * 1000) / 1000 + 1
+)
 
 _APPEND_WITH_TTL_LUA = """
 local phase=redis.call('HGET',KEYS[2],'phase')
@@ -158,16 +163,21 @@ class RedisStreamBridge:
             else None
         )
         redis_url = str(settings.redis_url) if settings is not None else ""
-        options = {
+        common_options = {
             "decode_responses": True,
-            "socket_connect_timeout": 2,
-            "socket_timeout": 5,
+            "socket_connect_timeout": _REDIS_CONNECT_TIMEOUT_SECONDS,
         }
         self._publish_client = publish_client or Redis.from_url(
-            redis_url, max_connections=SSE_PUBLISH_MAX_CONNECTIONS, **options
+            redis_url,
+            max_connections=SSE_PUBLISH_MAX_CONNECTIONS,
+            socket_timeout=_REDIS_PUBLISH_TIMEOUT_SECONDS,
+            **common_options,
         )
         self._blocking_client = blocking_client or Redis.from_url(
-            redis_url, max_connections=SSE_BLOCKING_MAX_CONNECTIONS, **options
+            redis_url,
+            max_connections=SSE_BLOCKING_MAX_CONNECTIONS,
+            socket_timeout=_REDIS_BLOCKING_TIMEOUT_SECONDS,
+            **common_options,
         )
 
     async def aclose(self) -> None:
