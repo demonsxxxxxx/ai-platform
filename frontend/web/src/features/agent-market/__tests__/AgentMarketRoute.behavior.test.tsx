@@ -900,14 +900,35 @@ test("a bare Agent workspace creates and submits one request on the first send",
     assert.equal(container.querySelector("[data-agent-workspace-welcome]"), null);
     assert.equal(container.querySelector("[data-agent-workspace-start]"), null);
 
-    const starterPrompt = container
+    let starterPrompt = container
       .querySelectorAll("button")
       .find((button) => button.textContent.includes("帮我处理企业任务"));
+    for (
+      let attempt = 0;
+      attempt < 40 && (!starterPrompt || starterPrompt.hasAttribute("disabled"));
+      attempt += 1
+    ) {
+      await React.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      starterPrompt = container
+        .querySelectorAll("button")
+        .find((button) => button.textContent.includes("帮我处理企业任务"));
+    }
     assert.ok(starterPrompt);
+    assert.equal(starterPrompt.hasAttribute("disabled"), false);
     await React.act(async () => {
       starterPrompt.dispatchEvent({ type: "click", bubbles: true });
-      for (let index = 0; index < 16; index += 1) await Promise.resolve();
     });
+    for (
+      let attempt = 0;
+      attempt < 40 && (selections.length === 0 || submissions.length === 0);
+      attempt += 1
+    ) {
+      await React.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
 
     assert.equal(selections.length, 1);
     assert.equal(
