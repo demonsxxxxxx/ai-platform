@@ -64,7 +64,8 @@ Each stage:
 - stops at its declared timeout, waits a bounded grace period, and then
   terminates the complete owned process tree;
 - preserves an ordinary pytest failure exit code; and
-- never reads or reports environment variable values.
+- removes caller-provided `PYTEST_*` control variables from the child process,
+  records only the removed variable names, and never reports environment values.
 
 Only one stage may run in a worktree. `test_runner_busy` means another stage
 owns the lock; do not bypass the lock or start pytest directly. Independent
@@ -139,8 +140,9 @@ is not baseline proof.
 
 The local report records the repository root, exact HEAD, stage, selectors,
 timeout, start and finish times, duration, return code, pytest counts, cleanup
-status, and workspace-relative basetemp/JUnit/evidence paths. It intentionally
-does not record environment values.
+status, removed `PYTEST_*` variable names, and workspace-relative
+basetemp/JUnit/evidence paths. It intentionally does not record environment
+values.
 
 Report the observed evidence level precisely:
 

@@ -9,7 +9,7 @@ This file applies to the current `ai-platform` repository root.
 - This Windows workstation currently does not provide a local `docker` command. If `docker` is not recognized, do not repeatedly retry local `docker compose` checks.
 - For local readiness, prefer repository-native checks such as:
   - `python -m compileall -q app tools scripts`
-  - `python tools/run_test_stage.py --stage <name> --timeout-seconds 300 -- <explicit-test-selectors>`
+  - `python tools/run_test_stage.py --stage example-owning --timeout-seconds 300 -- tests/test_run_test_stage.py`
   - relevant integration or smoke checks for the changed path
 - After the local test-stage runner is accepted on `main`, use it for ordinary
   local pytest execution. The introducing change may test the runner directly

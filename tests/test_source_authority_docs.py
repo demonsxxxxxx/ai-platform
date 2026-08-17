@@ -68,6 +68,7 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     assert "falsifiable regression" in workflow
     assert "cannot prove the contract existed before coding" in workflow
     assert "python tools/run_test_stage.py" in agents
+    assert "docs/agent-rules/local-test-execution.md" in agents
     for execution_rule in (
         "test_isolation_failure",
         "test_timeout",

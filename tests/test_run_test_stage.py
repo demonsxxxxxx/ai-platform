@@ -15,8 +15,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SOURCE = REPO_ROOT / "tools" / "run_test_stage.py"
 
 
+def _subprocess_environment(
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("PYTEST_")
+    }
+    environment.update(overrides or {})
+    return environment
+
+
 def _run(
-    *arguments: str, cwd: Path, timeout: float = 20
+    *arguments: str,
+    cwd: Path,
+    timeout: float = 20,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(arguments),
@@ -26,6 +41,7 @@ def _run(
         text=True,
         encoding="utf-8",
         timeout=timeout,
+        env=_subprocess_environment(environment),
     )
 
 
@@ -50,13 +66,20 @@ def _make_repo(tmp_path: Path, tests: dict[str, str]) -> Path:
     return repo
 
 
-def _runner(repo: Path, *arguments: str, cwd: Path | None = None, timeout: float = 20):
+def _runner(
+    repo: Path,
+    *arguments: str,
+    cwd: Path | None = None,
+    timeout: float = 20,
+    environment: dict[str, str] | None = None,
+):
     return _run(
         sys.executable,
         str(repo / "tools" / "run_test_stage.py"),
         *arguments,
         cwd=cwd or repo,
         timeout=timeout,
+        environment=environment,
     )
 
 
@@ -119,7 +142,7 @@ def test_runner_executes_explicit_selector_with_local_evidence(tmp_path):
     )
     assert evidence["selectors"] == ["tests/test_pass.py::test_pass"]
     assert evidence["command"][:3] == [sys.executable, "-m", "pytest"]
-    assert "environment" not in evidence
+    assert evidence["environment"] == {"removed_pytest_variables": []}
     assert evidence["pytest"] == {"errors": 0, "failures": 0, "skipped": 0, "tests": 1}
     assert evidence["cleanup"] == "completed"
     assert (
@@ -130,6 +153,33 @@ def test_runner_executes_explicit_selector_with_local_evidence(tmp_path):
     assert str(paths["basetemp"]).startswith(".pytest-tmp/test-runs/")
     assert (repo / str(paths["junit"])).is_file()
     assert (repo / str(paths["evidence"])).is_file()
+
+
+def test_runner_removes_caller_pytest_control_environment(tmp_path):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+
+    completed = _runner(
+        repo,
+        "--stage",
+        "environment",
+        "tests/test_pass.py",
+        environment={
+            "PYTEST_ADDOPTS": "--not-a-real-pytest-option",
+            "PYTEST_CURRENT_TEST": "foreign-test-state",
+            "PYTEST_PLUGINS": "module_that_does_not_exist",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    evidence = _single_evidence(repo)
+    assert evidence["environment"] == {
+        "removed_pytest_variables": [
+            "PYTEST_ADDOPTS",
+            "PYTEST_CURRENT_TEST",
+            "PYTEST_PLUGINS",
+        ]
+    }
+    assert evidence["pytest"] == {"errors": 0, "failures": 0, "skipped": 0, "tests": 1}
 
 
 @pytest.mark.parametrize(
@@ -217,7 +267,7 @@ def test_runner_rejects_a_second_stage_in_the_same_worktree(tmp_path):
             "test_wait.py": (
                 "import time\nfrom pathlib import Path\n\ndef test_wait():\n"
                 "    Path('entered').write_text('ready', encoding='utf-8')\n"
-                "    deadline = time.monotonic() + 5\n"
+                "    deadline = time.monotonic() + 15\n"
                 "    while not Path('release').exists():\n"
                 "        assert time.monotonic() < deadline\n"
                 "        time.sleep(0.02)\n"
@@ -230,7 +280,7 @@ def test_runner_rejects_a_second_stage_in_the_same_worktree(tmp_path):
         "--stage",
         "first",
         "--timeout-seconds",
-        "10",
+        "20",
         "tests/test_wait.py",
     ]
     first = subprocess.Popen(
@@ -240,9 +290,10 @@ def test_runner_rejects_a_second_stage_in_the_same_worktree(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        env=_subprocess_environment(),
     )
     lock_path = repo / ".pytest-tmp" / ".run-test-stage.lock"
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if lock_path.is_file():
             try:
@@ -258,7 +309,7 @@ def test_runner_rejects_a_second_stage_in_the_same_worktree(tmp_path):
 
     second = _runner(repo, "--stage", "second", "tests/test_wait.py")
     (repo / "release").write_text("continue", encoding="utf-8")
-    stdout, stderr = first.communicate(timeout=10)
+    stdout, stderr = first.communicate(timeout=20)
 
     assert first.returncode == 0, f"{stdout}\n{stderr}"
     assert second.returncode == 75
@@ -288,12 +339,13 @@ def test_timeout_terminates_the_owned_child_process_tree(tmp_path):
         "--stage",
         "timeout",
         "--timeout-seconds",
-        "3",
+        "8",
         "tests/test_hang.py",
-        timeout=15,
+        timeout=25,
     )
 
     assert completed.returncode == 124, completed.stderr
+    assert (repo / "child.pid").is_file(), "timed stage never started its child fixture"
     evidence = _single_evidence(repo)
     assert evidence["status"] == "timed_out"
     assert evidence["category"] == "test_timeout"
@@ -302,3 +354,40 @@ def test_timeout_terminates_the_owned_child_process_tree(tmp_path):
     while time.monotonic() < deadline and _pid_is_running(child_pid):
         time.sleep(0.05)
     assert not _pid_is_running(child_pid)
+
+
+def test_successful_stage_terminates_a_leaked_descendant(tmp_path):
+    repo = _make_repo(
+        tmp_path,
+        {
+            "test_leak.py": (
+                "import pathlib\n"
+                "import subprocess\n"
+                "import sys\n\n"
+                "_CHILDREN = []\n\n"
+                "def test_leak():\n"
+                "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "    _CHILDREN.append(child)\n"
+                "    pathlib.Path('child.pid').write_text(str(child.pid), encoding='utf-8')\n"
+                "    assert child.poll() is None\n"
+            )
+        },
+    )
+
+    completed = _runner(
+        repo,
+        "--stage",
+        "normal-cleanup",
+        "--timeout-seconds",
+        "10",
+        "tests/test_leak.py",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (repo / "child.pid").is_file()
+    child_pid = int((repo / "child.pid").read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and _pid_is_running(child_pid):
+        time.sleep(0.05)
+    assert not _pid_is_running(child_pid)
+    assert _single_evidence(repo)["cleanup"] == "completed"

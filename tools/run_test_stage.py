@@ -173,9 +173,11 @@ class WorktreeLock:
 
 
 class OwnedProcess:
-    def __init__(self, command: list[str], *, cwd: Path) -> None:
+    def __init__(
+        self, command: list[str], *, cwd: Path, environment: dict[str, str]
+    ) -> None:
         self._job_handle: int | None = None
-        kwargs: dict[str, object] = {"cwd": cwd}
+        kwargs: dict[str, object] = {"cwd": cwd, "env": environment}
         if os.name == "nt":
             kwargs["creationflags"] = _windows_creation_flags()
         elif os.name == "posix":
@@ -222,14 +224,15 @@ class OwnedProcess:
         except OSError:
             pass
 
-    def cleanup_descendants(self) -> None:
-        if os.name == "nt":
-            self.close()
-            return
+    def has_exited(self) -> bool:
         if os.name == "posix":
-            self.terminate(force=False)
-            time.sleep(0.05)
-            self.terminate(force=True)
+            result = os.waitid(
+                os.P_PID,
+                self.process.pid,
+                os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            )
+            return result is not None
+        return self.process.poll() is not None
 
     def close(self) -> None:
         if os.name != "nt" or self._job_handle is None:
@@ -524,6 +527,13 @@ class ClassifiedResult:
 
 def _stop_process(process_tree: OwnedProcess) -> None:
     process_tree.terminate(force=False)
+    if os.name == "posix":
+        deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+        while not process_tree.has_exited() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        # The unreaped group leader keeps its PGID unavailable for reuse while
+        # the final group signal is sent.
+        process_tree.terminate(force=True)
     try:
         process_tree.process.wait(timeout=TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
@@ -539,7 +549,7 @@ def _wait_for_process(
 ) -> tuple[int, bool]:
     next_heartbeat = started + HEARTBEAT_SECONDS
     deadline = started + plan.timeout_seconds
-    while process_tree.process.poll() is None:
+    while not process_tree.has_exited():
         now = time.monotonic()
         if now >= deadline:
             _stop_process(process_tree)
@@ -552,11 +562,19 @@ def _wait_for_process(
             )
             next_heartbeat = now + HEARTBEAT_SECONDS
         time.sleep(min(0.1, max(0.0, deadline - now)))
+    if os.name == "posix":
+        # Signal the owned group before reaping its leader, eliminating the
+        # window in which the numeric PGID could be reused by an unrelated job.
+        process_tree.terminate(force=True)
     return int(process_tree.process.wait()), False
 
 
 def _execute_process(
-    command: list[str], plan: StagePlan, *, started: float
+    command: list[str],
+    plan: StagePlan,
+    *,
+    started: float,
+    environment: dict[str, str],
 ) -> ProcessResult:
     process_tree: OwnedProcess | None = None
     returncode = EXIT_INFRASTRUCTURE
@@ -565,7 +583,11 @@ def _execute_process(
     cleanup = "not_started"
     cleanup_failed = False
     try:
-        process_tree = OwnedProcess(command, cwd=plan.repo_root)
+        process_tree = OwnedProcess(
+            command,
+            cwd=plan.repo_root,
+            environment=environment,
+        )
         returncode, timed_out = _wait_for_process(process_tree, plan, started=started)
     except KeyboardInterrupt:
         interrupted = True
@@ -574,7 +596,7 @@ def _execute_process(
             _stop_process(process_tree)
     except (OSError, subprocess.SubprocessError) as error:
         if process_tree is not None:
-            process_tree.terminate(force=True)
+            _stop_process(process_tree)
         print(
             f"unable to run pytest stage: {type(error).__name__}",
             file=sys.stderr,
@@ -583,7 +605,6 @@ def _execute_process(
     finally:
         if process_tree is not None:
             try:
-                process_tree.cleanup_descendants()
                 process_tree.close()
                 cleanup = "completed"
             except OSError as error:
@@ -636,6 +657,14 @@ def _classify_result(
     return ClassifiedResult(returncode, *values)
 
 
+def _pytest_environment() -> tuple[dict[str, str], tuple[str, ...]]:
+    removed = tuple(sorted(name for name in os.environ if name.startswith("PYTEST_")))
+    environment = {
+        name: value for name, value in os.environ.items() if name not in removed
+    }
+    return environment, removed
+
+
 def _run_stage(plan: StagePlan) -> int:
     plan.run_root.mkdir(parents=True, exist_ok=False)
     command = [
@@ -652,7 +681,13 @@ def _run_stage(plan: StagePlan) -> int:
     ]
     started_at = _utc_now()
     started = time.monotonic()
-    process = _execute_process(command, plan, started=started)
+    environment, removed_pytest_variables = _pytest_environment()
+    process = _execute_process(
+        command,
+        plan,
+        started=started,
+        environment=environment,
+    )
     counts = _pytest_counts(plan.junit)
     result = _classify_result(
         process,
@@ -671,6 +706,9 @@ def _run_stage(plan: StagePlan) -> int:
         "head_sha": plan.head_sha,
         "selectors": list(plan.selectors),
         "command": command,
+        "environment": {
+            "removed_pytest_variables": list(removed_pytest_variables),
+        },
         "timeout_seconds": plan.timeout_seconds,
         "require_zero_skips": plan.require_zero_skips,
         "started_at": started_at,
