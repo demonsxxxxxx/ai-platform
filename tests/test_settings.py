@@ -6,6 +6,19 @@ from pydantic import ValidationError
 from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, Settings
 
 
+def test_claude_agent_sdk_timeout_defaults_to_document_workflow_budget(monkeypatch):
+    monkeypatch.delenv("CLAUDE_AGENT_SDK_TIMEOUT_SECONDS", raising=False)
+
+    assert Settings(_env_file=None).claude_agent_sdk_timeout_seconds == 300.0
+    assert (
+        Settings(
+            _env_file=None,
+            claude_agent_sdk_timeout_seconds=120.0,
+        ).claude_agent_sdk_timeout_seconds
+        == 120.0
+    )
+
+
 def test_browser_authentication_windows_default_to_twenty_four_hours():
     settings = Settings(_env_file=None)
 
