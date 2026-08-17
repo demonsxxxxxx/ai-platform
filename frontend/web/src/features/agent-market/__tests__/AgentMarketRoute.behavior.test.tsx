@@ -85,6 +85,17 @@ function dispatchEventFromTarget(target: TestEventTarget, event: Record<string, 
   }
 }
 
+class TestLockManager {
+  async request<T>(
+    _name: string,
+    options: { mode: "exclusive" },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    assert.equal(options.mode, "exclusive");
+    return callback();
+  }
+}
+
 class TestNode extends TestEventTarget {
   parentNode: TestNode | null = null;
   childNodes: TestNode[] = [];
@@ -456,12 +467,16 @@ function installDom() {
     },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
   });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { userAgent: "node", locks: new TestLockManager() },
+  });
   return { document, window: windowTarget };
 }
 
 async function prepareShellHarness({ authenticated = false } = {}) {
   await import("../../../i18n/index.ts");
-  const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
+  const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
   const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
   const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
   const { authApi } = await import("../../../services/api/auth.ts");
@@ -513,15 +528,22 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
 
+  function AuthenticatedGate({ children }: { children: React.ReactNode }) {
+    return useAuth().hasPermission(Permission.CHAT_WRITE) ? children : null;
+  }
+
   return {
     wrap(children: React.ReactNode) {
+      const shellChildren = authenticated
+        ? React.createElement(AuthenticatedGate, null, children)
+        : children;
       return React.createElement(
         ThemeProvider,
         null,
         React.createElement(
           AuthProvider,
           null,
-          React.createElement(SettingsProvider, null, children),
+          React.createElement(SettingsProvider, null, shellChildren),
         ),
       );
     },
@@ -889,6 +911,15 @@ test("a bare Agent workspace creates and submits one request on the first send",
       );
       for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
+    for (
+      let attempt = 0;
+      attempt < 40 && !container.querySelector("[data-agent-chat-opening]");
+      attempt += 1
+    ) {
+      await React.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
@@ -900,21 +931,9 @@ test("a bare Agent workspace creates and submits one request on the first send",
     assert.equal(container.querySelector("[data-agent-workspace-welcome]"), null);
     assert.equal(container.querySelector("[data-agent-workspace-start]"), null);
 
-    let starterPrompt = container
+    const starterPrompt = container
       .querySelectorAll("button")
       .find((button) => button.textContent.includes("帮我处理企业任务"));
-    for (
-      let attempt = 0;
-      attempt < 40 && (!starterPrompt || starterPrompt.hasAttribute("disabled"));
-      attempt += 1
-    ) {
-      await React.act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      starterPrompt = container
-        .querySelectorAll("button")
-        .find((button) => button.textContent.includes("帮我处理企业任务"));
-    }
     assert.ok(starterPrompt);
     assert.equal(starterPrompt.hasAttribute("disabled"), false);
     await React.act(async () => {
