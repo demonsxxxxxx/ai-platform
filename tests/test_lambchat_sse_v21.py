@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as route
-from app.streaming.api import LiveSubscriptionClosed
+from app.streaming.api import LiveSubscriptionClosed, live_redis_id_is_after
 from app.streaming.events import STREAM_DESIGN_ID
 from app.streaming.redis import (
     ResumeDecision,
@@ -114,12 +114,11 @@ class FakeBridge:
 
     async def replay_page(self, *, after_redis_id, through_redis_id, **kwargs):
         self.calls.append(f"replay:{after_redis_id}:{through_redis_id}")
-        after = route._redis_id_tuple(after_redis_id)
-        through = route._redis_id_tuple(through_redis_id)
         return tuple(
             row
             for row in self.rows
-            if after < route._redis_id_tuple(row.cursor.redis_id) <= through
+            if live_redis_id_is_after(row.cursor.redis_id, after_redis_id)
+            and not live_redis_id_is_after(row.cursor.redis_id, through_redis_id)
         )
 
     def decode_live_publication(self, **kwargs):

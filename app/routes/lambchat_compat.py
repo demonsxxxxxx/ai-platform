@@ -50,13 +50,13 @@ from app.run_projection import (
     public_terminal_detail,
 )
 from app.settings import get_settings
-from app.streaming.api import LiveSubscriptionClosed
-from app.streaming.authority import RunCursor, event_page
-from app.streaming.contracts import (
+from app.streaming.api import (
+    LiveSubscriptionClosed,
     StreamEnvelope,
-    _redis_id_tuple,
+    live_redis_id_is_after,
     stream_live_channel,
 )
+from app.streaming.authority import RunCursor, event_page
 from app.streaming.events import PUBLIC_RUN_STREAM_SCHEMA
 from app.streaming.redis import (
     SSE_AUTHORITY_LEASE_SECONDS,
@@ -1762,7 +1762,7 @@ async def chat_session_stream(
                     return
                 if publication.channel != channel:
                     raise StreamContractError("stream_live_channel_mismatch")
-                if _redis_id_tuple(publication.redis_id) <= _redis_id_tuple(after):
+                if not live_redis_id_is_after(publication.redis_id, after):
                     continue
                 entry = bridge.decode_live_publication(
                     redis_id=publication.redis_id,

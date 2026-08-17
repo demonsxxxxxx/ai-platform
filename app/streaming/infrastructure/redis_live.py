@@ -11,7 +11,6 @@ from typing import Any
 
 from redis.asyncio import Redis
 
-from app.settings import get_settings
 from app.streaming.domain.live import LivePublication
 
 LIVE_REDIS_MAX_CONNECTIONS = 2
@@ -21,10 +20,13 @@ _REDIS_ID_RE = re.compile(r"^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$")
 
 
 class RedisLiveFanoutSource:
-    def __init__(self, *, client: Any | None = None) -> None:
-        settings = get_settings() if client is None else None
-        self._client = client or Redis.from_url(
-            str(settings.redis_url),
+    def __init__(
+        self, *, redis_url: str | None = None, client: Any | None = None
+    ) -> None:
+        if client is None and redis_url is None:
+            raise ValueError("live_source_redis_url_required")
+        self._client = client if client is not None else Redis.from_url(
+            redis_url,
             decode_responses=True,
             max_connections=LIVE_REDIS_MAX_CONNECTIONS,
             socket_connect_timeout=2,

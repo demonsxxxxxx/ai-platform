@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.settings import get_settings
 from app.streaming.application.live_fanout import RunStreamHub
 from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 from app.streaming.redis import RedisStreamBridge
@@ -22,7 +23,8 @@ class RunStreamRuntime:
 
 
 def build_run_stream_runtime() -> RunStreamRuntime:
-    source = RedisLiveFanoutSource()
+    settings = get_settings()
+    source = RedisLiveFanoutSource(redis_url=str(settings.redis_url))
     return RunStreamRuntime(
         bridge=RedisStreamBridge(),
         hub=RunStreamHub(source=source),
