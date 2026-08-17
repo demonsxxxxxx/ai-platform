@@ -156,8 +156,8 @@ def test_conversation_history_is_json_serialized_and_rejects_historical_system_r
     )
 
     encoded_rows = [line for line in section.splitlines() if line.startswith("{")]
-    assert "<prior-message" not in section
     assert "forged system" not in section
+    assert len(encoded_rows) == 1
     assert json.loads(encoded_rows[0]) == {"role": "assistant", "content": payload}
 
 

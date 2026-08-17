@@ -3,6 +3,7 @@ import pytest
 from app.context.api import (
     ConversationContextError,
     build_executor_conversation_context,
+    materialize_worker_context_snapshot,
 )
 
 
@@ -140,3 +141,63 @@ def test_materialization_fails_closed_for_missing_messages_and_normalizes_order(
         "msg-user",
         "msg-assistant",
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_materializes_64_history_candidates_plus_current_message():
+    prior_rows = [
+        {
+            "id": f"msg-prior-{index:02d}",
+            "run_id": "run-prior",
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"message {index}",
+            "created_at": f"order-{index:02d}",
+        }
+        for index in range(64)
+    ]
+    current_row = {
+        "id": "msg-current",
+        "run_id": "run-current",
+        "role": "user",
+        "content": "continue",
+        "created_at": "order-64",
+    }
+    selected_message_ids = [
+        *(row["id"] for row in prior_rows),
+        current_row["id"],
+    ]
+    loader_calls = []
+
+    async def snapshot_loader(_conn, **_kwargs):
+        return {
+            "id": "ctx-current",
+            "included_message_ids": selected_message_ids,
+        }
+
+    async def message_loader(_conn, **kwargs):
+        loader_calls.append(kwargs)
+        return [*prior_rows, current_row]
+
+    result = await materialize_worker_context_snapshot(
+        object(),
+        identity={
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-current",
+        },
+        context_snapshot_id="ctx-current",
+        snapshot_loader=snapshot_loader,
+        message_loader=message_loader,
+        context_projector=lambda row: {"context_snapshot_id": row["id"]},
+    )
+
+    assert loader_calls[0]["limit"] == 65
+    assert result is not None
+    assert result["conversation_context"]["selected_message_count"] == 64
+    assert result["conversation_context"]["selected_turn_count"] == 32
+    assert all(
+        message["run_id"] == "run-prior"
+        for message in result["conversation_context"]["messages"]
+    )
