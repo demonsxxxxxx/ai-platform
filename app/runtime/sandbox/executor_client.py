@@ -4,7 +4,6 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from pydantic import ValidationError
 
 from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
 from app.settings import get_settings
@@ -301,7 +300,7 @@ class SandboxExecutorClient:
                     "attempt_id": response.get("attempt_id", request.attempt_id),
                 }
             )
-        except ValidationError:
+        except (TypeError, ValueError):
             raise SandboxExecutorHttpError(
                 status_code=502,
                 error_code="executor_protocol_invalid",

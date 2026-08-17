@@ -22,8 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
@@ -2302,6 +2301,7 @@ def create_executor_app(
     @app.post("/v2/tasks")
     async def dispatch_task(
         request: ExecutorTaskRequest,
+        response: Response = None,  # type: ignore[assignment]
         executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
     ) -> dict[str, Any]:
         _require_executor_credential(executor_credential, configured_executor_auth_token)
@@ -2313,14 +2313,13 @@ def create_executor_app(
             trusted_callback_base_url=trusted_callback_base_url,
         )
         if execute_claimed["value"]:
-            return JSONResponse(
-                status_code=status.HTTP_202_ACCEPTED,
-                content={
-                    "status": "accepted",
-                    "run_id": request.run_id,
-                    "attempt_id": request.attempt_id,
-                },
-            )
+            if response is not None:
+                response.status_code = status.HTTP_202_ACCEPTED
+            return {
+                "status": "accepted",
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+            }
         execute_claimed["value"] = True
         task_state["run_id"] = request.run_id
         task_state["attempt_id"] = request.attempt_id
@@ -2332,14 +2331,13 @@ def create_executor_app(
         task = asyncio.create_task(supervise_task(request))
         task_state["task"] = task
         task_state["status"] = "accepted"
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "status": "accepted",
-                "run_id": request.run_id,
-                "attempt_id": request.attempt_id,
-            },
-        )
+        if response is not None:
+            response.status_code = status.HTTP_202_ACCEPTED
+        return {
+            "status": "accepted",
+            "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
+        }
 
     @app.get("/v2/tasks/{run_id}/{attempt_id}")
     async def get_task_status(
