@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.context_manifest import utf8_token_estimate
 
 EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION = (
     "ai-platform.executor-conversation-context.v1"
@@ -38,7 +37,7 @@ def _message_order_key(row: dict[str, Any]) -> tuple[str, str]:
 
 
 def _message_cost(message: dict[str, str]) -> int:
-    return utf8_token_estimate(
+    rendered = (
         json.dumps(
             {"role": message["role"], "content": message["content"]},
             ensure_ascii=False,
@@ -46,6 +45,7 @@ def _message_cost(message: dict[str, str]) -> int:
         )
         + "\n"
     )
+    return len(rendered.encode("utf-8"))
 
 
 def _group_complete_turns(messages: list[dict[str, str]]) -> list[list[dict[str, str]]]:
