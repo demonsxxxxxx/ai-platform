@@ -3,7 +3,7 @@
   "candidate": {
     "authority_ref": "13d0cc0aa39e54a5455074a15caffdfd43a3c2b7",
     "base_ref": "13d0cc0aa39e54a5455074a15caffdfd43a3c2b7",
-    "head_scope_sha256": "645819d18a0d919ba7ce7312dfdae33570eef32ab8fcb3ef326fd7f23bb00888"
+    "head_scope_sha256": "69a016591893a823113b216c4c7264640171ffb7de7e0db74e333900349e1bc0"
   },
   "expires_on": "2026-09-16",
   "owner": "runtime-platform",
