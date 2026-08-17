@@ -790,10 +790,11 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   }
 });
 
-test("a bare Agent workspace creates and submits one request on the first send", async () => {
+test("Marketplace Start and workspace Start New Task each submit on the first action", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -807,6 +808,7 @@ test("a bare Agent workspace creates and submits one request on the first send",
     avatar_ref: "builtin:assistant",
     category: "support",
   } as const;
+  const originalListPublished = agentProfileApi.listPublished;
   const originalGetPublished = agentProfileApi.getPublished;
   const originalListConversations = agentProfileApi.listConversations;
   const originalCreateConversation = agentProfileApi.createConversation;
@@ -815,6 +817,7 @@ test("a bare Agent workspace creates and submits one request on the first send",
   const originalGetEvents = sessionApi.getEvents;
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({
     sessions: [],
@@ -822,9 +825,10 @@ test("a bare Agent workspace creates and submits one request on the first send",
   });
   const selections: Array<{ selection: unknown; operationId: string }> = [];
   agentProfileApi.createConversation = async (selection, operationId) => {
+    const sessionId = `session-support-${selections.length + 1}`;
     selections.push({ selection, operationId });
     return {
-      session_id: "session-support",
+      session_id: sessionId,
       workspace_id: "default",
       agent_id: profile.agent_id,
       title: profile.name,
@@ -848,8 +852,8 @@ test("a bare Agent workspace creates and submits one request on the first send",
     is_active: true,
     metadata: {},
   });
-  sessionApi.getAuthoritative = async () => ({
-    session_id: "session-support",
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
     workspace_id: "default",
     agent_id: profile.agent_id,
     title: profile.name,
@@ -870,7 +874,7 @@ test("a bare Agent workspace creates and submits one request on the first send",
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
     return {
-      session_id: "session-support",
+      session_id: args[1],
       run_id: null,
       status: "needs_confirmation" as const,
       suggestions: [],
@@ -886,12 +890,46 @@ test("a bare Agent workspace creates and submits one request on the first send",
   const container = dom.document.createElement("div");
   const root = ReactDOM.createRoot(container as never);
   const reliableSessionStorage = dom.window.sessionStorage;
+  async function waitUntil(predicate: () => boolean) {
+    for (let attempt = 0; attempt < 40 && !predicate(); attempt += 1) {
+      await React.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+  async function submitStarterPrompt(expectedCount: number, expectedSessionId: string) {
+    const starterPrompt = container
+      .querySelectorAll("button")
+      .find((button) => button.textContent.includes("帮我处理企业任务"));
+    assert.ok(starterPrompt);
+    assert.equal(starterPrompt.hasAttribute("disabled"), false);
+    await React.act(async () => {
+      starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(
+      () => selections.length === expectedCount && submissions.length === expectedCount,
+    );
+
+    assert.equal(selections.length, expectedCount);
+    assert.equal(
+      submissions.length,
+      expectedCount,
+      `the first action must reach submitChat; rendered UI: ${container.textContent}`,
+    );
+    assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
+    assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
+    assert.deepEqual(submissions[expectedCount - 1]?.[10], {
+      agent_id: profile.agent_id,
+      expected_revision: profile.expected_revision,
+    });
+  }
+
   try {
     await React.act(async () => {
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4/chat"] },
+          { initialEntries: ["/agent-market"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -901,6 +939,10 @@ test("a bare Agent workspace creates and submits one request on the first send",
                 Routes,
                 null,
                 React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
                   path: "/agent-market/:agentId/:revision/chat/:sessionId?",
                   element: React.createElement(AgentWorkspaceRoute),
                 }),
@@ -909,61 +951,59 @@ test("a bare Agent workspace creates and submits one request on the first send",
           ),
         ),
       );
-      for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
-    for (
-      let attempt = 0;
-      attempt < 40 && !container.querySelector("[data-agent-chat-opening]");
-      attempt += 1
-    ) {
-      await React.act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-    }
+    await waitUntil(() => container.querySelector("[data-agent-market-card]") !== null);
+
+    assert.equal(currentPath, "/agent-market");
+    const marketStart = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始任务");
+    assert.ok(marketStart);
+    await React.act(async () => {
+      marketStart.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(() => container.querySelector("[data-agent-chat-opening]") !== null);
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
-    assert.ok(container.querySelector("[data-agent-chat-opening]"));
     assert.match(container.textContent, /欢迎使用企业专家/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
-    const composer = container.querySelector("textarea");
-    assert.ok(composer);
-    assert.equal(container.querySelector("[data-agent-workspace-welcome]"), null);
-    assert.equal(container.querySelector("[data-agent-workspace-start]"), null);
+    assert.ok(container.querySelector("textarea"));
 
-    const starterPrompt = container
+    await submitStarterPrompt(1, "session-support-1");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-1");
+
+    const startNewTask = container
       .querySelectorAll("button")
-      .find((button) => button.textContent.includes("帮我处理企业任务"));
-    assert.ok(starterPrompt);
-    assert.equal(starterPrompt.hasAttribute("disabled"), false);
+      .find((button) => button.getAttribute("aria-label") === "开始新任务");
+    assert.ok(startNewTask);
     await React.act(async () => {
-      starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+      startNewTask.dispatchEvent({ type: "click", bubbles: true });
     });
-    for (
-      let attempt = 0;
-      attempt < 40 && (selections.length === 0 || submissions.length === 0);
-      attempt += 1
-    ) {
-      await React.act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-    }
-
-    assert.equal(selections.length, 1);
-    assert.equal(
-      submissions.length,
-      1,
-      `the first send must reach submitChat; rendered UI: ${container.textContent}`,
+    await waitUntil(
+      () =>
+        currentPath === "/agent-market/agt_support/4/chat" &&
+        container.querySelector("[data-agent-starter-prompts]") !== null,
     );
-    assert.equal(submissions[0]?.[0], "帮我处理企业任务");
-    assert.equal(submissions[0]?.[1], "session-support");
-    assert.deepEqual(submissions[0]?.[10], {
-      agent_id: profile.agent_id,
-      expected_revision: profile.expected_revision,
-    });
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support");
+
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(selections.length, 1, "Start New Task must remain creation-free");
+    assert.equal(submissions.length, 1);
+
+    await submitStarterPrompt(2, "session-support-2");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-2");
+    assert.deepEqual(
+      selections.map(({ selection }) => selection),
+      [
+        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+      ],
+    );
+    const operationIds = selections.map(({ operationId }) => operationId);
+    assert.equal(new Set(operationIds).size, 2);
   } finally {
     dom.window.sessionStorage = reliableSessionStorage;
+    agentProfileApi.listPublished = originalListPublished;
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     agentProfileApi.createConversation = originalCreateConversation;
