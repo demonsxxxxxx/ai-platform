@@ -46,7 +46,10 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
-from app.runtime.sandbox.executor_client import SandboxExecutorClient, normalize_executor_reported_failure
+from app.runtime.sandbox.executor_client import (
+    SandboxExecutorClient,
+    normalize_executor_reported_failure,
+)
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
     safe_readiness_evidence_payload,
@@ -78,6 +81,8 @@ class SandboxRuntimeResult:
     status: str
     session_id: str
     run_id: str
+    attempt_id: str
+    lease_id: str
     provider: str
     executor_response: dict[str, Any]
     timings: dict[str, Any]
@@ -680,6 +685,54 @@ class SandboxRuntime:
         collection_started = False
         collection_succeeded = False
 
+        def build_runtime_result(
+            response_payload: dict[str, Any],
+            *,
+            cleanup_latency_ms: int = 0,
+        ) -> SandboxRuntimeResult:
+            return SandboxRuntimeResult(
+                status=str(response_payload.get("status") or "accepted"),
+                session_id=request.session_id,
+                run_id=request.run_id,
+                attempt_id=request.attempt_id,
+                lease_id=str(lease_record_id or ""),
+                provider=lease.provider,
+                executor_response=response_payload,
+                timings={
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_queue_wait_latency_ms": self._timing_value(request.queue_wait_ms),
+                    "sandbox_lease_acquire_latency_ms": lease_acquire_latency_ms,
+                    "sandbox_container_start_latency_ms": self._timing_value(
+                        lease.timings.get("sandbox_container_start_latency_ms")
+                        or lease.timings.get("sandbox_container_cold_start_latency_ms")
+                    ),
+                    "sandbox_container_cold_start_latency_ms": self._timing_value(
+                        lease.timings.get("sandbox_container_cold_start_latency_ms")
+                    ),
+                    "sandbox_healthcheck_latency_ms": self._timing_value(
+                        lease.timings.get("sandbox_healthcheck_latency_ms")
+                    ),
+                    "sandbox_executor_dispatch_latency_ms": sandbox_executor_dispatch_latency_ms,
+                    "executor_first_token_latency_ms": self._timing_value(
+                        response_payload.get("executor_first_token_latency_ms")
+                    ),
+                    "executor_tool_call_latency_ms": self._timing_value(
+                        response_payload.get("executor_tool_call_latency_ms")
+                    ),
+                    "executor_model_latency_ms": self._timing_value(
+                        response_payload.get("executor_model_latency_ms")
+                    ),
+                    "document_processing_latency_ms": self._timing_value(
+                        response_payload.get("document_processing_latency_ms")
+                    ),
+                    "artifact_upload_latency_ms": self._timing_value(
+                        response_payload.get("artifact_upload_latency_ms")
+                    ),
+                    "sandbox_cleanup_latency_ms": cleanup_latency_ms,
+                    "sandbox_total_latency_ms": self._elapsed_ms(total_started_at),
+                },
+            )
+
         async def stop_owned_runtime(reason: str) -> bool:
             """Elect exactly one stop/release owner across runtime cancellation paths."""
 
@@ -763,11 +816,42 @@ class SandboxRuntime:
             await self.provider.validate_for_dispatch(lease, request, workspace)
             validation_succeeded = True
             dispatch_started_at = time.monotonic()
-            response = normalize_executor_reported_failure(
-                await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers),
-                expected_run_id=request.run_id,
+            response = await self._call_execute_task(
+                lease.executor_url,
+                task_request,
+                lease.executor_headers,
             )
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
+            if str(response.get("status") or "").lower() == "accepted":
+                if lease_record_id is None and self._uses_default_lease_recorder:
+                    raise RuntimeError("sandbox_executor_lease_receipt_required")
+                if self._uses_default_lease_recorder:
+                    async with transaction() as conn:
+                        accepted = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+                            conn,
+                            tenant_id=request.tenant_id,
+                            run_id=request.run_id,
+                            attempt_id=request.attempt_id,
+                            lease_id=lease_record_id,
+                            executor_status="accepted",
+                        )
+                    if accepted is None:
+                        raise RuntimeError("sandbox_executor_attempt_inactive")
+                    if not request.reconciliation_context:
+                        raise RuntimeError("sandbox_executor_reconciliation_context_required")
+                    await sandbox_lease_repository.record_sandbox_executor_reconciliation_context(
+                        conn,
+                        tenant_id=request.tenant_id,
+                        run_id=request.run_id,
+                        attempt_id=request.attempt_id,
+                        lease_id=lease_record_id,
+                        context=request.reconciliation_context,
+                    )
+                return build_runtime_result(response)
+            response = normalize_executor_reported_failure(
+                response,
+                expected_run_id=request.run_id,
+            )
             cleanup_timed_out = (
                 str(response.get("status") or "") == "failed"
                 and str(response.get("error_code") or "") == "executor_cleanup_timeout"
@@ -825,39 +909,7 @@ class SandboxRuntime:
             await stop_and_release_owned(release_reason)
             sandbox_cleanup_latency_ms = self._elapsed_ms(cleanup_started_at)
 
-        return SandboxRuntimeResult(
-            status=str(response.get("status") or "accepted"),
-            session_id=request.session_id,
-            run_id=request.run_id,
-            provider=lease.provider,
-            executor_response=response,
-            timings={
-                "schema_version": "ai-platform.sandbox-latency-split.v1",
-                "sandbox_queue_wait_latency_ms": self._timing_value(request.queue_wait_ms),
-                "sandbox_lease_acquire_latency_ms": lease_acquire_latency_ms,
-                "sandbox_container_start_latency_ms": self._timing_value(
-                    lease.timings.get("sandbox_container_start_latency_ms")
-                    or lease.timings.get("sandbox_container_cold_start_latency_ms")
-                ),
-                "sandbox_container_cold_start_latency_ms": self._timing_value(
-                    lease.timings.get("sandbox_container_cold_start_latency_ms")
-                ),
-                "sandbox_healthcheck_latency_ms": self._timing_value(
-                    lease.timings.get("sandbox_healthcheck_latency_ms")
-                ),
-                "sandbox_executor_dispatch_latency_ms": sandbox_executor_dispatch_latency_ms,
-                "executor_first_token_latency_ms": self._timing_value(
-                    response.get("executor_first_token_latency_ms")
-                ),
-                "executor_tool_call_latency_ms": self._timing_value(
-                    response.get("executor_tool_call_latency_ms")
-                ),
-                "executor_model_latency_ms": self._timing_value(response.get("executor_model_latency_ms")),
-                "document_processing_latency_ms": self._timing_value(
-                    response.get("document_processing_latency_ms")
-                ),
-                "artifact_upload_latency_ms": self._timing_value(response.get("artifact_upload_latency_ms")),
-                "sandbox_cleanup_latency_ms": sandbox_cleanup_latency_ms,
-                "sandbox_total_latency_ms": self._elapsed_ms(total_started_at),
-            },
+        return build_runtime_result(
+            response,
+            cleanup_latency_ms=sandbox_cleanup_latency_ms,
         )

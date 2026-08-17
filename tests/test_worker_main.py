@@ -868,7 +868,8 @@ async def test_stale_run_fence_renews_through_stage_and_drain_transactions(monke
 
 
 @pytest.mark.asyncio
-async def test_run_once_acknowledges_completed_message(monkeypatch):
+@pytest.mark.parametrize("outcome_status", ["running", "succeeded"])
+async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch, outcome_status):
     calls = []
 
     async def reclaim_expired_leases(**_kwargs):
@@ -880,7 +881,7 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process", payload["run_id"], worker_id))
-        return WorkerOutcome(status="succeeded", run_id="run-a")
+        return WorkerOutcome(status=outcome_status, run_id="run-a")
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
@@ -902,7 +903,7 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
     outcome = await run_once(timeout_seconds=1, worker_id="worker-a", heartbeat_interval_seconds=60)
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == outcome_status
     assert calls == [("reclaim",), ("lease", "worker-a"), ("process", "run-a", "worker-a"), ("ack", "raw-run", "msg-a")]
 
 

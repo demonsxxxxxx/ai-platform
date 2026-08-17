@@ -4,13 +4,14 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from pydantic import ValidationError
 
-from app.runtime.sandbox.contracts import ExecutorTaskRequest
+from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
 from app.settings import get_settings
-from app.tool_permission_lifecycle import tool_permission_budget
 
 
 PostJson = Callable[..., Awaitable[dict[str, Any]]]
+RequestJson = Callable[..., Awaitable[dict[str, Any]]]
 EXECUTOR_CONNECT_BASE_URL_METADATA = "X-AI-Platform-Internal-Executor-Connect-Base-Url"
 _MAX_EXECUTOR_HTTP_ERROR_BODY_BYTES = 4096
 _GENERIC_EXECUTOR_HTTP_ERROR_CODE = "executor_http_failure"
@@ -33,6 +34,7 @@ _EXECUTOR_HTTP_ERROR_MESSAGES = {
     "invalid_callback_target": "Executor callback target was rejected",
     "executor_runtime_identity_unavailable": "Executor runtime identity is unavailable",
     "executor_request_replayed": "Executor request was already claimed",
+    "executor_protocol_invalid": "Executor returned an invalid protocol response",
 }
 _EXECUTOR_REPORTED_FAILURE_CODES = frozenset(
     {
@@ -239,27 +241,45 @@ def prepare_executor_http_request(
     return urlunsplit((logical.scheme, connect_netloc, logical.path, logical.query, logical.fragment)), outgoing_headers
 
 
+async def _default_request_json(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.request(
+            method,
+            url,
+            json=payload,
+            headers=dict(headers or {}),
+        )
+        if not 200 <= response.status_code < 300:
+            raise _executor_http_error(response)
+        data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
 async def _default_post_json(
     url: str,
     payload: dict[str, Any],
     timeout: float,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        request_headers = dict(headers or {})
-        if request_headers:
-            response = await client.post(url, json=payload, headers=request_headers)
-        else:
-            response = await client.post(url, json=payload)
-        if not 200 <= response.status_code < 300:
-            raise _executor_http_error(response)
-        data = response.json()
-    return data if isinstance(data, dict) else {"status": "accepted"}
+    data = await _default_request_json("POST", url, payload, timeout, headers)
+    return data or {"status": "accepted"}
 
 
 class SandboxExecutorClient:
-    def __init__(self, post_json: PostJson | None = None, timeout_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        post_json: PostJson | None = None,
+        timeout_seconds: float | None = None,
+        request_json: RequestJson | None = None,
+    ) -> None:
         self._post_json = post_json or _default_post_json
+        self._request_json = request_json or _default_request_json
         self._timeout_seconds = timeout_seconds
 
     async def execute(
@@ -269,16 +289,60 @@ class SandboxExecutorClient:
         *,
         executor_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        logical_url = f"{executor_url.rstrip('/')}/v1/tasks/execute"
+        logical_url = f"{executor_url.rstrip('/')}/v2/tasks"
         url, outgoing_headers = prepare_executor_http_request(logical_url, executor_headers)
-        timeout_seconds = self._timeout_seconds if self._timeout_seconds is not None else _default_timeout_seconds(request)
-        return await self._post_json(url, request.model_dump(), timeout_seconds, outgoing_headers)
+        timeout_seconds = self._timeout_seconds if self._timeout_seconds is not None else _default_timeout_seconds()
+        response = await self._post_json(url, request.model_dump(), timeout_seconds, outgoing_headers)
+        try:
+            receipt = ExecutorTaskDispatchReceipt.model_validate(
+                {
+                    **response,
+                    "run_id": response.get("run_id", request.run_id),
+                    "attempt_id": response.get("attempt_id", request.attempt_id),
+                }
+            )
+        except ValidationError:
+            raise SandboxExecutorHttpError(
+                status_code=502,
+                error_code="executor_protocol_invalid",
+            ) from None
+        if receipt.run_id != request.run_id or receipt.attempt_id != request.attempt_id:
+            raise SandboxExecutorHttpError(
+                status_code=502,
+                error_code="executor_protocol_invalid",
+            )
+        return receipt.model_dump()
+
+    async def get_status(
+        self,
+        executor_url: str,
+        *,
+        run_id: str,
+        attempt_id: str,
+        executor_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        logical_url = f"{executor_url.rstrip('/')}/v2/tasks/{run_id}/{attempt_id}"
+        url, outgoing_headers = prepare_executor_http_request(logical_url, executor_headers)
+        timeout_seconds = self._timeout_seconds if self._timeout_seconds is not None else _default_timeout_seconds()
+        return await self._request_json("GET", url, None, timeout_seconds, outgoing_headers)
+
+    async def cancel(
+        self,
+        executor_url: str,
+        *,
+        run_id: str,
+        attempt_id: str,
+        executor_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        logical_url = f"{executor_url.rstrip('/')}/v2/tasks/{run_id}/{attempt_id}/cancel"
+        url, outgoing_headers = prepare_executor_http_request(logical_url, executor_headers)
+        timeout_seconds = self._timeout_seconds if self._timeout_seconds is not None else _default_timeout_seconds()
+        return await self._post_json(url, {}, timeout_seconds, outgoing_headers)
 
 
 def _default_timeout_seconds(request: ExecutorTaskRequest | None = None) -> float:
-    """Use the normal bounded executor timeout; runtime approval never extends it."""
+    """Bound only the short asynchronous dispatch request."""
 
-    settings = get_settings()
-    sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 1200.0))
     _ = request
-    return tool_permission_budget(sdk_timeout).normal_outer_executor_timeout_seconds
+    settings = get_settings()
+    return float(getattr(settings, "opensandbox_request_timeout_seconds", 30.0))

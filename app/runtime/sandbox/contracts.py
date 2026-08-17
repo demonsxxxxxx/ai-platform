@@ -3,7 +3,7 @@ from ipaddress import ip_address
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
@@ -171,6 +171,7 @@ class SandboxRuntimeRequest(BaseModel):
     sdk_session_id: str | None = None
     governed_permission_wait: bool = False
     require_selected_skill_invocation: bool = True
+    reconciliation_context: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "attempt_id", "agent_id", "callback_token_id")
     @classmethod
@@ -354,6 +355,36 @@ class ExecutorTaskRequest(BaseModel):
         return assert_safe_id(value, "sdk_session_id") if value else value
 
 
+class ExecutorTaskDispatchReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["accepted"]
+    run_id: str
+    attempt_id: str
+
+    @field_validator("run_id", "attempt_id")
+    @classmethod
+    def validate_ids(cls, value: str, info) -> str:
+        return assert_safe_id(value, str(info.field_name))
+
+
+class ExecutorTerminalResult(BaseModel):
+    """Authoritative terminal response returned through the callback channel."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: Literal["completed", "succeeded", "failed", "cancelled", "canceled"]
+    run_id: str
+    message: str = Field(default="", max_length=200_000)
+    error_code: str | None = Field(default=None, max_length=256)
+    error_message: str | None = Field(default=None, max_length=4_096)
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        return assert_safe_id(value, "run_id")
+
+
 class ExecutorCallbackEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -368,7 +399,26 @@ class ExecutorCallbackEvent(BaseModel):
     state_patch: dict[str, Any] = Field(default_factory=dict)
     sdk_session_id: str | None = None
     error_message: str | None = None
-    events: list[AgentEvent] = Field(default_factory=list)
+    events: list[AgentEvent] = Field(default_factory=list, max_length=100)
+    terminal_result: ExecutorTerminalResult | None = None
+
+    @model_validator(mode="after")
+    def validate_terminal_result(self) -> "ExecutorCallbackEvent":
+        terminal = self.status in {"completed", "failed", "cancelled"}
+        if terminal != (self.terminal_result is not None):
+            raise ValueError("terminal_result must be present only for terminal callbacks")
+        if self.terminal_result is None:
+            return self
+        if self.terminal_result.run_id != self.run_id:
+            raise ValueError("terminal_result run_id must match callback run_id")
+        result_status = self.terminal_result.status
+        if self.status == "completed" and result_status not in {"completed", "succeeded"}:
+            raise ValueError("completed callback requires a successful terminal result")
+        if self.status == "failed" and result_status != "failed":
+            raise ValueError("failed callback requires a failed terminal result")
+        if self.status == "cancelled" and result_status not in {"cancelled", "canceled"}:
+            raise ValueError("cancelled callback requires a cancelled terminal result")
+        return self
 
     @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod

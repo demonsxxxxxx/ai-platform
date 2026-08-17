@@ -7,7 +7,19 @@ import app.runtime.sandbox.executor_client as executor_client_module
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
-from app.tool_permission_lifecycle import tool_permission_budget
+
+
+def callback_event(**kwargs) -> ExecutorCallbackEvent:
+    if kwargs.get("status") in {"completed", "failed", "cancelled"}:
+        kwargs.setdefault(
+            "terminal_result",
+            {
+                "status": kwargs["status"],
+                "run_id": kwargs["run_id"],
+                "message": "",
+            },
+        )
+    return ExecutorCallbackEvent(**kwargs)
 
 
 def executor_identity() -> dict[str, str]:
@@ -51,7 +63,7 @@ def test_container_started_event_is_admin_only_and_sanitized():
 
 
 def test_callback_running_new_message_maps_to_assistant_delta():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -70,7 +82,7 @@ def test_callback_running_new_message_maps_to_assistant_delta():
 
 
 def test_callback_batch_id_is_optional_safe_and_serialized():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -79,7 +91,7 @@ def test_callback_batch_id_is_optional_safe_and_serialized():
         status="running",
         progress=20,
     )
-    missing = ExecutorCallbackEvent(
+    missing = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -93,7 +105,7 @@ def test_callback_batch_id_is_optional_safe_and_serialized():
     assert missing.model_dump()["batch_id"] is None
     for hostile_batch_id in ("", "batch/id", "batch id", "x" * 129):
         with pytest.raises(ValueError, match="batch_id"):
-            ExecutorCallbackEvent(
+            callback_event(
                 session_id="session-a",
                 run_id="run-a",
                 attempt_id="attempt-a",
@@ -105,7 +117,7 @@ def test_callback_batch_id_is_optional_safe_and_serialized():
 
 
 def test_callback_completed_new_message_preserves_final_assistant_delta():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -124,7 +136,7 @@ def test_callback_completed_new_message_preserves_final_assistant_delta():
 
 @pytest.mark.parametrize("value", ["", 7, True, [], {}, None])
 def test_callback_rejects_empty_or_non_string_explicit_delta(value):
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -140,7 +152,7 @@ def test_callback_rejects_empty_or_non_string_explicit_delta(value):
 
 @pytest.mark.parametrize("value", ["", 7, True, [], {}, None])
 def test_callback_rejects_empty_or_non_string_text_fallback(value):
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -155,7 +167,7 @@ def test_callback_rejects_empty_or_non_string_text_fallback(value):
 
 
 def test_callback_rejects_invalid_explicit_delta_without_falling_back_to_text():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -170,7 +182,7 @@ def test_callback_rejects_invalid_explicit_delta_without_falling_back_to_text():
 
 
 def test_callback_uses_valid_text_only_when_delta_is_absent():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -187,7 +199,7 @@ def test_callback_uses_valid_text_only_when_delta_is_absent():
 
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
 def test_callback_non_success_terminal_new_message_does_not_synthesize_delta(status):
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -201,7 +213,7 @@ def test_callback_non_success_terminal_new_message_does_not_synthesize_delta(sta
 
 
 def test_callback_current_step_maps_to_tool_call_delta():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -220,7 +232,7 @@ def test_callback_current_step_maps_to_tool_call_delta():
 
 
 def test_callback_current_step_remains_running_only():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -235,7 +247,7 @@ def test_callback_current_step_remains_running_only():
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
 def test_callback_terminal_status_does_not_map_to_authoritative_run_event(status):
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -253,7 +265,7 @@ def test_callback_terminal_status_does_not_map_to_authoritative_run_event(status
 
 
 def test_callback_typed_events_are_appended_after_compatibility_events():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -288,7 +300,7 @@ def test_callback_typed_events_are_appended_after_compatibility_events():
 
 
 def test_callback_collapses_only_one_exact_cross_representation_delta_mirror():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -328,7 +340,7 @@ def test_callback_collapses_only_one_exact_cross_representation_delta_mirror():
     ],
 )
 def test_callback_does_not_collapse_non_exact_or_admin_only_delta_mirrors(typed_event):
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -348,7 +360,7 @@ def test_callback_does_not_collapse_non_exact_or_admin_only_delta_mirrors(typed_
 
 
 def test_callback_suppresses_executor_terminal_facts_without_reordering_surrounding_events():
-    callback = ExecutorCallbackEvent(
+    callback = callback_event(
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -374,28 +386,24 @@ def test_callback_suppresses_executor_terminal_facts_without_reordering_surround
     ]
 
 
-def test_executor_client_default_timeout_uses_document_workflow_budget(monkeypatch):
+def test_executor_client_default_timeout_uses_short_opensandbox_budget(monkeypatch):
     monkeypatch.setattr(
         executor_client_module,
         "get_settings",
-        lambda: type("S", (), {})(),
+        lambda: type("S", (), {"opensandbox_request_timeout_seconds": 30.0})(),
     )
 
-    assert executor_client_module._default_timeout_seconds() == tool_permission_budget(
-        1200.0
-    ).normal_outer_executor_timeout_seconds
+    assert executor_client_module._default_timeout_seconds() == 30.0
 
 
-def test_executor_client_preserves_explicit_zero_timeout(monkeypatch):
+def test_executor_client_uses_configured_dispatch_timeout(monkeypatch):
     monkeypatch.setattr(
         executor_client_module,
         "get_settings",
-        lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 0.0})(),
+        lambda: type("S", (), {"opensandbox_request_timeout_seconds": 7.0})(),
     )
 
-    assert executor_client_module._default_timeout_seconds() == tool_permission_budget(
-        0.0
-    ).normal_outer_executor_timeout_seconds
+    assert executor_client_module._default_timeout_seconds() == 7.0
 
 
 @pytest.mark.asyncio
@@ -404,7 +412,11 @@ async def test_executor_client_posts_task_request(monkeypatch):
 
     async def post_json(url, payload, timeout, headers=None):
         calls.append((url, payload, timeout))
-        return {"status": "accepted", "session_id": "session-a"}
+        return {
+            "status": "accepted",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+        }
 
     monkeypatch.setattr(
         "app.runtime.sandbox.executor_client.get_settings",
@@ -426,12 +438,16 @@ async def test_executor_client_posts_task_request(monkeypatch):
 
     result = await client.execute("http://executor.test", request)
 
-    assert result == {"status": "accepted", "session_id": "session-a"}
+    assert result == {
+        "status": "accepted",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+    }
     assert calls == [
         (
-            "http://executor.test/v1/tasks/execute",
+            "http://executor.test/v2/tasks",
             request.model_dump(),
-            tool_permission_budget(120.0).normal_outer_executor_timeout_seconds,
+            30.0,
         )
     ]
 
@@ -500,14 +516,15 @@ async def test_executor_client_non_2xx_error_identity_is_bounded_and_secret_safe
         async def __aexit__(self, exc_type, exc, traceback):
             return None
 
-        async def post(self, url, *, json, headers=None):
+        async def request(self, method, url, *, json, headers=None):
+            assert method == "POST"
             return StubResponse()
 
     monkeypatch.setattr(executor_client_module.httpx, "AsyncClient", StubAsyncClient)
 
     with pytest.raises(SandboxExecutorHttpError) as raised:
         await executor_client_module._default_post_json(
-            "https://executor.test/v1/tasks/execute?token=private-query-token",
+            "https://executor.test/v2/tasks?token=private-query-token",
             {"prompt": "private-prompt", "callback_token": "private-callback-token"},
             3.0,
             {"Authorization": "Bearer private-header-token"},
@@ -531,7 +548,7 @@ async def test_executor_client_non_2xx_error_identity_is_bounded_and_secret_safe
 
 
 @pytest.mark.asyncio
-async def test_executor_client_preserves_http_200_reported_failure():
+async def test_executor_client_rejects_http_200_reported_failure_as_invalid_protocol():
     async def post_json(url, payload, timeout, headers=None):
         return {
             "status": "failed",
@@ -551,16 +568,14 @@ async def test_executor_client_preserves_http_200_reported_failure():
         callback_base_url="http://callback-base",
     )
 
-    result = await SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0).execute(
-        "http://executor.test",
-        request,
-    )
+    with pytest.raises(SandboxExecutorHttpError) as raised:
+        await SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0).execute(
+            "http://executor.test",
+            request,
+        )
 
-    assert result == {
-        "status": "failed",
-        "error_code": "executor_health_timeout",
-        "error_message": "Executor health timeout",
-    }
+    assert raised.value.status_code == 502
+    assert raised.value.error_code == "executor_protocol_invalid"
 
 
 def test_executor_failure_normalizer_drops_unknown_private_fields():
@@ -600,7 +615,7 @@ def test_executor_failure_normalizer_drops_unknown_private_fields():
 
 
 @pytest.mark.asyncio
-async def test_executor_client_uses_normal_deadline_without_permission_wait(monkeypatch):
+async def test_executor_client_uses_short_dispatch_deadline(monkeypatch):
     calls = []
 
     async def post_json(url, payload, timeout, headers=None):
@@ -609,7 +624,7 @@ async def test_executor_client_uses_normal_deadline_without_permission_wait(monk
 
     monkeypatch.setattr(
         "app.runtime.sandbox.executor_client.get_settings",
-        lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 120.0})(),
+        lambda: type("S", (), {"opensandbox_request_timeout_seconds": 30.0})(),
     )
     request = ExecutorTaskRequest(
         **executor_identity(),
@@ -626,7 +641,7 @@ async def test_executor_client_uses_normal_deadline_without_permission_wait(monk
 
     await SandboxExecutorClient(post_json=post_json).execute("http://executor.test", request)
 
-    assert calls == [tool_permission_budget(120.0).normal_outer_executor_timeout_seconds]
+    assert calls == [30.0]
 
 
 @pytest.mark.asyncio
@@ -663,7 +678,7 @@ async def test_executor_client_connects_to_pinned_ip_without_transmitting_privat
 
     assert calls == [
         (
-            "http://172.17.0.1:43123/v1/tasks/execute",
+            "http://172.17.0.1:43123/v2/tasks",
             {
                 "X-AI-Platform-Executor-Credential": "executor-secret",
                 "Host": "host.docker.internal:43123",

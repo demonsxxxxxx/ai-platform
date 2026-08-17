@@ -28,9 +28,19 @@ def noop_lease(*args):
     return None
 
 
+class FakeCursor:
+    async def fetchone(self):
+        return {"id": "lease-recorded", "executor_status": "accepted"}
+
+
+class FakeConnection:
+    async def execute(self, *_args, **_kwargs):
+        return FakeCursor()
+
+
 @asynccontextmanager
 async def fake_transaction():
-    yield object()
+    yield FakeConnection()
 
 
 def request(**overrides) -> SandboxRuntimeRequest:
@@ -53,6 +63,11 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
         "callback_url": "http://callback.test/api/ai/runtime/callbacks/executor",
         "callback_token_id": "cbt_run-a",
+        "reconciliation_context": {
+            "schema_version": "ai-platform.executor-reconciliation.v1",
+            "run_payload": {"run_id": "run-a"},
+            "adapter_context": {},
+        },
     }
     values.update(overrides)
     return SandboxRuntimeRequest(**values)
@@ -148,8 +163,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert lease_calls[0][0] == "record"
     assert lease_calls[0][1].container_id == "exec-run-a"
     assert lease_calls[0][2].run_id == "run-a"
-    assert lease_calls[1][0] == "release"
-    assert lease_calls[1][2] == "dispatch_completed"
+    assert len(lease_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1095,8 +1109,8 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
         "executor_model_latency_ms": 21,
         "document_processing_latency_ms": 8,
         "artifact_upload_latency_ms": 0,
-        "sandbox_cleanup_latency_ms": 15,
-        "sandbox_total_latency_ms": 130,
+        "sandbox_cleanup_latency_ms": 0,
+        "sandbox_total_latency_ms": 110,
     }
     assert result.timings["sandbox_executor_dispatch_latency_ms"] < result.timings["sandbox_total_latency_ms"]
     assert result.timings["sandbox_container_cold_start_latency_ms"] != result.timings["executor_model_latency_ms"]
@@ -1222,7 +1236,7 @@ async def test_runtime_preserves_typed_executor_http_error_and_cleanup_order(tmp
 
 
 @pytest.mark.asyncio
-async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, monkeypatch):
+async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, monkeypatch):
     calls = []
 
     class StubSettings:
@@ -1253,12 +1267,34 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
         calls.append(("release_one", kwargs["lease_id"], kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released"}
 
+    async def record_sandbox_executor_heartbeat(conn, **kwargs):
+        calls.append(("accepted", kwargs["lease_id"], kwargs["run_id"], kwargs["attempt_id"]))
+        return {"id": kwargs["lease_id"]}
+
+    async def record_sandbox_executor_reconciliation_context(conn, **kwargs):
+        calls.append(
+            (
+                "context",
+                kwargs["lease_id"],
+                kwargs["context"]["schema_version"],
+            )
+        )
+        return {"id": kwargs["lease_id"]}
+
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
     monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr(
         "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
         fence_sandbox_lease_release,
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_heartbeat",
+        record_sandbox_executor_heartbeat,
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_reconciliation_context",
+        record_sandbox_executor_reconciliation_context,
     )
 
     runtime = SandboxRuntime(
@@ -1312,7 +1348,8 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                     "runtime_workspace_container_path": "/workspace",
                 },
         ),
-        ("release_one", "lease-created-a", "dispatch_completed"),
+        ("accepted", "lease-created-a", "run-a", "qat_test-runtime-attempt"),
+        ("context", "lease-created-a", "ai-platform.executor-reconciliation.v1"),
     ]
 
 
@@ -1432,7 +1469,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert create_kwargs["lease_payload_json"]["governed_egress_proof"] == governed_egress_proof
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
-    assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1773,7 +1810,6 @@ async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_pat
             {"workspace": "/workspace", "inputs": "/workspace/inputs"},
         ),
         ("execute", "http://opensandbox-executor.test", "run-a"),
-        ("release", "opensandbox", "dispatch_completed", "lease-opensandbox-a"),
     ]
 
 
@@ -1875,7 +1911,7 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
         "http://opensandbox-executor.test",
         {"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"},
     )
-    assert calls[2] == ("release", "lease-created-a", "dispatch_completed")
+    assert len(calls) == 2
     assert "executor_headers" not in create_payload
     assert "opensandbox-secret" not in str(create_payload)
 
@@ -1908,10 +1944,14 @@ async def test_executor_client_posts_private_executor_headers():
         executor_headers={"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"},
     )
 
-    assert response == {"status": "accepted"}
+    assert response == {
+        "status": "accepted",
+        "run_id": "run-a",
+        "attempt_id": "qat_test-executor-attempt",
+    }
     assert calls == [
         (
-            "http://executor.test/v1/tasks/execute",
+            "http://executor.test/v2/tasks",
             {
                 "tenant_id": "tenant-a",
                 "workspace_id": "workspace-a",
@@ -1936,7 +1976,58 @@ async def test_executor_client_posts_private_executor_headers():
 
 
 @pytest.mark.asyncio
-async def test_runtime_does_not_release_db_lease_when_completion_stop_fails(tmp_path):
+async def test_executor_client_uses_short_v2_status_and_cancel_requests():
+    calls = []
+
+    async def request_json(method, url, payload, timeout, headers=None):
+        calls.append((method, url, payload, timeout, dict(headers or {})))
+        return {"status": "running", "run_id": "run-a", "attempt_id": "attempt-a"}
+
+    async def post_json(url, payload, timeout, headers=None):
+        calls.append(("POST", url, payload, timeout, dict(headers or {})))
+        return {"status": "cancel_requested", "run_id": "run-a", "attempt_id": "attempt-a"}
+
+    client = SandboxExecutorClient(
+        post_json=post_json,
+        request_json=request_json,
+        timeout_seconds=3.0,
+    )
+
+    status_response = await client.get_status(
+        "http://executor.test",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        executor_headers={"X-Private": "value"},
+    )
+    cancel_response = await client.cancel(
+        "http://executor.test",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        executor_headers={"X-Private": "value"},
+    )
+
+    assert status_response["status"] == "running"
+    assert cancel_response["status"] == "cancel_requested"
+    assert calls == [
+        (
+            "GET",
+            "http://executor.test/v2/tasks/run-a/attempt-a",
+            None,
+            3.0,
+            {"X-Private": "value"},
+        ),
+        (
+            "POST",
+            "http://executor.test/v2/tasks/run-a/attempt-a/cancel",
+            {},
+            3.0,
+            {"X-Private": "value"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_leaves_accepted_lease_for_durable_reconciler(tmp_path):
     calls = []
 
     class StopFailedProvider(FakeContainerProvider):
@@ -1963,10 +2054,10 @@ async def test_runtime_does_not_release_db_lease_when_completion_stop_fails(tmp_
         release_lease=release_lease,
     )
 
-    with pytest.raises(RuntimeError, match="sandbox_runtime_cleanup_failed"):
-        await runtime.submit(request(sandbox_mode="ephemeral"))
+    result = await runtime.submit(request(sandbox_mode="ephemeral"))
 
-    assert calls == [("record", "run-a"), ("stop", "dispatch_completed")]
+    assert result.status == "accepted"
+    assert calls == [("record", "run-a")]
 
 
 @pytest.mark.asyncio

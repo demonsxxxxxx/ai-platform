@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -12,6 +13,7 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.db import transaction
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
@@ -27,6 +29,10 @@ from app.runtime.sandbox.contracts import (
     ExecutorContextRetrievalRequest,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.runtime.sandbox.executor_signals import (
+    ExecutorSignalUnavailable,
+    publish_executor_terminal_signal,
+)
 from app.settings import get_settings
 from app.streaming.redis import (
     RedisStreamBridge,
@@ -40,6 +46,7 @@ from app.streaming.redis import (
 from app.storage import ObjectStorage
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
@@ -59,12 +66,8 @@ def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str
 async def record_executor_callback(
     callback: ExecutorCallbackEvent,
 ) -> dict[str, object]:
-    """Persist only non-terminal sandbox observations; worker owns run terminal facts."""
+    """Persist one fenced sandbox observation or terminal result."""
 
-    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
-        raise HTTPException(
-            status_code=409, detail="executor_terminal_callback_not_allowed"
-        )
     callback_for_events = callback
     if callback.status == "running" and callback.new_message is not None:
         raw_delta = (
@@ -95,7 +98,7 @@ async def record_executor_callback(
         if str(run_identity.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
             raise HTTPException(status_code=409, detail="run_already_terminal")
         tenant_id = str(run_identity["tenant_id"])
-        await _require_current_runtime_attempt(
+        lease = await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
@@ -209,12 +212,58 @@ async def record_executor_callback(
                     run_id=callback.run_id,
                     **event,
                 )
+        lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
+        if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
+            if callback.terminal_result is None:
+                raise HTTPException(status_code=422, detail="executor_terminal_result_required")
+            if not lease_id:
+                raise HTTPException(
+                    status_code=503,
+                    detail="sandbox_executor_lease_receipt_unavailable",
+                )
+            try:
+                await sandbox_lease_repository.record_sandbox_executor_terminal(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    lease_id=lease_id,
+                    executor_status=callback.status,
+                    terminal_result=callback.terminal_result.model_dump(
+                        mode="json", exclude_none=True
+                    ),
+                )
+            except sandbox_lease_repository.SandboxExecutorTerminalConflictError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="sandbox_executor_terminal_conflict",
+                ) from exc
+        elif lease_id:
+            heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+                conn,
+                tenant_id=tenant_id,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                lease_id=lease_id,
+                executor_status="running",
+            )
+            if heartbeat is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="sandbox_runtime_attempt_inactive",
+                )
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
+    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES and lease_id:
+        try:
+            await publish_executor_terminal_signal()
+        except ExecutorSignalUnavailable:
+            # PostgreSQL is authoritative; the worker falls back to bounded polling.
+            logger.warning("executor_terminal_signal_unavailable")
     if public_deltas:
         # The callback receipt is already durable. Re-check the run and stream
         # authority after that commit so a concurrently committed terminal run

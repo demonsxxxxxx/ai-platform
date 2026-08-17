@@ -127,7 +127,7 @@ EXECD_ALLOWED = {
 EXECUTOR_ALLOWED = {
     ("GET", "/health"),
     ("GET", "/health/runtime-identity"),
-    ("POST", "/v1/tasks/execute"),
+    ("POST", "/v2/tasks"),
 }
 
 
@@ -1072,7 +1072,7 @@ class GatewayApplication:
             command = _json_object(request.body)
             if command != {"command": "test -f /workspace/.ai-platform-opensandbox-lease.json"}:
                 raise GatewayError(400, "workspace_command_not_allowed")
-        if port == 18000 and clean_path == "/v1/tasks/execute":
+        if port == 18000 and clean_path == "/v2/tasks":
             task = _json_object(request.body)
             self._validate_task_scope(task, record)
             task["callback_base_url"] = "http://127.0.0.1:18888"

@@ -177,6 +177,15 @@ class ContainerProvider(Protocol):
 
         ...
 
+    async def executor_control_endpoint(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+    ) -> tuple[str, dict[str, str]]:
+        """Resolve a fresh authenticated endpoint for status/cancel control."""
+
+        ...
+
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]: ...
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]: ...
@@ -2733,6 +2742,21 @@ def _generate_executor_auth_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _executor_auth_token_for_request(request: SandboxRuntimeRequest, settings: Any) -> str:
+    signing_key = str(getattr(settings, "sandbox_egress_proof_signing_key", "") or "").strip()
+    if not signing_key:
+        return _generate_executor_auth_token()
+    scope = "\0".join(
+        (
+            "ai-platform-executor-control-v2",
+            request.tenant_id,
+            request.run_id,
+            request.attempt_id,
+        )
+    )
+    return hmac.new(signing_key.encode("utf-8"), scope.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def _executor_auth_headers(
     executor_auth_token: str,
     headers: dict[str, str] | None = None,
@@ -2827,6 +2851,13 @@ class FakeContainerProvider:
         workspace: WorkspaceLease,
     ) -> None:
         return None
+
+    async def executor_control_endpoint(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+    ) -> tuple[str, dict[str, str]]:
+        return lease.executor_url, dict(lease.executor_headers)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         removed = self._leases.pop(lease.container_id, None)
@@ -3873,7 +3904,7 @@ class DockerContainerProvider:
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
         cold_start_started_at = self._monotonic()
-        executor_auth_token = _generate_executor_auth_token()
+        executor_auth_token = _executor_auth_token_for_request(request, settings)
         native_tool_token = _generate_executor_auth_token() if native_tool_required else ""
         bootstrap_lease.executor_headers = _executor_auth_headers(executor_auth_token)
         native_tool_container = None
@@ -4263,6 +4294,30 @@ class DockerContainerProvider:
         """Docker writes directly to the controller-visible workspace bind."""
 
         return None
+
+    async def executor_control_endpoint(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+    ) -> tuple[str, dict[str, str]]:
+        settings = get_settings()
+
+        def resolve() -> tuple[str, dict[str, str]]:
+            container = self._get_client().containers.get(lease.container_name)
+            status = _container_status_from_labels(container)
+            if status is None or not _status_matches_lease(status, lease):
+                raise ContainerStartFailedError("executor control identity mismatch")
+            token = _container_executor_auth_token(container)
+            if not token:
+                raise ContainerStartFailedError("executor control credential unavailable")
+            endpoint = _resolve_executor_published_endpoint(settings)
+            executor_url = _published_executor_url_from_container(container, endpoint)
+            return executor_url, _executor_auth_headers(
+                token,
+                connect_base_url=_executor_connect_base_url(executor_url, endpoint),
+            )
+
+        return await asyncio.to_thread(resolve)
 
     def _stop_sync(self, lease: ContainerLease, reason: str) -> StopResult:
         primary_status = "not_found"
@@ -4860,7 +4915,7 @@ class OpenSandboxContainerProvider:
 
         started_at = self._monotonic()
         connection_config = self._connection_config(settings)
-        executor_auth_token = _generate_executor_auth_token()
+        executor_auth_token = _executor_auth_token_for_request(request, settings)
 
         async def cleanup_new(sandbox: Any | None, original_error: SandboxRuntimeError | None = None) -> None:
             return await cleanup_new_sandbox_or_reconcile(
@@ -5676,6 +5731,35 @@ class OpenSandboxContainerProvider:
         finally:
             if staging_root is not None:
                 self._remove_temporary_collection_root(staging_root)
+
+    async def executor_control_endpoint(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+    ) -> tuple[str, dict[str, str]]:
+        settings = get_settings()
+        connection_config = self._connection_config(settings)
+        sandbox = self._sandboxes.get(lease.container_id)
+        if sandbox is None:
+            sandbox = await self._connect(
+                lease.container_id,
+                connection_config,
+                skip_health_check=True,
+            )
+        info = await _maybe_await(sandbox.get_info()) if hasattr(sandbox, "get_info") else sandbox
+        status = _opensandbox_status_from_info(info)
+        if status is None or not _status_matches_lease(status, lease):
+            raise ContainerStartFailedError("executor control identity mismatch")
+        executor_url, endpoint_headers = await resolve_executor_endpoint(
+            sandbox,
+            settings,
+            error_factory=ContainerStartFailedError,
+        )
+        self._sandboxes[lease.container_id] = sandbox
+        return executor_url, _executor_auth_headers(
+            _executor_auth_token_for_request(request, settings),
+            endpoint_headers,
+        )
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
