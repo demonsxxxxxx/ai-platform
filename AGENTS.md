@@ -9,20 +9,28 @@ This file applies to the current `ai-platform` repository root.
 - This Windows workstation currently does not provide a local `docker` command. If `docker` is not recognized, do not repeatedly retry local `docker compose` checks.
 - For local readiness, prefer repository-native checks such as:
   - `python -m compileall -q app tools scripts`
-  - `python -m pytest <changed-or-affected-tests> -q --basetemp .pytest-tmp`
+  - `python tools/run_test_stage.py --stage <name> --timeout-seconds 300 -- <explicit-test-selectors>`
   - relevant integration or smoke checks for the changed path
+- After the local test-stage runner is accepted on `main`, use it for ordinary
+  local pytest execution. The introducing change may test the runner directly
+  with the repository's existing pytest command and a workspace-local
+  basetemp; a candidate-owned runner cannot certify its own introduction.
+- Run pytest from the target worktree root with explicit test files or node IDs.
+  Do not use nested `spawnSync`/capture runners, bypass the per-worktree lock,
+  or treat partial output from a timeout as a pass. If tests pass separately but
+  fail or hang together, stop and fix the test-isolation failure.
+- The normative local procedure and failure taxonomy live in
+  `docs/agent-rules/local-test-execution.md`.
 - Do not run or require full-repository pytest by default. Full pytest is
   prohibited as a routine gate because it wastes time; run it only if the user
   explicitly requests it for a specific risk decision.
 - Run Docker validation, builds, restarts, and runtime smoke only on a
   Docker-capable environment. The authoritative commands and recovery paths
   live in `docs/operations/release-operations-runbook.md`.
-- Every local pytest invocation must pass a basetemp path under the
-  workspace-local, git-ignored `.pytest-tmp/` directory; use
-  `--basetemp .pytest-tmp` by default and never rely on the system temp path.
-- If stale unreadable content prevents reuse of that root, pass a fresh
-  non-existing child such as
-  `--basetemp .pytest-tmp\run-verify-<timestamp>` and report the reason.
+- The local test-stage runner creates a unique basetemp under the workspace-local,
+  git-ignored `.pytest-tmp/` directory. Never rely on the system temp path.
+  When directly testing the runner itself, create `.pytest-tmp/` first, pass a
+  fresh child through `--basetemp`, and report any stale-root reason.
 
 ## Remote Runtime Access
 

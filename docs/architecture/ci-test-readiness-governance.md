@@ -65,6 +65,13 @@ Delete a test when its production path is formally retired and the test only
 asserts that retired path. Keep or rewrite the test when it protects a current
 wire, persistence, security, denial, concurrency, or compatibility contract.
 
+The normative local execution procedure is
+[`../agent-rules/local-test-execution.md`](../agent-rules/local-test-execution.md).
+It governs explicit selection, worktree binding, basetemp allocation, locking,
+timeouts, process-tree cleanup, and local evidence reports. It does not change
+the test classes or evidence levels owned by this architecture contract, and it
+does not replace immutable pre-push authority or required CI.
+
 ## 4. Required CI topology
 
 The backend required result is an aggregation boundary, not a place to hide
