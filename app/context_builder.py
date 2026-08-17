@@ -5,12 +5,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app import repositories
+from app.context.api import MAX_CONVERSATION_CONTEXT_CANDIDATES
+from app.context.file_continuity import snapshot_file_ids
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     ContextPlanner,
     public_context_manifest_projection,
 )
-from app.context.file_continuity import snapshot_file_ids
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
 from app.office_execution_tier import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
@@ -476,13 +477,6 @@ def initial_context_summary(
     return summary
 
 
-def _manifest_current_message(input_payload: dict[str, Any]) -> str:
-    message = input_payload.get("message")
-    if isinstance(message, str):
-        return message
-    return ""
-
-
 def _manifest_context_chips(input_payload: dict[str, Any]) -> list[str]:
     chips = input_payload.get("context_chips")
     if isinstance(chips, list):
@@ -525,8 +519,8 @@ def _build_initial_context_manifest(
     agent_id: str,
     skill_id: str | None,
     input_payload: dict[str, Any],
-    prior_messages: list[dict[str, Any]],
     history_candidate_count: int,
+    history_authorized_count: int,
     file_ids: list[str],
     artifact_ids: list[str],
     memory_record_ids: list[str],
@@ -542,9 +536,8 @@ def _build_initial_context_manifest(
         run_id=run_id,
         agent_id=agent_id,
         skill_id=skill_id,
-        current_message=_manifest_current_message(input_payload),
-        recent_messages=prior_messages,
         history_candidate_count=history_candidate_count,
+        history_authorized_count=history_authorized_count,
         context_chips=_manifest_context_chips(input_payload),
         files=_manifest_file_refs(file_ids, authorized_file_rows),
         artifacts=_manifest_artifact_refs(artifact_ids),
@@ -573,14 +566,14 @@ async def record_initial_context_snapshot(
     include_session_history: bool = False,
     include_session_files: bool = True,
 ) -> dict[str, Any]:
-    included_message_ids = list(message_ids or [])
-    prior_messages: list[dict[str, Any]] = []
+    included_message_ids = list(dict.fromkeys(message_ids or []))
     included_file_ids = list(file_ids or [])
     included_artifact_ids: list[str] = []
     source_run_ids: list[str] = []
     source_artifacts: list[dict[str, Any]] = []
     legacy_history_excluded = False
     history_candidate_count = 0
+    history_authorized_count = 0
     if include_session_history:
         history_candidate_count = await repositories.count_session_context_messages(
             conn,
@@ -597,28 +590,23 @@ async def record_initial_context_snapshot(
             user_id=user_id,
             session_id=session_id,
             run_id=run_id,
-            limit=8,
+            limit=MAX_CONVERSATION_CONTEXT_CANDIDATES,
         )
-        included_message_ids = list(
+        current_message_ids = {message_id for message_id in included_message_ids if message_id}
+        history_message_ids = list(
             dict.fromkeys(
-                [
-                    str(row.get("id") or "")
-                    for row in session_messages
-                    if isinstance(row, dict) and row.get("id")
-                ]
-                + included_message_ids
+                str(row.get("id") or "")
+                for row in session_messages
+                if isinstance(row, dict)
+                and row.get("id")
+                and str(row.get("id") or "") not in current_message_ids
+                and str(row.get("run_id") or "") != run_id
             )
-        )[-8:]
-        included_message_id_set = set(included_message_ids)
-        current_message_ids = {message_id for message_id in message_ids or [] if message_id}
-        prior_messages = [
-            dict(row)
-            for row in session_messages
-            if isinstance(row, dict)
-            and str(row.get("id") or "") in included_message_id_set
-            and str(row.get("id") or "") not in current_message_ids
-            and str(row.get("run_id") or "") != run_id
-        ]
+        )[-MAX_CONVERSATION_CONTEXT_CANDIDATES:]
+        history_authorized_count = len(history_message_ids)
+        included_message_ids = list(
+            dict.fromkeys([*history_message_ids, *included_message_ids])
+        )
         if include_session_files:
             session_files = await repositories.list_session_context_files(
                 conn,
@@ -756,8 +744,8 @@ async def record_initial_context_snapshot(
         agent_id=agent_id,
         skill_id=skill_id,
         input_payload=input_payload,
-        prior_messages=prior_messages,
         history_candidate_count=history_candidate_count,
+        history_authorized_count=history_authorized_count,
         file_ids=included_file_ids,
         artifact_ids=included_artifact_ids,
         memory_record_ids=[],

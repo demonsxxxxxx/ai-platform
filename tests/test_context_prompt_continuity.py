@@ -30,8 +30,12 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
             "prompt_summary": "Context materials: 1 file ref.",
             "context_manifest": {
                 "schema_version": "ai-platform.context-manifest.v1",
-                "current_message": "continue",
-                "recent_messages": [{"message_id": "msg-prior"}],
+                "selection": {
+                    "selection_version": "conversation-turns-v1",
+                    "history_candidate_count": 1,
+                    "history_authorized_count": 1,
+                    "history_omitted_count": 0,
+                },
                 "files": [{"file_id": "file-a", "name": "input.docx", "storage_key": "secret"}],
                 "available_retrieval_tools": ["read_session_messages", "read_context_file"],
                 "private_payload": {"storage_key": "tenants/private/input.docx"},

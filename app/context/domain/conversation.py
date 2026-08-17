@@ -7,6 +7,7 @@ from typing import Any
 EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION = (
     "ai-platform.executor-conversation-context.v1"
 )
+MAX_CONVERSATION_CONTEXT_CANDIDATES = 64
 DEFAULT_CONVERSATION_HISTORY_BYTES = 8192
 _ALLOWED_CONVERSATION_ROLES = {"user", "assistant"}
 

@@ -4,6 +4,7 @@ import secrets
 
 from app.context.application.worker_snapshot import materialize_worker_context_snapshot
 from app.context.domain.conversation import (
+    MAX_CONVERSATION_CONTEXT_CANDIDATES,
     ConversationContextError,
     build_executor_conversation_context,
     empty_executor_conversation_context,
@@ -145,6 +146,7 @@ def context_file_executor_failure(
 __all__ = [
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
+    "MAX_CONVERSATION_CONTEXT_CANDIDATES",
     "ConversationContextError",
     "ContextFileContentError",
     "build_executor_conversation_context",

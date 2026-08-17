@@ -77,7 +77,10 @@ def context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
         isinstance(manifest, dict)
         and manifest.get("schema_version") == "ai-platform.context-manifest.v1"
     ):
-        message_count = len(manifest.get("recent_messages") or [])
+        selection = manifest.get("selection")
+        selection = selection if isinstance(selection, dict) else {}
+        message_count = selection.get("history_authorized_count")
+        message_count = message_count if isinstance(message_count, int) else 0
         file_count = len(manifest.get("files") or [])
         artifact_count = len(manifest.get("artifacts") or [])
         memory_count = len(manifest.get("memory_records") or [])

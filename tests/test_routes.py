@@ -901,10 +901,10 @@ async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     assert response["context_ref"] == {
         "context_window": {
             "status": "degraded",
-            "selection_version": "session-context-v1",
+            "selection_version": "conversation-turns-v1",
             "history_candidate_count": 0,
-            "history_inline_count": 0,
-            "history_trimmed_count": 0,
+            "history_authorized_count": 0,
+            "history_omitted_count": 0,
             "legacy_history_excluded": False,
             "selected_file_names": [],
         }

@@ -76,7 +76,9 @@ input, not a runtime dependency or implementation authority.
 
 1. Stored `messages` rows remain the conversation text authority.
 2. The immutable run context snapshot remains the authorization boundary for
-   selecting messages.
+   selecting messages. It records at most 64 prior candidate message IDs plus
+   the current-run message IDs; this is an authorization ceiling, not a
+   model-facing count or turn selector.
 3. Materialization must fetch only message identifiers selected by that exact
    snapshot and must re-prove tenant, workspace, user, session, and run binding.
 4. A missing, duplicate, or out-of-scope materialization fails closed before
@@ -146,9 +148,11 @@ input, not a runtime dependency or implementation authority.
 
 1. Executor-private message text must not enter ordinary-user context summaries,
    operational logs, or public events.
-2. Public projections may report selected message count, selected turn count,
-   dropped turn count, context version, and whether older retrieval remains
-   available.
+2. Public projections may report candidate, snapshot-authorized, and
+   candidate-omitted message counts, context version, and whether older
+   retrieval remains available. The context manifest contains no current
+   request, historical message body, message ID, or per-message selection
+   result.
 3. Runtime evidence may identify message and turn counts but must not expose raw
    message identifiers or content to ordinary users.
 4. Context assembly failures use bounded error categories without echoing text.
@@ -157,8 +161,10 @@ input, not a runtime dependency or implementation authority.
 
 The conversation execution path must stop relying on:
 
-- `inline_content` omission for recent user/assistant continuity;
-- `requires_retrieval` as the representation of the latest assistant answer;
+- conversation fields in the context manifest, including `current_message`,
+  `recent_messages`, `inline_content`, message summaries, message token
+  estimates, and message `requires_retrieval` rows;
+- the fixed eight-message snapshot clamp;
 - per-message character limits that erase an otherwise affordable turn;
 - message reference identifiers rendered into the model prompt;
 - `Context pack: N message(s)` as a substitute for the selected text;
@@ -185,7 +191,10 @@ cutover.
    enter executor conversation context.
 7. A snapshot-selected message from another scope or a materialization with a
    missing selected identifier fails before SDK dispatch.
-8. Existing file, artifact, memory, public provenance, run isolation, and
+8. New context manifests contain no conversation fields or message identifiers;
+   legacy persisted manifest fields are discarded at the sanitization boundary
+   and only their non-sensitive count may migrate to the new public projection.
+9. Existing file, artifact, memory, public provenance, run isolation, and
    current-run capability tests remain green.
 
 ## Delivery Boundaries
@@ -203,4 +212,5 @@ of the exact deployed subject.
 
 The source change is rollbackable by reverting the implementation and PRD index
 entry. No data rewrite or schema rollback is required. Existing messages and
-context snapshots remain readable throughout the cutover.
+context snapshots remain readable through a one-way sanitization migration;
+new snapshots never emit the removed conversation-manifest fields.

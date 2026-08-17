@@ -359,8 +359,8 @@ def test_public_run_context_projection_contains_only_allowlisted_window():
                     "selection": {
                         "status": "trimmed",
                         "history_candidate_count": 3,
-                        "history_inline_count": 2,
-                        "history_trimmed_count": 1,
+                        "history_authorized_count": 2,
+                        "history_omitted_count": 1,
                     },
                     "files": [
                         {"name": r"C:\uploads\approved-report.txt"},
@@ -374,10 +374,10 @@ def test_public_run_context_projection_contains_only_allowlisted_window():
     assert projection == {
         "context_window": {
             "status": "trimmed",
-            "selection_version": "session-context-v1",
+            "selection_version": "conversation-turns-v1",
             "history_candidate_count": 3,
-            "history_inline_count": 2,
-            "history_trimmed_count": 1,
+            "history_authorized_count": 2,
+            "history_omitted_count": 1,
             "legacy_history_excluded": False,
             "selected_file_names": ["approved-report.txt", "报价😀.xlsx"],
         }
