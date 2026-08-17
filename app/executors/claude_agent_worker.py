@@ -1372,9 +1372,8 @@ class ClaudeAgentWorkerAdapter:
                 )
             )
         prompt_builder_kwargs = {
-            "user_message": str(
-                payload.input.get("message") or payload.input.get("prompt") or ""
-            ),
+            "user_message": str(payload.input.get("message")
+                or payload.input.get("prompt") or ""),
             "file_names": file_names,
             "context_pack": prompt_context_pack,
             "conversation_context": payload.conversation_context,
