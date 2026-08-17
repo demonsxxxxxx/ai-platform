@@ -25,7 +25,7 @@ def _lease_row() -> dict[str, object]:
         "tenant_id": "tenant-a",
         "run_id": "run-a",
         "executor_reconciliation_claim_token": "claim-a",
-        "executor_terminal_result_json": {"status": "completed", "message": "done"},
+        "executor_terminal_json": {"status": "succeeded", "message": "done"},
     }
 
 

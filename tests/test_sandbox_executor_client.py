@@ -390,11 +390,11 @@ def test_callback_suppresses_executor_terminal_facts_without_reordering_surround
     ]
 
 
-def test_executor_client_default_timeout_uses_short_opensandbox_budget(monkeypatch):
+def test_executor_client_default_timeout_uses_short_dispatch_budget(monkeypatch):
     monkeypatch.setattr(
         executor_client_module,
         "get_settings",
-        lambda: type("S", (), {"opensandbox_request_timeout_seconds": 30.0})(),
+        lambda: type("S", (), {"sandbox_executor_dispatch_timeout_seconds": 30.0})(),
     )
 
     assert executor_client_module._default_timeout_seconds() == 30.0
@@ -404,7 +404,7 @@ def test_executor_client_uses_configured_dispatch_timeout(monkeypatch):
     monkeypatch.setattr(
         executor_client_module,
         "get_settings",
-        lambda: type("S", (), {"opensandbox_request_timeout_seconds": 7.0})(),
+        lambda: type("S", (), {"sandbox_executor_dispatch_timeout_seconds": 7.0})(),
     )
 
     assert executor_client_module._default_timeout_seconds() == 7.0

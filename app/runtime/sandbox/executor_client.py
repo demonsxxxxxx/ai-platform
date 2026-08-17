@@ -344,4 +344,4 @@ def _default_timeout_seconds(request: ExecutorTaskRequest | None = None) -> floa
 
     _ = request
     settings = get_settings()
-    return float(getattr(settings, "opensandbox_request_timeout_seconds", 30.0))
+    return float(getattr(settings, "sandbox_executor_dispatch_timeout_seconds", 30.0))
