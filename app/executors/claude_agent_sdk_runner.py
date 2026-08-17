@@ -37,7 +37,6 @@ from app.executors.claude.capability_policy import (
     internal_context_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (
-    _prior_messages_prompt_section as _prior_messages_prompt_section,
     attachment_context_data_message as _attachment_context_data_message,
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,

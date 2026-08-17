@@ -10,9 +10,6 @@ from app.executors.claude import capability_policy, prompts
 def test_runner_reexports_leaf_contracts_without_duplicate_implementations() -> None:
     assert runner.build_skill_prompt is prompts.build_skill_prompt
     assert runner._context_pack_prompt_section is prompts.context_pack_prompt_section
-    assert (
-        runner._prior_messages_prompt_section is prompts._prior_messages_prompt_section
-    )
     assert runner.CapabilityExecutionPlan is capability_policy.CapabilityExecutionPlan
     assert (
         runner.internal_context_tool_policy_subjects

@@ -67,7 +67,6 @@ def _patch_route(
 
     async def get_snapshot(conn, *, tenant_id, workspace_id, user_id, session_id, run_id):
         refs = {
-            "read_session_messages": ("recent_messages", [{"message_id": "message-a"}]),
             "read_context_file": ("files", [{"file_id": "file-a"}]),
             "read_run_artifact": ("artifacts", [{"artifact_id": "artifact-a"}]),
             "stage_context_file_to_workspace": ("files", [{"file_id": "file-a"}]),
@@ -79,6 +78,14 @@ def _patch_route(
             "available_retrieval_tools": tools,
         }
         for tool in tools:
+            if tool == "read_session_messages":
+                manifest["selection"] = {
+                    "selection_version": "conversation-turns-v1",
+                    "history_candidate_count": 1,
+                    "history_authorized_count": 1,
+                    "history_omitted_count": 0,
+                }
+                continue
             key, values = refs[tool]
             manifest[key] = values
         return {"payload_json": {"context_manifest": manifest}}

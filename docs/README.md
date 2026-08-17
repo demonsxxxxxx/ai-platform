@@ -15,6 +15,9 @@ does not represent deployed runtime state.
 - `architecture/expert-agent-service-workbench.md` defines the Agent-first
   authenticated product, Agent.md Builder language, progressive configuration,
   task-oriented Market/Workspace UX, and truthful Skill archive semantics.
+- `architecture/agent-conversation-context.md` defines platform-owned conversation
+  continuity, snapshot-authorized executor-private messages, complete-turn
+  context budgeting, and the separation from public context projections.
 - `architecture/source-code-architecture.md` defines the normative backend
   package tree, dependency direction, naming, compatibility, deletion proof,
   and strangler migration contract. ADR 0006 records the decision and rejected

@@ -76,10 +76,10 @@ async def test_record_initial_context_snapshot_persists_context_manifest_for_exe
         "agent_id": "general-agent",
         "skill_id": "general-chat",
     }
-    assert manifest["current_message"] == "continue from prior context"
-    assert manifest["recent_messages"] == []
+    assert "current_message" not in manifest
+    assert "recent_messages" not in manifest
     assert manifest["files"] == [{"file_id": "file-a", "requires_retrieval": True}]
-    assert manifest["budget"]["max_prompt_tokens"] > 0
+    assert manifest["budget"]["max_inline_material_tokens"] > 0
     assert context_ref["context_manifest"]["schema_version"] == "ai-platform.context-manifest.v1"
     assert context_ref["context_manifest"]["redaction"]["object_locator_refs_removed"] is True
     assert "file-a" not in str(context_ref)
@@ -830,7 +830,7 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
             "user_id": "user-a",
             "session_id": "session-a",
             "run_id": "run-current",
-            "limit": 8,
+            "limit": 64,
         }
         return [
             {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it", "session_generation": 1, "created_at": "2026-07-19T00:00:01Z"},
@@ -915,15 +915,10 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
     assert captured["included_artifact_ids"] == ["art-prior"]
     assert captured["included_file_ids"] == ["file-current"]
     manifest = captured["payload_json"]["context_manifest"]
-    assert [item["message_id"] for item in manifest["recent_messages"]] == [
-        "msg-prior-user",
-        "msg-prior-assistant",
-    ]
-    assert [item["inline_content"] for item in manifest["recent_messages"]] == [
-        "translate it",
-        "done",
-    ]
-    assert all(item["run_id"] == "run-prior" for item in manifest["recent_messages"])
+    assert "recent_messages" not in manifest
+    assert manifest["selection"]["history_candidate_count"] == 2
+    assert manifest["selection"]["history_authorized_count"] == 2
+    assert manifest["selection"]["history_omitted_count"] == 0
     assert manifest["artifacts"] == [{"artifact_id": "art-prior", "requires_retrieval": True}]
     assert manifest["files"] == [
         {"file_id": "file-current", "requires_retrieval": True},
@@ -997,16 +992,16 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
 
 
 @pytest.mark.asyncio
-async def test_session_history_manifest_membership_is_clamped_after_eight_message_snapshot_limit(monkeypatch):
+async def test_session_history_snapshot_authorizes_candidate_tail_without_manifest_message_refs(monkeypatch):
     captured = {}
 
     async def fake_count_messages(_conn, **_kwargs):
-        return 8
+        return 10
 
     async def fake_list_messages(_conn, **_kwargs):
         return [
             {"id": f"msg-prior-{index}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}"}
-            for index in range(1, 9)
+            for index in range(1, 11)
         ] + [{"id": "msg-current", "run_id": "run-current", "role": "user", "content": "current"}]
 
     async def fake_empty(*_args, **_kwargs):
@@ -1037,14 +1032,14 @@ async def test_session_history_manifest_membership_is_clamped_after_eight_messag
     )
 
     included = captured["included_message_ids"]
-    manifest_ids = [row["message_id"] for row in captured["payload_json"]["context_manifest"]["recent_messages"]]
-    assert included == [*(f"msg-prior-{index}" for index in range(2, 9)), "msg-current"]
-    assert manifest_ids == [f"msg-prior-{index}" for index in range(2, 9)]
-    assert set(manifest_ids) < set(included)
+    manifest = captured["payload_json"]["context_manifest"]
+    assert included == [*(f"msg-prior-{index}" for index in range(1, 11)), "msg-current"]
+    assert "recent_messages" not in manifest
+    assert manifest["selection"]["history_authorized_count"] == 10
 
 
 @pytest.mark.asyncio
-async def test_context_builder_counts_long_history_before_fetching_bounded_newest_tail(monkeypatch):
+async def test_context_builder_counts_history_before_fetching_authorized_candidate_tail(monkeypatch):
     captured: dict[str, object] = {}
     call_order: list[str] = []
 
@@ -1055,7 +1050,7 @@ async def test_context_builder_counts_long_history_before_fetching_bounded_newes
 
     async def list_messages(_conn, **kwargs):
         call_order.append("list")
-        assert kwargs["limit"] == 8
+        assert kwargs["limit"] == 64
         return [
             {
                 "id": f"msg-{index}",
@@ -1101,10 +1096,10 @@ async def test_context_builder_counts_long_history_before_fetching_bounded_newes
     manifest = captured["payload_json"]["context_manifest"]
     assert call_order == ["count", "list"]
     assert manifest["selection"]["history_candidate_count"] == 13
-    assert manifest["selection"]["history_inline_count"] == 8
-    assert manifest["selection"]["history_trimmed_count"] == 5
+    assert manifest["selection"]["history_authorized_count"] == 8
+    assert manifest["selection"]["history_omitted_count"] == 5
     assert manifest["selection"]["status"] == "trimmed"
-    assert [row["message_id"] for row in manifest["recent_messages"]] == [f"msg-{index}" for index in range(6, 14)]
+    assert "recent_messages" not in manifest
 
 
 @pytest.mark.asyncio

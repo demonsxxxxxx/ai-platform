@@ -28,6 +28,7 @@ from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
 )
+from app.context.api import materialize_worker_context_snapshot
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     sanitize_context_manifest_payload,
@@ -2212,24 +2213,14 @@ async def _ensure_worker_context_snapshot(
     run_identity: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     identity = run_identity or _payload_identity(payload)
-    # The repository joins the physical runs.context_snapshot_id to the exact
-    # scoped executor row; the locked JSON value is only a mirror check.
-    scoped_snapshot = await repositories.get_context_snapshot_for_worker(
+    return await materialize_worker_context_snapshot(
         conn,
-        tenant_id=identity["tenant_id"],
-        workspace_id=identity["workspace_id"],
-        user_id=identity["user_id"],
-        session_id=identity["session_id"],
-        run_id=identity["run_id"],
+        identity=identity,
         context_snapshot_id=str(payload.context_snapshot_id or ""),
+        snapshot_loader=repositories.get_context_snapshot_for_worker,
+        message_loader=repositories.list_scoped_context_messages,
+        context_projector=_context_snapshot_ref_from_row,
     )
-    if scoped_snapshot is None:
-        return None
-    context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
-    return {
-        "context_snapshot_id": str(context_ref["context_snapshot_id"]),
-        "context_snapshot": context_ref,
-    }
 
 
 async def process_run_payload(
@@ -2653,7 +2644,10 @@ async def process_run_payload(
         skill_manifests=payload.skill_manifests,
         context_snapshot_id=str(context_ref["context_snapshot_id"]),
         context_snapshot=context_ref["context_snapshot"],
-        context_pack=executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+        context_pack={
+            **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+            "conversation_context": context_ref["conversation_context"],
+        },
         model_id=payload.model_id or "",
         model_value=payload.model_value or "",
         agent_profile=payload.agent_profile or {},

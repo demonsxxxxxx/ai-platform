@@ -9,9 +9,7 @@ from app.control_plane_contracts import sanitize_public_payload
 CONTEXT_MANIFEST_SCHEMA_VERSION = "ai-platform.context-manifest.v1"
 EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 DEFAULT_CONTEXT_MANIFEST_VERSION = "v1"
-DEFAULT_CONTEXT_SELECTION_VERSION = "session-context-v1"
-DEFAULT_MAX_INLINE_HISTORY_BYTES = 8192
-DEFAULT_MAX_CURRENT_MESSAGE_BYTES = 16384
+DEFAULT_CONTEXT_SELECTION_VERSION = "conversation-turns-v1"
 CONTEXT_RETRIEVAL_TOOLS = (
     "read_session_messages",
     "read_context_file",
@@ -27,6 +25,7 @@ def available_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[s
 
     if not manifest or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
         return []
+    manifest = sanitize_context_manifest_payload(manifest)
     raw_advertised = manifest.get("available_retrieval_tools")
     if not isinstance(raw_advertised, list):
         return []
@@ -36,8 +35,13 @@ def available_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[s
         if isinstance(tool_name, str) and tool_name in CONTEXT_RETRIEVAL_TOOLS
     }
     selected: list[str] = []
+    selection = manifest.get("selection")
+    if isinstance(selection, dict) and _safe_nonnegative_int(
+        selection.get("history_candidate_count")
+    ):
+        if "read_session_messages" in advertised:
+            selected.append("read_session_messages")
     for refs_key, tool_names in (
-        ("recent_messages", ("read_session_messages",)),
         ("files", ("read_context_file", "stage_context_file_to_workspace")),
         ("artifacts", ("read_run_artifact", "stage_run_artifact_to_workspace")),
         ("memory_records", ("search_memory",)),
@@ -133,9 +137,41 @@ def _sanitize_manifest_value(value: Any) -> Any:
 
 
 def sanitize_context_manifest_payload(value: Any) -> dict[str, Any]:
-    """Return a manifest payload with private executor/storage fields removed."""
+    """Return a non-conversation manifest with private storage fields removed."""
     sanitized = _sanitize_manifest_value(value)
-    return sanitized if isinstance(sanitized, dict) else {}
+    if not isinstance(sanitized, dict):
+        return {}
+    legacy_messages = sanitized.pop("recent_messages", None)
+    legacy_message_count = len(legacy_messages) if isinstance(legacy_messages, list) else 0
+    sanitized.pop("current_message", None)
+    selection = sanitized.get("selection")
+    if not isinstance(selection, dict):
+        selection = {}
+        sanitized["selection"] = selection
+    if legacy_message_count:
+        selection.setdefault("selection_version", DEFAULT_CONTEXT_SELECTION_VERSION)
+        selection.setdefault("history_candidate_count", legacy_message_count)
+        selection.setdefault("history_authorized_count", legacy_message_count)
+        selection.setdefault("history_omitted_count", 0)
+    selection = sanitized.get("selection")
+    if isinstance(selection, dict):
+        for key in (
+            "history_inline_count",
+            "history_trimmed_count",
+            "selection_order",
+            "render_order",
+        ):
+            selection.pop(key, None)
+    budget = sanitized.get("budget")
+    if isinstance(budget, dict):
+        for key in (
+            "recent_message_limit",
+            "max_inline_message_chars",
+            "max_inline_message_bytes",
+            "max_inline_history_bytes",
+        ):
+            budget.pop(key, None)
+    return sanitized
 
 
 def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +211,9 @@ def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, An
         ),
         "generated_at": _safe_iso_timestamp(safe_manifest.get("generated_at")),
         "referenced_materials": {
-            "message_count": len(safe_manifest.get("recent_messages") or []),
+            "message_count": _safe_nonnegative_int(
+                selection.get("history_authorized_count")
+            ),
             "file_count": len(safe_manifest.get("files") or []),
             "artifact_count": len(safe_manifest.get("artifacts") or []),
             "memory_record_count": len(safe_manifest.get("memory_records") or []),
@@ -188,8 +226,12 @@ def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, An
             )
             or DEFAULT_CONTEXT_SELECTION_VERSION,
             "history_candidate_count": _safe_nonnegative_int(selection.get("history_candidate_count")),
-            "history_inline_count": _safe_nonnegative_int(selection.get("history_inline_count")),
-            "history_trimmed_count": _safe_nonnegative_int(selection.get("history_trimmed_count")),
+            "history_authorized_count": _safe_nonnegative_int(
+                selection.get("history_authorized_count")
+            ),
+            "history_omitted_count": _safe_nonnegative_int(
+                selection.get("history_omitted_count")
+            ),
             "legacy_history_excluded": bool(selection.get("legacy_history_excluded")),
             "selected_file_names": selected_file_names,
         },
@@ -227,10 +269,6 @@ def _display_name_from_row(row: dict[str, Any]) -> str:
     return ""
 
 
-def _message_token_count(value: str) -> int:
-    return utf8_token_estimate(value)
-
-
 def _can_inline_file_preview(content_type: str) -> bool:
     return content_type.startswith("text/") or content_type in {
         "application/json",
@@ -245,27 +283,14 @@ class ContextPlanner:
     def __init__(
         self,
         *,
-        max_inline_message_chars: int = 640,
         max_inline_file_preview_chars: int = 1024,
         max_inline_file_bytes: int = 8192,
-        recent_message_limit: int = 8,
         token_budget: int = 1200,
-        max_inline_message_bytes: int | None = None,
-        max_inline_history_bytes: int = DEFAULT_MAX_INLINE_HISTORY_BYTES,
         context_manifest_version: str = DEFAULT_CONTEXT_MANIFEST_VERSION,
     ) -> None:
-        self.max_inline_message_chars = max(0, int(max_inline_message_chars))
         self.max_inline_file_preview_chars = max(0, int(max_inline_file_preview_chars))
         self.max_inline_file_bytes = max(0, int(max_inline_file_bytes))
-        self.recent_message_limit = max(0, int(recent_message_limit))
         self.token_budget = max(1, int(token_budget))
-        self.max_inline_message_bytes = max(
-            0,
-            int(max_inline_message_bytes)
-            if max_inline_message_bytes is not None
-            else self.max_inline_message_chars * 4,
-        )
-        self.max_inline_history_bytes = max(0, int(max_inline_history_bytes))
         self.context_manifest_version = context_manifest_version or DEFAULT_CONTEXT_MANIFEST_VERSION
 
     def plan(
@@ -278,27 +303,23 @@ class ContextPlanner:
         run_id: str,
         agent_id: str,
         skill_id: str | None,
-        current_message: str,
-        recent_messages: list[dict[str, Any]] | None = None,
         context_chips: list[str] | None = None,
         files: list[dict[str, Any]] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
         memory_records: list[dict[str, Any]] | None = None,
         source_run_ids: list[str] | None = None,
         legacy_history_excluded: bool = False,
-        history_candidate_count: int | None = None,
+        history_candidate_count: int = 0,
+        history_authorized_count: int = 0,
     ) -> dict[str, Any]:
-        """Return the bounded manifest that is safe to include as a prompt index."""
-        budget = _InlineBudget(self.token_budget, self.max_inline_history_bytes)
-        # The current turn is authoritative prompt material. Reserve it once
-        # before selecting historical messages, using the same UTF-8-safe
-        # estimator as every other inline candidate.
-        budget.reserve_current(current_message)
-        message_refs, history_selection = self._message_refs(
-            list(recent_messages or []),
-            budget=budget,
-            history_candidate_count=history_candidate_count,
+        """Return the bounded non-conversation manifest for executor materials."""
+        budget = _InlineBudget(self.token_budget, self.max_inline_file_bytes)
+        candidate_count = max(
+            _safe_nonnegative_int(history_candidate_count),
+            _safe_nonnegative_int(history_authorized_count),
         )
+        authorized_count = _safe_nonnegative_int(history_authorized_count)
+        omitted_count = candidate_count - authorized_count
         file_refs = self._file_refs(list(files or []), budget=budget)
         artifact_refs = self._artifact_refs(list(artifacts or []))
         memory_refs = self._memory_refs(list(memory_records or []))
@@ -323,14 +344,6 @@ class ContextPlanner:
                 "agent_id": _safe_id(agent_id),
                 "skill_id": _safe_id(skill_id),
             },
-            "current_message": truncate_utf8_text(
-                _safe_text(current_message, limit=self.max_inline_message_chars * 2),
-                max_bytes=min(
-                    DEFAULT_MAX_CURRENT_MESSAGE_BYTES,
-                    max(self.max_inline_message_bytes * 2, self.max_inline_message_bytes),
-                ),
-            ),
-            "recent_messages": message_refs,
             "context_chips": chip_refs,
             "files": file_refs,
             "artifacts": artifact_refs,
@@ -341,21 +354,15 @@ class ContextPlanner:
                 "status": "degraded"
                 if legacy_history_excluded
                 else "trimmed"
-                if history_selection["trimmed_count"]
+                if omitted_count
                 else "complete",
-                "history_candidate_count": history_selection["candidate_count"],
-                "history_inline_count": history_selection["inline_count"],
-                "history_trimmed_count": history_selection["trimmed_count"],
+                "history_candidate_count": candidate_count,
+                "history_authorized_count": authorized_count,
+                "history_omitted_count": omitted_count,
                 "legacy_history_excluded": bool(legacy_history_excluded),
-                "selection_order": "newest_first",
-                "render_order": "chronological",
             },
             "budget": {
-                "max_prompt_tokens": self.token_budget,
-                "recent_message_limit": self.recent_message_limit,
-                "max_inline_message_chars": self.max_inline_message_chars,
-                "max_inline_message_bytes": self.max_inline_message_bytes,
-                "max_inline_history_bytes": self.max_inline_history_bytes,
+                "max_inline_material_tokens": self.token_budget,
                 "max_inline_file_bytes": self.max_inline_file_bytes,
                 "inline_tokens_used": budget.used_tokens,
                 "inline_budget_exhausted": budget.exhausted,
@@ -375,19 +382,23 @@ class ContextPlanner:
     def executor_context_pack(self, manifest: dict[str, Any]) -> dict[str, Any]:
         """Wrap a manifest in the existing executor context-pack contract."""
         safe_manifest = sanitize_context_manifest_payload(manifest)
+        selection = safe_manifest.get("selection")
+        selection = selection if isinstance(selection, dict) else {}
         counts = {
-            "message_count": len(safe_manifest.get("recent_messages") or []),
+            "message_count": _safe_nonnegative_int(
+                selection.get("history_authorized_count")
+            ),
             "file_count": len(safe_manifest.get("files") or []),
             "artifact_count": len(safe_manifest.get("artifacts") or []),
             "memory_record_count": len(safe_manifest.get("memory_records") or []),
         }
         prompt_summary = (
-            "Context manifest: "
-            f"{counts['message_count']} message refs, "
+            "Context materials: "
             f"{counts['file_count']} file refs, "
             f"{counts['artifact_count']} artifact refs, "
             f"{counts['memory_record_count']} memory refs. "
-            "Use context retrieval tools for full message, file, artifact, or memory content."
+            "Recent conversation text is supplied separately. Use context retrieval tools "
+            "for authorized file, artifact, memory, or explicitly older message inspection."
         )
         return {
             "schema_version": EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION,
@@ -406,72 +417,6 @@ class ContextPlanner:
             "context_pack_generated_at": str(safe_manifest.get("generated_at") or _utc_now_iso()),
             "prompt_summary": prompt_summary,
         }
-
-    def _message_refs(
-        self,
-        rows: list[dict[str, Any]],
-        *,
-        budget: "_InlineBudget",
-        history_candidate_count: int | None = None,
-    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-        """Select newest eligible history first, then return it chronologically."""
-
-        candidate_count = max(len(rows), _safe_nonnegative_int(history_candidate_count))
-        newest_first = sorted(rows, key=_message_sort_key, reverse=True)[: self.recent_message_limit]
-        result: list[tuple[tuple[int, str, str], dict[str, Any]]] = []
-        inline_count = 0
-        # Count-limit exclusions are material omissions too; otherwise a
-        # public "complete" summary could claim full history when it was not
-        # considered for inclusion.
-        trimmed_count = candidate_count - len(newest_first)
-        for row in newest_first:
-            if row.get("requires_retrieval") and not row.get("content"):
-                trimmed_count += 1
-                result.append(
-                    (_message_sort_key(row), {
-                        "message_id": _safe_id(row.get("message_id") or row.get("id")),
-                        "requires_retrieval": True,
-                    })
-                )
-                continue
-            content = _safe_text(row.get("content"))
-            candidate_tokens = _message_token_count(content)
-            inline_content = None
-            omitted_from_inline = bool(content)
-            if (
-                content
-                and len(content) <= self.max_inline_message_chars
-                and utf8_token_estimate(content) <= self.max_inline_message_bytes
-            ):
-                if budget.try_consume(content):
-                    inline_content = truncate_utf8_text(
-                        content,
-                        max_bytes=self.max_inline_message_bytes,
-                    )
-                    inline_count += 1
-                    omitted_from_inline = False
-            if omitted_from_inline:
-                trimmed_count += 1
-            result.append(
-                (_message_sort_key(row), {
-                    "message_id": _safe_id(row.get("message_id") or row.get("id")),
-                    "run_id": _safe_id(row.get("run_id")),
-                    "role": _safe_text(row.get("role"), limit=32) or "unknown",
-                    "inline_content": inline_content,
-                    "summary": None if inline_content else "Content omitted from manifest; use scoped retrieval.",
-                    "approx_tokens": candidate_tokens,
-                    "requires_retrieval": inline_content is None,
-                })
-            )
-        result.sort(key=lambda item: item[0])
-        return (
-            [item[1] for item in result],
-            {
-                "candidate_count": candidate_count,
-                "inline_count": inline_count,
-                "trimmed_count": trimmed_count,
-            },
-        )
 
     def _file_refs(self, rows: list[dict[str, Any]], *, budget: "_InlineBudget") -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -551,16 +496,6 @@ class ContextPlanner:
             )
         return result
 
-    def _summary(self, content: str) -> str:
-        if not content:
-            return "Content omitted from manifest; use scoped retrieval."
-        if _message_token_count(content) > self.token_budget:
-            return "Content omitted from manifest; use scoped retrieval."
-        return truncate_utf8_text(
-            content[: self.max_inline_message_chars].rstrip(),
-            max_bytes=self.max_inline_message_bytes,
-        )
-
 
 class _InlineBudget:
     def __init__(self, max_tokens: int, max_bytes: int) -> None:
@@ -571,7 +506,7 @@ class _InlineBudget:
         self.exhausted = False
 
     def try_consume(self, value: str) -> bool:
-        normalized = _message_token_count(value)
+        normalized = utf8_token_estimate(value)
         byte_count = utf8_token_estimate(value)
         if normalized == 0:
             return True
@@ -586,30 +521,3 @@ class _InlineBudget:
         if self.used_tokens >= self.max_tokens or self.used_bytes >= self.max_bytes:
             self.exhausted = True
         return True
-
-    def reserve_current(self, value: str) -> None:
-        """Reserve the current user turn once, without allowing it to be omitted."""
-
-        normalized = _message_token_count(value)
-        byte_count = utf8_token_estimate(value)
-        if normalized == 0:
-            return
-        if normalized > self.max_tokens or byte_count > self.max_bytes:
-            self.used_tokens = self.max_tokens
-            self.used_bytes = self.max_bytes
-            self.exhausted = True
-            return
-        self.used_tokens += normalized
-        self.used_bytes += byte_count
-        if self.used_tokens >= self.max_tokens or self.used_bytes >= self.max_bytes:
-            self.exhausted = True
-
-
-def _message_sort_key(row: dict[str, Any]) -> tuple[int, str, str]:
-    """Return a stable run-generation and message-order key for manifest rendering."""
-
-    generation = row.get("session_generation")
-    safe_generation = generation if isinstance(generation, int) and not isinstance(generation, bool) else -1
-    created_at = _safe_text(row.get("created_at"), limit=64)
-    message_id = _safe_id(row.get("message_id") or row.get("id"))
-    return safe_generation, created_at, message_id

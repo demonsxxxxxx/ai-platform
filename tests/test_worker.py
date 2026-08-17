@@ -901,6 +901,25 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def list_scoped_context_messages(conn, **kwargs):
+        message_ids = ["msg-a", "msg-b"][: int(kwargs.get("limit") or 0)]
+        return [
+            {
+                "id": message_id,
+                "run_id": f"run-prior-{index}",
+                "role": "user" if index % 2 else "assistant",
+                "content": f"context message {index}",
+                "created_at": f"2026-08-17T00:00:{index:02d}Z",
+            }
+            for index, message_id in enumerate(message_ids, start=1)
+        ]
+
+    monkeypatch.setattr(
+        "app.worker.repositories.list_scoped_context_messages",
+        list_scoped_context_messages,
+        raising=False,
+    )
+
     async def reconcile_multi_agent_child_run_terminal_state(conn, **kwargs):
         return None
 
@@ -5018,6 +5037,8 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
     assert outcome.status == "succeeded"
     context_pack = getattr(captured["payload"], "context_pack", None)
     assert isinstance(context_pack, dict)
+    assert context_pack["conversation_context"]["selected_message_count"] == 2
+    assert context_pack["conversation_context"]["selected_turn_count"] == 1
     assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
     assert context_pack["source"] == "runs_api"
     assert context_pack["referenced_materials"] == {
