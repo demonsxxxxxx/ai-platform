@@ -1,6 +1,8 @@
 import codecs
+from dataclasses import dataclass
 import io
 import re
+import unicodedata
 from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import quote
 import zipfile
@@ -25,7 +27,6 @@ from app.models import (
     FileDeletionResponse,
     SessionInputFileResponse,
     SessionInputFilesResponse,
-    UploadFileResponse,
 )
 from app.repositories import (
     FileDeletionBlockedError,
@@ -49,7 +50,19 @@ from app.validation import assert_safe_id
 
 router = APIRouter()
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._() -]+")
+MAX_UPLOAD_FILENAME_UTF8_BYTES = 255
+WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
+WINDOWS_RESERVED_FILE_BASENAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
+)
+UNSAFE_FILENAME_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 ARTIFACT_DOWNLOAD_PERMISSION = "artifact:download"
 UPLOAD_PERMISSIONS = ("file:upload", "file:upload:document")
 ACTIVE_CONTENT_EXTENSIONS = frozenset({".htm", ".html", ".mht", ".mhtml", ".shtml", ".svg", ".xhtml", ".xml"})
@@ -102,6 +115,14 @@ SAFE_RESPONSE_CONTENT_TYPE_PATTERN = re.compile(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class UploadFileResponse:
+    file_id: str
+    name: str
+    sha256: str
+    size_bytes: int
+
+
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
     granted = {item.strip() for item in principal.permissions if item.strip()}
     if is_ai_admin(principal):
@@ -121,6 +142,33 @@ def _require_upload_permissions(principal: AuthPrincipal) -> None:
 
 def _normalized_content_type(value: object) -> str:
     return str(value or "").split(";", 1)[0].strip().lower()
+
+
+def _normalize_upload_filename(value: str | None) -> str:
+    normalized = unicodedata.normalize("NFC", value or "")
+    windows_path = PureWindowsPath(normalized)
+    posix_path = PurePosixPath(normalized)
+    reserved_basename = normalized.split(".", 1)[0].rstrip(" ").casefold()
+    invalid = (
+        not normalized
+        or normalized in {".", ".."}
+        or normalized.endswith((" ", "."))
+        or any(
+            unicodedata.category(character) in UNSAFE_FILENAME_UNICODE_CATEGORIES
+            for character in normalized
+        )
+        or len(normalized.encode("utf-8")) > MAX_UPLOAD_FILENAME_UTF8_BYTES
+        or any(character in WINDOWS_INVALID_FILENAME_CHARS for character in normalized)
+        or windows_path.drive != ""
+        or windows_path.is_absolute()
+        or posix_path.is_absolute()
+        or len(windows_path.parts) != 1
+        or len(posix_path.parts) != 1
+        or reserved_basename in WINDOWS_RESERVED_FILE_BASENAMES
+    )
+    if invalid:
+        raise HTTPException(status_code=400, detail="invalid_file_name")
+    return normalized
 
 
 def _safe_response_content_type(value: object) -> str:
@@ -379,10 +427,10 @@ async def upload_file(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    safe_name = SAFE_FILENAME_PATTERN.sub("_", file.filename or "upload.bin").strip(" .") or "upload.bin"
+    display_name = _normalize_upload_filename(file.filename)
     content_type = file.content_type or "application/octet-stream"
     content = await _read_bounded_upload(file)
-    _validate_upload_content(filename=safe_name, declared_content_type=content_type, content=content)
+    _validate_upload_content(filename=display_name, declared_content_type=content_type, content=content)
     try:
         async with transaction() as conn:
             await ensure_workspace(conn, tenant_id=tenant_id, workspace_id=workspace_id)
@@ -405,7 +453,7 @@ async def upload_file(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     file_id = new_id("file")
-    storage_key = f"tenants/{tenant_id}/workspaces/{workspace_id}/sessions/{session_id or 'unbound'}/files/{file_id}/{safe_name}"
+    storage_key = f"tenants/{tenant_id}/workspaces/{workspace_id}/sessions/{session_id or 'unbound'}/files/{file_id}/content"
     stored = ObjectStorage().put_bytes(
         storage_key=storage_key,
         content=content,
@@ -419,7 +467,7 @@ async def upload_file(
             workspace_id=workspace_id,
             user_id=principal.user_id,
             session_id=session_id,
-            original_name=safe_name,
+            original_name=display_name,
             content_type=content_type,
             size_bytes=stored.size_bytes,
             storage_key=stored.storage_key,
@@ -427,6 +475,7 @@ async def upload_file(
         )
     return UploadFileResponse(
         file_id=file_id,
+        name=display_name,
         sha256=stored.sha256,
         size_bytes=stored.size_bytes,
     )

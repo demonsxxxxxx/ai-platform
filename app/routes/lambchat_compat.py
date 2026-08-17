@@ -1135,13 +1135,12 @@ async def upload_file(
         session_id=session_id,
         principal=principal,
     )
-    filename = file.filename or uploaded.file_id
     mime_type = file.content_type or "application/octet-stream"
     return {
         "key": uploaded.file_id,
         "file_id": uploaded.file_id,
         "url": f"/api/ai/files/{uploaded.file_id}",
-        "name": filename,
+        "name": uploaded.name,
         "type": folder,
         "mime_type": mime_type,
         "mimeType": mime_type,
