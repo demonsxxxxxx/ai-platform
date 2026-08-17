@@ -720,6 +720,17 @@ async def run_once(
     return outcome
 
 
+def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
+    if not task.done():
+        return
+    if task.cancelled():
+        raise RuntimeError(f"background task cancelled unexpectedly: {task.get_name()}")
+    error = task.exception()
+    if error is not None:
+        raise RuntimeError(f"background task failed: {task.get_name()}") from error
+    raise RuntimeError(f"background task exited unexpectedly: {task.get_name()}")
+
+
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
     await require_schema_current()
     registry = AdapterRegistry()
@@ -739,6 +750,8 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
     )
     try:
         while True:
+            _raise_if_background_task_stopped(reconciler_task)
+            _raise_if_background_task_stopped(heartbeat_task)
             try:
                 outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
             except Exception:
@@ -826,7 +839,7 @@ async def run_worker_pool(
         for index in range(resolved_worker_count)
     ]
     try:
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, reconciler_task, maintenance_task, heartbeat_task)
     finally:
         reconciler_stop.set()
         for task in [*tasks, reconciler_task, maintenance_task, heartbeat_task]:

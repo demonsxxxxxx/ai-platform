@@ -131,6 +131,24 @@ EXECUTOR_ALLOWED = {
 }
 
 
+def _executor_control_scope(method: str, path: str) -> tuple[str, str] | None:
+    parts = path.split("/")
+    if len(parts) == 5 and parts[:3] == ["", "v2", "tasks"] and method == "GET":
+        run_id, attempt_id = parts[3:]
+    elif (
+        len(parts) == 6
+        and parts[:3] == ["", "v2", "tasks"]
+        and parts[5] == "cancel"
+        and method == "POST"
+    ):
+        run_id, attempt_id = parts[3:5]
+    else:
+        return None
+    if not SCOPE_SEGMENT.fullmatch(run_id) or not SCOPE_SEGMENT.fullmatch(attempt_id):
+        return None
+    return run_id, attempt_id
+
+
 class DeadlineExceeded(TimeoutError):
     """Internal signal that one monotonic operation budget is exhausted."""
 
@@ -1058,9 +1076,15 @@ class GatewayApplication:
         if not hmac.compare_digest(provided.encode(), self._route_token(record, port).encode()):
             raise GatewayError(401, "route_auth_failed")
         clean_path = path.split("?", 1)[0]
+        method = request.method.upper()
+        executor_control_scope = _executor_control_scope(method, clean_path) if port == 18000 else None
         allowed = EXECD_ALLOWED if port == 44772 else EXECUTOR_ALLOWED if port == 18000 else set()
-        if (request.method.upper(), clean_path) not in allowed:
+        if (method, clean_path) not in allowed and executor_control_scope is None:
             raise GatewayError(404, "proxy_route_not_allowed")
+        if executor_control_scope is not None:
+            run_id, attempt_id = executor_control_scope
+            if run_id != record.scope["run_id"] or attempt_id != record.scope["attempt_id"]:
+                raise GatewayError(409, "task_scope_mismatch")
         forwarded = request
         if port == 44772 and clean_path in {"/directories/list", "/files/info"}:
             forwarded = replace(request, target=_validate_workspace_collection_request(request, clean_path, query))

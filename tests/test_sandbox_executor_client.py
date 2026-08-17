@@ -10,15 +10,19 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxEx
 
 
 def callback_event(**kwargs) -> ExecutorCallbackEvent:
-    if kwargs.get("status") in {"completed", "failed", "cancelled"}:
-        kwargs.setdefault(
-            "terminal_result",
-            {
-                "status": kwargs["status"],
-                "run_id": kwargs["run_id"],
-                "message": "",
-            },
-        )
+    status = kwargs.get("status")
+    if status in {"completed", "failed", "cancelled"}:
+        terminal_result = {
+            "status": status,
+            "run_id": kwargs["run_id"],
+            "message": "completed" if status == "completed" else "",
+        }
+        if status != "completed":
+            terminal_result.update(
+                error_code="executor_failed",
+                error_message=f"executor {status}",
+            )
+        kwargs.setdefault("terminal_result", terminal_result)
     return ExecutorCallbackEvent(**kwargs)
 
 

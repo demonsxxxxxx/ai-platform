@@ -384,6 +384,15 @@ class ExecutorTerminalResult(BaseModel):
     def validate_run_id(cls, value: str) -> str:
         return assert_safe_id(value, "run_id")
 
+    @model_validator(mode="after")
+    def validate_terminal_payload(self) -> "ExecutorTerminalResult":
+        if self.status in {"completed", "succeeded"}:
+            if not self.message.strip():
+                raise ValueError("successful terminal result requires a non-empty message")
+        elif not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
+            raise ValueError("failed or cancelled terminal result requires structured error fields")
+        return self
+
 
 class ExecutorCallbackEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")

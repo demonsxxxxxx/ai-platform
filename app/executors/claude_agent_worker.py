@@ -1492,6 +1492,7 @@ class ClaudeAgentWorkerAdapter:
         }
         reconciliation_context = {
             "schema_version": "ai-platform.executor-reconciliation.v1",
+            "adapter_name": "claude-agent-worker",
             "run_payload": _sandbox_reconciliation_payload(payload),
             "adapter_context": adapter_reconciliation_context,
         }

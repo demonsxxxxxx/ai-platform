@@ -4310,7 +4310,9 @@ class DockerContainerProvider:
             token = _container_executor_auth_token(container)
             if not token:
                 raise ContainerStartFailedError("executor control credential unavailable")
-            endpoint = _resolve_executor_published_endpoint(settings)
+            endpoint = _resolve_executor_published_endpoint(
+                settings.sandbox_executor_published_host
+            )
             executor_url = _published_executor_url_from_container(container, endpoint)
             return executor_url, _executor_auth_headers(
                 token,

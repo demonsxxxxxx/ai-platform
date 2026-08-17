@@ -243,6 +243,7 @@ async def probe_suspect_executor_tasks_once(
                     lease_row,
                     executor_status="failed",
                     terminal_result={
+                        "run_id": str(lease_row["run_id"]),
                         "status": "failed",
                         "error_code": "sandbox_executor_lost",
                         "error_message": "Sandbox executor stopped responding",
@@ -283,6 +284,7 @@ async def reconcile_pending_executor_terminals_once(
                     conn,
                     tenant_id=str(lease_row["tenant_id"]),
                     run_id=str(lease_row["run_id"]),
+                    for_update=True,
                 )
             if run is None:
                 raise ValueError("executor_reconciliation_run_missing")
@@ -340,10 +342,15 @@ async def run_executor_terminal_reconciler(
     worker_id: str | None = None,
 ) -> None:
     while not stop_event.is_set():
-        await reconcile_pending_executor_terminals_once(
-            registry=registry,
-            worker_id=worker_id,
-        )
+        try:
+            await reconcile_pending_executor_terminals_once(
+                registry=registry,
+                worker_id=worker_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
+            _logger.exception("executor_terminal_reconciliation_scan_failed")
         if stop_event.is_set():
             break
         try:

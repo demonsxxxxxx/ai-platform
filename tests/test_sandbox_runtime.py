@@ -65,6 +65,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "callback_token_id": "cbt_run-a",
         "reconciliation_context": {
             "schema_version": "ai-platform.executor-reconciliation.v1",
+            "adapter_name": "claude-agent-worker",
             "run_payload": {"run_id": "run-a"},
             "adapter_context": {},
         },
@@ -1267,16 +1268,15 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
         calls.append(("release_one", kwargs["lease_id"], kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released"}
 
-    async def record_sandbox_executor_heartbeat(conn, **kwargs):
-        calls.append(("accepted", kwargs["lease_id"], kwargs["run_id"], kwargs["attempt_id"]))
-        return {"id": kwargs["lease_id"]}
-
-    async def record_sandbox_executor_reconciliation_context(conn, **kwargs):
+    async def record_sandbox_executor_accepted(conn, **kwargs):
         calls.append(
             (
-                "context",
+                "acceptance",
                 kwargs["lease_id"],
-                kwargs["context"]["schema_version"],
+                kwargs["run_id"],
+                kwargs["attempt_id"],
+                kwargs["reconciliation_context"]["schema_version"],
+                kwargs["reconciliation_context"]["adapter_name"],
             )
         )
         return {"id": kwargs["lease_id"]}
@@ -1289,12 +1289,8 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
         fence_sandbox_lease_release,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_heartbeat",
-        record_sandbox_executor_heartbeat,
-    )
-    monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_reconciliation_context",
-        record_sandbox_executor_reconciliation_context,
+        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_accepted",
+        record_sandbox_executor_accepted,
     )
 
     runtime = SandboxRuntime(
@@ -1348,8 +1344,14 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
                     "runtime_workspace_container_path": "/workspace",
                 },
         ),
-        ("accepted", "lease-created-a", "run-a", "qat_test-runtime-attempt"),
-        ("context", "lease-created-a", "ai-platform.executor-reconciliation.v1"),
+        (
+            "acceptance",
+            "lease-created-a",
+            "run-a",
+            "qat_test-runtime-attempt",
+            "ai-platform.executor-reconciliation.v1",
+            "claude-agent-worker",
+        ),
     ]
 
 

@@ -667,6 +667,25 @@ def test_dispatch_revalidates_scope_and_rewrites_callback() -> None:
     forwarded = json.loads(runtime.proxied[-1][2].body)
     assert forwarded["callback_base_url"] == "http://127.0.0.1:18888"
     assert forwarded["callback_url"] == "http://127.0.0.1:18888/api/ai/runtime/callbacks/executor"
+    assert call(
+        app,
+        "GET",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks/run-one/attempt-one",
+        headers={ROUTE_HEADER: token},
+    ).status == 200
+    assert call(
+        app,
+        "POST",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks/run-one/attempt-one/cancel",
+        {},
+        {ROUTE_HEADER: token},
+    ).status == 200
+    assert call(
+        app,
+        "GET",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks/other/attempt-one",
+        headers={ROUTE_HEADER: token},
+    ).status == 409
     task["workspace_id"] = "other"
     denied = call(app, "POST", f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks", task, {ROUTE_HEADER: token})
     assert denied.status == 409

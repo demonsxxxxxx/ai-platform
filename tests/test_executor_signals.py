@@ -6,9 +6,10 @@ from app.runtime.sandbox import executor_signals
 
 
 class FakeRedisHandle:
-    def __init__(self, *, rows=None, fail: bool = False) -> None:
+    def __init__(self, *, rows=None, fail: bool = False, close_fail: bool = False) -> None:
         self.rows = rows or []
         self.fail = fail
+        self.close_fail = close_fail
         self.xadd_calls = []
         self.xread_calls = []
         self.closed = False
@@ -27,6 +28,8 @@ class FakeRedisHandle:
 
     async def aclose(self):
         self.closed = True
+        if self.close_fail:
+            raise RuntimeError("redis close failed")
 
 
 @pytest.mark.asyncio
@@ -68,3 +71,27 @@ async def test_executor_signal_failure_is_fail_open_for_postgres_recovery(monkey
         await executor_signals.publish_executor_terminal_signal()
 
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_executor_signal_close_failure_is_visible(monkeypatch):
+    client = FakeRedisHandle(close_fail=True)
+    monkeypatch.setattr(executor_signals, "get_redis_client", lambda: client)
+
+    with pytest.raises(
+        executor_signals.ExecutorSignalUnavailable,
+        match="executor_signal_close_unavailable",
+    ):
+        await executor_signals.publish_executor_terminal_signal()
+
+
+@pytest.mark.asyncio
+async def test_executor_signal_operation_error_is_not_masked_by_close(monkeypatch):
+    client = FakeRedisHandle(fail=True, close_fail=True)
+    monkeypatch.setattr(executor_signals, "get_redis_client", lambda: client)
+
+    with pytest.raises(
+        executor_signals.ExecutorSignalUnavailable,
+        match="executor_terminal_signal_unavailable",
+    ):
+        await executor_signals.publish_executor_terminal_signal()

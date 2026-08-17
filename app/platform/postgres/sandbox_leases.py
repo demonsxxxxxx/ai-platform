@@ -109,6 +109,49 @@ async def create_sandbox_lease(
     return row
 
 
+async def record_sandbox_executor_accepted(
+    connection: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    lease_id: str,
+    reconciliation_context: dict[str, Any],
+) -> dict[str, Any]:
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set executor_status = case
+                when executor_status in ('running', 'succeeded', 'failed', 'cancelled')
+                    then executor_status
+                else 'accepted'
+            end,
+            executor_heartbeat_at = now(),
+            executor_reconciliation_context_json = %s::jsonb,
+            updated_at = now()
+        where id = %s
+          and tenant_id = %s
+          and run_id = %s
+          and attempt_id = %s
+          and status = 'active'
+        returning *
+        """,
+        (
+            json.dumps(reconciliation_context, ensure_ascii=False),
+            lease_id,
+            tenant_id,
+            run_id,
+            attempt_id,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise SandboxLeaseReleaseScopeMismatchError(
+            "sandbox_executor_attempt_inactive"
+        )
+    return dict(row)
+
+
 async def record_sandbox_executor_heartbeat(
     connection: Any,
     *,
@@ -123,7 +166,11 @@ async def record_sandbox_executor_heartbeat(
     cursor = await connection.execute(
         """
         update sandbox_leases
-        set executor_status = %s,
+        set executor_status = case
+                when executor_status = 'running' and %s = 'accepted'
+                    then executor_status
+                else %s
+            end,
             executor_heartbeat_at = now(),
             heartbeat_at = now(),
             updated_at = now()
@@ -135,7 +182,7 @@ async def record_sandbox_executor_heartbeat(
           and executor_terminal_json is null
         returning *
         """,
-        (executor_status, lease_id, tenant_id, run_id, attempt_id),
+        (executor_status, executor_status, lease_id, tenant_id, run_id, attempt_id),
     )
     row = await cursor.fetchone()
     return dict(row) if row is not None else None
@@ -153,6 +200,16 @@ async def record_sandbox_executor_terminal(
 ) -> dict[str, Any]:
     if executor_status not in {"completed", "failed", "cancelled"}:
         raise ValueError("sandbox_executor_terminal_status_invalid")
+    normalized_result_status = str(terminal_result.get("status") or "").strip().lower()
+    if str(terminal_result.get("run_id") or "") != run_id:
+        raise ValueError("sandbox_executor_terminal_run_id_invalid")
+    allowed_result_statuses = {
+        "completed": {"completed", "succeeded"},
+        "failed": {"failed"},
+        "cancelled": {"cancelled", "canceled"},
+    }
+    if normalized_result_status not in allowed_result_statuses[executor_status]:
+        raise ValueError("sandbox_executor_terminal_result_status_invalid")
     cursor = await connection.execute(
         """
         select *

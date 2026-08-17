@@ -2998,6 +2998,14 @@ async def process_run_payload(
     reconciled_parent = None
     try:
         async with transaction() as conn:
+            locked_run = await repositories.get_run(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                for_update=True,
+            )
+            if locked_run is None or str(locked_run.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+                raise _WorkerSuccessCommitBlocked()
             if reconciliation is not None and not await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
                 conn,
                 lease_id=str(reconciliation.lease_row["id"]),
@@ -3462,11 +3470,13 @@ async def reconcile_executor_terminal_result(
     adapter_context = context.get("adapter_context")
     if not isinstance(adapter_context, dict):
         raise ValueError("executor_reconciliation_adapter_context_missing")
-    run_payload_value = adapter_context.get("run_payload")
+    run_payload_value = context.get("run_payload")
     if not isinstance(run_payload_value, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
     run_payload = RunPayload(**run_payload_value)
     adapter_name = str(context.get("adapter_name") or "").strip()
+    if not adapter_name:
+        raise ValueError("executor_reconciliation_adapter_name_missing")
     queue_payload = QueueRunPayload(
         tenant_id=run_payload.tenant_id,
         workspace_id=run_payload.workspace_id,

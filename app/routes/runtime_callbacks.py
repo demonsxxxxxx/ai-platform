@@ -233,7 +233,11 @@ async def record_executor_callback(
                         mode="json", exclude_none=True
                     ),
                 )
-            except sandbox_lease_repository.SandboxExecutorTerminalConflictError as exc:
+            except (
+                sandbox_lease_repository.SandboxExecutorTerminalConflictError,
+                sandbox_lease_repository.SandboxLeaseReleaseScopeMismatchError,
+                ValueError,
+            ) as exc:
                 raise HTTPException(
                     status_code=409,
                     detail="sandbox_executor_terminal_conflict",

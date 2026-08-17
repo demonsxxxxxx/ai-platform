@@ -826,27 +826,19 @@ class SandboxRuntime:
                 if lease_record_id is None and self._uses_default_lease_recorder:
                     raise RuntimeError("sandbox_executor_lease_receipt_required")
                 if self._uses_default_lease_recorder:
+                    if not request.reconciliation_context:
+                        raise RuntimeError("sandbox_executor_reconciliation_context_required")
+                    if not str(request.reconciliation_context.get("adapter_name") or "").strip():
+                        raise RuntimeError("sandbox_executor_reconciliation_adapter_required")
                     async with transaction() as conn:
-                        accepted = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+                        await sandbox_lease_repository.record_sandbox_executor_accepted(
                             conn,
                             tenant_id=request.tenant_id,
                             run_id=request.run_id,
                             attempt_id=request.attempt_id,
                             lease_id=lease_record_id,
-                            executor_status="accepted",
+                            reconciliation_context=request.reconciliation_context,
                         )
-                    if accepted is None:
-                        raise RuntimeError("sandbox_executor_attempt_inactive")
-                    if not request.reconciliation_context:
-                        raise RuntimeError("sandbox_executor_reconciliation_context_required")
-                    await sandbox_lease_repository.record_sandbox_executor_reconciliation_context(
-                        conn,
-                        tenant_id=request.tenant_id,
-                        run_id=request.run_id,
-                        attempt_id=request.attempt_id,
-                        lease_id=lease_record_id,
-                        context=request.reconciliation_context,
-                    )
                 return build_runtime_result(response)
             response = normalize_executor_reported_failure(
                 response,
