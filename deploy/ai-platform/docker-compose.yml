@@ -60,6 +60,10 @@ services:
     entrypoint: ["python", "-m", "app.runtime.sandbox.workspace_permissions"]
     command: []
     restart: "no"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     network_mode: none
     read_only: true
     security_opt:
