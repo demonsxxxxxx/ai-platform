@@ -2644,8 +2644,10 @@ async def process_run_payload(
         skill_manifests=payload.skill_manifests,
         context_snapshot_id=str(context_ref["context_snapshot_id"]),
         context_snapshot=context_ref["context_snapshot"],
-        context_pack=executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
-        conversation_context=context_ref["conversation_context"],
+        context_pack={
+            **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+            "conversation_context": context_ref["conversation_context"],
+        },
         model_id=payload.model_id or "",
         model_value=payload.model_value or "",
         agent_profile=payload.agent_profile or {},

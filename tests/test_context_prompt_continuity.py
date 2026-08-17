@@ -42,7 +42,7 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
     assert "Context materials: 1 file ref." in prompt
     assert "Recent conversation text is supplied separately by the platform" in prompt
     assert "Authorized message ref IDs" not in prompt
-    assert "read_session_messages" not in prompt
+    assert "read_session_messages" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
@@ -97,13 +97,13 @@ def test_skill_prompt_injects_complete_ordered_conversation_once():
         context_pack={
             "schema_version": "ai-platform.executor-context-pack.v1",
             "prompt_summary": "bounded materials",
-        },
-        conversation_context={
-            "schema_version": "ai-platform.executor-conversation-context.v1",
-            "messages": [
-                {"role": "user", "content": "first prior"},
-                {"role": "assistant", "content": assistant},
-            ],
+            "conversation_context": {
+                "schema_version": "ai-platform.executor-conversation-context.v1",
+                "messages": [
+                    {"role": "user", "content": "first prior"},
+                    {"role": "assistant", "content": assistant},
+                ],
+            },
         },
     )
 

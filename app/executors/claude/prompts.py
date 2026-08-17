@@ -107,11 +107,7 @@ def context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
                     f"- Authorized {label} ref IDs (use these exact IDs in retrieval tools): "
                     f"{', '.join(ref_ids)}"
                 )
-        safe_tools = [
-            tool_name
-            for tool_name in available_context_retrieval_tools(manifest)
-            if tool_name != "read_session_messages"
-        ]
+        safe_tools = available_context_retrieval_tools(manifest)
         if safe_tools:
             metadata_lines.append(
                 f"- Available context retrieval tools: {', '.join(safe_tools)}"
@@ -129,6 +125,19 @@ def context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
         "materials; do not infer raw storage keys, sandbox paths, private payloads, or "
         "long-term memory beyond what is listed."
     )
+
+
+def _conversation_context_for_prompt(
+    context_pack: dict[str, Any] | None,
+    conversation_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if isinstance(conversation_context, dict):
+        return conversation_context
+    if isinstance(context_pack, dict) and isinstance(
+        context_pack.get("conversation_context"), dict
+    ):
+        return context_pack["conversation_context"]
+    return None
 
 
 def conversation_history_prompt_section(
@@ -213,7 +222,7 @@ def build_skill_prompt(
         "You are running inside the ai-platform controlled worker. "
         "Use only backend-managed skills staged in this workspace and do not access "
         "arbitrary shell, SQL, or host filesystem paths.\n"
-        f"{conversation_history_prompt_section(conversation_context)}\n"
+        f"{conversation_history_prompt_section(_conversation_context_for_prompt(context_pack, conversation_context))}\n"
         f"User request: {bounded_user_message}\n"
         f"Workspace input files (under inputs/):\n{files_text}\n\n"
         "If a staged Skill matches the task, use that Skill's instructions. "
@@ -250,7 +259,7 @@ def build_harness_chat_prompt(
         "You are running inside the ai-platform controlled Harness. "
         "Do not access arbitrary shell, SQL, unregistered external services, or host "
         "filesystem paths.\n"
-        f"{conversation_history_prompt_section(conversation_context)}\n"
+        f"{conversation_history_prompt_section(_conversation_context_for_prompt(context_pack, conversation_context))}\n"
         f"User request: {bounded_user_message}\n"
         f"Authorized attachment names (read content only through platform context tools):\n"
         f"{files_text}\n\n"
