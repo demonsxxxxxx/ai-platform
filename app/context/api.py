@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 
+from app.context.application.worker_snapshot import materialize_worker_context_snapshot
 from app.context.domain.conversation import (
     ConversationContextError,
     build_executor_conversation_context,
@@ -150,5 +151,6 @@ __all__ = [
     "context_file_executor_failure",
     "context_file_failure_diagnostic",
     "empty_executor_conversation_context",
+    "materialize_worker_context_snapshot",
     "normalize_context_file_error_code",
 ]

@@ -28,11 +28,7 @@ from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
 )
-from app.context.api import (
-    ConversationContextError,
-    build_executor_conversation_context,
-    empty_executor_conversation_context,
-)
+from app.context.api import materialize_worker_context_snapshot
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     sanitize_context_manifest_payload,
@@ -2217,49 +2213,14 @@ async def _ensure_worker_context_snapshot(
     run_identity: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     identity = run_identity or _payload_identity(payload)
-    # The repository joins the physical runs.context_snapshot_id to the exact
-    # scoped executor row; the locked JSON value is only a mirror check.
-    scoped_snapshot = await repositories.get_context_snapshot_for_worker(
+    return await materialize_worker_context_snapshot(
         conn,
-        tenant_id=identity["tenant_id"],
-        workspace_id=identity["workspace_id"],
-        user_id=identity["user_id"],
-        session_id=identity["session_id"],
-        run_id=identity["run_id"],
+        identity=identity,
         context_snapshot_id=str(payload.context_snapshot_id or ""),
+        snapshot_loader=repositories.get_context_snapshot_for_worker,
+        message_loader=repositories.list_scoped_context_messages,
+        context_projector=_context_snapshot_ref_from_row,
     )
-    if scoped_snapshot is None:
-        return None
-    context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
-    raw_message_ids = scoped_snapshot.get("included_message_ids")
-    if not isinstance(raw_message_ids, list):
-        return None
-    selected_message_ids = [str(message_id or "").strip() for message_id in raw_message_ids]
-    if selected_message_ids:
-        materialized_messages = await repositories.list_scoped_context_messages(
-            conn,
-            tenant_id=identity["tenant_id"],
-            workspace_id=identity["workspace_id"],
-            user_id=identity["user_id"],
-            session_id=identity["session_id"],
-            run_id=identity["run_id"],
-            limit=len(selected_message_ids),
-        )
-        try:
-            conversation_context = build_executor_conversation_context(
-                materialized_messages,
-                selected_message_ids=selected_message_ids,
-                current_run_id=identity["run_id"],
-            )
-        except ConversationContextError:
-            return None
-    else:
-        conversation_context = empty_executor_conversation_context()
-    return {
-        "context_snapshot_id": str(context_ref["context_snapshot_id"]),
-        "context_snapshot": context_ref,
-        "conversation_context": conversation_context,
-    }
 
 
 async def process_run_payload(
