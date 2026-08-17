@@ -131,10 +131,13 @@ class RedisLiveFanoutSource:
                     continue
                 if message_type != "message":
                     continue
-                publication = self._parse_publication(
-                    channel=channel,
-                    value=message.get("data"),
-                )
+                try:
+                    publication = self._parse_publication(
+                        channel=channel,
+                        value=message.get("data"),
+                    )
+                except ValueError:
+                    continue
                 if self._on_publication is None:
                     raise RuntimeError("live_source_listener_missing")
                 await self._on_publication(publication)

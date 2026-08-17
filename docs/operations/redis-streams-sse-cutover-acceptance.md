@@ -193,11 +193,11 @@ Nginx config, and browser build:
 - callback HTTP response loss, duplicate batch conflict, Redis `XADD` unknown
   outcomes, PG terminal rollback, PG commit plus terminal Redis unknown outcome,
   reconciler retry, and exact terminal payload digest;
-- authorization renewal/invalidation across API replicas, blocked live wait,
-  slow downstream delivery, instance restart/loss, fail-closed uncertainty, and
-  no new application/gateway frame after recorded effective boundary;
+- authorization-epoch commits across API replicas, blocked live wait, slow
+  downstream delivery, instance restart/loss, renewal denial, and no old-epoch
+  application/gateway frame after the recorded <=15-second lease deadline;
 - Nginx buffering/cache/compression disabled, heartbeat beneath timeout, bounded
-  slow client behavior, gateway close on invalidation, and browser-observed
+  slow client behavior, gateway close on lease expiry, and browser-observed
   progressive rendering/final replacement;
 - ordinary-user privacy scan proving no raw command/tool payload, hidden
   reasoning, credentials, paths, or storage keys;
@@ -224,7 +224,7 @@ No issue auto-closes merely because the Draft PR exists or local tests pass.
 
 The runtime evidence packet records exact subjects, commands/harness version,
 raw counts and percentiles, Redis clients/memory, PostgreSQL write/query counts,
-cursor/gap/terminal cases, invalidation timestamps and measured boundary, proxy
-headers/config, browser result, privacy scan, cleanup, rollback, failures, and
-whether any selector was unavailable. Secrets, raw prompts, delta text, and real
+cursor/gap/terminal cases, revocation commit and lease-deadline timestamps,
+proxy headers/config, browser result, privacy scan, cleanup, rollback, failures,
+and whether any selector was unavailable. Secrets, raw prompts, delta text, and real
 environment files are excluded or redacted.

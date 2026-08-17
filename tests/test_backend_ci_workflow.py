@@ -76,6 +76,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_runtime_callbacks.py",
         "tests/test_worker.py",
         "tests/test_lambchat_sse_v21.py",
+        "tests/test_app_lifespan.py",
         "tests/test_runtime_launch_script.py",
     ),
     "release-governance": (
@@ -158,7 +159,13 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     }
     assert actual_shards == BACKEND_TEST_SHARDS
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 37
+    assert len(all_selectors) == len(set(all_selectors)) == 38
+    assert tests_job.count("image: redis:7.4-alpine") == 1
+    assert '"6379:6379"' in tests_job
+    assert '--health-cmd "redis-cli ping"' in tests_job
+    assert (
+        "AI_PLATFORM_SSE_REDIS_TEST_URL: redis://localhost:6379/15" in tests_job
+    )
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step

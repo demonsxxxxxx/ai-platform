@@ -143,38 +143,40 @@ open and renews it before expiry. The lease binds:
   seconds after issue.
 
 PostgreSQL is queried on connection establishment, renewal, and authority state
-transitions, not for every payload. Each payload frame, including replay gap,
-terminal, and end, checks the connection-local lease epoch/deadline plus local
-invalidation immediately before gateway write admission. Heartbeat also
-requires a current lease but cannot renew it. A Pub/Sub subscription does not
-authorize a principal; only the per-browser lease does.
+transitions, not for every payload. Lease acquisition validates the durable
+authorization epoch. Each payload frame, including replay gap, terminal, and
+end, checks the authority-clock `lease_not_after` immediately before gateway
+write admission. Heartbeat also requires a current lease but cannot renew it. A
+Pub/Sub subscription does not authorize a principal; only the per-browser lease
+does.
 
-The effective read/write block is capped by remaining lease duration. Missed or
-uncertain renewal closes fail closed. A database error does not extend local
-authority. A process-local timestamp without the durable epoch and invalidation
-channel is insufficient.
+A committed epoch change immediately fences renewal. A lease issued before that
+commit remains authoritative only until its `lease_not_after`, so the effective
+read/write block is capped by the remaining lease duration and never exceeds 15
+seconds. Missed or uncertain renewal closes fail closed. A database error does
+not extend local authority. A process-local timestamp without a durable,
+epoch-backed lease is insufficient.
 
-Required bounded metrics include renewal result/latency, local per-frame rejects,
-invalidation closes, lease expiry closes, active connections, and frames by
-bounded event class. IDs and payload text are never metric labels.
+Required bounded metrics include renewal result/latency, per-frame deadline
+rejects, lease expiry closes, active connections, and frames by bounded event
+class. IDs and payload text are never metric labels.
 
 ## Cross-instance invalidation and revocation
 
-An authority transition commits a new epoch in PostgreSQL and publishes a
-multi-instance invalidation signal. Each API instance updates its local invalid
-epoch, closes affected local subscriber queues, rejects new old-epoch frames,
-and closes affected writers. The process-level Redis channel may remain
-subscribed for other authorized browsers; it is transport, not authority. A new
-or restarted instance can obtain only the current epoch.
+An authority transition commits a new epoch in PostgreSQL. Later lease
+acquisition or renewal can obtain only that current epoch. Each API instance
+continues to admit an already issued lease only until its authority-clock
+deadline, then closes the affected writer when renewal is denied. Redis Pub/Sub
+is the run-event transport and is not presented as an authorization invalidation
+bus.
 
 Revocation states are:
 
 - `requested`: change has not committed; previous epoch remains authoritative;
-- `committed`: new epoch is durable, old renewal is denied, invalidation is in
-  progress;
-- `effective`: the owned application/gateway boundary has invalidated every
-  registered old-epoch connection or its <=15-second lease expired, and no new
-  old-epoch application frame can be admitted for gateway write.
+- `committed`: new epoch is durable and old-epoch lease renewal is denied;
+- `effective`: every registered old-epoch connection has closed or its
+  <=15-second lease expired, and no new old-epoch application frame can be
+  admitted for gateway write.
 
 The guarantee is intentionally bounded: after `effective`, the application and
 owned SSE gateway produce/accept no new payload under the old epoch. An ASGI send
@@ -185,13 +187,14 @@ or commit-time-zero-frame promise.
 
 The owned gateway must support cancellation and connection close; Nginx must
 disable buffering/cache/compression for the SSE location. External Acceptance
-injects revocation during blocked read and slow downstream delivery, observes
-gateway close and proxy behavior, and records the precise measurable boundary.
+injects revocation during blocked read and slow downstream delivery, verifies
+that renewal is denied, observes no old-epoch application frame after the
+recorded lease deadline, and records the precise measurable boundary.
 
-If invalidation delivery is lost, lease expiry bounds application authority.
-Renewal is denied from current PostgreSQL state. Failures must not report
-`effective` before the owned boundary is closed, and timeout/uncertainty stays
-pending or fails closed rather than claiming browser quiescence.
+Lease expiry bounds application authority even if a browser is blocked in a
+live wait. Renewal is denied from current PostgreSQL state. Failures must not
+report `effective` before the owned boundary is closed, and timeout/uncertainty
+stays pending or fails closed rather than claiming browser quiescence.
 
 ## Mid-run Redis failure
 
@@ -262,7 +265,6 @@ Pending Redis publication does not leave a terminal run permanently `running`.
 | duplicate batch with changed item | fenced conflict; no publish |
 | Redis event `XADD` unknown | retry same canonical bytes/event ID; reducer applies once |
 | memory cap reached and Redis unavailable | seal/discard unpublished live bytes; no PG delta or unbounded queue |
-| approval/control event cannot publish | pause before side effect or fail/cancel |
 | Pub/Sub disconnect or local queue overflow | close affected SSE without cursor advance; reconnect repairs from Stream |
 | attach races publication | subscribe acknowledgement before bounded replay; overlap dedupe; no missed semantic event |
 | PostgreSQL terminal rollback | no terminal/end; no success claim |
@@ -270,8 +272,8 @@ Pending Redis publication does not leave a terminal run permanently `running`.
 | terminal Redis outcome unknown | retry exact frozen bytes/IDs |
 | continuity lost during terminal retry | successor incarnation, gap, same semantic intent bytes |
 | authorization renewal fails | close fail closed before next payload |
-| invalidation during blocked/live wait | close local subscriber and old-epoch writer |
-| frame checked before revocation commit | may already be downstream; no new frame admitted after effective owned boundary |
+| authorization epoch commits during blocked/live wait | renewal is denied; no old-epoch application frame is admitted after the <=15-second lease deadline |
+| frame checked before revocation commit | may already be downstream; the issued lease remains authority only through its recorded deadline |
 | late delta races closing | reject and measure; never append after terminal |
 
 ## Required focused tests
@@ -285,11 +287,10 @@ Pending Redis publication does not leave a terminal run permanently `running`.
   direct or nested Redis access inside a PG transaction;
 - coalescer age/size/order/bounds, shutdown/terminal flush, secret/private event
   rejection, and no hidden reasoning;
-- Redis outage before/mid-run, eligible continuation, approval fail-closed, no
-  PG delta fallback, and bounded memory;
-- authorization open/renewal, local per-frame check without PG query,
-  invalidation, expiry, restart, blocked-read cancellation, and fail-closed DB
-  errors;
+- Redis outage before/mid-run, eligible continuation, no PG delta fallback, and
+  bounded memory;
+- authorization open/renewal, local deadline check without PG query, expiry,
+  restart, blocked-read lease expiry, and fail-closed DB errors;
 - terminal PG rollback, commit plus Redis failure/unknown outcome, exact payload
   hash retry, successor incarnation, duplicate event, late delta, and final
   hydrate replacement.

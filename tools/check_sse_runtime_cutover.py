@@ -83,6 +83,15 @@ def _calls(node: ast.AST) -> list[tuple[str, int]]:
     return visitor.calls
 
 
+def _all_calls(node: ast.AST) -> list[tuple[str, int]]:
+    return [
+        (name, candidate.lineno)
+        for candidate in ast.walk(node)
+        if isinstance(candidate, ast.Call)
+        and (name := _dotted_name(candidate.func)) is not None
+    ]
+
+
 def _unique_call_line(
     calls: list[tuple[str, int]],
     *,
@@ -255,10 +264,7 @@ def _typescript_call_arguments(source: str, callee: str) -> list[str]:
 
 
 def _nginx_sse_contract_failures(source: str) -> list[str]:
-    marker = (
-        "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/"
-        "[A-Za-z0-9_-]+/stream$ {"
-    )
+    marker = "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {"
     if marker not in source:
         return ["nginx.conf.template:sse_location_missing"]
     block = source.split(marker, 1)[1].split("\n    }", 1)[0]
@@ -283,7 +289,7 @@ def _nginx_sse_contract_failures(source: str) -> list[str]:
 def check() -> list[str]:
     failures: list[str] = []
     chat_stream = _function("app/routes/lambchat_compat.py", "chat_session_stream")
-    for name, line in _calls(chat_stream):
+    for name, line in _all_calls(chat_stream):
         final_name = name.rsplit(".", 1)[-1]
         if final_name in {"list_run_events", "event_page", "sleep", "read", "xread"}:
             failures.append(f"lambchat_compat.py:{line}:retired_live_call:{final_name}")

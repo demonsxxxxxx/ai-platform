@@ -112,12 +112,14 @@ authority.
   or unprovable continuity emits one id-less gap and uses durable hydrate.
 - The reducer sends and advances only the last cursor whose event was validated
   and successfully committed to client state. Heartbeat and gap never advance it.
-- Connection/renewal performs the PostgreSQL authority lookup. Each payload uses
-  the cached lease epoch/deadline plus local invalidation; PostgreSQL is not read
-  per frame.
+- Connection/renewal performs the PostgreSQL authority lookup. Lease acquisition
+  validates the durable epoch; each payload checks the cached authority-clock
+  deadline, and PostgreSQL is not read per frame. A committed epoch change
+  rejects renewal, so old-epoch admission ends no later than the <=15-second
+  lease deadline.
 - ASGI handoff is not browser receipt. Revocation guarantees no new application
-  frame after the owned gateway boundary becomes effective; real proxy behavior
-  is externally measured.
+  frame after the old lease deadline; real proxy behavior is externally
+  measured.
 - Active appends atomically refresh active-idle TTL. Terminal/end atomically set
   terminal replay TTL. Creation-time wall clock never expires a still-active
   stream.

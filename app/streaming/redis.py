@@ -427,24 +427,15 @@ class SseAuthorityLease:
     authorization_epoch: int
     lease_not_after: datetime
 
-    def allows_frame(
-        self,
-        *,
-        now: datetime,
-        local_authorization_epoch: int,
-        invalidated_through_epoch: int,
-    ) -> bool:
+    def allows_frame(self, *, now: datetime) -> bool:
+        """Check the authority-clock deadline of this already authorized lease."""
         now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
         deadline = (
             self.lease_not_after
             if self.lease_not_after.tzinfo
             else self.lease_not_after.replace(tzinfo=timezone.utc)
         )
-        return (
-            self.authorization_epoch == local_authorization_epoch
-            and self.authorization_epoch > invalidated_through_epoch
-            and now < deadline
-        )
+        return now < deadline
 
 
 @dataclass(frozen=True, slots=True)

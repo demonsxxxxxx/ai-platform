@@ -1636,11 +1636,9 @@ async def chat_session_stream(
         async def refresh_lease() -> bool:
             nonlocal lease
             now = datetime.now(timezone.utc)
-            if lease.allows_frame(
-                now=now,
-                local_authorization_epoch=lease.authorization_epoch,
-                invalidated_through_epoch=lease.authorization_epoch - 1,
-            ):
+            # A committed epoch change fences renewal. This issued lease remains
+            # authoritative only until its authority-clock deadline (<=15s).
+            if lease.allows_frame(now=now):
                 return True
             try:
                 async with transaction() as conn:

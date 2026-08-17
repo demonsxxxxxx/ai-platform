@@ -32,7 +32,7 @@ server {
         try_files /ai-platform-build-provenance.json =404;
     }
 
-    location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/[A-Za-z0-9_-]+/stream$ {
+    location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
         proxy_pass ${AI_PLATFORM_API_UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host $host;

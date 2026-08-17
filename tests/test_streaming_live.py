@@ -159,6 +159,38 @@ async def test_redis_source_multiplexes_channels_on_one_pubsub_connection():
     assert client.pubsub_instance.closed is True
 
 
+@pytest.mark.asyncio
+async def test_redis_source_skips_malformed_publication_without_failing_transport():
+    client = FakeRedisClient()
+    source = RedisLiveFanoutSource(client=client)
+    received = []
+    failures = []
+    await source.start(
+        on_publication=lambda value: _append(received, value),
+        on_failure=lambda reason: _append(failures, reason),
+    )
+
+    await source.subscribe("channel-a")
+    await client.pubsub_instance.messages.put(
+        {"type": "message", "channel": "channel-a", "data": "not-json"}
+    )
+    await client.pubsub_instance.messages.put(
+        {
+            "type": "message",
+            "channel": "channel-a",
+            "data": json.dumps({"redis_id": "3-0", "envelope": "{}"}),
+        }
+    )
+    for _ in range(10):
+        if received:
+            break
+        await asyncio.sleep(0)
+
+    assert received == [LivePublication("channel-a", "3-0", "{}")]
+    assert failures == []
+    await source.aclose()
+
+
 async def _append(values, value):
     values.append(value)
 
