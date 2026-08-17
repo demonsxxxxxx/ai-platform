@@ -382,7 +382,19 @@ def test_executor_client_default_timeout_uses_document_workflow_budget(monkeypat
     )
 
     assert executor_client_module._default_timeout_seconds() == tool_permission_budget(
-        300.0
+        1200.0
+    ).normal_outer_executor_timeout_seconds
+
+
+def test_executor_client_preserves_explicit_zero_timeout(monkeypatch):
+    monkeypatch.setattr(
+        executor_client_module,
+        "get_settings",
+        lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 0.0})(),
+    )
+
+    assert executor_client_module._default_timeout_seconds() == tool_permission_budget(
+        0.0
     ).normal_outer_executor_timeout_seconds
 
 

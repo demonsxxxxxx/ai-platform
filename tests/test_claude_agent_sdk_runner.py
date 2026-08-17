@@ -21,7 +21,7 @@ def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
             sandbox_brokered=True,
             full_access=False,
         )
-        == 300.0
+        == 1200.0
     )
     assert (
         _sdk_run_timeout_seconds(

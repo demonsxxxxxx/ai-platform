@@ -9,7 +9,7 @@ from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, Settings
 def test_claude_agent_sdk_timeout_defaults_to_document_workflow_budget(monkeypatch):
     monkeypatch.delenv("CLAUDE_AGENT_SDK_TIMEOUT_SECONDS", raising=False)
 
-    assert Settings(_env_file=None).claude_agent_sdk_timeout_seconds == 300.0
+    assert Settings(_env_file=None).claude_agent_sdk_timeout_seconds == 1200.0
     assert (
         Settings(
             _env_file=None,

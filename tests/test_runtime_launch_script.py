@@ -191,14 +191,14 @@ def test_compose_and_example_use_document_workflow_sdk_timeout_default():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
-    assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS=300" in env_example_text
+    assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS=1200" in env_example_text
     assert (
         compose_text.count(
-            "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS: ${CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-300}"
+            "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS: ${CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-1200}"
         )
         == 2
     )
-    assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-120" not in compose_text
+    assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-300}" not in compose_text
 
 
 def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_server():
