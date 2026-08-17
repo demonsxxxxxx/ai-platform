@@ -79,8 +79,9 @@ input, not a runtime dependency or implementation authority.
    selecting messages.
 3. Materialization must fetch only message identifiers selected by that exact
    snapshot and must re-prove tenant, workspace, user, session, and run binding.
-4. A missing, duplicate, out-of-scope, or reordered materialization fails
-   closed before Engine dispatch.
+4. A missing, duplicate, or out-of-scope materialization fails closed before
+   Engine dispatch. Returned rows are normalized to durable conversation order
+   and repository return order is not an authority.
 5. Retry of the same run uses the same ordered selected message set and the same
    deterministic trimming algorithm.
 

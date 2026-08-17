@@ -114,7 +114,7 @@ def test_latest_turn_remains_complete_when_it_alone_exceeds_history_budget():
     ]
 
 
-def test_materialization_fails_closed_for_missing_or_reordered_snapshot_messages():
+def test_materialization_fails_closed_for_missing_messages_and_normalizes_order():
     rows = [
         _row("msg-user", "run-prior", "user", "question", 1),
         _row("msg-assistant", "run-prior", "assistant", "answer", 2),
@@ -130,12 +130,13 @@ def test_materialization_fails_closed_for_missing_or_reordered_snapshot_messages
             current_run_id="run-current",
         )
 
-    with pytest.raises(
-        ConversationContextError,
-        match="conversation_context_materialization_reordered",
-    ):
-        build_executor_conversation_context(
-            list(reversed(rows)),
-            selected_message_ids=["msg-user", "msg-assistant"],
-            current_run_id="run-current",
-        )
+    reordered = build_executor_conversation_context(
+        list(reversed(rows)),
+        selected_message_ids=["msg-user", "msg-assistant"],
+        current_run_id="run-current",
+    )
+
+    assert [message["message_id"] for message in reordered["messages"]] == [
+        "msg-user",
+        "msg-assistant",
+    ]

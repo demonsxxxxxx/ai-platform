@@ -85,11 +85,10 @@ def build_executor_conversation_context(
         raise ConversationContextError("conversation_context_materialization_invalid")
     if set(actual_ids) != set(normalized_ids):
         raise ConversationContextError("conversation_context_materialization_incomplete")
-    if rows != sorted(rows, key=_message_order_key):
-        raise ConversationContextError("conversation_context_materialization_reordered")
+    ordered_rows = sorted(rows, key=_message_order_key)
 
     history: list[dict[str, str]] = []
-    for row in rows:
+    for row in ordered_rows:
         if str(row.get("run_id") or "") == current_run_id:
             continue
         role = str(row.get("role") or "").strip().lower()
