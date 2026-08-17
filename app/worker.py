@@ -28,6 +28,11 @@ from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
 )
+from app.context.conversation import (
+    ConversationContextError,
+    build_executor_conversation_context,
+    empty_executor_conversation_context,
+)
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     sanitize_context_manifest_payload,
@@ -2226,9 +2231,34 @@ async def _ensure_worker_context_snapshot(
     if scoped_snapshot is None:
         return None
     context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
+    raw_message_ids = scoped_snapshot.get("included_message_ids")
+    if not isinstance(raw_message_ids, list):
+        return None
+    selected_message_ids = [str(message_id or "").strip() for message_id in raw_message_ids]
+    if selected_message_ids:
+        materialized_messages = await repositories.list_scoped_context_messages(
+            conn,
+            tenant_id=identity["tenant_id"],
+            workspace_id=identity["workspace_id"],
+            user_id=identity["user_id"],
+            session_id=identity["session_id"],
+            run_id=identity["run_id"],
+            limit=len(selected_message_ids),
+        )
+        try:
+            conversation_context = build_executor_conversation_context(
+                materialized_messages,
+                selected_message_ids=selected_message_ids,
+                current_run_id=identity["run_id"],
+            )
+        except ConversationContextError:
+            return None
+    else:
+        conversation_context = empty_executor_conversation_context()
     return {
         "context_snapshot_id": str(context_ref["context_snapshot_id"]),
         "context_snapshot": context_ref,
+        "conversation_context": conversation_context,
     }
 
 
@@ -2654,6 +2684,7 @@ async def process_run_payload(
         context_snapshot_id=str(context_ref["context_snapshot_id"]),
         context_snapshot=context_ref["context_snapshot"],
         context_pack=executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+        conversation_context=context_ref["conversation_context"],
         model_id=payload.model_id or "",
         model_value=payload.model_value or "",
         agent_profile=payload.agent_profile or {},

@@ -901,6 +901,25 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def list_scoped_context_messages(conn, **kwargs):
+        message_ids = ["msg-a", "msg-b"][: int(kwargs.get("limit") or 0)]
+        return [
+            {
+                "id": message_id,
+                "run_id": f"run-prior-{index}",
+                "role": "user" if index % 2 else "assistant",
+                "content": f"context message {index}",
+                "created_at": f"2026-08-17T00:00:{index:02d}Z",
+            }
+            for index, message_id in enumerate(message_ids, start=1)
+        ]
+
+    monkeypatch.setattr(
+        "app.worker.repositories.list_scoped_context_messages",
+        list_scoped_context_messages,
+        raising=False,
+    )
+
     async def reconcile_multi_agent_child_run_terminal_state(conn, **kwargs):
         return None
 

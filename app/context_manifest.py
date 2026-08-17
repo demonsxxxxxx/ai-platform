@@ -382,12 +382,12 @@ class ContextPlanner:
             "memory_record_count": len(safe_manifest.get("memory_records") or []),
         }
         prompt_summary = (
-            "Context manifest: "
-            f"{counts['message_count']} message refs, "
+            "Context materials: "
             f"{counts['file_count']} file refs, "
             f"{counts['artifact_count']} artifact refs, "
             f"{counts['memory_record_count']} memory refs. "
-            "Use context retrieval tools for full message, file, artifact, or memory content."
+            "Recent conversation text is supplied separately. Use context retrieval tools "
+            "for authorized file, artifact, memory, or explicitly older message inspection."
         )
         return {
             "schema_version": EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION,

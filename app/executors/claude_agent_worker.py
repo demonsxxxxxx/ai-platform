@@ -1377,6 +1377,7 @@ class ClaudeAgentWorkerAdapter:
             ),
             "file_names": file_names,
             "context_pack": prompt_context_pack,
+            "conversation_context": payload.conversation_context,
         }
         prompt = (
             build_harness_chat_prompt(**prompt_builder_kwargs)

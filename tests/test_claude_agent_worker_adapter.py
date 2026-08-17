@@ -728,6 +728,43 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
 
 
 @pytest.mark.asyncio
+async def test_worker_dispatch_includes_complete_latest_conversation_turn(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+    assistant = "analysis " + ("x" * 900) + "\nA. continue\nB. wait"
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "A"},
+            conversation_context={
+                "schema_version": "ai-platform.executor-conversation-context.v1",
+                "messages": [
+                    {"role": "user", "content": "Is this file enough?"},
+                    {"role": "assistant", "content": assistant},
+                ],
+            },
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert len(runtime_requests) == 1
+    prompt = runtime_requests[0].input_message
+    assert "A. continue" in prompt
+    assert "B. wait" in prompt
+    assert prompt.count("User request: A") == 1
+    assert "read_session_messages" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_submit_run_classifies_context_file_size_failure_without_starting_runtime(
     monkeypatch,
     tmp_path,
@@ -2390,7 +2427,7 @@ async def test_general_chat_xlsx_metadata_does_not_create_parser_contract_or_req
     ]
     assert "read_context_file" not in request.input_message
     assert "stage_context_file_to_workspace" not in request.input_message
-    assert "read_session_messages" in request.input_message
+    assert "read_session_messages" not in request.input_message
     assert "read_run_artifact" in request.input_message
     assert "stage_run_artifact_to_workspace" in request.input_message
     workspace = sandbox_workspace_path(current_settings)

@@ -146,7 +146,8 @@ def test_executor_context_pack_from_manifest_contains_only_index_and_retrieval_r
     assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
     assert context_pack["context_manifest"]["schema_version"] == "ai-platform.context-manifest.v1"
     assert context_pack["context_manifest"]["current_message"] == "please use the prior file"
-    assert "Use context retrieval tools for full message, file, artifact, or memory content" in context_pack["prompt_summary"]
+    assert "Recent conversation text is supplied separately" in context_pack["prompt_summary"]
+    assert "full message" not in context_pack["prompt_summary"]
     serialized = json.dumps(context_pack, ensure_ascii=False)
     assert "storage_key" not in serialized
     assert "source.docx" in serialized

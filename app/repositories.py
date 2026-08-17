@@ -558,7 +558,7 @@ async def list_scoped_context_messages(
           and sessions.user_id = current_run.user_id
           and sessions.workspace_id = current_run.workspace_id
           and context_snapshot.included_message_ids ? messages.id
-        order by messages.created_at asc
+        order by messages.created_at asc, messages.id asc
         limit %s offset %s
         """,
         (run_id, tenant_id, workspace_id, user_id, session_id, run_id, max(1, int(limit)), max(0, int(offset))),
