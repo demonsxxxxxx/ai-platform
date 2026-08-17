@@ -14,9 +14,12 @@ from docx import Document
 from pypdf import PdfReader
 from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject
 
+from app.context.api import (
+    ContextFileContentError,
+    normalize_context_file_error_code,
+)
 from app.context_manifest import truncate_utf8_text
 from app.file_parser_contracts import (
-    AttachmentPreprocessingError,
     AttachmentParserRequirement,
     MaterializedAttachmentFact,
     XLSX_CONTENT_TYPE,
@@ -47,125 +50,6 @@ TEXT_CONTENT_TYPES = frozenset(
     }
 )
 TEXT_EXTENSIONS = frozenset({".csv", ".json", ".markdown", ".md", ".txt"})
-
-
-CONTEXT_FILE_FAILURE_SCHEMA_VERSION = "ai-platform.context-file-failure.v1"
-CONTEXT_FILE_ERROR_CODES = frozenset(
-    {
-        "attachment_materialized_fact_invalid",
-        "attachment_parser_file_mapping_invalid",
-        "attachment_parser_file_too_large",
-        "attachment_parser_prompt_too_large",
-        "attachment_parser_staged_file_invalid",
-        "attachment_parser_staged_file_mismatch",
-        "attachment_parser_unsupported",
-        "attachment_preprocessing_contract_invalid",
-        "context_file_docx_archive_entry_limit_exceeded",
-        "context_file_docx_archive_invalid",
-        "context_file_docx_archive_structure_invalid",
-        "context_file_docx_archive_too_large",
-        "context_file_docx_embedded_content_unsupported",
-        "context_file_docx_encrypted",
-        "context_file_docx_external_relationship_unsupported",
-        "context_file_docx_macros_unsupported",
-        "context_file_docx_parse_failed",
-        "context_file_docx_relationship_invalid",
-        "context_file_docx_required_part_missing",
-        "context_file_identity_mismatch",
-        "context_file_json_invalid",
-        "context_file_name_conflict",
-        "context_file_pdf_active_content_unsupported",
-        "context_file_pdf_page_limit_exceeded",
-        "context_file_pdf_parse_failed",
-        "context_file_pdf_password_required",
-        "context_file_preprocessing_failed",
-        "context_file_staging_write_failed",
-        "context_file_storage_unavailable",
-        "context_file_text_encoding_unsupported",
-        "context_file_too_large",
-        "context_file_type_unsupported",
-        "context_file_unavailable",
-        "xlsx_archive_too_large",
-        "xlsx_cell_limit_exceeded",
-        "xlsx_content_types_structure_unsupported",
-        "xlsx_encrypted_unsupported",
-        "xlsx_macros_unsupported",
-        "xlsx_parse_failed",
-        "xlsx_relationship_structure_unsupported",
-        "xlsx_workbook_part_unsupported",
-        "xlsx_workbook_structure_unsupported",
-        "xlsx_worksheet_structure_unsupported",
-        "xlsx_xml_encoding_unsupported",
-        "xlsx_xml_entities_unsupported",
-    }
-)
-
-
-def normalize_context_file_error_code(value: object) -> str:
-    code = str(value or "").strip()
-    return code if code in CONTEXT_FILE_ERROR_CODES else "context_file_preprocessing_failed"
-
-
-def _context_file_error_phase(code: str) -> str:
-    if code == "context_file_unavailable":
-        return "authorization"
-    if code == "context_file_identity_mismatch":
-        return "identity"
-    if code in {"context_file_name_conflict", "context_file_staging_write_failed"}:
-        return "staging"
-    if code == "context_file_storage_unavailable":
-        return "storage"
-    if code == "context_file_too_large" or code.endswith("_too_large"):
-        return "limits"
-    if code == "context_file_type_unsupported":
-        return "classification"
-    return "parser"
-
-
-class ContextFileContentError(ValueError):
-    def __init__(
-        self,
-        code: str,
-        *,
-        phase: str | None = None,
-        file_kind: str | None = None,
-        attachment_index: int | None = None,
-    ) -> None:
-        super().__init__(code)
-        self.code = code
-        self.phase = phase or _context_file_error_phase(code)
-        self.file_kind = str(file_kind or "").strip().casefold()
-        self.attachment_index = attachment_index
-
-    def bind_attachment(self, *, attachment_index: int, file_kind: str) -> ContextFileContentError:
-        if self.attachment_index is None:
-            self.attachment_index = attachment_index
-        if not self.file_kind:
-            self.file_kind = str(file_kind or "").strip().casefold()
-        return self
-
-
-def context_file_failure_diagnostic(error: ContextFileContentError) -> dict[str, object]:
-    chain: list[str] = []
-    current: BaseException | None = error
-    seen: set[int] = set()
-    while current is not None and len(chain) < 4 and id(current) not in seen:
-        seen.add(id(current))
-        name = type(current).__name__
-        if name.isidentifier():
-            chain.append(name[:80])
-        current = current.__cause__
-    diagnostic: dict[str, object] = {
-        "schema_version": CONTEXT_FILE_FAILURE_SCHEMA_VERSION,
-        "reason_code": normalize_context_file_error_code(error.code),
-        "phase": error.phase,
-        "exception_chain": chain,
-    }
-    if error.file_kind:
-        diagnostic["file_kind"] = error.file_kind
-    if isinstance(error.attachment_index, int) and error.attachment_index > 0:
-        diagnostic["attachment_index"] = error.attachment_index
-    return diagnostic
 
 
 @dataclass(frozen=True)
@@ -444,8 +328,11 @@ def _parse_xlsx(
             target = Path(directory) / PurePosixPath(file_name).name
             target.write_bytes(raw)
             parsed = parse_xlsx_attachment(path=target, requirement=requirement)
-    except AttachmentPreprocessingError as exc:
-        raise ContextFileContentError(exc.code) from exc
+    except ValueError as exc:
+        error_code = normalize_context_file_error_code(getattr(exc, "code", None))
+        raise ContextFileContentError(
+            error_code if error_code.startswith(("attachment_", "xlsx_")) else "xlsx_parse_failed"
+        ) from exc
     except Exception as exc:
         raise ContextFileContentError("xlsx_parse_failed") from exc
     rendered = json.dumps(parsed.content, ensure_ascii=False, separators=(",", ":"))

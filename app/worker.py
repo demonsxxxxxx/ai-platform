@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import logging
 import re
 import time as _time
 from dataclasses import dataclass, replace
@@ -28,10 +27,6 @@ from app.capability_distribution import (
 from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
-)
-from app.context.file_content import (
-    CONTEXT_FILE_ERROR_CODES,
-    CONTEXT_FILE_FAILURE_SCHEMA_VERSION,
 )
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
@@ -80,6 +75,7 @@ from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_ev
 from app.streaming.worker_projection import (
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
+    persist_worker_failure_event,
     publish_pending_run_terminal,
 )
 from app.skills.catalog import (
@@ -112,7 +108,6 @@ class _WorkerClock:
 
 
 time = _WorkerClock()
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -274,66 +269,6 @@ _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
     r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b",
     re.IGNORECASE,
 )
-_CONTEXT_FILE_DIAGNOSTIC_ID_RE = re.compile(r"^[0-9a-f]{16}$")
-_CONTEXT_FILE_KIND_RE = re.compile(r"^[a-z0-9.+-]{1,32}$")
-_CONTEXT_FILE_PHASES = frozenset(
-    {"authorization", "classification", "identity", "limits", "materialization", "parser", "staging", "storage"}
-)
-
-
-def _validated_context_file_diagnostic(result: ExecutorResult) -> dict[str, object] | None:
-    raw = result.executor_payload.get("context_file_failure")
-    if not isinstance(raw, dict):
-        return None
-    if raw.get("schema_version") != CONTEXT_FILE_FAILURE_SCHEMA_VERSION:
-        return None
-    reason_code = str(raw.get("reason_code") or "")
-    if reason_code not in CONTEXT_FILE_ERROR_CODES:
-        return None
-    phase = str(raw.get("phase") or "")
-    if phase not in _CONTEXT_FILE_PHASES:
-        return None
-    diagnostic_id = str(raw.get("diagnostic_id") or "")
-    if _CONTEXT_FILE_DIAGNOSTIC_ID_RE.fullmatch(diagnostic_id) is None:
-        return None
-    exception_chain = raw.get("exception_chain")
-    if (
-        not isinstance(exception_chain, list)
-        or len(exception_chain) > 4
-        or any(
-            not isinstance(item, str)
-            or len(item) > 80
-            or not item.isidentifier()
-            for item in exception_chain
-        )
-    ):
-        return None
-    diagnostic: dict[str, object] = {
-        "schema_version": CONTEXT_FILE_FAILURE_SCHEMA_VERSION,
-        "diagnostic_id": diagnostic_id,
-        "reason_code": reason_code,
-        "phase": phase,
-        "exception_chain": list(exception_chain),
-    }
-    file_kind = raw.get("file_kind")
-    if file_kind is not None:
-        normalized_kind = str(file_kind)
-        if _CONTEXT_FILE_KIND_RE.fullmatch(normalized_kind) is None:
-            return None
-        diagnostic["file_kind"] = normalized_kind
-    attachment_index = raw.get("attachment_index")
-    if attachment_index is not None:
-        if (
-            not isinstance(attachment_index, int)
-            or isinstance(attachment_index, bool)
-            or attachment_index < 1
-            or attachment_index > 32
-        ):
-            return None
-        diagnostic["attachment_index"] = attachment_index
-    return diagnostic
-
-
 def _public_executor_failure_message(result: ExecutorResult) -> str:
     generic_message = "Executor reported failure"
     if result.executor_payload.get("sandbox_runtime_used") is True:
@@ -3293,17 +3228,6 @@ async def process_run_payload(
             else:
                 reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
                 reported_error_message = _public_executor_failure_message(result)
-                context_file_diagnostic = _validated_context_file_diagnostic(result)
-                if context_file_diagnostic is not None:
-                    logger.error(
-                        "Context file preprocessing failed",
-                        extra={
-                            "run_id": payload.run_id,
-                            "attempt_id": attempt_id,
-                            "trace_id": trace_id,
-                            **context_file_diagnostic,
-                        },
-                    )
                 await _attach_multi_agent_result_summary(
                     conn,
                     tenant_id=payload.tenant_id,
@@ -3353,32 +3277,14 @@ async def process_run_payload(
                             "Run already reached a terminal state",
                         )
                     else:
-                        await repositories.append_event(
+                        await persist_worker_failure_event(
                             conn,
                             tenant_id=payload.tenant_id,
                             run_id=payload.run_id,
-                            event_type="error",
-                            stage="worker",
-                            message="Run failed",
-                            payload={
-                                "artifact_count": len(result.artifacts),
-                                "visible_to_user": False,
-                                **(
-                                    {"context_file_failure": context_file_diagnostic}
-                                    if context_file_diagnostic is not None
-                                    else {}
-                                ),
-                            },
-                            **(
-                                {
-                                    "trace_id": trace_id,
-                                    "severity": "error",
-                                    "visible_to_user": False,
-                                    "error_code": reported_error_code,
-                                }
-                                if context_file_diagnostic is not None
-                                else {}
-                            ),
+                            result=result,
+                            attempt_id=attempt_id,
+                            trace_id=trace_id,
+                            error_code=reported_error_code,
                         )
                         await release_runtime_sandbox_lease(conn, reason="run_failed")
                         terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)

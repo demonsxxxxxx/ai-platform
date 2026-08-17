@@ -2,7 +2,6 @@ import base64
 import binascii
 import inspect
 import posixpath
-import secrets
 import shutil
 import zipfile
 from dataclasses import asdict, dataclass, field, replace
@@ -13,9 +12,9 @@ from xml.etree import ElementTree
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
-from app.context.file_content import (
+from app.context.api import (
     ContextFileContentError,
-    context_file_failure_diagnostic,
+    context_file_executor_failure,
 )
 from app.context.file_continuity import materialize_run_context_files
 from app.context_manifest import (
@@ -663,10 +662,7 @@ class ClaudeAgentWorkerAdapter:
                 execution_owner=execution_owner,
             )
         except ContextFileContentError as exc:
-            return self._context_file_failure_result(
-                payload=payload,
-                error=exc,
-            )
+            return self._context_file_failure_result(payload=payload, error=exc)
         if sdk_result is not None:
             return sdk_result
 
@@ -1225,18 +1221,7 @@ class ClaudeAgentWorkerAdapter:
         resolved_workspace = workspace or _run_workspace(settings, payload)
         resolved_workspace_root = workspace_root or settings.claude_agent_workspace_root
         _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
-        try:
-            materialized_file_names = await self._materialize_files(
-                payload,
-                resolved_workspace,
-            )
-        except ContextFileContentError:
-            raise
-        except Exception as exc:
-            raise ContextFileContentError(
-                "context_file_preprocessing_failed",
-                phase="materialization",
-            ) from exc
+        materialized_file_names = await self._materialize_files(payload, resolved_workspace)
         file_names = list(materialized_file_names)
         raw_attachment_facts = getattr(materialized_file_names, "attachment_facts", [])
         attachment_facts = (
@@ -1599,18 +1584,7 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         error: ContextFileContentError,
     ) -> ExecutorResult:
-        diagnostic = context_file_failure_diagnostic(error)
-        diagnostic["diagnostic_id"] = secrets.token_hex(8)
-        safe_error_code = str(diagnostic["reason_code"])
-        message = (
-            "The input file exceeds the 32 MiB processing limit."
-            if safe_error_code == "context_file_too_large"
-            else (
-                "The PDF requires a password before it can be processed."
-                if safe_error_code == "context_file_pdf_password_required"
-                else "The input file could not be prepared for execution."
-            )
-        )
+        safe_error_code, message, diagnostic = context_file_executor_failure(error)
         return ExecutorResult(
             status="failed",
             adapter_version=self.adapter_version,

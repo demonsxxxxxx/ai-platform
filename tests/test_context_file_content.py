@@ -8,8 +8,8 @@ from openpyxl import Workbook
 from pypdf import PdfWriter
 from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject
 
+from app.context.api import ContextFileContentError, context_file_failure_diagnostic
 from app.context.file_content import (
-    ContextFileContentError,
     DOCX_CONTENT_TYPE,
     MAX_CONTEXT_FILE_STAGE_BYTES,
     MAX_DOCUMENT_SOURCE_BYTES,
@@ -18,7 +18,6 @@ from app.context.file_content import (
     MAX_TEXT_SOURCE_BYTES,
     PDF_CONTENT_TYPE,
     _pdf_has_active_content,
-    context_file_failure_diagnostic,
     parse_context_file,
 )
 from app.file_parser_contracts import AttachmentPreprocessingError, XLSX_CONTENT_TYPE

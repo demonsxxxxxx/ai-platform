@@ -7,8 +7,8 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from app.context.api import ContextFileContentError
 from app.context.file_content import (
-    ContextFileContentError,
     MAX_CONTEXT_FILE_STAGE_BYTES,
     validate_context_file_for_stage,
 )
@@ -407,6 +407,12 @@ async def materialize_run_context_files(
                 file_kind=file_kind,
                 attachment_index=attachment_index,
             ) from exc
+        except Exception as exc:
+            raise ContextFileContentError(
+                "context_file_storage_unavailable",
+                file_kind=file_kind,
+                attachment_index=attachment_index,
+            ) from exc
         try:
             validate_context_file_for_stage(row, content)
         except ContextFileContentError as exc:
@@ -437,7 +443,7 @@ async def materialize_run_context_files(
             canonical_target.write_bytes(content)
             written_paths.append(canonical_target)
             materialized_file_names.append(target.name)
-    except BaseException:
+    except BaseException as exc:
         for written_path in reversed(written_paths):
             try:
                 written_path.unlink(missing_ok=True)
@@ -447,6 +453,11 @@ async def materialize_run_context_files(
             inputs_dir.rmdir()
         except OSError:
             pass
+        if isinstance(exc, Exception):
+            raise ContextFileContentError(
+                "context_file_staging_write_failed",
+                phase="staging",
+            ) from exc
         raise
     return ContextFileMaterialization(
         tuple(file_names),

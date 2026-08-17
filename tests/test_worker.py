@@ -10,6 +10,7 @@ import pytest
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.execution.api import validated_context_file_diagnostic
 from app.executors.base import (
     ArtifactManifest,
     ExecutorResult,
@@ -6536,7 +6537,7 @@ def test_worker_rejects_untrusted_context_file_diagnostic_payload():
         },
     )
 
-    assert worker_module._validated_context_file_diagnostic(result) is None
+    assert validated_context_file_diagnostic(result.executor_payload) is None
 
 
 @pytest.mark.asyncio
