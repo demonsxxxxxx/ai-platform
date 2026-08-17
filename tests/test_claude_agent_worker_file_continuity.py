@@ -468,7 +468,7 @@ async def test_materialize_files_uses_real_scoped_repository_query_for_prior_run
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_point", ["mkdir", "write"])
+@pytest.mark.parametrize("failure_point", ["mkdir", "write", "partial_write"])
 async def test_materialize_files_cleans_all_written_copies_after_io_failure(
     monkeypatch,
     tmp_path,
@@ -505,6 +505,8 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
 
     def fail_second_canonical_write(path, content):
         if path.parent.name == "inputs" and path.name == "file-b.docx":
+            if failure_point == "partial_write":
+                original_write_bytes(path, b"partial")
             raise OSError("simulated workspace write failure")
         return original_write_bytes(path, content)
 

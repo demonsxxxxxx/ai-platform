@@ -438,10 +438,10 @@ async def materialize_run_context_files(
         if targets:
             inputs_dir.mkdir(parents=True, exist_ok=True)
         for (target, canonical_target), content in zip(targets, validated_contents, strict=True):
-            target.write_bytes(content)
             written_paths.append(target)
-            canonical_target.write_bytes(content)
+            target.write_bytes(content)
             written_paths.append(canonical_target)
+            canonical_target.write_bytes(content)
             materialized_file_names.append(target.name)
     except BaseException as exc:
         for written_path in reversed(written_paths):
