@@ -279,6 +279,6 @@ def _default_timeout_seconds(request: ExecutorTaskRequest | None = None) -> floa
     """Use the normal bounded executor timeout; runtime approval never extends it."""
 
     settings = get_settings()
-    sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
+    sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 300.0) or 300.0)
     _ = request
     return tool_permission_budget(sdk_timeout).normal_outer_executor_timeout_seconds
