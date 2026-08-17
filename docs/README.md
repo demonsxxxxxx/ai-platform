@@ -46,14 +46,15 @@ does not represent deployed runtime state.
   requirement.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
-- `architecture/redis-streams-sse-event-channel.md` indexes the current v2.1
+- `architecture/redis-streams-sse-event-channel.md` indexes the implemented v3
   single-runtime Redis SSE contract. Its wire-protocol, execution-control, and
   cutover/acceptance links are the single detailed authorities; implementation
-  reuses existing attempt/runtime/worker fences and does not assume a parallel
-  A2 execution ledger.
-- `adr/0004-redis-streams-sse-event-channel-v2-1-correction.md` records the
-  accepted v2.1 decision. ADR 0003 (v2) and ADR 0002 (v1) are superseded audit
-  history, not runnable fallbacks.
+  reuses existing Run/attempt/runtime/worker fences and replaces per-browser
+  Redis blocking readers with one process-local Pub/Sub fan-out plus Stream
+  replay.
+- `adr/0009-redis-streams-sse-v3-live-fanout.md` records the proposed v3
+  decision. ADR 0004 (v2.1), ADR 0003 (v2), and ADR 0002 (v1) are superseded
+  audit history after the release-atomic cutover, not runnable fallbacks.
 - `architecture/docker-packaging.md` defines reproducible dependency authority,
   immutable image bases, CI image acceptance, and digest-bound GHCR supply-chain
   publication without deployment or runtime authority.

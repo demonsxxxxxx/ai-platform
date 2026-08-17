@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app import repositories, session_actions
@@ -50,7 +50,14 @@ from app.run_projection import (
     public_terminal_detail,
 )
 from app.settings import get_settings
+from app.streaming.api import LiveSubscriptionClosed
 from app.streaming.authority import RunCursor, event_page
+from app.streaming.contracts import (
+    StreamEnvelope,
+    _redis_id_tuple,
+    stream_live_channel,
+)
+from app.streaming.events import PUBLIC_RUN_STREAM_SCHEMA
 from app.streaming.redis import (
     SSE_AUTHORITY_LEASE_SECONDS,
     RedisStreamBridge,
@@ -78,6 +85,20 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
     payload = json.dumps(data, ensure_ascii=False, default=_json_default)
     prefix = f"id: {event_id}\n" if event_id else ""
     return f"{prefix}event: {event}\ndata: {payload}\n\n"
+
+
+def _public_stream_event(
+    envelope: StreamEnvelope, *, payload: dict[str, object] | None = None
+) -> dict[str, object]:
+    return {
+        "schema": PUBLIC_RUN_STREAM_SCHEMA,
+        "event_id": envelope.event_id,
+        "run_id": envelope.run_id,
+        "stream_incarnation": envelope.stream_incarnation,
+        "event_type": envelope.event_type,
+        "emitted_at": envelope.emitted_at,
+        "payload": payload if payload is not None else dict(envelope.payload),
+    }
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -1449,7 +1470,7 @@ async def chat_status(
     return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
 
 
-async def _restore_chat_answer_projector(
+async def _restore_chat_stream_projection(
     bridge: RedisStreamBridge,
     *,
     run: dict[str, Any],
@@ -1457,21 +1478,23 @@ async def _restore_chat_answer_projector(
     run_id: str,
     stream_incarnation: int,
     through_redis_id: str,
-) -> PublicChatAnswerStreamProjector:
-    """Rebuild private stream projection state through one proven resume cursor."""
+) -> tuple[PublicChatAnswerStreamProjector, str | None, bool]:
+    """Rebuild private projection and terminal state through one resume cursor."""
     projector = PublicChatAnswerStreamProjector(run)
+    terminal_event_id: str | None = None
+    ended = False
     if through_redis_id == "0-0":
-        return projector
+        return projector, terminal_event_id, ended
     after = "0-0"
     saw_stream_open = False
     while after != through_redis_id:
         previous_after = after
-        entries = await bridge.read(
+        entries = await bridge.replay_page(
             tenant_scope_value=tenant_scope_value,
             run_id=run_id,
             stream_incarnation=stream_incarnation,
             after_redis_id=after,
-            block_ms=1,
+            through_redis_id=through_redis_id,
         )
         if not entries:
             raise StreamContractError("stream_projection_history_unavailable")
@@ -1484,17 +1507,26 @@ async def _restore_chat_answer_projector(
                 saw_stream_open = True
             elif envelope.event_type == "assistant_text_delta":
                 projector.push(envelope.payload["delta"])
+            elif envelope.event_type == "terminal":
+                terminal_event_id = envelope.event_id
+            elif envelope.event_type == "end":
+                if envelope.payload.get("terminal_event_id") != terminal_event_id:
+                    raise StreamContractError(
+                        "stream_end_without_observed_terminal"
+                    )
+                ended = True
             if after == through_redis_id:
-                return projector
+                return projector, terminal_event_id, ended
         if after == previous_after:
             raise StreamContractError("stream_projection_history_unavailable")
-    return projector
+    return projector, terminal_event_id, ended
 
 
 @router.get("/chat/sessions/{session_id}/stream")
 async def chat_session_stream(
     session_id: str,
     run_id: str,
+    request: Request,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> StreamingResponse:
@@ -1531,43 +1563,106 @@ async def chat_session_stream(
         raise HTTPException(status_code=409, detail="sse_stream_not_admitted")
     if lease is None:
         raise HTTPException(status_code=409, detail="sse_authority_lease_unavailable")
-    bridge = RedisStreamBridge()
+
+    async def release_lease() -> None:
+        try:
+            async with transaction() as conn:
+                await close_sse_authority_lease(
+                    conn, lease_id=lease.lease_id, reason="connection_closed"
+                )
+        except Exception:
+            pass
+
+    runtime = getattr(request.app.state, "run_stream_runtime", None)
+    if runtime is None:
+        await release_lease()
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable")
+    bridge = runtime.bridge
+    channel = stream_live_channel(
+        tenant_scope_value=authority.tenant_scope,
+        run_id=run_id,
+        stream_incarnation=authority.stream_incarnation,
+    )
+    subscription = None
     try:
+        subscription = await runtime.hub.subscribe(channel)
         resume = await bridge.resolve_resume(
             tenant_scope_value=authority.tenant_scope,
             run_id=run_id,
             current_stream_incarnation=authority.stream_incarnation,
             last_event_id=last_event_id,
         )
+        answer_projector = PublicChatAnswerStreamProjector(initial_run)
+        restored_terminal_event_id: str | None = None
+        resume_already_ended = False
+        replay_tail = resume.after_redis_id or "0-0"
+        if resume.gap is None:
+            bounds = await bridge.retained_bounds(
+                tenant_scope_value=authority.tenant_scope,
+                run_id=run_id,
+                stream_incarnation=authority.stream_incarnation,
+            )
+            if bounds is None:
+                raise StreamContractError("stream_replay_bounds_unavailable")
+            replay_tail = bounds[1].cursor.redis_id
+            (
+                answer_projector,
+                restored_terminal_event_id,
+                resume_already_ended,
+            ) = await _restore_chat_stream_projection(
+                bridge,
+                run=initial_run,
+                tenant_scope_value=authority.tenant_scope,
+                run_id=run_id,
+                stream_incarnation=authority.stream_incarnation,
+                through_redis_id=resume.after_redis_id or "0-0",
+            )
     except StreamContractError as exc:
-        await bridge.aclose()
+        if subscription is not None:
+            await subscription.aclose()
+        await release_lease()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except StreamTransportUnavailable as exc:
-        await bridge.aclose()
-        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
-    try:
-        answer_projector = await _restore_chat_answer_projector(
-            bridge,
-            run=initial_run,
-            tenant_scope_value=authority.tenant_scope,
-            run_id=run_id,
-            stream_incarnation=authority.stream_incarnation,
-            through_redis_id=resume.after_redis_id or "0-0",
-        )
-    except StreamContractError as exc:
-        await bridge.aclose()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except StreamTransportUnavailable as exc:
-        await bridge.aclose()
+    except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
+        if subscription is not None:
+            await subscription.aclose()
+        await release_lease()
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
-        terminal_status: str | None = None
-        terminal_event_id: str | None = None
-        last_answer_event_id: str | None = None
-        last_answer_cursor_id: str | None = None
+        terminal_event_id: str | None = restored_terminal_event_id
+
+        async def refresh_lease() -> bool:
+            nonlocal lease
+            now = datetime.now(timezone.utc)
+            if lease.allows_frame(
+                now=now,
+                local_authorization_epoch=lease.authorization_epoch,
+                invalidated_through_epoch=lease.authorization_epoch - 1,
+            ):
+                return True
+            try:
+                async with transaction() as conn:
+                    run = await repositories.get_authorized_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=run_id,
+                    )
+                    if run is None or run.get("session_id") != session_id:
+                        return False
+                    lease = await acquire_sse_authority_lease(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=run_id,
+                        api_instance_id=_SSE_API_INSTANCE_ID,
+                        connection_id=connection_id,
+                        lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                    )
+            except (SseAuthorityConflictError, ValueError):
+                return False
+            return True
 
         async def publish_pending_terminal() -> None:
             async with transaction() as conn:
@@ -1587,150 +1682,105 @@ async def chat_session_stream(
             async with transaction() as conn:
                 await mark_terminal_intent_published(conn, intent=intent)
 
+        def project_entry(entry) -> tuple[str | None, bool]:
+            nonlocal terminal_event_id
+            envelope = entry.envelope
+            payload: dict[str, object]
+            if envelope.event_type == "stream_open":
+                payload = dict(envelope.payload)
+            elif envelope.event_type == "assistant_text_delta":
+                projected_delta = answer_projector.push(envelope.payload["delta"])
+                if not projected_delta:
+                    return None, False
+                payload = {"delta": projected_delta}
+            elif envelope.event_type == "terminal":
+                terminal_event_id = envelope.event_id
+                payload = dict(envelope.payload)
+            elif envelope.event_type == "end":
+                if (
+                    terminal_event_id is None
+                    or envelope.payload["terminal_event_id"] != terminal_event_id
+                ):
+                    raise StreamContractError(
+                        "stream_end_without_observed_terminal"
+                    )
+                payload = dict(envelope.payload)
+            elif envelope.event_type in {"semantic_stage", "semantic_progress"}:
+                payload = dict(envelope.payload)
+            else:
+                raise StreamContractError("stream_public_event_unmapped")
+            return (
+                _sse(
+                    envelope.event_type,
+                    _public_stream_event(envelope, payload=payload),
+                    entry.cursor.event_id,
+                ),
+                envelope.event_type == "end",
+            )
+
         try:
             if resume.gap is not None:
                 yield _sse("gap", resume.gap.as_public_dict())
                 return
-            while True:
-                now = datetime.now(timezone.utc)
-                if not lease.allows_frame(
-                    now=now,
-                    local_authorization_epoch=lease.authorization_epoch,
-                    invalidated_through_epoch=lease.authorization_epoch - 1,
-                ):
-                    try:
-                        async with transaction() as conn:
-                            run = await repositories.get_authorized_run(
-                                conn,
-                                tenant_id=principal.tenant_id,
-                                user_id=principal.user_id,
-                                run_id=run_id,
-                            )
-                            if run is None or run.get("session_id") != session_id:
-                                return
-                            lease = await acquire_sse_authority_lease(
-                                conn,
-                                tenant_id=principal.tenant_id,
-                                run_id=run_id,
-                                api_instance_id=_SSE_API_INSTANCE_ID,
-                                connection_id=connection_id,
-                                lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
-                            )
-                    except (SseAuthorityConflictError, ValueError):
-                        return
-                await publish_pending_terminal()
-                entries = await bridge.read(
+            if resume_already_ended:
+                return
+            if not await refresh_lease():
+                return
+            await publish_pending_terminal()
+            while after != replay_tail:
+                previous_after = after
+                entries = await bridge.replay_page(
                     tenant_scope_value=authority.tenant_scope,
                     run_id=run_id,
                     stream_incarnation=authority.stream_incarnation,
                     after_redis_id=after,
-                    block_ms=5000,
+                    through_redis_id=replay_tail,
                 )
                 if not entries:
+                    raise StreamContractError("stream_replay_history_unavailable")
+                for entry in entries:
+                    if not await refresh_lease():
+                        return
+                    after = entry.cursor.redis_id
+                    frame, ended = project_entry(entry)
+                    if frame is not None:
+                        yield frame
+                    if ended:
+                        return
+                if after == previous_after:
+                    raise StreamContractError("stream_replay_history_unavailable")
+            while True:
+                if not await refresh_lease():
+                    return
+                await publish_pending_terminal()
+                try:
+                    publication = await subscription.next(timeout_seconds=5.0)
+                except TimeoutError:
                     yield ": heartbeat\n\n"
                     continue
-                for entry in entries:
-                    if not lease.allows_frame(
-                        now=datetime.now(timezone.utc),
-                        local_authorization_epoch=lease.authorization_epoch,
-                        invalidated_through_epoch=lease.authorization_epoch - 1,
-                    ):
-                        break
-                    after = entry.cursor.redis_id
-                    envelope = entry.envelope
-                    if envelope.event_type == "stream_open":
-                        yield _sse(
-                            "metadata",
-                            {
-                                "event_id": envelope.event_id,
-                                "session_id": session_id,
-                                "run_id": run_id,
-                            },
-                            entry.cursor.event_id,
-                        )
-                    elif envelope.event_type == "assistant_text_delta":
-                        last_answer_event_id = envelope.event_id
-                        last_answer_cursor_id = entry.cursor.event_id
-                        projected_delta = answer_projector.push(
-                            envelope.payload["delta"]
-                        )
-                        if not projected_delta:
-                            continue
-                        yield _sse(
-                            "message:chunk",
-                            {
-                                "run_id": run_id,
-                                "event_id": envelope.event_id,
-                                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                                "projection_kind": "assistant_delta",
-                                "content": projected_delta,
-                            },
-                            entry.cursor.event_id,
-                        )
-                    elif envelope.event_type == "terminal":
-                        if last_answer_event_id and last_answer_cursor_id:
-                            final_delta = answer_projector.flush()
-                            if final_delta:
-                                yield _sse(
-                                    "message:chunk",
-                                    {
-                                        "run_id": run_id,
-                                        "event_id": last_answer_event_id,
-                                        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                                        "projection_kind": "assistant_delta",
-                                        "content": final_delta,
-                                    },
-                                    last_answer_cursor_id,
-                                )
-                        terminal_status = str(envelope.payload["status"])
-                        terminal_event_id = envelope.event_id
-                        yield _sse(
-                            "done",
-                            {
-                                "event_id": envelope.event_id,
-                                "run_id": run_id,
-                                "status": terminal_status,
-                            },
-                            entry.cursor.event_id,
-                        )
-                    elif envelope.event_type == "end":
-                        if (
-                            terminal_event_id is None
-                            or envelope.payload["terminal_event_id"]
-                            != terminal_event_id
-                        ):
-                            raise StreamContractError(
-                                "stream_end_without_observed_terminal"
-                            )
-                        yield _sse(
-                            "end",
-                            {
-                                "event_id": envelope.event_id,
-                                "run_id": run_id,
-                                "terminal_event_id": terminal_event_id,
-                            },
-                            entry.cursor.event_id,
-                        )
-                        return
-                    elif envelope.event_type in {"semantic_stage", "semantic_progress"}:
-                        public_event = str(envelope.payload["event"])
-                        public_data = dict(envelope.payload["data"])
-                        public_data.setdefault("event_id", envelope.event_id)
-                        public_data.setdefault("run_id", run_id)
-                        yield _sse(public_event, public_data, entry.cursor.event_id)
-                    else:
-                        raise StreamContractError("stream_public_event_unmapped")
+                except LiveSubscriptionClosed:
+                    return
+                if publication.channel != channel:
+                    raise StreamContractError("stream_live_channel_mismatch")
+                if _redis_id_tuple(publication.redis_id) <= _redis_id_tuple(after):
+                    continue
+                entry = bridge.decode_live_publication(
+                    redis_id=publication.redis_id,
+                    envelope_json=publication.envelope_json,
+                    run_id=run_id,
+                    stream_incarnation=authority.stream_incarnation,
+                )
+                after = entry.cursor.redis_id
+                frame, ended = project_entry(entry)
+                if frame is not None:
+                    yield frame
+                if ended:
+                    return
         except (StreamTransportUnavailable, StreamContractError):
-            yield _sse("error", {"error": "sse_stream_unavailable"})
+            return
         finally:
-            await bridge.aclose()
-            try:
-                async with transaction() as conn:
-                    await close_sse_authority_lease(
-                        conn, lease_id=lease.lease_id, reason="connection_closed"
-                    )
-            except Exception:
-                pass
+            await subscription.aclose()
+            await release_lease()
 
     return StreamingResponse(
         stream(),

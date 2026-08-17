@@ -1,4 +1,4 @@
-"""Post-commit worker publication seams for Redis SSE v2.1."""
+"""Post-commit worker publication seams for Redis SSE v3."""
 
 from __future__ import annotations
 

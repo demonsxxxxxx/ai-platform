@@ -142,7 +142,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
 
     assert "runs-on: ubuntu-latest" in validation_job
     assert "timeout-minutes: 10" in validation_job
-    assert validation_job.count("- name: Enforce SSE v2.1 release-atomic cutover") == 1
+    assert validation_job.count("- name: Enforce SSE v3 release-atomic cutover") == 1
     assert validation_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
     assert "runs-on: ubuntu-latest" in tests_job
     assert "needs: backend-validation" in tests_job

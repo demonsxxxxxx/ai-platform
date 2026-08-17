@@ -1,6 +1,6 @@
-# Redis Streams SSE v2.1 Execution Control
+# Redis Streams SSE v3 Execution Control
 
-Status: normative for `ai-platform.redis-streams-sse-event-channel.v2.1`
+Status: normative contract for `ai-platform.redis-streams-sse-event-channel.v3`; External Acceptance pending
 
 Index: [Redis Streams SSE Event Channel](redis-streams-sse-event-channel.md)
 
@@ -21,10 +21,10 @@ a parallel execution state machine:
 - queue and worker leases fence the active dispatcher;
 - repository terminal transitions, not executor callbacks, own terminal facts.
 
-V2.1 adds stream admission fields to that same current attempt/run authority:
-design ID, projection version, positive stream incarnation, stable stream-open
-event ID/bytes/digest, admission state, and timestamps. The worker holding the
-existing dispatch fence performs:
+V3 reuses the stream admission fields already attached to that current
+attempt/run authority: design ID, projection version, positive stream
+incarnation, stable stream-open event ID/bytes/digest, admission state, and
+timestamps. The worker holding the existing dispatch fence performs:
 
 1. lock and verify the runnable current attempt and its worker/runtime fence;
 2. allocate and commit the next stream incarnation plus deterministic
@@ -71,8 +71,8 @@ No unbounded outbox of text deltas and no `run_events` text fallback is created.
 
 ## Committed semantic producer
 
-The worker may publish only the two semantic envelope classes currently owned
-by closed platform projectors:
+The worker may publish only the two semantic envelope classes currently owned by
+closed platform projectors:
 
 - `semantic_stage` wraps a validated fixed platform phase as `run_event`;
 - `semantic_progress` wraps a strict versioned `execution_step*` event, including
@@ -89,9 +89,9 @@ identity.
 
 There is no generic object-to-Redis adapter. Raw command/tool arguments or
 results, hidden reasoning, paths, credentials, and executor-selected arbitrary
-labels cannot enter these projections. Approval, artifact, and run-status live
-producers are outside the accepted V2.1 source set; their durable facts remain
-available through authorized hydrate/API paths.
+labels cannot enter these projections. Runtime approval is not a Streaming
+producer. Artifact and Run-status live producers remain outside v3 unless a
+separately reviewed committed source contract is accepted.
 
 ## Projection and bounded coalescer
 
@@ -114,9 +114,16 @@ completion, shutdown, or terminal request.
 
 At a hard bound, publication is synchronous within a bounded Redis timeout. If
 it fails, the coalescer seals, discards only unpublished live bytes, records
-transport degradation, and refuses later live deltas. It never drops an older
-buffer while claiming continuity, queues without a byte/count deadline, or
-writes text deltas to PostgreSQL.
+transport degradation, and refuses later live deltas. The atomic append writes
+the retained Stream entry and publishes the same canonical envelope to live
+subscribers. A missed live notification is repaired from the Stream; no producer
+writes Pub/Sub separately.
+
+The coalescer never drops an older buffer while claiming continuity, queues
+without a byte/count deadline, or writes text deltas to PostgreSQL. The API live
+hub separately bounds each browser by event count and bytes. Subscriber overflow
+or shared-feed uncertainty closes the connection; it never drops an event while
+continuing from a later cursor.
 
 With 50 active runs and a 40 ms age ceiling, the basic upper pressure is about
 `50 / 0.04 = 1250` payload frames per second before semantic events,
@@ -136,10 +143,11 @@ open and renews it before expiry. The lease binds:
   seconds after issue.
 
 PostgreSQL is queried on connection establishment, renewal, and authority state
-transitions, not for every payload. Each payload frame, including gap, terminal,
-and end, checks the connection-local lease epoch/deadline and the instance-local
-invalidation epoch immediately before gateway write admission. Heartbeat also
-requires a current lease but cannot renew it.
+transitions, not for every payload. Each payload frame, including replay gap,
+terminal, and end, checks the connection-local lease epoch/deadline plus local
+invalidation immediately before gateway write admission. Heartbeat also
+requires a current lease but cannot renew it. A Pub/Sub subscription does not
+authorize a principal; only the per-browser lease does.
 
 The effective read/write block is capped by remaining lease duration. Missed or
 uncertain renewal closes fail closed. A database error does not extend local
@@ -154,8 +162,10 @@ bounded event class. IDs and payload text are never metric labels.
 
 An authority transition commits a new epoch in PostgreSQL and publishes a
 multi-instance invalidation signal. Each API instance updates its local invalid
-epoch, cancels blocked `XREAD`, rejects new old-epoch frames, and closes affected
-writers. A new or restarted instance can obtain only the current epoch.
+epoch, closes affected local subscriber queues, rejects new old-epoch frames,
+and closes affected writers. The process-level Redis channel may remain
+subscribed for other authorized browsers; it is transport, not authority. A new
+or restarted instance can obtain only the current epoch.
 
 Revocation states are:
 
@@ -170,7 +180,7 @@ The guarantee is intentionally bounded: after `effective`, the application and
 owned SSE gateway produce/accept no new payload under the old epoch. An ASGI send
 return means bytes reached the protocol server boundary, not that the browser
 received them. Bytes already handed to a protocol server, kernel, Nginx, load
-balancer, or client buffer may still arrive. V2.1 therefore makes no browser-byte
+balancer, or client buffer may still arrive. V3 therefore makes no browser-byte
 or commit-time-zero-frame promise.
 
 The owned gateway must support cancellation and connection close; Nginx must
@@ -188,18 +198,20 @@ pending or fails closed rather than claiming browser quiescence.
 Redis unavailability before confirmed stream admission rejects or holds the run
 without SDK dispatch. There is no in-process stream substitute.
 
-After dispatch, a Redis failure:
+After dispatch, a Redis append or shared live-feed failure:
 
-1. seals the bounded coalescer and stops live publications;
-2. records transport degradation as a durable run/terminal fact;
-3. forbids unbounded retry and PostgreSQL text-delta fallback;
-4. preserves cancellation, resource, egress, and safety control.
+1. seals the bounded producer coalescer when append continuity is uncertain;
+2. closes affected browser subscribers when only live notification is lost, so
+   they reconnect and replay from Redis Stream;
+3. records transport degradation when retained append is unavailable;
+4. forbids unbounded retry and PostgreSQL text-delta fallback;
+5. preserves cancellation, resource, egress, and safety control.
 
 Eligible non-interactive work may continue only while those control authorities
-remain reliable. If approval, user interaction, or a safety/control event is
-required but cannot be delivered, execution pauses before the dependent side
-effect or terminalizes failure/cancellation. If a bounded safe pause cannot be
-maintained, it fails closed.
+remain reliable. V3 does not expose runtime approval over this stream. Any
+future safety-critical interaction must first define its own durable authority
+and fail-closed behavior; Pub/Sub delivery alone can never authorize a side
+effect.
 
 Redis recovery does not retroactively claim lost text replay. It may resume live
 publication only through a proven current incarnation. Loss of continuity
@@ -251,12 +263,14 @@ Pending Redis publication does not leave a terminal run permanently `running`.
 | Redis event `XADD` unknown | retry same canonical bytes/event ID; reducer applies once |
 | memory cap reached and Redis unavailable | seal/discard unpublished live bytes; no PG delta or unbounded queue |
 | approval/control event cannot publish | pause before side effect or fail/cancel |
+| Pub/Sub disconnect or local queue overflow | close affected SSE without cursor advance; reconnect repairs from Stream |
+| attach races publication | subscribe acknowledgement before bounded replay; overlap dedupe; no missed semantic event |
 | PostgreSQL terminal rollback | no terminal/end; no success claim |
 | PostgreSQL commit then Redis failure | terminal remains durable; intent pending; final hydrate converges |
 | terminal Redis outcome unknown | retry exact frozen bytes/IDs |
 | continuity lost during terminal retry | successor incarnation, gap, same semantic intent bytes |
 | authorization renewal fails | close fail closed before next payload |
-| invalidation during blocked `XREAD` | cancel read and close old-epoch connection |
+| invalidation during blocked/live wait | close local subscriber and old-epoch writer |
 | frame checked before revocation commit | may already be downstream; no new frame admitted after effective owned boundary |
 | late delta races closing | reject and measure; never append after terminal |
 

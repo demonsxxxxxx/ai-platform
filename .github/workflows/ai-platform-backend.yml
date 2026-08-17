@@ -108,7 +108,7 @@ jobs:
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
 
-      - name: Enforce SSE v2.1 release-atomic cutover
+      - name: Enforce SSE v3 release-atomic cutover
         run: python tools/check_sse_runtime_cutover.py
 
   backend-tests:

@@ -76,6 +76,7 @@ export interface AcceptedStreamCursor {
   sessionId: string | null;
   runId: string | null;
   eventId: string | null;
+  streamIncarnation?: number | null;
 }
 
 /** The connection generation that authorizes a runless stream frame. */
@@ -128,7 +129,6 @@ const SIDE_EFFECT_EVENTS = new Set<string>([
   "done",
   "end",
   "queue_update",
-  "approval_required",
   "skills:changed",
   "heartbeat",
 ]);
@@ -388,12 +388,6 @@ export function handleStreamEvent(
     }
 
     case "end": {
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "approval_required": {
-      handleApprovalRequired(data, ctx);
       commitAcceptedEvent();
       return true;
     }
@@ -708,12 +702,4 @@ function appendCancelledPart(parts: MessagePart[]): MessagePart[] {
     return parts;
   }
   return [...parts, { type: "cancelled" }];
-}
-
-function handleApprovalRequired(
-  data: EventData,
-  ctx: EventHandlerContext,
-): void {
-  void data;
-  void ctx;
 }

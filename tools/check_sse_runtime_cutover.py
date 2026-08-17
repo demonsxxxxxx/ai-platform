@@ -254,13 +254,73 @@ def _typescript_call_arguments(source: str, callee: str) -> list[str]:
     ]
 
 
+def _nginx_sse_contract_failures(source: str) -> list[str]:
+    marker = (
+        "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/"
+        "[A-Za-z0-9_-]+/stream$ {"
+    )
+    if marker not in source:
+        return ["nginx.conf.template:sse_location_missing"]
+    block = source.split(marker, 1)[1].split("\n    }", 1)[0]
+    required = (
+        'proxy_set_header Connection "";',
+        'proxy_set_header Accept-Encoding "";',
+        "proxy_buffering off;",
+        "proxy_request_buffering off;",
+        "proxy_cache off;",
+        "gzip off;",
+        'add_header Cache-Control "no-cache, no-transform" always;',
+        "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};",
+        "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};",
+    )
+    return [
+        f"nginx.conf.template:sse_directive_missing:{directive}"
+        for directive in required
+        if directive not in block
+    ]
+
+
 def check() -> list[str]:
     failures: list[str] = []
     chat_stream = _function("app/routes/lambchat_compat.py", "chat_session_stream")
     for name, line in _calls(chat_stream):
         final_name = name.rsplit(".", 1)[-1]
-        if final_name in {"list_run_events", "event_page", "sleep"}:
+        if final_name in {"list_run_events", "event_page", "sleep", "read", "xread"}:
             failures.append(f"lambchat_compat.py:{line}:retired_live_call:{final_name}")
+    chat_calls = _calls(chat_stream)
+    live_order = [
+        _unique_call_line(chat_calls, qualified_name=name)
+        for name in (
+            "runtime.hub.subscribe",
+            "bridge.resolve_resume",
+            "bridge.retained_bounds",
+        )
+    ]
+    if (
+        any(line is None for line in live_order)
+        or live_order != sorted(live_order)  # type: ignore[arg-type]
+    ):
+        failures.append("lambchat_compat.py:subscribe_before_replay_unproven")
+
+    redis_source = (ROOT / "app/streaming/redis.py").read_text(encoding="utf-8")
+    if "async def read(" in redis_source or ".xread(" in redis_source:
+        failures.append("redis.py:retired_xread_live_path_present")
+    if "XADD" not in redis_source or "PUBLISH" not in redis_source:
+        failures.append("redis.py:atomic_stream_publish_script_missing")
+    for retired_marker in (
+        "ai-platform-stream-open-v2.1",
+        "ai-platform-stream-terminal-v2.1",
+        "ai-platform:sse:v2.1",
+        "ai-platform.stream-event.v2.1",
+    ):
+        if retired_marker in redis_source:
+            failures.append(f"redis.py:retired_v21_marker:{retired_marker}")
+    for required_marker in (
+        "ai-platform-stream-open-v3",
+        "ai-platform-stream-terminal-v3",
+    ):
+        if required_marker not in redis_source:
+            failures.append(f"redis.py:v3_semantic_id_marker_missing:{required_marker}")
 
     worker = _function("app/worker.py", "process_run_payload")
     worker_calls = _calls(worker)
@@ -387,6 +447,15 @@ def check() -> list[str]:
         or connect.count(cursor_assignment) != 1
     ):
         failures.append("sseConnection.ts:cursor_not_bound_to_reducer_commit")
+    if connect.count("adaptPublicRunStreamEventV3(") != 1:
+        failures.append("sseConnection.ts:v3_generated_adapter_not_unique")
+    event_handlers = (
+        ROOT / "frontend/web/src/hooks/useAgent/eventHandlers.ts"
+    ).read_text(encoding="utf-8")
+    if "approval_required" in event_handlers:
+        failures.append("eventHandlers.ts:retired_runtime_approval_present")
+    nginx = (ROOT / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    failures.extend(_nginx_sse_contract_failures(nginx))
     return failures
 
 
@@ -399,5 +468,5 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 if __name__ == "__main__":
     _parse_args(sys.argv[1:])
     errors = check()
-    print("\n".join(errors) if errors else "SSE v2.1 cutover check passed")
+    print("\n".join(errors) if errors else "SSE v3 cutover check passed")
     sys.exit(bool(errors))

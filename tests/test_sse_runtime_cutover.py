@@ -48,6 +48,20 @@ async def producer(transaction_factory):
     assert cutover._redis_append_inside_transaction(node) == [4]
 
 
+def test_checker_requires_dedicated_sse_nginx_contract():
+    source = """
+location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/[A-Za-z0-9_-]+/stream$ {
+    proxy_set_header Connection "";
+}
+"""
+
+    failures = cutover._nginx_sse_contract_failures(source)
+
+    assert any("Accept-Encoding" in failure for failure in failures)
+    assert any("proxy_buffering off" in failure for failure in failures)
+    assert any("proxy_cache off" in failure for failure in failures)
+
+
 def test_frontend_structure_ignores_noop_markers_outside_the_real_connect_body():
     source = """
 const commitAcceptedStreamEvent = () => {

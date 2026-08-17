@@ -7,14 +7,16 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as route
+from app.streaming.api import LiveSubscriptionClosed
+from app.streaming.events import STREAM_DESIGN_ID
 from app.streaming.redis import (
     ResumeDecision,
     SseAuthorityLease,
+    StreamAuthority,
     StreamCursor,
     StreamEntry,
     StreamEnvelope,
     StreamGap,
-    StreamAuthority,
     StreamTransportUnavailable,
     committed_public_stream_event,
 )
@@ -67,9 +69,89 @@ def entry(redis_id, event_id, event_type, payload):
     return StreamEntry(StreamCursor("run-a", 1, redis_id), envelope)
 
 
-def patch_authority(monkeypatch):
+def open_entry(redis_id="1-0"):
+    return entry(
+        redis_id,
+        "sev-open",
+        "stream_open",
+        {"design_id": STREAM_DESIGN_ID},
+    )
+
+
+class ClosedSubscription:
+    def __init__(self):
+        self.closed = False
+
+    async def next(self, *, timeout_seconds=None):
+        raise LiveSubscriptionClosed("test_stream_closed")
+
+    async def aclose(self):
+        self.closed = True
+
+
+class FakeBridge:
+    def __init__(self, rows, *, resume=None, resolve_error=None):
+        self.rows = list(rows)
+        self.resume = resume
+        self.resolve_error = resolve_error
+        self.calls = []
+
+    async def resolve_resume(self, **kwargs):
+        self.calls.append("resolve")
+        if self.resolve_error:
+            raise self.resolve_error
+        if self.resume is not None:
+            return self.resume
+        last_event_id = kwargs["last_event_id"]
+        if last_event_id:
+            cursor = StreamCursor.parse(last_event_id, run_id="run-a")
+            return ResumeDecision(cursor.redis_id, None)
+        return ResumeDecision("0-0", None)
+
+    async def retained_bounds(self, **kwargs):
+        self.calls.append("bounds")
+        return self.rows[0], self.rows[-1]
+
+    async def replay_page(self, *, after_redis_id, through_redis_id, **kwargs):
+        self.calls.append(f"replay:{after_redis_id}:{through_redis_id}")
+        after = route._redis_id_tuple(after_redis_id)
+        through = route._redis_id_tuple(through_redis_id)
+        return tuple(
+            row
+            for row in self.rows
+            if after < route._redis_id_tuple(row.cursor.redis_id) <= through
+        )
+
+    def decode_live_publication(self, **kwargs):
+        raise AssertionError("finite replay tests must not decode live publications")
+
+
+class FakeHub:
+    def __init__(self, bridge, *, on_subscribe=None):
+        self.bridge = bridge
+        self.on_subscribe = on_subscribe
+        self.calls = []
+        self.subscription = ClosedSubscription()
+
+    async def subscribe(self, channel):
+        self.calls.append("subscribe")
+        self.bridge.calls.append("subscribe")
+        if self.on_subscribe:
+            self.on_subscribe()
+        return self.subscription
+
+
+def request_for(bridge, *, on_subscribe=None):
+    runtime = SimpleNamespace(
+        bridge=bridge,
+        hub=FakeHub(bridge, on_subscribe=on_subscribe),
+    )
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=runtime)))
+
+
+def patch_authority(monkeypatch, *, run=None):
     async def get_run(conn, *, tenant_id, user_id, run_id):
-        return {"id": run_id, "session_id": "session-a", "status": "running"}
+        return run or {"id": run_id, "session_id": "session-a", "status": "running"}
 
     async def get_authority(conn, *, tenant_id, run_id):
         return authority()
@@ -89,23 +171,25 @@ def patch_authority(monkeypatch):
     monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
     monkeypatch.setattr(route, "get_terminal_intent", get_intent)
-    monkeypatch.setattr(
-        route, "get_settings", lambda: SimpleNamespace(sse_authority_lease_seconds=15)
-    )
 
 
-@pytest.mark.asyncio
-async def test_v21_stream_uses_native_redis_cursor_and_never_reads_pg_deltas(
-    monkeypatch,
-):
-    patch_authority(monkeypatch)
-    rows = (
-        entry(
-            "1-0",
-            "sev-open",
-            "stream_open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
+async def connect(bridge, *, last_event_id=None, on_subscribe=None):
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        request_for(bridge, on_subscribe=on_subscribe),
+        last_event_id=last_event_id,
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
         ),
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+    return response, body
+
+
+def terminal_rows():
+    return (
+        open_entry(),
         entry("2-0", "sev-delta", "assistant_text_delta", {"delta": "hello"}),
         entry(
             "3-0",
@@ -120,425 +204,205 @@ async def test_v21_stream_uses_native_redis_cursor_and_never_reads_pg_deltas(
         entry("4-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
     )
 
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            assert kwargs["last_event_id"] is None
-            return ResumeDecision("0-0", None)
 
-        async def read(self, **kwargs):
-            return rows
-
-        async def aclose(self):
-            return None
+@pytest.mark.asyncio
+async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
+    patch_authority(monkeypatch)
 
     async def forbidden(*args, **kwargs):
         raise AssertionError("PG run_events must not drive live SSE")
 
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
     monkeypatch.setattr(route.repositories, "list_run_events", forbidden)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
-        ),
-    )
-    body = "".join([chunk async for chunk in response.body_iterator])
+    bridge = FakeBridge(terminal_rows())
+    response, body = await connect(bridge)
+
     assert response.headers["cache-control"] == "no-cache, no-transform"
     assert response.headers["x-accel-buffering"] == "no"
-    assert "id: run-a:1:2-0" in body and '"content": "hello"' in body
+    assert "id: run-a:1:2-0" in body
+    assert '"schema": "ai-platform.public-run-stream-event.v3"' in body
+    assert '"payload": {"delta": "hello"}' in body
     assert body.index("id: run-a:1:3-0") < body.index("id: run-a:1:4-0")
 
 
 @pytest.mark.asyncio
-async def test_v21_stream_projects_identifier_split_across_redis_deltas(monkeypatch):
+async def test_v3_subscribes_before_capturing_replay_tail(monkeypatch):
     patch_authority(monkeypatch)
+    bridge = FakeBridge([open_entry()])
 
-    async def get_run(conn, *, tenant_id, user_id, run_id):
-        return {
-            "id": run_id,
-            "session_id": "session-a",
-            "status": "running",
-            "agent_id": "qa-word-review",
-            "skill_id": "general-chat",
-        }
+    def append_after_subscribe():
+        bridge.rows.extend(terminal_rows()[1:])
 
-    rows = (
-        entry(
-            "1-0",
-            "sev-open",
-            "stream_open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
-        ),
-        entry(
-            "2-0",
-            "sev-delta-a",
-            "assistant_text_delta",
-            {"delta": "已开始处理，general-"},
-        ),
-        entry(
-            "3-0",
-            "sev-delta-b",
-            "assistant_text_delta",
-            {"delta": "chat 已完成。"},
-        ),
-        entry(
-            "4-0",
-            "sev-terminal",
-            "terminal",
-            {
-                "event_id": "sev-terminal",
-                "hydrate_required": True,
-                "status": "succeeded",
-            },
-        ),
-        entry("5-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
-    )
+    _, body = await connect(bridge, on_subscribe=append_after_subscribe)
 
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            return ResumeDecision("0-0", None)
-
-        async def read(self, **kwargs):
-            return rows
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
-        ),
-    )
-    body = "".join([chunk async for chunk in response.body_iterator])
-
-    assert "general-chat" not in body
-    assert "qa-word-review" not in body
-    assert "general-agent" in body
-    assert '"content": "已开始处理，general-agent 已完成。"' in body
+    assert bridge.calls[:3] == ["subscribe", "resolve", "bounds"]
+    assert '"delta": "hello"' in body
+    assert "event: end\n" in body
 
 
 @pytest.mark.asyncio
-async def test_v21_resume_rebuilds_split_identifier_projection_state(monkeypatch):
-    patch_authority(monkeypatch)
-
-    async def get_run(conn, *, tenant_id, user_id, run_id):
-        return {
-            "id": run_id,
+async def test_v3_resume_rebuilds_split_identifier_projection_state(monkeypatch):
+    patch_authority(
+        monkeypatch,
+        run={
+            "id": "run-a",
             "session_id": "session-a",
             "status": "running",
             "agent_id": "qa-word-review",
             "skill_id": "general-chat",
-        }
-
-    retained = (
-        entry(
-            "1-0",
-            "sev-open",
-            "stream_open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
-        ),
-        entry(
-            "2-0",
-            "sev-delta-safe",
-            "assistant_text_delta",
-            {"delta": "已开始处理，"},
-        ),
-        entry(
-            "3-0",
-            "sev-delta-prefix",
-            "assistant_text_delta",
-            {"delta": "general-"},
-        ),
+        },
+    )
+    rows = (
+        open_entry(),
+        entry("2-0", "safe", "assistant_text_delta", {"delta": "已开始处理，"}),
+        entry("3-0", "prefix", "assistant_text_delta", {"delta": "general-"}),
         entry(
             "4-0",
-            "sev-progress",
+            "progress",
             "semantic_stage",
             {"event": "run_event", "data": {"content": "处理中"}},
         ),
-    )
-    resumed = (
-        entry(
-            "5-0",
-            "sev-delta-suffix",
-            "assistant_text_delta",
-            {"delta": "chat 已完成。"},
-        ),
+        entry("5-0", "suffix", "assistant_text_delta", {"delta": "chat 已完成。"}),
         entry(
             "6-0",
-            "sev-terminal",
+            "terminal-after-resume",
             "terminal",
             {
-                "event_id": "sev-terminal",
+                "event_id": "terminal-after-resume",
                 "hydrate_required": True,
                 "status": "succeeded",
             },
         ),
-        entry("7-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
-    )
-
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            assert kwargs["last_event_id"] == "run-a:1:4-0"
-            return ResumeDecision("4-0", None)
-
-        async def read(self, **kwargs):
-            if kwargs["after_redis_id"] == "0-0":
-                return retained
-            if kwargs["after_redis_id"] == "4-0":
-                return resumed
-            raise AssertionError(f"unexpected cursor: {kwargs['after_redis_id']}")
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        last_event_id="run-a:1:4-0",
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        entry(
+            "7-0",
+            "end-after-resume",
+            "end",
+            {"terminal_event_id": "terminal-after-resume"},
         ),
     )
-    body = "".join([chunk async for chunk in response.body_iterator])
+    bridge = FakeBridge(rows)
+    _, body = await connect(bridge, last_event_id="run-a:1:4-0")
 
     assert "general-chat" not in body
     assert "qa-word-review" not in body
     assert "已开始处理" not in body
-    assert '"content": "general-agent 已完成。"' in body
+    assert '"delta": "general-agent 已完成。"' in body
 
 
 @pytest.mark.asyncio
-async def test_v21_terminal_flushes_pending_identifier_after_stable_delta(monkeypatch):
-    patch_authority(monkeypatch)
-
-    async def get_run(conn, *, tenant_id, user_id, run_id):
-        return {
-            "id": run_id,
+async def test_v3_terminal_relies_on_final_hydrate_instead_of_cursor_reuse(monkeypatch):
+    patch_authority(
+        monkeypatch,
+        run={
+            "id": "run-a",
             "session_id": "session-a",
             "status": "running",
-            "agent_id": "qa-word-review",
             "skill_id": "general-chat",
-        }
-
+        },
+    )
     rows = (
-        entry(
-            "1-0",
-            "sev-open",
-            "stream_open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
-        ),
-        entry(
-            "2-0",
-            "sev-delta-safe",
-            "assistant_text_delta",
-            {"delta": "已完成，"},
-        ),
-        entry(
-            "3-0",
-            "sev-delta-pending",
-            "assistant_text_delta",
-            {"delta": "general-chat"},
-        ),
+        open_entry(),
+        entry("2-0", "safe", "assistant_text_delta", {"delta": "已完成，"}),
+        entry("3-0", "pending", "assistant_text_delta", {"delta": "general-chat"}),
         entry(
             "4-0",
-            "sev-terminal",
+            "terminal-after-pending",
             "terminal",
             {
-                "event_id": "sev-terminal",
+                "event_id": "terminal-after-pending",
                 "hydrate_required": True,
                 "status": "succeeded",
             },
         ),
-        entry("5-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
-    )
-
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            return ResumeDecision("0-0", None)
-
-        async def read(self, **kwargs):
-            return rows
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        entry(
+            "5-0",
+            "end-after-pending",
+            "end",
+            {"terminal_event_id": "terminal-after-pending"},
         ),
     )
-    body = "".join([chunk async for chunk in response.body_iterator])
+    _, body = await connect(FakeBridge(rows))
 
     assert "general-chat" not in body
-    assert "qa-word-review" not in body
-    assert '"content": "已完成，"' in body
-    assert '"content": "general-agent"' in body
-    assert "id: run-a:1:2-0" in body
-    assert "id: run-a:1:3-0" in body
+    assert '"delta": "已完成，"' in body
+    assert body.count("id: run-a:1:3-0") == 0
+    assert '"hydrate_required": true' in body
 
 
 @pytest.mark.asyncio
-async def test_v21_stream_maps_committed_execution_projection_from_redis(monkeypatch):
+async def test_v3_maps_committed_execution_projection(monkeypatch):
     patch_authority(monkeypatch)
-    committed = {
-        "id": "evt-execution-1",
-        "run_id": "run-a",
-        "sequence": 11,
-        "event_type": "execution_step",
-        "visible_to_user": True,
-        "created_at": "2026-08-09T00:00:00Z",
-        "payload_json": {
-            "step_id": "pex_execution_1",
-            "kind": "processing",
-            "stage": "execution",
-            "status": "running",
-            "title": "Process request",
-            "summary": "Running controlled processing",
-            "progress": {"current": 0, "total": 1},
-        },
-    }
-    projection = committed_public_stream_event(committed)
+    projection = committed_public_stream_event(
+        {
+            "id": "evt-execution-1",
+            "run_id": "run-a",
+            "sequence": 11,
+            "event_type": "execution_step",
+            "visible_to_user": True,
+            "created_at": "2026-08-09T00:00:00Z",
+            "payload_json": {
+                "step_id": "pex_execution_1",
+                "kind": "processing",
+                "stage": "execution",
+                "status": "running",
+                "title": "Process request",
+                "summary": "Running controlled processing",
+                "progress": {"current": 0, "total": 1},
+            },
+        }
+    )
     assert projection is not None
     envelope_type, payload = projection
-    rows = (
-        entry(
-            "1-0",
-            "sev-open",
-            "stream_open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
-        ),
-        entry("2-0", "evt-execution-1", envelope_type, payload),
-    )
+    rows = (open_entry(), entry("2-0", "evt-execution-1", envelope_type, payload))
+    bridge = FakeBridge(rows)
+    _, body = await connect(bridge)
 
-    class Bridge:
-        reads = 0
-
-        async def resolve_resume(self, **kwargs):
-            return ResumeDecision("0-0", None)
-
-        async def read(self, **kwargs):
-            self.reads += 1
-            if self.reads == 1:
-                return rows
-            raise StreamTransportUnavailable("stop")
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        principal=AuthPrincipal(
-            user_id="user-a",
-            display_name="User",
-            tenant_id="tenant-a",
-        ),
-    )
-    body = "".join([chunk async for chunk in response.body_iterator])
-
-    assert "event: execution_step\n" in body
+    assert "event: semantic_progress\n" in body
     assert "id: run-a:1:2-0\n" in body
     assert '"event_id": "evt-execution-1"' in body
     assert '"sequence": 11' in body
 
 
 @pytest.mark.asyncio
-async def test_v21_trim_gap_is_idless_and_requests_durable_hydration(monkeypatch):
+async def test_v3_trim_gap_is_idless_and_requests_durable_hydration(monkeypatch):
     patch_authority(monkeypatch)
-
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            return ResumeDecision(
-                None, StreamGap("retained_history_unavailable", "run-a:1:1-0", 1, 1)
-            )
-
-        async def read(self, **kwargs):
-            raise AssertionError("gap must close before XREAD")
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        last_event_id="run-a:1:1-0",
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
+    bridge = FakeBridge(
+        [open_entry()],
+        resume=ResumeDecision(
+            None, StreamGap("retained_history_unavailable", "run-a:1:1-0", 1, 1)
         ),
     )
-    body = "".join([chunk async for chunk in response.body_iterator])
+    _, body = await connect(bridge, last_event_id="run-a:1:1-0")
+
     assert body.startswith("event: gap\n")
-    assert "id:" not in body and '"recovery": "reload_durable_state"' in body
+    assert "id:" not in body
+    assert '"recovery": "reload_durable_state"' in body
 
 
 @pytest.mark.asyncio
-async def test_v21_end_before_terminal_fails_closed_without_emitting_end(monkeypatch):
+async def test_v3_end_before_terminal_closes_without_synthetic_error(monkeypatch):
     patch_authority(monkeypatch)
     rows = (
-        entry(
-            "1-0",
-            "sev-open",
-            "stream_open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v2.1"},
-        ),
+        open_entry(),
         entry("2-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
     )
-
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            return ResumeDecision("0-0", None)
-
-        async def read(self, **kwargs):
-            return rows
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        principal=AuthPrincipal(
-            user_id="user-a",
-            display_name="User",
-            tenant_id="tenant-a",
-        ),
-    )
-    body = "".join([chunk async for chunk in response.body_iterator])
+    _, body = await connect(FakeBridge(rows))
 
     assert "event: end\n" not in body
-    assert "event: error\n" in body
+    assert "event: error\n" not in body
 
 
 @pytest.mark.asyncio
-async def test_v21_redis_admission_outage_fails_before_response(monkeypatch):
+async def test_v3_redis_admission_outage_fails_before_response(monkeypatch):
     patch_authority(monkeypatch)
-
-    class Bridge:
-        async def resolve_resume(self, **kwargs):
-            raise StreamTransportUnavailable("down")
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(route, "RedisStreamBridge", Bridge)
+    bridge = FakeBridge(
+        [open_entry()],
+        resolve_error=StreamTransportUnavailable("down"),
+    )
     with pytest.raises(HTTPException) as exc:
         await route.chat_session_stream(
             "session-a",
             "run-a",
+            request_for(bridge),
             principal=AuthPrincipal(
                 user_id="user-a", display_name="User", tenant_id="tenant-a"
             ),
