@@ -342,6 +342,61 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
 
 
 @pytest.mark.asyncio
+async def test_materialize_files_reports_original_attachment_ordinal(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    contents = {
+        "file-safe": _docx_bytes(),
+        "file-unsafe": _unsafe_pdf_bytes(),
+    }
+
+    class FakeStorage:
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            file_id = storage_key.rsplit("/", 1)[-1]
+            raw = contents[file_id]
+            assert max_bytes == len(raw)
+            return raw
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        file_id = kwargs["file_id"]
+        raw = contents[file_id]
+        suffix = "docx" if file_id == "file-safe" else "pdf"
+        content_type = DOCX_CONTENT_TYPE if suffix == "docx" else PDF_CONTENT_TYPE
+        return {
+            "original_name": f"{file_id}.{suffix}",
+            "content_type": content_type,
+            "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "storage_key": f"files/{file_id}",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(
+        ValueError,
+        match="context_file_pdf_active_content_unsupported",
+    ) as captured:
+        await adapter._materialize_files(
+            payload(file_ids=["file-safe", "file-unsafe"]),
+            workspace,
+        )
+
+    assert captured.value.attachment_index == 2
+    assert captured.value.file_kind == "pdf"
+    assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_materialize_files_uses_real_scoped_repository_query_for_prior_run_file(
     monkeypatch,
     tmp_path,

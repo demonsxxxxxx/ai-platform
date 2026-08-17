@@ -57,10 +57,13 @@ def _pdf_bytes(*, encrypted: bool = False, javascript: bool = False) -> bytes:
     return stream.getvalue()
 
 
-def _empty_password_pdf_bytes() -> bytes:
+def _empty_password_pdf_bytes(*, page_count: int = 1, javascript: bool = False) -> bytes:
     stream = io.BytesIO()
     writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
+    for _ in range(page_count):
+        writer.add_blank_page(width=200, height=200)
+    if javascript:
+        writer.add_js("app.alert('no')")
     writer.encrypt(user_password="", owner_password="owner-password")
     writer.write(stream)
     return stream.getvalue()
@@ -192,6 +195,25 @@ def test_parse_context_file_accepts_empty_password_encrypted_pdf():
     parsed = parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
 
     assert parsed.parser_id == "ai-platform.pdf.pypdf"
+
+
+@pytest.mark.parametrize(
+    ("raw", "error_code"),
+    [
+        (
+            _empty_password_pdf_bytes(javascript=True),
+            "context_file_pdf_active_content_unsupported",
+        ),
+        (
+            _empty_password_pdf_bytes(page_count=MAX_PDF_PAGES + 1),
+            "context_file_pdf_page_limit_exceeded",
+        ),
+    ],
+    ids=("active-content", "page-limit"),
+)
+def test_parse_context_file_checks_empty_password_pdf_after_decryption(raw, error_code):
+    with pytest.raises(ContextFileContentError, match=error_code):
+        parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
 
 
 @pytest.mark.parametrize(
