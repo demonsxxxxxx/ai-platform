@@ -1,6 +1,6 @@
-# Redis Streams SSE v2.1 Wire Protocol
+# Redis Streams SSE v3 Wire Protocol
 
-Status: normative for `ai-platform.redis-streams-sse-event-channel.v2.1`
+Status: normative contract for `ai-platform.redis-streams-sse-event-channel.v3`; External Acceptance pending
 
 Index: [Redis Streams SSE Event Channel](redis-streams-sse-event-channel.md)
 
@@ -11,17 +11,29 @@ format, atomic retention, public SSE framing, cursor validation, replay gaps, an
 frontend cursor acceptance. It does not own execution/revocation policy or
 release operations.
 
+## Generated protocol authority
+
+`schemas/public_run_stream.v3.schema.json` is the only definition source for the
+v3 Redis envelope and browser-visible `PublicRunStreamEventV3` discriminated
+union. The repository generator emits checked-in Python and TypeScript types;
+CI regenerates both and fails on a diff. Handwritten envelope field lists,
+event enums, and frontend protocol unions are prohibited.
+
+The Redis envelope may contain keyed tenant scope and attempt identity required
+for trusted validation. Its `public_event` member is the bounded generated value
+sent to the browser. Internal-only fields are never copied into that member.
+
 ## Deterministic executor callback batch
 
 An executor callback request carries an authenticated envelope:
 
 ```json
 {
-  "schema": "ai-platform.executor-callback-batch.v2.1",
+  "schema": "ai-platform.executor-callback-batch.v3",
   "run_id": "run_...",
   "attempt_id": "attempt_...",
   "batch_id": "opaque-stable-batch-id",
-  "projection_version": "public-stream-v2.1",
+  "projection_version": "public-stream-v3",
   "items": [
     {
       "item_index": 0,
@@ -62,7 +74,7 @@ Every Redis entry contains one canonical JSON value:
 
 ```json
 {
-  "schema": "ai-platform.stream-event.v2.1",
+  "schema": "ai-platform.stream-event.v3",
   "event_id": "sev_...",
   "tenant_scope": "keyed-nonreversible-scope",
   "run_id": "run_...",
@@ -70,16 +82,27 @@ Every Redis entry contains one canonical JSON value:
   "stream_incarnation": 1,
   "event_type": "assistant_text_delta",
   "emitted_at": "RFC3339 UTC",
-  "projection_version": "public-stream-v2.1",
-  "payload": {"delta": "bounded public text"}
+  "projection_version": "public-stream-v3",
+  "payload": {"delta": "bounded public text"},
+  "public_event": {
+    "schema": "ai-platform.public-run-stream-event.v3",
+    "event_id": "sev_...",
+    "run_id": "run_...",
+    "stream_incarnation": 1,
+    "event_type": "assistant_text_delta",
+    "emitted_at": "RFC3339 UTC",
+    "payload": {"delta": "bounded public text"}
+  }
 }
 ```
 
 Required fields are exact; unknown top-level fields fail closed until a new
-schema is accepted. JSON bytes use UTF-8, sorted object keys, no insignificant
-whitespace, and the same canonical number/string rules used by the payload
-digest. Unknown schema/projection/event types, invalid UTF-8, oversize payloads,
-or mismatched scope/run/attempt/incarnation fail before `XADD`.
+schema is accepted. `public_event` must be the exact generated safe projection
+of the internal envelope identity and payload. JSON bytes use UTF-8, sorted
+object keys, no insignificant whitespace, and the same canonical number/string
+rules used by the payload digest. Unknown schema/projection/event types, invalid
+UTF-8, oversize payloads, mismatched public projection, or mismatched
+scope/run/attempt/incarnation fail before Redis append.
 
 `event_id` is semantic idempotency. The Redis ID is transport ordering inside
 one proven incarnation. An unknown `XADD` outcome retries the same envelope
@@ -97,12 +120,13 @@ through them and reducers apply the semantic event once.
 | `terminal` | committed terminal transaction and frozen intent | no |
 | `end` | committed terminal and frozen end intent | no |
 
-V2.1 does not define separate Redis `tool_lifecycle`, `approval_required`,
-`artifact_ready`, or `run_status` envelope types. Skill and tool execution are
-shown only through the strict `execution_step*` projection carried by
-`semantic_progress`. Approval, artifact, and authoritative run status remain
-durable API/hydrate facts until a separately reviewed live producer contract
-exists. Consumer support alone is never evidence that a producer exists.
+V3 does not define Redis or public `tool_lifecycle`, `approval_required`,
+`artifact_ready`, `run_status`, or `reasoning_delta` envelope types. Skill and
+tool execution are shown only through the strict `execution_step*` projection
+carried by `semantic_progress`. Approval is not a runtime Streaming authority;
+artifact and authoritative Run status remain durable API/hydrate facts until a
+separately reviewed committed producer exists. Consumer support alone is never
+evidence that a producer exists.
 
 For `semantic_stage` and `semantic_progress`, the envelope semantic `event_id`,
 the public `sequence`, and `emitted_at` come from the committed `run_events` row
@@ -128,10 +152,13 @@ PostgreSQL allocates a positive, monotonically increasing
 `stream_incarnation` for the current attempt. The Redis key is:
 
 ```text
-ai-platform:sse:v2.1:{<tenant_scope>:<run_id>}:<stream_incarnation>:events
+ai-platform:sse:v3:{<tenant_scope>:<run_id>}:<stream_incarnation>:events
+ai-platform:sse:v3:{<tenant_scope>:<run_id>}:<stream_incarnation>:live
 ```
 
-The cluster hash tag keeps one run's incarnations in one slot. Exactly one
+The first key is the replay Stream and the second is its Pub/Sub channel. The
+cluster hash tag keeps one run's incarnation and live notification on one slot.
+Exactly one
 incarnation is current. The key, every envelope, the terminal intent, and every
 cursor must agree. A missing/unprovable current key is never recreated under an
 already-issued incarnation; rebuild first increments PostgreSQL authority.
@@ -142,13 +169,18 @@ only when that exact first entry exists; a mismatched first entry fails closed.
 
 ## Atomic append and retention
 
-All appends run through one reviewed Lua script (or an equivalent atomic Redis
-transaction whose result is checked as one operation):
+All appends run through one reviewed Lua script:
 
 1. validate the expected key state when publishing `stream_open` or terminal;
 2. `XADD key MAXLEN ~ <configured_maxlen> * envelope <canonical-bytes>`;
-3. `PEXPIRE key <ttl_ms>`;
-4. return the native Redis ID and the applied TTL class.
+3. `PEXPIRE` the Stream and state keys with the selected TTL;
+4. `PUBLISH` a bounded wrapper containing the returned native Redis ID and the
+   exact canonical envelope bytes;
+5. return the native Redis ID and applied TTL class.
+
+No producer publishes outside this script. A Pub/Sub notification without the
+corresponding retained Stream entry is a contract failure; a retained entry
+without an observed notification is repaired by replay.
 
 The active TTL is an idle TTL refreshed by every accepted active event. It is
 not a fixed absolute duration from stream creation. Terminal then end use the
@@ -169,36 +201,45 @@ redis_bytes ~= retained_runs * min(MAXLEN, event_rate * ttl_seconds)
               * (average_entry_bytes + measured_redis_overhead)
 ```
 
-## Pools and cleanup
+## Shared live feed and bounded subscribers
 
-Publishing and blocking reads use distinct Redis pools. A blocked `XREAD` never
-occupies queue/auth/publisher capacity. Each blocking connection is acquired for
-one response and released on client close, cancellation, invalidation, timeout,
-gap, terminal end, or error. Application shutdown explicitly closes both pools.
+Each API process owns one Pub/Sub connection and dynamically subscribes to one
+logical live channel per active Run stream. Browsers for the same stream share
+that Redis subscription. Every browser still has an independent bounded queue,
+authorization lease, reducer cursor, and connection lifetime.
 
-Pool sizing is measured, not inferred from upstream defaults:
+Attach subscribes and observes the Redis subscription acknowledgement before it
+captures retained Stream bounds. It then replays through that captured tail,
+buffers concurrent live notifications, discards overlap at or before the replay
+tail, drains later buffered events in Redis-ID order, and enters live mode.
+Semantic event IDs make an exact retry reducer-idempotent.
 
-```text
-blocking_pool >= active_sse_connections_per_process + reconnect_burst + 2
-publish_pool >= concurrent_streaming_runs_per_process + reconcilers + 2
-```
+A feed disconnect, malformed wrapper, foreign key/incarnation, event-count or
+byte overflow, or uncertain ordering closes affected connections. It never
+drops a frame and then advances the browser cursor. Reconnect uses Stream replay.
+There is no process-memory replay log and no `XREADGROUP`.
 
-No Redis outage path creates a process-memory replay log.
+Starting local bounds, pending External Acceptance, are 256 queued events and 1
+MiB per browser, 256 browsers per API process, and 32 browsers per Run stream.
+Values are configuration with strict positive upper bounds and are not capacity
+claims.
 
 ## Public SSE frames
 
-Payload frames are:
+Payload frames use the generated public event, never an independently shaped
+data object:
 
 ```text
 id: <run_id>:<stream_incarnation>:<redis-milliseconds>-<redis-sequence>
 event: <public-event-type>
-data: <bounded JSON public projection>
+data: <canonical PublicRunStreamEventV3 JSON>
 
 ```
 
-The public data omits tenant scope, attempt ID, Redis key, credentials, and
-private identifiers. `terminal` and `end` each have Redis-backed IDs; `end`
-references the terminal semantic event ID.
+The public value omits tenant scope, attempt ID, Redis key, credentials, and
+private identifiers. The event header must equal `data.event_type`. `terminal`
+and `end` each have Redis-backed IDs; `end` references the terminal semantic
+event ID.
 
 Heartbeat is a comment frame and has no `id:` or payload event:
 
@@ -254,7 +295,7 @@ The bounded gap payload is:
 
 ```json
 {
-  "schema": "ai-platform.stream-gap.v2.1",
+  "schema": "ai-platform.stream-gap.v3",
   "reason": "stream_incarnation_mismatch",
   "requested_event_id": "run_...:7:1700000000000-0",
   "requested_stream_incarnation": 7,

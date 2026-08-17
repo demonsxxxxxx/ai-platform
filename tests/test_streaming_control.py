@@ -99,7 +99,7 @@ async def test_stream_admission_rejects_a_different_attempt_instead_of_creating_
     assert len(conn.calls) == 1
 
 
-def test_authority_lease_checks_local_epoch_invalidation_and_deadline_without_database_io():
+def test_authority_lease_checks_authority_deadline_without_database_io():
     now = datetime.now(timezone.utc)
     lease = control.SseAuthorityLease(
         lease_id="lease-a",
@@ -111,20 +111,8 @@ def test_authority_lease_checks_local_epoch_invalidation_and_deadline_without_da
         lease_not_after=now + timedelta(seconds=15),
     )
 
-    assert lease.allows_frame(
-        now=now, local_authorization_epoch=4, invalidated_through_epoch=3
-    )
-    assert not lease.allows_frame(
-        now=now, local_authorization_epoch=5, invalidated_through_epoch=3
-    )
-    assert not lease.allows_frame(
-        now=now, local_authorization_epoch=4, invalidated_through_epoch=4
-    )
-    assert not lease.allows_frame(
-        now=now + timedelta(seconds=15),
-        local_authorization_epoch=4,
-        invalidated_through_epoch=3,
-    )
+    assert lease.allows_frame(now=now)
+    assert not lease.allows_frame(now=now + timedelta(seconds=15))
 
 
 @pytest.mark.asyncio

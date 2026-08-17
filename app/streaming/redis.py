@@ -16,12 +16,17 @@ from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from app.settings import get_settings
+from app.streaming.api import (
+    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
+    redis_id_tuple as _redis_id_tuple,
+    stream_key,
+    stream_live_channel,
+)
 from app.streaming.contracts import (
     PUBLIC_EVENT_TYPES as PUBLIC_EVENT_TYPES,
     STREAM_DESIGN_ID,
     STREAM_EVENT_SCHEMA,
     STREAM_GAP_SCHEMA as STREAM_GAP_SCHEMA,
-    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
     STREAM_PROJECTION_VERSION,
     ResumeDecision,
     StreamContractError,
@@ -31,29 +36,22 @@ from app.streaming.contracts import (
     StreamGap,
     StreamProjectionError as StreamProjectionError,
     _rfc3339_utc,
-    _redis_id_tuple,
     canonical_json_bytes,
     committed_public_stream_event,
     new_envelope,
     stable_event_id,
-    stream_key,
     tenant_scope,
     validate_public_payload as validate_public_payload,
 )
 
 SSE_PUBLISH_MAX_CONNECTIONS = 16
-SSE_BLOCKING_MAX_CONNECTIONS = 128
 SSE_STREAM_MAXLEN = 10000
 SSE_STREAM_ACTIVE_IDLE_TTL_MS = 7200000
 SSE_STREAM_TERMINAL_TTL_MS = 7200000
 SSE_STREAM_READ_COUNT = 128
-SSE_STREAM_BLOCK_MS = 15000
 SSE_AUTHORITY_LEASE_SECONDS = 15
 _REDIS_CONNECT_TIMEOUT_SECONDS = 2
 _REDIS_PUBLISH_TIMEOUT_SECONDS = 5
-_REDIS_BLOCKING_TIMEOUT_SECONDS = (
-    min(SSE_STREAM_BLOCK_MS, SSE_AUTHORITY_LEASE_SECONDS * 1000) / 1000 + 1
-)
 
 _APPEND_WITH_TTL_LUA = """
 local phase=redis.call('HGET',KEYS[2],'phase')
@@ -98,6 +96,7 @@ if ARGV[5] == 'end' then
   redis.call('HSET',KEYS[2],'phase','ended','end_event_id',ARGV[2],'end_digest',ARGV[6],'end_redis_id',id)
 end
 redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
+redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
 return id
 """.strip()
 
@@ -154,35 +153,24 @@ async def publish_committed_stream_event(
 
 
 class RedisStreamBridge:
-    def __init__(
-        self, *, publish_client: Any | None = None, blocking_client: Any | None = None
-    ) -> None:
-        settings = (
-            get_settings()
-            if publish_client is None or blocking_client is None
-            else None
-        )
+    def __init__(self, *, publish_client: Any | None = None) -> None:
+        settings = get_settings() if publish_client is None else None
         redis_url = str(settings.redis_url) if settings is not None else ""
         common_options = {
             "decode_responses": True,
             "socket_connect_timeout": _REDIS_CONNECT_TIMEOUT_SECONDS,
         }
+        self._owns_publish_client = publish_client is None
         self._publish_client = publish_client or Redis.from_url(
             redis_url,
             max_connections=SSE_PUBLISH_MAX_CONNECTIONS,
             socket_timeout=_REDIS_PUBLISH_TIMEOUT_SECONDS,
             **common_options,
         )
-        self._blocking_client = blocking_client or Redis.from_url(
-            redis_url,
-            max_connections=SSE_BLOCKING_MAX_CONNECTIONS,
-            socket_timeout=_REDIS_BLOCKING_TIMEOUT_SECONDS,
-            **common_options,
-        )
 
     async def aclose(self) -> None:
-        await self._publish_client.aclose()
-        await self._blocking_client.aclose()
+        if self._owns_publish_client:
+            await self._publish_client.aclose()
 
     async def append(
         self, envelope: StreamEnvelope, *, terminal: bool = False
@@ -195,15 +183,21 @@ class RedisStreamBridge:
             run_id=envelope.run_id,
             stream_incarnation=envelope.stream_incarnation,
         )
+        live_channel = stream_live_channel(
+            tenant_scope_value=envelope.tenant_scope,
+            run_id=envelope.run_id,
+            stream_incarnation=envelope.stream_incarnation,
+        )
         envelope_bytes = envelope.canonical_bytes
         digest = _sha256(envelope_bytes)
         terminal_event_id = str(envelope.payload.get("terminal_event_id") or "")
         try:
             redis_id = await self._publish_client.eval(
                 _APPEND_WITH_TTL_LUA,
-                2,
+                3,
                 key,
                 f"{key}:state",
+                live_channel,
                 SSE_STREAM_MAXLEN,
                 envelope.event_id,
                 envelope_bytes.decode(),
@@ -341,44 +335,50 @@ class RedisStreamBridge:
         )
         return ResumeDecision(cursor.redis_id if gap is None else None, gap)
 
-    async def read(
+    async def replay_page(
         self,
         *,
         tenant_scope_value: str,
         run_id: str,
         stream_incarnation: int,
         after_redis_id: str,
-        block_ms: int | None = None,
+        through_redis_id: str,
     ) -> tuple[StreamEntry, ...]:
-        _redis_id_tuple(after_redis_id)
+        after = _redis_id_tuple(after_redis_id)
+        through = _redis_id_tuple(through_redis_id)
+        if after >= through:
+            return ()
         key = stream_key(
             tenant_scope_value=tenant_scope_value,
             run_id=run_id,
             stream_incarnation=stream_incarnation,
         )
-        block = min(
-            SSE_STREAM_BLOCK_MS,
-            SSE_AUTHORITY_LEASE_SECONDS * 1000,
-            int(block_ms or SSE_STREAM_BLOCK_MS),
-        )
         try:
-            result = await self._blocking_client.xread(
-                {key: after_redis_id}, count=SSE_STREAM_READ_COUNT, block=max(block, 1)
+            rows = await self._publish_client.xrange(
+                key,
+                min=f"({after_redis_id}",
+                max=through_redis_id,
+                count=SSE_STREAM_READ_COUNT,
             )
         except Exception as exc:
-            raise StreamTransportUnavailable("stream_read_unavailable") from exc
-        entries = []
-        for returned_key, rows in result or ():
-            if (
-                returned_key.decode()
-                if isinstance(returned_key, bytes)
-                else returned_key
-            ) != key:
-                raise StreamContractError("stream_read_foreign_key")
-            entries.extend(
-                self._decode(row, run_id, stream_incarnation) for row in rows
-            )
-        return tuple(entries)
+            raise StreamTransportUnavailable("stream_replay_unavailable") from exc
+        return tuple(
+            self._decode(row, run_id, stream_incarnation) for row in rows or ()
+        )
+
+    def decode_live_publication(
+        self,
+        *,
+        redis_id: str,
+        envelope_json: str,
+        run_id: str,
+        stream_incarnation: int,
+    ) -> StreamEntry:
+        return self._decode(
+            (redis_id, {"envelope": envelope_json}),
+            run_id,
+            stream_incarnation,
+        )
 
     @staticmethod
     def _decode(row: object, run_id: str, incarnation: int) -> StreamEntry:
@@ -427,24 +427,15 @@ class SseAuthorityLease:
     authorization_epoch: int
     lease_not_after: datetime
 
-    def allows_frame(
-        self,
-        *,
-        now: datetime,
-        local_authorization_epoch: int,
-        invalidated_through_epoch: int,
-    ) -> bool:
+    def allows_frame(self, *, now: datetime) -> bool:
+        """Check the authority-clock deadline of this already authorized lease."""
         now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
         deadline = (
             self.lease_not_after
             if self.lease_not_after.tzinfo
             else self.lease_not_after.replace(tzinfo=timezone.utc)
         )
-        return (
-            self.authorization_epoch == local_authorization_epoch
-            and self.authorization_epoch > invalidated_through_epoch
-            and now < deadline
-        )
+        return now < deadline
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,7 +517,7 @@ def stream_open_event_id(
     *, tenant_scope: str, run_id: str, attempt_id: str, incarnation: int
 ) -> str:
     return _semantic_id(
-        "ai-platform-stream-open-v2.1", tenant_scope, run_id, attempt_id, incarnation
+        "ai-platform-stream-open-v3", tenant_scope, run_id, attempt_id, incarnation
     )
 
 
@@ -535,8 +526,8 @@ def terminal_event_ids(
 ) -> tuple[str, str]:
     base = (tenant_scope, run_id, attempt_id, incarnation)
     return _semantic_id(
-        "ai-platform-stream-terminal-v2.1", *base, "terminal"
-    ), _semantic_id("ai-platform-stream-terminal-v2.1", *base, "end")
+        "ai-platform-stream-terminal-v3", *base, "terminal"
+    ), _semantic_id("ai-platform-stream-terminal-v3", *base, "end")
 
 
 async def create_or_get_stream_admission(

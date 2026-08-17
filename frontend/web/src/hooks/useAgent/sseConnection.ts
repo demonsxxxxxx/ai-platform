@@ -13,10 +13,10 @@ import { getRefreshToken } from "../../services/api/token";
 import {
   isSequencedPublicChatEvent,
   type EventData,
-  type EventType,
   type StreamEvent,
 } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
+import { adaptPublicRunStreamEventV3 } from "./publicRunStreamV3";
 import { clearAllLoadingStates } from "./messageParts";
 import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
@@ -261,31 +261,19 @@ export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
   );
 }
 
-function explicitRunId(data: Record<string, unknown>): string | null {
-  return typeof data.run_id === "string" && data.run_id.trim()
-    ? data.run_id
-    : null;
-}
-
 /**
- * A persisted public event sequence is the only signal authoritative enough
- * to restore a reconnect budget. Synthetic and final snapshot frames may be
- * replayed without proving new backend progress.
+ * An accepted assistant delta or sequenced public semantic event proves new
+ * persisted backend progress. Synthetic metadata and terminal snapshots do not.
  */
 function isAcceptedRunProgress(
   eventType: string,
   data: Record<string, unknown>,
   terminal: boolean,
 ): boolean {
-  return !terminal && isSequencedPublicChatEvent(eventType, data as EventData);
-}
-
-/** A transport heartbeat confirms liveness only; it cannot create chat text. */
-function isRunHeartbeat(eventType: string, data: Record<string, unknown>): boolean {
   return (
-    eventType === "heartbeat" &&
-    typeof data.status === "string" &&
-    data.status.trim().length > 0
+    !terminal &&
+    (eventType === "message:chunk" ||
+      isSequencedPublicChatEvent(eventType, data as EventData))
   );
 }
 
@@ -362,11 +350,13 @@ export async function connectToSSE(
     headers["Authorization"] = `Bearer ${token}`;
   }
   const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
-  if (
+  const acceptedCursorOwnsRun =
     acceptedCursor?.sessionId === targetSessionId &&
-    acceptedCursor.runId === targetRunId &&
-    acceptedCursor.eventId
-  ) {
+    acceptedCursor.runId === targetRunId;
+  let acceptedStreamIncarnation = acceptedCursorOwnsRun
+    ? (acceptedCursor.streamIncarnation ?? null)
+    : null;
+  if (acceptedCursorOwnsRun && acceptedCursor.eventId) {
     headers["Last-Event-ID"] = acceptedCursor.eventId;
   }
 
@@ -431,16 +421,12 @@ export async function connectToSSE(
             return;
           }
           if (event.event === "ping") return;
-          let parsedData: Record<string, unknown>;
+          let parsed: unknown;
           try {
-            const parsed = JSON.parse(event.data);
-            if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-              return;
-            }
-            parsedData = parsed as Record<string, unknown>;
+            parsed = JSON.parse(event.data);
           } catch {
-            // Ignore parse errors
-            return;
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_event_json_invalid");
           }
           if (event.event === "gap") {
             // Preserve the run owner so the caller can reconcile against
@@ -450,61 +436,28 @@ export async function connectToSSE(
           }
           const eventId = event.id;
           if (!eventId) {
-            if (event.event === "heartbeat") return;
             receivedNonTerminalApplicationError = true;
             throw new Error("sse_event_id_missing");
           }
-          const sourceRunId = explicitRunId(parsedData);
-          // An old explicit frame cannot end this connection or suppress its
-          // reconnect. It is not safe to rebind an explicit foreign run.
-          if (sourceRunId && sourceRunId !== targetRunId) {
-            return;
-          }
-
-          // The status-stream heartbeat is intentionally not an assistant
-          // message event. It confirms liveness for this attached stream, but
-          // cannot erase this generation's cumulative reconnect budget: a
-          // heartbeat-then-close loop is not stable transport progress.
-          if (isRunHeartbeat(event.event, parsedData)) {
-            return;
-          }
-
-          const terminalStatus = terminalRunStatusFromEvent(
-            event.event,
-            parsedData,
-          );
-          // An SSE `error` frame can report a stream interruption while the
-          // backend run is still active. Abort immediately and hand exactly
-          // one generation-bound reconciliation to the caller; do not wait
-          // for a server close or let fetch-event-source retry internally.
-          if (event.event === "error" && !terminalStatus) {
+          const adapted = adaptPublicRunStreamEventV3({
+            eventHeader: event.event,
+            transportCursor: eventId,
+            value: parsed,
+            targetRunId,
+            targetStreamIncarnation: acceptedStreamIncarnation,
+          });
+          if (!adapted) {
             receivedNonTerminalApplicationError = true;
-            setConnectionStatus("reconnecting");
-            isConnectingRef.current = false;
-            // Throw while this stream is still current. fetch-event-source
-            // then runs its error path, disposes its internal request, and
-            // rejects this connection rather than scheduling a retry. Calling
-            // our signal's abort() first would resolve fetch-event-source and
-            // silently skip the authoritative reconciliation below.
-            throw new Error("SSE application interruption before terminal event");
+            throw new Error("sse_event_contract_invalid");
           }
-          // A `done` frame without an authoritative terminal status (for
-          // example, `{ status: "timeout" }`) likewise cannot complete the
-          // run locally.
-          if (
-            (event.event === "done" || event.event === "complete") &&
-            !terminalStatus
-          ) {
-            return;
-          }
-          const normalizedData =
-            terminalStatus && !sourceRunId
-              ? { ...parsedData, run_id: targetRunId }
-              : parsedData;
-          const timestamp = normalizedData._timestamp as string | undefined;
+          acceptedStreamIncarnation ??= adapted.streamIncarnation;
+          const terminalStatus = terminalRunStatusFromEvent(
+            adapted.event,
+            adapted.data as unknown as Record<string, unknown>,
+          );
           const streamEvent: StreamEvent = {
-            event: event.event as EventType,
-            data: JSON.stringify(normalizedData),
+            event: adapted.event,
+            data: JSON.stringify(adapted.data),
           };
           const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
             if (!isCurrentStream()) return;
@@ -513,13 +466,14 @@ export async function connectToSSE(
                 sessionId: targetSessionId,
                 runId: targetRunId,
                 eventId,
+                streamIncarnation: adapted.streamIncarnation,
               };
             }
             if (
               semanticApplied &&
               isAcceptedRunProgress(
-                event.event,
-                normalizedData,
+                adapted.event,
+                adapted.data as unknown as Record<string, unknown>,
                 Boolean(terminalStatus),
               )
             ) {
@@ -530,7 +484,7 @@ export async function connectToSSE(
             streamEvent,
             messageId,
             eventId,
-            timestamp,
+            adapted.emittedAt,
             ctx,
             {
               sessionId: targetSessionId,

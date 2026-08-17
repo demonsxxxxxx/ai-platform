@@ -369,7 +369,12 @@ function resetAcceptedStreamState(
   runId: string | null = null,
 ) {
   sequenceRef.current = { sessionId, runId, sequence: null };
-  cursorRef.current = { sessionId, runId, eventId: null };
+  cursorRef.current = {
+    sessionId,
+    runId,
+    eventId: null,
+    streamIncarnation: null,
+  };
 }
 
 interface ReconcileOwner {
@@ -708,6 +713,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionId: null,
     runId: null,
     eventId: null,
+    streamIncarnation: null,
   });
 
   // Track last event timestamp from history

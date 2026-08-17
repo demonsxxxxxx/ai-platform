@@ -16,9 +16,43 @@ import {
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
 import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
+import {
+  PUBLIC_RUN_STREAM_SCHEMA,
+  STREAM_DESIGN_ID,
+} from "../../../generated/publicRunStreamV3.ts";
 import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function v3Frame({
+  cursor,
+  runId,
+  eventType,
+  payload,
+  eventId = cursor,
+  streamIncarnation = 1,
+}: {
+  cursor: string;
+  runId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  eventId?: string;
+  streamIncarnation?: number;
+}) {
+  return {
+    id: cursor,
+    event: eventType,
+    data: JSON.stringify({
+      schema: PUBLIC_RUN_STREAM_SCHEMA,
+      event_id: eventId,
+      run_id: runId,
+      stream_incarnation: streamIncarnation,
+      emitted_at: "2026-08-09T00:00:00Z",
+      event_type: eventType,
+      payload,
+    }),
+  };
+}
 
 test("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
   let messages: Message[] = [
@@ -224,21 +258,28 @@ test("reconnect sends only the last reducer-accepted native Redis cursor", async
   const fetchStream: SSEFetchEventSource = async (_input, init) => {
     seen.push((init.headers || {}) as Record<string, string>);
     await init.onopen?.(new Response(null, { status: 200 }));
-    init.onmessage?.({
-      id: "run-old:1:1-0",
-      event: "message:chunk",
-      data: JSON.stringify({
-        run_id: "run-old",
-        projection_version: "ai-platform.chat-public-projection.v1",
-        projection_kind: "assistant_delta",
-        content: "accepted",
-      }),
-    } as never);
-    init.onmessage?.({
-      id: "run-old:1:2-0",
-      event: "done",
-      data: JSON.stringify({ run_id: "run-old", status: "succeeded" }),
-    } as never);
+    init.onmessage?.(
+      v3Frame({
+        cursor: "run-old:1:1-0",
+        runId: "run-old",
+        eventType: "assistant_text_delta",
+        eventId: "delta-1",
+        payload: { delta: "accepted" },
+      }) as never,
+    );
+    init.onmessage?.(
+      v3Frame({
+        cursor: "run-old:1:2-0",
+        runId: "run-old",
+        eventType: "terminal",
+        eventId: "terminal-1",
+        payload: {
+          event_id: "terminal-1",
+          hydrate_required: true,
+          status: "succeeded",
+        },
+      }) as never,
+    );
     init.onclose?.();
   };
   const tokens = {
@@ -328,11 +369,6 @@ test("keeps a silent running heartbeat attached without projecting assistant con
     false,
     async (_input, init) => {
       await init.onopen?.(new Response(null, { status: 200 }));
-      init.onmessage?.({
-        event: "heartbeat",
-        id: "run-heartbeat:heartbeat:1",
-        data: JSON.stringify({ run_id: "run-heartbeat", status: "running" }),
-      } as never);
       assert.equal(context.retryCountRef.current, 2);
       assert.equal(messages[0]?.content, "");
       assert.deepEqual(messages[0]?.parts, []);
@@ -751,7 +787,7 @@ test("drops a status-query retry after its session generation changes", async ()
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
-test("ignores a mismatched explicit terminal frame without suppressing reconnect", async () => {
+test("rejects a foreign v3 frame without accepting terminal state", async () => {
   let terminalCalls = 0;
   const context = {
     abortControllerRef: { current: null },
@@ -787,24 +823,29 @@ test("ignores a mismatched explicit terminal frame without suppressing reconnect
       false,
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "run_event",
-          id: "evt-old-terminal",
-          data: JSON.stringify({
-            run_id: "run-old",
-            event_type: "run_failed",
-          }),
-        } as never);
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-old:1:1-0",
+            runId: "run-old",
+            eventType: "terminal",
+            eventId: "old-terminal",
+            payload: {
+              event_id: "old-terminal",
+              hydrate_required: true,
+              status: "failed",
+            },
+          }) as never,
+        );
         await init.onclose?.();
       },
     ),
-    /SSE closed before terminal event/,
+    /sse_event_contract_invalid/,
   );
 
   assert.equal(terminalCalls, 0);
 });
 
-test("leaves a runless stream timeout for authoritative status reconciliation", async () => {
+test("leaves a stream close without terminal for authoritative status reconciliation", async () => {
   let terminalCalls = 0;
   const connectionStates: string[] = [];
   const context = {
@@ -840,20 +881,10 @@ test("leaves a runless stream timeout for authoritative status reconciliation", 
       false,
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "error",
-          id: "evt-timeout-error",
-          data: JSON.stringify({ error: "stream_timeout" }),
-        } as never);
-        init.onmessage?.({
-          event: "done",
-          id: "evt-timeout-done",
-          data: JSON.stringify({ status: "timeout" }),
-        } as never);
         await init.onclose?.();
       },
     ),
-    /SSE application interruption before terminal event/,
+    /SSE closed before terminal event/,
   );
 
   assert.equal(terminalCalls, 0);
@@ -900,9 +931,9 @@ test("drops a delayed non-terminal application error after its stream generation
       await init.onopen?.(new Response(null, { status: 200 }));
       try {
         init.onmessage?.({
-          event: "error",
-          id: "evt-stream-timeout",
-          data: JSON.stringify({ error: "stream_timeout" }),
+          event: "reasoning.delta",
+          id: "run-old:1:1-0",
+          data: "{}",
         } as never);
       } catch {
         errorFrameHandled();
@@ -921,7 +952,7 @@ test("drops a delayed non-terminal application error after its stream generation
   await connection;
 
   assert.deepEqual(connectionStates, []);
-  assert.equal(context.isConnectingRef.current, false);
+  assert.equal(context.isConnectingRef.current, true);
 });
 
 test("does not let a deferred stale 401 refresh mutate a replacement SSE stream", async () => {
@@ -1014,11 +1045,19 @@ test("retries a current 401 once and aborts only its captured stream controller"
           signals.push(init.signal);
         },
         afterOpen: async (init) => {
-          init.onmessage?.({
-            event: "complete",
-            id: "run-old:1:2-0",
-            data: JSON.stringify({ status: "succeeded" }),
-          } as never);
+          init.onmessage?.(
+            v3Frame({
+              cursor: "run-old:1:2-0",
+              runId: "run-old",
+              eventType: "terminal",
+              eventId: "terminal-after-refresh",
+              payload: {
+                event_id: "terminal-after-refresh",
+                hydrate_required: true,
+                status: "succeeded",
+              },
+            }) as never,
+          );
           await init.onclose?.();
         },
       },
@@ -1133,11 +1172,19 @@ test("flushes a paused accepted answer delta exactly once before a 401 refresh h
           contentObservedByRefreshedAttempt = messages[0]?.content || "";
         },
         afterOpen: async (init) => {
-          init.onmessage?.({
-            event: "complete",
-            id: "run-refresh-flush:1:2-0",
-            data: JSON.stringify({ run_id: owner.runId, status: "succeeded" }),
-          } as never);
+          init.onmessage?.(
+            v3Frame({
+              cursor: "run-refresh-flush:1:2-0",
+              runId: owner.runId,
+              eventType: "terminal",
+              eventId: "terminal-refresh-flush",
+              payload: {
+                event_id: "terminal-refresh-flush",
+                hydrate_required: true,
+                status: "succeeded",
+              },
+            }) as never,
+          );
           await init.onclose?.();
         },
       },
@@ -1901,15 +1948,18 @@ test("resets reconnect budget only after a unique current-run progress frame", a
       false,
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "run_event",
-          id: "evt-current-progress",
-          data: JSON.stringify({
-            run_id: "run-1",
-            sequence: 43,
-            event_type: "worker_progress",
-          }),
-        } as never);
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-1:1:43-0",
+            runId: "run-1",
+            eventType: "semantic_stage",
+            eventId: "current-progress",
+            payload: {
+              event: "run_event",
+              data: { sequence: 43, event_type: "worker_progress" },
+            },
+          }) as never,
+        );
         await init.onclose?.();
       },
     ),
@@ -1934,18 +1984,15 @@ test("resets reconnect budget only after a unique current-run progress frame", a
       false,
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "message:chunk",
-          id: "evt-current-delta",
-          data: JSON.stringify({
-            projection_version: "ai-platform.chat-public-projection.v1",
-            projection_kind: "assistant_delta",
-            run_id: "run-1",
-            event_id: "evt-current-delta",
-            sequence: 44,
-            content: "新进度",
-          }),
-        } as never);
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-1:1:44-0",
+            runId: "run-1",
+            eventType: "assistant_text_delta",
+            eventId: "current-delta",
+            payload: { delta: "新进度" },
+          }) as never,
+        );
         await init.onclose?.();
       },
     ),
@@ -1954,7 +2001,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
   assert.equal(deltaProgressContext.retryCountRef.current, 0);
   assert.equal(
     deltaProgressContext.acceptedRunEventSequenceRef.current.sequence,
-    44,
+    43,
   );
 
   const nonProgressContext = {
@@ -1974,16 +2021,15 @@ test("resets reconnect budget only after a unique current-run progress frame", a
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.({ event: "ping", data: "{}" } as never);
-        init.onmessage?.({
-          event: "message:chunk",
-          id: "evt-current-synthetic-progress",
-          data: JSON.stringify({ run_id: "run-1", content: "并非权威进度" }),
-        } as never);
-        init.onmessage?.({
-          event: "run_event",
-          id: "evt-foreign-progress",
-          data: JSON.stringify({ run_id: "run-foreign", event_type: "worker_started" }),
-        } as never);
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-1:1:45-0",
+            runId: "run-1",
+            eventType: "stream_open",
+            eventId: "stream-open-current",
+            payload: { design_id: STREAM_DESIGN_ID },
+          }) as never,
+        );
         await init.onclose?.();
       },
     ),
@@ -2031,16 +2077,18 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
       false,
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "run_event",
-          id: "run-1:1:2-0",
-          data: JSON.stringify({
-            run_id: "run-1",
-            event_id: "semantic-progress-1",
-            sequence: 9,
-            event_type: "worker_progress",
-          }),
-        } as never);
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-1:1:2-0",
+            runId: "run-1",
+            eventType: "semantic_stage",
+            eventId: "semantic-progress-1",
+            payload: {
+              event: "run_event",
+              data: { sequence: 9, event_type: "worker_progress" },
+            },
+          }) as never,
+        );
         await init.onclose?.();
       },
     ),

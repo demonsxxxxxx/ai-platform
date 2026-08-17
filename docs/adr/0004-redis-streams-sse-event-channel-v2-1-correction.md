@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 supersedes: 0003-redis-streams-sse-event-channel-v2-correction.md
+superseded_by: 0009-redis-streams-sse-v3-live-fanout.md
 ---
 
 # Correct Redis Streams SSE v2 implementation and release boundaries

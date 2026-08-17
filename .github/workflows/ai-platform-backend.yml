@@ -108,7 +108,7 @@ jobs:
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
 
-      - name: Enforce SSE v2.1 release-atomic cutover
+      - name: Enforce SSE v3 release-atomic cutover
         run: python tools/check_sse_runtime_cutover.py
 
   backend-tests:
@@ -116,6 +116,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-validation
     timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     strategy:
       fail-fast: false
       matrix:
@@ -149,6 +159,7 @@ jobs:
               tests/test_runtime_callbacks.py
               tests/test_worker.py
               tests/test_lambchat_sse_v21.py
+              tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
           - shard: release-governance
             test_files: >-
@@ -165,6 +176,7 @@ jobs:
               tests/test_release_authority.py
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      AI_PLATFORM_SSE_REDIS_TEST_URL: redis://localhost:6379/15
     steps:
       - name: Checkout exact backend test source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

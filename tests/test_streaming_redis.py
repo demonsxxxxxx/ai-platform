@@ -37,7 +37,7 @@ class FakeRedis:
     def __init__(self, rows=None):
         self.rows = list(rows or [])
         self.eval_calls = []
-        self.xread_calls = []
+        self.published = []
         self.close_calls = 0
         self.event_ids = {}
 
@@ -47,6 +47,7 @@ class FakeRedis:
         key_count,
         key,
         state_key,
+        live_channel,
         maxlen,
         event_id,
         envelope,
@@ -61,6 +62,7 @@ class FakeRedis:
                 key_count,
                 key,
                 state_key,
+                live_channel,
                 maxlen,
                 event_id,
                 envelope,
@@ -77,27 +79,35 @@ class FakeRedis:
             return self.event_ids[event_id]
         redis_id = f"1700000000000-{len(self.rows)}"
         self.rows.append((redis_id, {"envelope": envelope}))
+        self.published.append(
+            (live_channel, json.dumps({"redis_id": redis_id, "envelope": envelope}))
+        )
         self.event_ids[event_id] = redis_id
         return redis_id
 
     async def xrange(self, _key, min="-", max="+", count=None):
         if min == max and min not in {"-", "+"}:
             return [row for row in self.rows if row[0] == min][: count or None]
-        return self.rows[: count or None]
+        rows = list(self.rows)
+        if min.startswith("("):
+            after = min[1:]
+            rows = [
+                row
+                for row in rows
+                if stream_redis._redis_id_tuple(row[0])
+                > stream_redis._redis_id_tuple(after)
+            ]
+        if max != "+":
+            rows = [
+                row
+                for row in rows
+                if stream_redis._redis_id_tuple(row[0])
+                <= stream_redis._redis_id_tuple(max)
+            ]
+        return rows[: count or None]
 
     async def xrevrange(self, _key, max="+", min="-", count=None):
         return list(reversed(self.rows))[: count or None]
-
-    async def xread(self, streams, count, block):
-        self.xread_calls.append((streams, count, block))
-        key, after = next(iter(streams.items()))
-        later = [
-            row
-            for row in self.rows
-            if stream_redis._redis_id_tuple(row[0])
-            > stream_redis._redis_id_tuple(after)
-        ]
-        return [(key, later[:count])] if later else []
 
     async def aclose(self):
         self.close_calls += 1
@@ -110,11 +120,7 @@ async def test_real_redis_lua_phase_ttl_idempotency_and_bounded_stream(monkeypat
         pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
 
     publish = stream_redis.Redis.from_url(redis_url, decode_responses=True)
-    blocking = stream_redis.Redis.from_url(redis_url, decode_responses=True)
-    bridge = stream_redis.RedisStreamBridge(
-        publish_client=publish,
-        blocking_client=blocking,
-    )
+    bridge = stream_redis.RedisStreamBridge(publish_client=publish)
     key = stream_redis.stream_key(
         tenant_scope_value="scope-a",
         run_id="run-a",
@@ -208,6 +214,7 @@ async def test_real_redis_lua_phase_ttl_idempotency_and_bounded_stream(monkeypat
     finally:
         await publish.delete(key, f"{key}:state")
         await bridge.aclose()
+        await publish.aclose()
 
 
 def test_cursor_is_run_and_incarnation_bound_and_future_or_foreign_forms_fail_closed():
@@ -405,10 +412,7 @@ def test_stable_event_id_is_deterministic_per_batch_item():
 async def test_append_atomically_combines_xadd_maxlen_and_ttl_refresh(monkeypatch):
     monkeypatch.setattr(stream_redis, "SSE_STREAM_TERMINAL_TTL_MS", 10800000)
     publisher = FakeRedis()
-    blocking = FakeRedis()
-    bridge = stream_redis.RedisStreamBridge(
-        publish_client=publisher, blocking_client=blocking
-    )
+    bridge = stream_redis.RedisStreamBridge(publish_client=publisher)
 
     active = await bridge.append(_envelope())
     terminal = await bridge.append(
@@ -428,9 +432,15 @@ async def test_append_atomically_combines_xadd_maxlen_and_ttl_refresh(monkeypatc
     assert terminal.redis_id == "1700000000000-1"
     assert "XADD" in publisher.eval_calls[0][0]
     assert "PEXPIRE" in publisher.eval_calls[0][0]
-    assert publisher.eval_calls[0][7] == 7200000
-    assert publisher.eval_calls[1][7] == 10800000
-    assert json.loads(publisher.eval_calls[0][6])["event_type"] == "stream_open"
+    assert publisher.eval_calls[0][8] == 7200000
+    assert publisher.eval_calls[1][8] == 10800000
+    assert json.loads(publisher.eval_calls[0][7])["event_type"] == "stream_open"
+    assert publisher.eval_calls[0][4] == stream_redis.stream_live_channel(
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        stream_incarnation=1,
+    )
+    assert json.loads(publisher.published[0][1])["redis_id"] == active.redis_id
 
     duplicate = await bridge.append(_envelope())
     assert duplicate == active
@@ -454,9 +464,7 @@ async def test_append_atomically_combines_xadd_maxlen_and_ttl_refresh(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_default_bridge_uses_independent_bounded_publish_and_blocking_pools(
-    monkeypatch,
-):
+async def test_default_bridge_uses_one_bounded_publish_pool(monkeypatch):
     created = []
     options = []
 
@@ -476,17 +484,10 @@ async def test_default_bridge_uses_independent_bounded_publish_and_blocking_pool
     bridge = stream_redis.RedisStreamBridge()
     assert [(url, maximum) for url, maximum, _ in created] == [
         ("redis://redis:6379/0", stream_redis.SSE_PUBLISH_MAX_CONNECTIONS),
-        ("redis://redis:6379/0", stream_redis.SSE_BLOCKING_MAX_CONNECTIONS),
     ]
-    assert created[0][2] is not created[1][2]
     assert options[0]["socket_timeout"] == stream_redis._REDIS_PUBLISH_TIMEOUT_SECONDS
-    assert options[1]["socket_timeout"] == stream_redis._REDIS_BLOCKING_TIMEOUT_SECONDS
-    assert options[1]["socket_timeout"] > min(
-        stream_redis.SSE_STREAM_BLOCK_MS,
-        stream_redis.SSE_AUTHORITY_LEASE_SECONDS * 1000,
-    ) / 1000
     await bridge.aclose()
-    assert [client.close_calls for _, _, client in created] == [1, 1]
+    assert [client.close_calls for _, _, client in created] == [1]
 
 
 @pytest.mark.asyncio
@@ -504,10 +505,7 @@ async def test_trim_missing_and_rebuild_return_idless_gap_without_xread(monkeypa
             ("1700000000200-0", {"envelope": delta}),
         ]
     )
-    blocking = FakeRedis(publisher.rows)
-    bridge = stream_redis.RedisStreamBridge(
-        publish_client=publisher, blocking_client=blocking
-    )
+    bridge = stream_redis.RedisStreamBridge(publish_client=publisher)
 
     trimmed = await bridge.resolve_resume(
         tenant_scope_value="scope-a",
@@ -526,11 +524,11 @@ async def test_trim_missing_and_rebuild_return_idless_gap_without_xread(monkeypa
     assert trimmed.gap.reason == "retained_history_unavailable"
     assert rebuilt.after_redis_id is None
     assert rebuilt.gap.reason == "stream_incarnation_mismatch"
-    assert blocking.xread_calls == []
+    assert not hasattr(stream_redis.RedisStreamBridge, "read")
 
 
 @pytest.mark.asyncio
-async def test_two_readers_receive_same_entries_and_cleanup_handles(monkeypatch):
+async def test_two_finite_replay_readers_receive_same_entries(monkeypatch):
     monkeypatch.setattr(stream_redis, "get_settings", _settings)
     rows = [
         ("1700000000000-0", {"envelope": _envelope().canonical_bytes.decode()}),
@@ -546,30 +544,27 @@ async def test_two_readers_receive_same_entries_and_cleanup_handles(monkeypatch)
         ),
     ]
     publisher = FakeRedis(rows)
-    first_reader = FakeRedis(rows)
-    second_reader = FakeRedis(rows)
-    first_bridge = stream_redis.RedisStreamBridge(
-        publish_client=publisher, blocking_client=first_reader
-    )
-    second_bridge = stream_redis.RedisStreamBridge(
-        publish_client=publisher, blocking_client=second_reader
-    )
+    first_bridge = stream_redis.RedisStreamBridge(publish_client=publisher)
+    second_bridge = stream_redis.RedisStreamBridge(publish_client=publisher)
 
-    first_entries = await first_bridge.read(
+    first_entries = await first_bridge.replay_page(
         tenant_scope_value="scope-a",
         run_id="run-a",
         stream_incarnation=1,
         after_redis_id="0-0",
+        through_redis_id="1700000000040-0",
     )
-    second_entries = await second_bridge.read(
+    second_entries = await second_bridge.replay_page(
         tenant_scope_value="scope-a",
         run_id="run-a",
         stream_incarnation=1,
         after_redis_id="0-0",
+        through_redis_id="1700000000040-0",
     )
 
     assert [entry.cursor.event_id for entry in first_entries] == [
         entry.cursor.event_id for entry in second_entries
     ]
     await first_bridge.aclose()
-    assert first_reader.close_calls == 1
+    await second_bridge.aclose()
+    assert publisher.close_calls == 0
