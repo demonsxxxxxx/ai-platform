@@ -5030,6 +5030,7 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
     assert environment["ANTHROPIC_AUTH_TOKEN"] == "test-anthropic-token"
     assert environment["OPENAI_API_KEY"] == "test-newapi-token"
     assert environment["CLAUDE_AGENT_PERMISSION_MODE"] == "bypassPermissions"
+    assert environment["CLAUDE_AGENT_SDK_TIMEOUT_SECONDS"] == "120"
     assert environment["CLAUDE_AGENT_ALLOWED_TOOLS"] == "Read,Glob,LS,Bash"
     assert environment["CLAUDE_AGENT_WORKSPACE_ROOT"] == "/workspace"
     assert environment["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer"

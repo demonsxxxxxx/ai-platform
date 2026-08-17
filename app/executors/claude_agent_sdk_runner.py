@@ -176,7 +176,7 @@ def _sdk_run_timeout_seconds(
     full_access: bool,
 ) -> float:
     """Return the bounded SDK execution time without an approval wait extension."""
-    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
+    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 300.0))
     if full_access:
         timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
     return timeout_seconds

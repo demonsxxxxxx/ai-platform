@@ -374,6 +374,18 @@ def test_callback_suppresses_executor_terminal_facts_without_reordering_surround
     ]
 
 
+def test_executor_client_default_timeout_uses_document_workflow_budget(monkeypatch):
+    monkeypatch.setattr(
+        executor_client_module,
+        "get_settings",
+        lambda: type("S", (), {})(),
+    )
+
+    assert executor_client_module._default_timeout_seconds() == tool_permission_budget(
+        300.0
+    ).normal_outer_executor_timeout_seconds
+
+
 @pytest.mark.asyncio
 async def test_executor_client_posts_task_request(monkeypatch):
     calls = []

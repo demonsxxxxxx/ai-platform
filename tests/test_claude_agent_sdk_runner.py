@@ -5,12 +5,32 @@ import types
 import pytest
 
 from app.executors.claude_agent_sdk_runner import (
+    _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
 )
 from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
+
+
+def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
+    assert (
+        _sdk_run_timeout_seconds(
+            types.SimpleNamespace(),
+            sandbox_brokered=True,
+            full_access=False,
+        )
+        == 300.0
+    )
+    assert (
+        _sdk_run_timeout_seconds(
+            types.SimpleNamespace(claude_agent_sdk_timeout_seconds=45),
+            sandbox_brokered=True,
+            full_access=False,
+        )
+        == 45.0
+    )
 
 
 def _settings():
