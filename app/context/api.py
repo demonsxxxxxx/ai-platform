@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import secrets
 
+from app.context.domain.conversation import (
+    ConversationContextError,
+    build_executor_conversation_context,
+    empty_executor_conversation_context,
+)
+
 
 CONTEXT_FILE_FAILURE_SCHEMA_VERSION = "ai-platform.context-file-failure.v1"
 CONTEXT_FILE_ERROR_CODES = frozenset(
@@ -138,8 +144,11 @@ def context_file_executor_failure(
 __all__ = [
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
+    "ConversationContextError",
     "ContextFileContentError",
+    "build_executor_conversation_context",
     "context_file_executor_failure",
     "context_file_failure_diagnostic",
+    "empty_executor_conversation_context",
     "normalize_context_file_error_code",
 ]

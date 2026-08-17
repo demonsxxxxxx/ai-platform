@@ -1,6 +1,6 @@
 import pytest
 
-from app.context.conversation import (
+from app.context.api import (
     ConversationContextError,
     build_executor_conversation_context,
 )

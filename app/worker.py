@@ -28,7 +28,7 @@ from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
 )
-from app.context.conversation import (
+from app.context.api import (
     ConversationContextError,
     build_executor_conversation_context,
     empty_executor_conversation_context,
