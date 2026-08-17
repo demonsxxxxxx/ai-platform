@@ -14,6 +14,10 @@ from docx import Document
 from pypdf import PdfReader
 from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject
 
+from app.context.api import (
+    ContextFileContentError,
+    normalize_context_file_error_code,
+)
 from app.context_manifest import truncate_utf8_text
 from app.file_parser_contracts import (
     AttachmentParserRequirement,
@@ -46,12 +50,6 @@ TEXT_CONTENT_TYPES = frozenset(
     }
 )
 TEXT_EXTENSIONS = frozenset({".csv", ".json", ".markdown", ".md", ".txt"})
-
-
-class ContextFileContentError(ValueError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 @dataclass(frozen=True)
@@ -118,12 +116,12 @@ def _parse_text(raw: bytes, *, content_type: str, max_output_bytes: int) -> Pars
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise ContextFileContentError("context_file_parse_failed") from exc
+        raise ContextFileContentError("context_file_text_encoding_unsupported") from exc
     if content_type == "application/json":
         try:
             json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ContextFileContentError("context_file_parse_failed") from exc
+            raise ContextFileContentError("context_file_json_invalid") from exc
     content, truncated = _bounded_output(text, max_output_bytes=max_output_bytes)
     return ParsedContextFile(
         content=content,
@@ -139,18 +137,20 @@ def _validate_docx_archive(raw: bytes) -> None:
     try:
         archive = ZipFile(io.BytesIO(raw))
     except (BadZipFile, ValueError) as exc:
-        raise ContextFileContentError("context_file_parse_failed") from exc
+        raise ContextFileContentError("context_file_docx_archive_invalid") from exc
     total_bytes = 0
     seen: set[str] = set()
     try:
         entries = archive.infolist()
         if len(entries) > MAX_DOCX_ENTRIES:
-            raise ContextFileContentError("context_file_parse_failed")
+            raise ContextFileContentError("context_file_docx_archive_entry_limit_exceeded")
         for entry in entries:
             name = entry.filename.replace("\\", "/")
             path = PurePosixPath(name)
             windows_path = PureWindowsPath(entry.filename)
             normalized = name.casefold()
+            if entry.flag_bits & 0x1:
+                raise ContextFileContentError("context_file_docx_encrypted")
             if (
                 not name
                 or name.startswith("/")
@@ -158,38 +158,39 @@ def _validate_docx_archive(raw: bytes) -> None:
                 or bool(windows_path.drive)
                 or normalized in seen
                 or any(part in {"", ".", ".."} for part in path.parts)
-                or entry.flag_bits & 0x1
             ):
-                raise ContextFileContentError("context_file_parse_failed")
+                raise ContextFileContentError("context_file_docx_archive_structure_invalid")
             seen.add(normalized)
             if entry.file_size < 0 or entry.file_size > MAX_DOCX_ENTRY_BYTES:
-                raise ContextFileContentError("context_file_parse_failed")
+                raise ContextFileContentError("context_file_docx_archive_too_large")
             total_bytes += entry.file_size
             if total_bytes > MAX_DOCX_TOTAL_BYTES:
-                raise ContextFileContentError("context_file_parse_failed")
+                raise ContextFileContentError("context_file_docx_archive_too_large")
             if "vbaproject" in normalized or normalized.startswith("word/embeddings/"):
-                raise ContextFileContentError("context_file_type_unsupported")
+                raise ContextFileContentError("context_file_docx_embedded_content_unsupported")
         if "[content_types].xml" not in seen or "word/document.xml" not in seen:
-            raise ContextFileContentError("context_file_type_unsupported")
+            raise ContextFileContentError("context_file_docx_required_part_missing")
         content_types = archive.read("[Content_Types].xml")
         lowered_content_types = content_types.lower()
         if any(
             marker in lowered_content_types
             for marker in (b"macroenabled", b"vbaproject", b"activex", b"oleobject")
         ):
-            raise ContextFileContentError("context_file_type_unsupported")
+            raise ContextFileContentError("context_file_docx_macros_unsupported")
         for entry in entries:
             if not entry.filename.casefold().endswith(".rels"):
                 continue
             try:
                 relationship_xml = archive.read(entry)
                 if b"<!doctype" in relationship_xml.lower():
-                    raise ContextFileContentError("context_file_parse_failed")
+                    raise ContextFileContentError("context_file_docx_relationship_invalid")
                 root = ElementTree.fromstring(relationship_xml)
             except ElementTree.ParseError as exc:
-                raise ContextFileContentError("context_file_parse_failed") from exc
+                raise ContextFileContentError("context_file_docx_relationship_invalid") from exc
             if any(str(node.attrib.get("TargetMode") or "").casefold() == "external" for node in root):
-                raise ContextFileContentError("context_file_type_unsupported")
+                raise ContextFileContentError(
+                    "context_file_docx_external_relationship_unsupported"
+                )
     finally:
         archive.close()
 
@@ -212,7 +213,7 @@ def _parse_docx(raw: bytes, *, max_output_bytes: int) -> ParsedContextFile:
                 values = [str(cell.text or "").strip() for cell in table_row.cells]
                 lines.append("\t".join(values))
     except Exception as exc:
-        raise ContextFileContentError("context_file_parse_failed") from exc
+        raise ContextFileContentError("context_file_docx_parse_failed") from exc
     content, truncated = _bounded_output("\n".join(lines), max_output_bytes=max_output_bytes)
     return ParsedContextFile(
         content=content,
@@ -272,13 +273,22 @@ def _parse_pdf(raw: bytes, *, max_output_bytes: int) -> ParsedContextFile:
         raise ContextFileContentError("context_file_too_large")
     try:
         reader = PdfReader(io.BytesIO(raw), strict=True)
-        if reader.is_encrypted or len(reader.pages) > MAX_PDF_PAGES or _pdf_has_active_content(reader):
-            raise ContextFileContentError("context_file_type_unsupported")
+        if reader.is_encrypted:
+            try:
+                password_type = reader.decrypt("")
+            except Exception as exc:
+                raise ContextFileContentError("context_file_pdf_parse_failed") from exc
+            if not password_type:
+                raise ContextFileContentError("context_file_pdf_password_required")
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise ContextFileContentError("context_file_pdf_page_limit_exceeded")
+        if _pdf_has_active_content(reader):
+            raise ContextFileContentError("context_file_pdf_active_content_unsupported")
         lines = [str(page.extract_text() or "") for page in reader.pages]
     except ContextFileContentError:
         raise
     except Exception as exc:
-        raise ContextFileContentError("context_file_parse_failed") from exc
+        raise ContextFileContentError("context_file_pdf_parse_failed") from exc
     content, truncated = _bounded_output("\n".join(lines), max_output_bytes=max_output_bytes)
     return ParsedContextFile(
         content=content,
@@ -318,8 +328,13 @@ def _parse_xlsx(
             target = Path(directory) / PurePosixPath(file_name).name
             target.write_bytes(raw)
             parsed = parse_xlsx_attachment(path=target, requirement=requirement)
+    except ValueError as exc:
+        error_code = normalize_context_file_error_code(getattr(exc, "code", None))
+        raise ContextFileContentError(
+            error_code if error_code.startswith(("attachment_", "xlsx_")) else "xlsx_parse_failed"
+        ) from exc
     except Exception as exc:
-        raise ContextFileContentError("context_file_parse_failed") from exc
+        raise ContextFileContentError("xlsx_parse_failed") from exc
     rendered = json.dumps(parsed.content, ensure_ascii=False, separators=(",", ":"))
     content, truncated = _bounded_output(rendered, max_output_bytes=max_output_bytes)
     return ParsedContextFile(

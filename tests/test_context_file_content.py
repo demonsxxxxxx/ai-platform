@@ -8,8 +8,8 @@ from openpyxl import Workbook
 from pypdf import PdfWriter
 from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject
 
+from app.context.api import ContextFileContentError, context_file_failure_diagnostic
 from app.context.file_content import (
-    ContextFileContentError,
     DOCX_CONTENT_TYPE,
     MAX_CONTEXT_FILE_STAGE_BYTES,
     MAX_DOCUMENT_SOURCE_BYTES,
@@ -20,7 +20,7 @@ from app.context.file_content import (
     _pdf_has_active_content,
     parse_context_file,
 )
-from app.file_parser_contracts import XLSX_CONTENT_TYPE
+from app.file_parser_contracts import AttachmentPreprocessingError, XLSX_CONTENT_TYPE
 
 
 def _row(name: str, content_type: str, raw: bytes) -> dict[str, object]:
@@ -52,6 +52,18 @@ def _pdf_bytes(*, encrypted: bool = False, javascript: bool = False) -> bytes:
         writer.encrypt("secret")
     if javascript:
         writer.add_js("app.alert('no')")
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def _empty_password_pdf_bytes(*, page_count: int = 1, javascript: bool = False) -> bytes:
+    stream = io.BytesIO()
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=200, height=200)
+    if javascript:
+        writer.add_js("app.alert('no')")
+    writer.encrypt(user_password="", owner_password="owner-password")
     writer.write(stream)
     return stream.getvalue()
 
@@ -159,7 +171,7 @@ def test_parse_context_file_rejects_pdf_page_limit():
     writer.write(stream)
     raw = stream.getvalue()
 
-    with pytest.raises(ContextFileContentError, match="context_file_type_unsupported"):
+    with pytest.raises(ContextFileContentError, match="context_file_pdf_page_limit_exceeded"):
         parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
 
 
@@ -176,13 +188,44 @@ def test_pdf_active_content_walk_fails_closed_at_object_limit():
     assert _pdf_has_active_content(reader) is True
 
 
+def test_parse_context_file_accepts_empty_password_encrypted_pdf():
+    raw = _empty_password_pdf_bytes()
+
+    parsed = parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
+
+    assert parsed.parser_id == "ai-platform.pdf.pypdf"
+
+
 @pytest.mark.parametrize(
-    "raw",
-    [_pdf_bytes(encrypted=True), _pdf_bytes(javascript=True), _pdf_with_page_action_bytes()],
-    ids=("encrypted", "javascript", "page-action"),
+    ("raw", "error_code"),
+    [
+        (
+            _empty_password_pdf_bytes(javascript=True),
+            "context_file_pdf_active_content_unsupported",
+        ),
+        (
+            _empty_password_pdf_bytes(page_count=MAX_PDF_PAGES + 1),
+            "context_file_pdf_page_limit_exceeded",
+        ),
+    ],
+    ids=("active-content", "page-limit"),
 )
-def test_parse_context_file_rejects_unsafe_pdf(raw):
-    with pytest.raises(ContextFileContentError, match="context_file_type_unsupported"):
+def test_parse_context_file_checks_empty_password_pdf_after_decryption(raw, error_code):
+    with pytest.raises(ContextFileContentError, match=error_code):
+        parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
+
+
+@pytest.mark.parametrize(
+    ("raw", "error_code"),
+    [
+        (_pdf_bytes(encrypted=True), "context_file_pdf_password_required"),
+        (_pdf_bytes(javascript=True), "context_file_pdf_active_content_unsupported"),
+        (_pdf_with_page_action_bytes(), "context_file_pdf_active_content_unsupported"),
+    ],
+    ids=("password-required", "javascript", "page-action"),
+)
+def test_parse_context_file_rejects_unsafe_pdf(raw, error_code):
+    with pytest.raises(ContextFileContentError, match=error_code):
         parse_context_file(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
 
 
@@ -197,18 +240,25 @@ def test_parse_context_file_rejects_docx_external_relationship():
         )
     raw = stream.getvalue()
 
-    with pytest.raises(ContextFileContentError, match="context_file_type_unsupported"):
+    with pytest.raises(
+        ContextFileContentError,
+        match="context_file_docx_external_relationship_unsupported",
+    ):
         parse_context_file(_row("source.docx", DOCX_CONTENT_TYPE, raw), raw)
 
 
 @pytest.mark.parametrize(
     ("entry_name", "content_types", "error_code"),
     [
-        ("../word/document.xml", "<Types />", "context_file_parse_failed"),
+        (
+            "../word/document.xml",
+            "<Types />",
+            "context_file_docx_archive_structure_invalid",
+        ),
         (
             "word/document.xml",
             '<Types><Override ContentType="application/vnd.ms-word.document.macroEnabled.main+xml" /></Types>',
-            "context_file_type_unsupported",
+            "context_file_docx_macros_unsupported",
         ),
     ],
     ids=("zip-traversal", "macro-content-type"),
@@ -233,5 +283,43 @@ def test_parse_context_file_rejects_docx_compression_bomb_entry():
         archive.writestr("word/document.xml", b"a" * (32 * 1024 * 1024 + 1))
     raw = stream.getvalue()
 
-    with pytest.raises(ContextFileContentError, match="context_file_parse_failed"):
+    with pytest.raises(ContextFileContentError, match="context_file_docx_archive_too_large"):
         parse_context_file(_row("source.docx", DOCX_CONTENT_TYPE, raw), raw)
+
+
+def test_parse_context_file_preserves_typed_xlsx_reason_and_safe_diagnostic(monkeypatch):
+    raw = _xlsx_bytes()
+
+    def reject_xlsx(*args, **kwargs):
+        raise AttachmentPreprocessingError("xlsx_macros_unsupported")
+
+    monkeypatch.setattr("app.context.file_content.parse_xlsx_attachment", reject_xlsx)
+
+    with pytest.raises(ContextFileContentError) as captured:
+        parse_context_file(_row("source.xlsx", XLSX_CONTENT_TYPE, raw), raw)
+
+    diagnostic = context_file_failure_diagnostic(captured.value)
+    assert diagnostic == {
+        "schema_version": "ai-platform.context-file-failure.v1",
+        "reason_code": "xlsx_macros_unsupported",
+        "phase": "parser",
+        "exception_chain": ["ContextFileContentError", "AttachmentPreprocessingError"],
+    }
+    assert "source.xlsx" not in str(diagnostic)
+
+
+def test_parse_context_file_maps_unknown_xlsx_exception_without_message(monkeypatch):
+    raw = _xlsx_bytes()
+
+    def fail_xlsx(*args, **kwargs):
+        raise RuntimeError("sensitive parser detail")
+
+    monkeypatch.setattr("app.context.file_content.parse_xlsx_attachment", fail_xlsx)
+
+    with pytest.raises(ContextFileContentError) as captured:
+        parse_context_file(_row("source.xlsx", XLSX_CONTENT_TYPE, raw), raw)
+
+    diagnostic = context_file_failure_diagnostic(captured.value)
+    assert diagnostic["reason_code"] == "xlsx_parse_failed"
+    assert diagnostic["exception_chain"] == ["ContextFileContentError", "RuntimeError"]
+    assert "sensitive parser detail" not in str(diagnostic)

@@ -75,6 +75,7 @@ from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_ev
 from app.streaming.worker_projection import (
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
+    persist_worker_failure_event,
     publish_pending_run_terminal,
 )
 from app.skills.catalog import (
@@ -268,8 +269,6 @@ _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
     r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b",
     re.IGNORECASE,
 )
-
-
 def _public_executor_failure_message(result: ExecutorResult) -> str:
     generic_message = "Executor reported failure"
     if result.executor_payload.get("sandbox_runtime_used") is True:
@@ -3278,14 +3277,14 @@ async def process_run_payload(
                             "Run already reached a terminal state",
                         )
                     else:
-                        await repositories.append_event(
+                        await persist_worker_failure_event(
                             conn,
                             tenant_id=payload.tenant_id,
                             run_id=payload.run_id,
-                            event_type="error",
-                            stage="worker",
-                            message="Run failed",
-                            payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                            result=result,
+                            attempt_id=attempt_id,
+                            trace_id=trace_id,
+                            error_code=reported_error_code,
                         )
                         await release_runtime_sandbox_lease(conn, reason="run_failed")
                         terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
