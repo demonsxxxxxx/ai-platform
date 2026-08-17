@@ -748,7 +748,75 @@ async def test_submit_run_classifies_context_file_size_failure_without_starting_
     assert result.result["error_code"] == "context_file_too_large"
     assert result.result["message"] == "The input file exceeds the 32 MiB processing limit."
     assert runtime_requests == []
-    assert "context_file_too_large" not in str(result.executor_payload)
+    diagnostic = result.executor_payload["context_file_failure"]
+    assert diagnostic["reason_code"] == "context_file_too_large"
+    assert diagnostic["phase"] == "limits"
+    assert diagnostic["exception_chain"] == ["ContextFileContentError"]
+    assert len(diagnostic["diagnostic_id"]) == 16
+    int(diagnostic["diagnostic_id"], 16)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "context_file_pdf_password_required",
+        "context_file_pdf_active_content_unsupported",
+        "context_file_docx_macros_unsupported",
+        "xlsx_encrypted_unsupported",
+    ],
+)
+async def test_submit_run_preserves_allowlisted_context_file_failure_codes(
+    monkeypatch,
+    tmp_path,
+    error_code,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def reject_file(*args, **kwargs):
+        raise ContextFileContentError(
+            error_code,
+            file_kind="pdf",
+            attachment_index=2,
+        )
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", reject_file)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(sandbox_writing_payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == error_code
+    assert runtime_requests == []
+    diagnostic = result.executor_payload["context_file_failure"]
+    assert diagnostic["reason_code"] == error_code
+    assert diagnostic["attachment_index"] == 2
+    assert diagnostic["file_kind"] == "pdf"
+
+
+@pytest.mark.asyncio
+async def test_submit_run_normalizes_unknown_context_file_code_without_leaking_value(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def reject_file(*args, **kwargs):
+        raise ContextFileContentError("private_unknown_reason")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", reject_file)
+    install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(sandbox_writing_payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "context_file_preprocessing_failed"
+    assert "private_unknown_reason" not in str(result.result)
+    assert "private_unknown_reason" not in str(result.executor_payload)
 
 
 def sandbox_workspace_path(current_settings, *, run_id="run_1", attempt_id="qat-test-attempt"):

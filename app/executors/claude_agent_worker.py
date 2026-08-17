@@ -12,7 +12,10 @@ from xml.etree import ElementTree
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
-from app.context.file_content import ContextFileContentError
+from app.context.api import (
+    ContextFileContentError,
+    context_file_executor_failure,
+)
 from app.context.file_continuity import materialize_run_context_files
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
@@ -659,9 +662,7 @@ class ClaudeAgentWorkerAdapter:
                 execution_owner=execution_owner,
             )
         except ContextFileContentError as exc:
-            return self._context_file_failure_result(
-                payload=payload, error_code=exc.code
-            )
+            return self._context_file_failure_result(payload=payload, error=exc)
         if sdk_result is not None:
             return sdk_result
 
@@ -1581,18 +1582,9 @@ class ClaudeAgentWorkerAdapter:
         self,
         *,
         payload: RunPayload,
-        error_code: str,
+        error: ContextFileContentError,
     ) -> ExecutorResult:
-        safe_error_code = (
-            "context_file_too_large"
-            if error_code == "context_file_too_large"
-            else "context_file_preprocessing_failed"
-        )
-        message = (
-            "The input file exceeds the 32 MiB processing limit."
-            if safe_error_code == "context_file_too_large"
-            else "The input file could not be prepared for execution."
-        )
+        safe_error_code, message, diagnostic = context_file_executor_failure(error)
         return ExecutorResult(
             status="failed",
             adapter_version=self.adapter_version,
@@ -1611,6 +1603,7 @@ class ClaudeAgentWorkerAdapter:
                 "sdk_used": False,
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
+                "context_file_failure": diagnostic,
             },
         )
 

@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
+from app.context.api import CONTEXT_FILE_ERROR_CODES
 from app.run_projection import (
     PublicChatAnswerStreamProjector,
     artifact_card,
@@ -260,6 +261,53 @@ def test_context_file_size_terminal_projection_is_specific_and_safe():
     assert projection["detail_code"] == "context_file_too_large"
     assert projection["error_code"] == "context_file_too_large"
     assert projection["message"] == "文件超过 32 MB 处理上限。请选择更小的文件后重试。"
+    assert projection["event_payload"] == {}
+
+
+@pytest.mark.parametrize(
+    ("error_code", "detail_code", "message_fragment"),
+    [
+        (
+            "context_file_pdf_password_required",
+            "context_file_pdf_password_required",
+            "需要密码",
+        ),
+        (
+            "context_file_pdf_active_content_unsupported",
+            "context_file_unsafe_content",
+            "活动内容",
+        ),
+        (
+            "context_file_pdf_parse_failed",
+            "context_file_invalid",
+            "无法解析",
+        ),
+        (
+            "context_file_identity_mismatch",
+            "context_file_identity_mismatch",
+            "完整性校验失败",
+        ),
+    ],
+)
+def test_context_file_terminal_projection_is_actionable_and_private_safe(
+    error_code,
+    detail_code,
+    message_fragment,
+):
+    projection = public_terminal_projection("failed", error_code)
+
+    assert projection["detail_code"] == detail_code
+    assert message_fragment in projection["message"]
+    assert projection["event_payload"] == {}
+    assert "attachment_index" not in str(projection)
+    assert "exception_chain" not in str(projection)
+
+
+@pytest.mark.parametrize("error_code", sorted(CONTEXT_FILE_ERROR_CODES))
+def test_all_context_file_failure_codes_have_actionable_public_projection(error_code):
+    projection = public_terminal_projection("failed", error_code)
+
+    assert projection["detail_code"] != "run_failed"
     assert projection["event_payload"] == {}
 
 

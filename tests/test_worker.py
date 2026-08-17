@@ -10,6 +10,7 @@ import pytest
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.execution.api import validated_context_file_diagnostic
 from app.executors.base import (
     ArtifactManifest,
     ExecutorResult,
@@ -6440,6 +6441,103 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
     assert outcome.error_code == "fake_failure"
     assert outcome.error_message == "fake run failed for run-a"
     assert any(item[0] == "fail" and item[1] == "fake_failure" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_context_file_diagnostic_only_in_hidden_event(
+    monkeypatch,
+    caplog,
+):
+    calls = []
+    diagnostic = {
+        "schema_version": "ai-platform.context-file-failure.v1",
+        "diagnostic_id": "0123456789abcdef",
+        "reason_code": "context_file_pdf_password_required",
+        "phase": "parser",
+        "file_kind": "pdf",
+        "attachment_index": 2,
+        "exception_chain": ["ContextFileContentError"],
+    }
+
+    class ContextFileFailureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={},
+                result={
+                    "message": "The PDF requires a password before it can be processed.",
+                    "error_code": "context_file_pdf_password_required",
+                },
+                executor_payload={"context_file_failure": diagnostic},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-context-file-error"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message, result_json))
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    caplog.set_level("ERROR", logger="app.worker")
+
+    outcome = await process_run_payload(
+        base_payload(),
+        AdapterRegistry({"fake": ContextFileFailureAdapter()}),
+    )
+
+    assert outcome.error_code == "context_file_pdf_password_required"
+    fail_call = next(item for item in calls if item[0] == "fail")
+    assert fail_call[3]["error_code"] == "context_file_pdf_password_required"
+    assert "context_file_failure" not in fail_call[3]
+    hidden_event = next(
+        item[1]
+        for item in calls
+        if item[0] == "event" and item[1]["event_type"] == "error"
+    )
+    assert hidden_event["visible_to_user"] is False
+    assert hidden_event["error_code"] == "context_file_pdf_password_required"
+    assert hidden_event["payload"]["context_file_failure"] == diagnostic
+    log_record = next(
+        record
+        for record in caplog.records
+        if record.message == "Context file preprocessing failed"
+    )
+    assert log_record.reason_code == "context_file_pdf_password_required"
+    assert log_record.attachment_index == 2
+    assert "password" not in log_record.getMessage().casefold()
+
+
+def test_worker_rejects_untrusted_context_file_diagnostic_payload():
+    result = ExecutorResult(
+        status="failed",
+        adapter_version="adapter/1",
+        executor_type="fake",
+        executor_version="fake/1",
+        capabilities={},
+        result={"message": "failed", "error_code": "context_file_preprocessing_failed"},
+        executor_payload={
+            "context_file_failure": {
+                "schema_version": "ai-platform.context-file-failure.v1",
+                "diagnostic_id": "0123456789abcdef",
+                "reason_code": "private_reason:/secret/path",
+                "phase": "parser",
+                "exception_chain": ["RuntimeError"],
+            }
+        },
+    )
+
+    assert validated_context_file_diagnostic(result.executor_payload) is None
 
 
 @pytest.mark.asyncio
