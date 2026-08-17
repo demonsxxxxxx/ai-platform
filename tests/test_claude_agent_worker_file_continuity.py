@@ -468,9 +468,11 @@ async def test_materialize_files_uses_real_scoped_repository_query_for_prior_run
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["mkdir", "write"])
 async def test_materialize_files_cleans_all_written_copies_after_io_failure(
     monkeypatch,
     tmp_path,
+    failure_point,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -494,6 +496,12 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
         }
 
     original_write_bytes = type(workspace).write_bytes
+    original_mkdir = type(workspace).mkdir
+
+    def fail_inputs_mkdir(path, *args, **kwargs):
+        if path == workspace / "inputs":
+            raise OSError("simulated workspace directory failure")
+        return original_mkdir(path, *args, **kwargs)
 
     def fail_second_canonical_write(path, content):
         if path.parent.name == "inputs" and path.name == "file-b.docx":
@@ -507,7 +515,11 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
         fake_get_scoped_context_file,
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(type(workspace), "write_bytes", fail_second_canonical_write)
+    monkeypatch.setattr(
+        type(workspace),
+        "mkdir" if failure_point == "mkdir" else "write_bytes",
+        fail_inputs_mkdir if failure_point == "mkdir" else fail_second_canonical_write,
+    )
 
     with pytest.raises(
         ContextFileContentError,

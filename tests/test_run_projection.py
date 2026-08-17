@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
+from app.context.api import CONTEXT_FILE_ERROR_CODES
 from app.run_projection import (
     PublicChatAnswerStreamProjector,
     artifact_card,
@@ -300,6 +301,14 @@ def test_context_file_terminal_projection_is_actionable_and_private_safe(
     assert projection["event_payload"] == {}
     assert "attachment_index" not in str(projection)
     assert "exception_chain" not in str(projection)
+
+
+@pytest.mark.parametrize("error_code", sorted(CONTEXT_FILE_ERROR_CODES))
+def test_all_context_file_failure_codes_have_actionable_public_projection(error_code):
+    projection = public_terminal_projection("failed", error_code)
+
+    assert projection["detail_code"] != "run_failed"
+    assert projection["event_payload"] == {}
 
 
 def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():

@@ -432,11 +432,11 @@ async def materialize_run_context_files(
         targets.append((target, canonical_target))
         validated_contents.append(content)
 
-    if targets:
-        inputs_dir.mkdir(parents=True, exist_ok=True)
     materialized_file_names: list[str] = []
     written_paths: list[Path] = []
     try:
+        if targets:
+            inputs_dir.mkdir(parents=True, exist_ok=True)
         for (target, canonical_target), content in zip(targets, validated_contents, strict=True):
             target.write_bytes(content)
             written_paths.append(target)
