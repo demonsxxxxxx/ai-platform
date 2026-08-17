@@ -4,6 +4,7 @@ import test from "node:test";
 
 import React from "react";
 
+import { Permission } from "../../../types/auth.ts";
 import {
   AGENT_PROFILE_CATEGORIES,
   AGENT_PROFILE_CATEGORY_LABELS,
@@ -81,6 +82,17 @@ function dispatchEventFromTarget(target: TestEventTarget, event: Record<string, 
     current.getListeners(String(event.type))?.forEach((listener) => listener(event));
     if (event.cancelBubble || event.bubbles !== true) break;
     current = current instanceof TestNode ? current.parentNode : null;
+  }
+}
+
+class TestLockManager {
+  async request<T>(
+    _name: string,
+    options: { mode: "exclusive" },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    assert.equal(options.mode, "exclusive");
+    return callback();
   }
 }
 
@@ -197,6 +209,19 @@ class TestElement extends TestNode {
 
   hasAttribute(name: string) {
     return this.attributes.has(name);
+  }
+
+  closest(selector: string): TestElement | null {
+    const match = selector.match(/^([a-z]+)?(?:\[([^=\]]+)(?:="([^"]*)")?\])?$/i);
+    const tagMatches = !match?.[1] || this.nodeName === match[1].toUpperCase();
+    const attributeMatches =
+      !match?.[2] ||
+      (this.hasAttribute(match[2]) &&
+        (match[3] === undefined || this.getAttribute(match[2]) === match[3]));
+    if (match && tagMatches && attributeMatches) return this;
+    return this.parentNode instanceof TestElement
+      ? this.parentNode.closest(selector)
+      : null;
   }
 
   getBoundingClientRect() {
@@ -442,12 +467,16 @@ function installDom() {
     },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
   });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { userAgent: "node", locks: new TestLockManager() },
+  });
   return { document, window: windowTarget };
 }
 
-async function prepareShellHarness() {
+async function prepareShellHarness({ authenticated = false } = {}) {
   await import("../../../i18n/index.ts");
-  const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
+  const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
   const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
   const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
   const { authApi } = await import("../../../services/api/auth.ts");
@@ -464,9 +493,22 @@ async function prepareShellHarness() {
     getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async () => undefined;
-  authApi.getCurrentUser = async () => {
-    throw new Error("logged out test session");
-  };
+  authApi.getCurrentUser = authenticated
+    ? async () => ({
+        id: "user-a",
+        tenant_id: "tenant-a",
+        username: "user-a",
+        email: "user-a@example.test",
+        roles: [],
+        permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE],
+        is_admin: false,
+        is_active: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      })
+    : async () => {
+        throw new Error("logged out test session");
+      };
   authApi.updateMetadata = async () => {
     throw new Error("no backend in mounted route test");
   };
@@ -486,15 +528,22 @@ async function prepareShellHarness() {
   modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
 
+  function AuthenticatedGate({ children }: { children: React.ReactNode }) {
+    return useAuth().hasPermission(Permission.CHAT_WRITE) ? children : null;
+  }
+
   return {
     wrap(children: React.ReactNode) {
+      const shellChildren = authenticated
+        ? React.createElement(AuthenticatedGate, null, children)
+        : children;
       return React.createElement(
         ThemeProvider,
         null,
         React.createElement(
           AuthProvider,
           null,
-          React.createElement(SettingsProvider, null, children),
+          React.createElement(SettingsProvider, null, shellChildren),
         ),
       );
     },
@@ -741,14 +790,15 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   }
 });
 
-test("a bare Agent workspace is the empty Chat experience and does not create until send", async () => {
+test("Marketplace Start and workspace Start New Task each submit on the first action", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
-  const shellHarness = await prepareShellHarness();
+  const shellHarness = await prepareShellHarness({ authenticated: true });
   const profile = {
     ...enterpriseProfileFields,
     agent_id: "agt_support",
@@ -758,21 +808,27 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
     avatar_ref: "builtin:assistant",
     category: "support",
   } as const;
+  const originalListPublished = agentProfileApi.listPublished;
   const originalGetPublished = agentProfileApi.getPublished;
   const originalListConversations = agentProfileApi.listConversations;
   const originalCreateConversation = agentProfileApi.createConversation;
+  const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  const originalSubmitChat = sessionApi.submitChat;
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({
     sessions: [],
     next_cursor: null,
   });
   const selections: Array<{ selection: unknown; operationId: string }> = [];
-  const recordedSelections = () => selections.slice();
   agentProfileApi.createConversation = async (selection, operationId) => {
+    const sessionId = `session-support-${selections.length + 1}`;
     selections.push({ selection, operationId });
     return {
-      session_id: "session-support",
+      session_id: sessionId,
       workspace_id: "default",
       agent_id: profile.agent_id,
       title: profile.name,
@@ -788,8 +844,16 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
       },
     };
   };
-  sessionApi.getAuthoritative = async () => ({
-    session_id: "session-support",
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: profile.agent_id,
+    created_at: "2026-08-17T00:00:00Z",
+    updated_at: "2026-08-17T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
     workspace_id: "default",
     agent_id: profile.agent_id,
     title: profile.name,
@@ -804,6 +868,18 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
       category: profile.category,
     },
   });
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.markRead = async () => {};
+  const submissions: unknown[][] = [];
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    return {
+      session_id: args[1],
+      run_id: null,
+      status: "needs_confirmation" as const,
+      suggestions: [],
+    };
+  }) as typeof sessionApi.submitChat;
   let currentPath = "";
   function LocationProbe() {
     const location = useLocation();
@@ -814,12 +890,46 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
   const container = dom.document.createElement("div");
   const root = ReactDOM.createRoot(container as never);
   const reliableSessionStorage = dom.window.sessionStorage;
+  async function waitUntil(predicate: () => boolean) {
+    for (let attempt = 0; attempt < 40 && !predicate(); attempt += 1) {
+      await React.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+  async function submitStarterPrompt(expectedCount: number, expectedSessionId: string) {
+    const starterPrompt = container
+      .querySelectorAll("button")
+      .find((button) => button.textContent.includes("帮我处理企业任务"));
+    assert.ok(starterPrompt);
+    assert.equal(starterPrompt.hasAttribute("disabled"), false);
+    await React.act(async () => {
+      starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(
+      () => selections.length === expectedCount && submissions.length === expectedCount,
+    );
+
+    assert.equal(selections.length, expectedCount);
+    assert.equal(
+      submissions.length,
+      expectedCount,
+      `the first action must reach submitChat; rendered UI: ${container.textContent}`,
+    );
+    assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
+    assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
+    assert.deepEqual(submissions[expectedCount - 1]?.[10], {
+      agent_id: profile.agent_id,
+      expected_revision: profile.expected_revision,
+    });
+  }
+
   try {
     await React.act(async () => {
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4/chat"] },
+          { initialEntries: ["/agent-market"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -829,6 +939,10 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
                 Routes,
                 null,
                 React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
                   path: "/agent-market/:agentId/:revision/chat/:sessionId?",
                   element: React.createElement(AgentWorkspaceRoute),
                 }),
@@ -837,24 +951,67 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
           ),
         ),
       );
-      for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
+    await waitUntil(() => container.querySelector("[data-agent-market-card]") !== null);
+
+    assert.equal(currentPath, "/agent-market");
+    const marketStart = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始任务");
+    assert.ok(marketStart);
+    await React.act(async () => {
+      marketStart.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(() => container.querySelector("[data-agent-chat-opening]") !== null);
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
-    assert.ok(container.querySelector("[data-agent-chat-opening]"));
     assert.match(container.textContent, /欢迎使用企业专家/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
-    assert.equal(container.querySelector("[data-agent-workspace-welcome]"), null);
-    assert.equal(container.querySelector("[data-agent-workspace-start]"), null);
-    assert.deepEqual(recordedSelections(), []);
+
+    await submitStarterPrompt(1, "session-support-1");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-1");
+
+    const startNewTask = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "开始新任务");
+    assert.ok(startNewTask);
+    await React.act(async () => {
+      startNewTask.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(
+      () =>
+        currentPath === "/agent-market/agt_support/4/chat" &&
+        container.querySelector("[data-agent-starter-prompts]") !== null,
+    );
+
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(selections.length, 1, "Start New Task must remain creation-free");
+    assert.equal(submissions.length, 1);
+
+    await submitStarterPrompt(2, "session-support-2");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-2");
+    assert.deepEqual(
+      selections.map(({ selection }) => selection),
+      [
+        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+      ],
+    );
+    const operationIds = selections.map(({ operationId }) => operationId);
+    assert.equal(new Set(operationIds).size, 2);
   } finally {
     dom.window.sessionStorage = reliableSessionStorage;
+    agentProfileApi.listPublished = originalListPublished;
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.submitChat = originalSubmitChat;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }

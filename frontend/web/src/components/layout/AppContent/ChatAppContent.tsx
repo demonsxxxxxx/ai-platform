@@ -1116,17 +1116,16 @@ export function ChatAppContent({
               },
               bindConversation: async (createdSessionId) =>
                 Boolean(await loadHistory(createdSessionId)),
-            }).then((createdSessionId) => {
-              navigate(
-                buildAgentMarketWorkspacePath(startProfile, createdSessionId),
-                { replace: true },
-              );
-              onAgentWorkspaceSessionCreated?.(createdSessionId);
-              return createdSessionId;
             }),
-          submitMessage: async () => {
+          submitMessage: async (createdSessionId) => {
             setAgentWorkspaceError(null);
-            return sendMessage(content, undefined, attachments, null);
+            const submission = sendMessage(content, undefined, attachments, null);
+            navigate(
+              buildAgentMarketWorkspacePath(startProfile, createdSessionId),
+              { replace: true },
+            );
+            onAgentWorkspaceSessionCreated?.(createdSessionId);
+            return submission;
           },
         });
         if (outcome.status === "accepted") {
