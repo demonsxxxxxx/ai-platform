@@ -458,10 +458,12 @@ async def test_default_bridge_uses_independent_bounded_publish_and_blocking_pool
     monkeypatch,
 ):
     created = []
+    options = []
 
     def from_url(url, **kwargs):
         client = FakeRedis()
         created.append((url, kwargs["max_connections"], client))
+        options.append(kwargs)
         return client
 
     monkeypatch.setattr(stream_redis.Redis, "from_url", from_url)
@@ -477,6 +479,12 @@ async def test_default_bridge_uses_independent_bounded_publish_and_blocking_pool
         ("redis://redis:6379/0", stream_redis.SSE_BLOCKING_MAX_CONNECTIONS),
     ]
     assert created[0][2] is not created[1][2]
+    assert options[0]["socket_timeout"] == stream_redis._REDIS_PUBLISH_TIMEOUT_SECONDS
+    assert options[1]["socket_timeout"] == stream_redis._REDIS_BLOCKING_TIMEOUT_SECONDS
+    assert options[1]["socket_timeout"] > min(
+        stream_redis.SSE_STREAM_BLOCK_MS,
+        stream_redis.SSE_AUTHORITY_LEASE_SECONDS * 1000,
+    ) / 1000
     await bridge.aclose()
     assert [client.close_calls for _, _, client in created] == [1, 1]
 
