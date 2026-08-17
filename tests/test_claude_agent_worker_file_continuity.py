@@ -79,10 +79,11 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     raw = _docx_bytes()
+    display_name = "参考文件1-IP248A项目基本信息收集表.docx"
 
     class FakeStorage:
         def get_bytes_bounded(self, *, storage_key, max_bytes):
-            assert storage_key == "files/prior.docx"
+            assert storage_key == "files/file-prior/content"
             assert max_bytes == len(raw)
             return raw
 
@@ -101,11 +102,11 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
         }
         return {
             "run_id": "run-prior",
-            "original_name": "prior.docx",
+            "original_name": display_name,
             "content_type": DOCX_CONTENT_TYPE,
             "size_bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
-            "storage_key": "files/prior.docx",
+            "storage_key": "files/file-prior/content",
         }
 
     adapter = ClaudeAgentWorkerAdapter()
@@ -121,9 +122,9 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
         workspace,
     )
 
-    assert list(materialized) == ["prior.docx"]
-    assert materialized.materialized_file_names == ["prior.docx"]
-    assert (workspace / "inputs" / "prior.docx").read_bytes() == raw
+    assert list(materialized) == [display_name]
+    assert materialized.materialized_file_names == [display_name]
+    assert (workspace / "inputs" / display_name).read_bytes() == raw
 
 
 @pytest.mark.asyncio

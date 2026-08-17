@@ -25,7 +25,7 @@ def upload_principal(*, permissions: list[str] | None = None) -> AuthPrincipal:
 
 
 class FakeUploadFile:
-    def __init__(self, filename: str, content_type: str, data: bytes):
+    def __init__(self, filename: str | None, content_type: str, data: bytes):
         self.filename = filename
         self.content_type = content_type
         self._data = data
@@ -350,17 +350,115 @@ async def test_upload_accepts_safe_ooxml_and_preserves_storage_contract(monkeypa
     )
 
     assert response.file_id == "file_upload_1"
+    assert response.name == "review.docx"
     assert response.sha256 == "sha-docx"
     assert response.size_bytes == len(make_safe_docx_bytes())
     assert storage_calls[0]["content_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    assert storage_calls[0]["storage_key"] == "tenants/default/workspaces/default/sessions/unbound/files/file_upload_1/review.docx"
+    assert storage_calls[0]["storage_key"] == "tenants/default/workspaces/default/sessions/unbound/files/file_upload_1/content"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        None,
+        "",
+        ".",
+        "..",
+        "../escape.docx",
+        "..\\escape.docx",
+        "C:\\escape.docx",
+        "report\n.docx",
+        "report\u202ecod.exe",
+        "\ud800.docx",
+        "report.docx ",
+        "report.docx.",
+        "CON.txt",
+        "report?.docx",
+        f"{'测' * 84}.docx",
+    ],
+)
+@pytest.mark.asyncio
+async def test_upload_rejects_unsafe_or_overlong_filename_before_body_or_side_effects(
+    monkeypatch,
+    filename,
+):
+    install_forbidden_repository_side_effects(monkeypatch)
+    upload = FakeUploadFile(filename, "text/plain", b"content")
+
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("invalid filename must reject before storage initialization")
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.upload_file(
+            file=upload,
+            workspace_id="default",
+            session_id=None,
+            principal=upload_principal(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_file_name"
+    assert upload.read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_upload_preserves_cjk_name_normalizes_nfc_and_decouples_storage_key(monkeypatch):
+    install_basic_upload_fakes(monkeypatch)
+    decomposed_name = "参考文件1-IP248A项目基本信息收集表-Re\u0301sume\u0301.docx"
+    normalized_name = "参考文件1-IP248A项目基本信息收集表-Résumé.docx"
+    upload = FakeUploadFile(
+        decomposed_name,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        make_safe_docx_bytes(),
+    )
+    stored_rows: list[dict[str, object]] = []
+    storage_keys: list[str] = []
+
+    async def record_file(_conn, **kwargs):
+        stored_rows.append(kwargs)
+
+    class RecordingStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            storage_keys.append(storage_key)
+            return StoredObject(
+                storage_key=storage_key,
+                sha256="sha-unicode",
+                size_bytes=len(content),
+            )
+
+    monkeypatch.setattr(files_routes, "create_file", record_file)
+    monkeypatch.setattr(files_routes, "ObjectStorage", RecordingStorage)
+
+    response = await files_routes.upload_file(
+        file=upload,
+        workspace_id="default",
+        session_id=None,
+        principal=upload_principal(),
+    )
+
+    assert response.name == normalized_name
+    assert stored_rows[0]["original_name"] == normalized_name
+    assert storage_keys == [
+        "tenants/default/workspaces/default/sessions/unbound/files/file_upload_1/content"
+    ]
+    assert normalized_name not in storage_keys[0]
+
+
+def test_upload_filename_accepts_exact_utf8_byte_limit():
+    filename = f"{'测' * 83}a.docx"
+
+    assert len(filename.encode("utf-8")) == files_routes.MAX_UPLOAD_FILENAME_UTF8_BYTES
+    assert files_routes._normalize_upload_filename(filename) == filename
 
 
 @pytest.mark.asyncio
 async def test_compat_upload_preserves_frontend_response_contract(monkeypatch):
     install_basic_upload_fakes(monkeypatch)
     upload = FakeUploadFile(
-        "review.docx",
+        "参考文件1-IP248A项目基本信息收集表.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         make_safe_docx_bytes(),
     )
@@ -386,7 +484,7 @@ async def test_compat_upload_preserves_frontend_response_contract(monkeypatch):
     assert response["key"] == "file_upload_1"
     assert response["file_id"] == "file_upload_1"
     assert response["url"] == "/api/ai/files/file_upload_1"
-    assert response["name"] == "review.docx"
+    assert response["name"] == "参考文件1-IP248A项目基本信息收集表.docx"
     assert response["type"] == "uploads"
     assert response["mimeType"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     assert response["mime_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"

@@ -1624,7 +1624,12 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     )
     payload = response.model_dump()
 
-    assert payload == {"file_id": "file_uploaded", "sha256": "sha-a", "size_bytes": 10}
+    assert payload == {
+        "file_id": "file_uploaded",
+        "name": "demo.txt",
+        "sha256": "sha-a",
+        "size_bytes": 10,
+    }
     assert "storage_key" not in payload
 
 
@@ -1645,7 +1650,7 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
             {
                 "id": "file-xlsx",
                 "run_id": "run-source",
-                "original_name": "source.xlsx",
+                "original_name": "参考文件1-IP248A项目基本信息收集表.xlsx",
                 "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "size_bytes": 123,
                 "created_at": "2026-07-18T00:00:00Z",
@@ -1681,6 +1686,7 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
         "file-bin",
         "file-xlsm",
     ]
+    assert payload["files"][0]["name"] == "参考文件1-IP248A项目基本信息收集表.xlsx"
     assert payload["files"][0]["preview_url"] == (
         "/api/ai/files/file-xlsx/preview?session_id=session-a&run_id=run-source"
     )
@@ -2005,7 +2011,7 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
     async def fake_authorized_input_file(**kwargs):
         return {
             "id": kwargs["file_id"],
-            "original_name": "source.xlsx",
+            "original_name": "参考文件1-IP248A项目基本信息收集表.xlsx",
             "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "storage_key": "private/source.xlsx",
         }
@@ -2026,6 +2032,12 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
 
     assert response.body == b"xlsx-original-bytes"
     assert response.headers["content-disposition"].startswith("attachment;")
+    assert (
+        "filename*=UTF-8''%E5%8F%82%E8%80%83%E6%96%87%E4%BB%B61-"
+        "IP248A%E9%A1%B9%E7%9B%AE%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF"
+        "%E6%94%B6%E9%9B%86%E8%A1%A8.xlsx"
+        in response.headers["content-disposition"]
+    )
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
 
