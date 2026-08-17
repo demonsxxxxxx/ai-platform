@@ -7,6 +7,7 @@ import pytest
 from docx import Document
 from pypdf import PdfWriter
 
+from app.context.api import ContextFileContentError
 from app.context.file_content import DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE
 from app.executors.base import RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
@@ -508,12 +509,16 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(type(workspace), "write_bytes", fail_second_canonical_write)
 
-    with pytest.raises(OSError, match="simulated workspace write failure"):
+    with pytest.raises(
+        ContextFileContentError,
+        match="context_file_staging_write_failed",
+    ) as captured:
         await adapter._materialize_files(
             payload(file_ids=["file-a", "file-b"]),
             workspace,
         )
 
+    assert isinstance(captured.value.__cause__, OSError)
     assert list(workspace.iterdir()) == []
 
 
