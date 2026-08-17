@@ -17,6 +17,10 @@ _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = worker_main.progress_pending_
 _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE = worker_main.reconcile_stale_runs_for_worker
 
 
+async def _controlled_terminal_reconciler(stop_event, **_kwargs):
+    await stop_event.wait()
+
+
 def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
     commit = "8" * 40
     heartbeat = tmp_path / "worker-runtime-heartbeat.json"
@@ -1811,6 +1815,7 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
     monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
 
@@ -1846,6 +1851,7 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
     monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
@@ -1882,6 +1888,7 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
 
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._run_worker_slot", fake_run_worker_slot)
 
     task = asyncio.create_task(worker_main.run_worker_pool(worker_count=3, poll_timeout_seconds=2, idle_sleep_seconds=0.25))
