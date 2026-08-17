@@ -51,8 +51,8 @@ from app.run_projection import (
 )
 from app.settings import get_settings
 from app.streaming.api import (
+    LiveEnvelope,
     LiveSubscriptionClosed,
-    StreamEnvelope,
     live_redis_id_is_after,
     stream_live_channel,
 )
@@ -88,7 +88,7 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _public_stream_event(
-    envelope: StreamEnvelope, *, payload: dict[str, object] | None = None
+    envelope: LiveEnvelope, *, payload: dict[str, object] | None = None
 ) -> dict[str, object]:
     return {
         "schema": PUBLIC_RUN_STREAM_SCHEMA,

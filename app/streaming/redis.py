@@ -21,7 +21,6 @@ from app.streaming.contracts import (
     STREAM_DESIGN_ID,
     STREAM_EVENT_SCHEMA,
     STREAM_GAP_SCHEMA as STREAM_GAP_SCHEMA,
-    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
     STREAM_PROJECTION_VERSION,
     ResumeDecision,
     StreamContractError,
@@ -31,15 +30,18 @@ from app.streaming.contracts import (
     StreamGap,
     StreamProjectionError as StreamProjectionError,
     _rfc3339_utc,
-    _redis_id_tuple,
     canonical_json_bytes,
     committed_public_stream_event,
     new_envelope,
     stable_event_id,
-    stream_key,
-    stream_live_channel,
     tenant_scope,
     validate_public_payload as validate_public_payload,
+)
+from app.streaming.domain.live import (
+    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
+    redis_id_tuple as _redis_id_tuple,
+    stream_key,
+    stream_live_channel,
 )
 
 SSE_PUBLISH_MAX_CONNECTIONS = 16

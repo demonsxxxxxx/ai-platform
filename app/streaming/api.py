@@ -5,25 +5,20 @@ from app.streaming.application.live_fanout import (
     LiveSubscriptionClosed,
     RunStreamHub,
 )
-from app.streaming.contracts import (
-    StreamEnvelope,
-    _redis_id_tuple,
+from app.streaming.domain.live import (
+    LiveEnvelope,
+    LivePublication,
+    live_redis_id_is_after,
     stream_live_channel,
 )
-from app.streaming.domain.live import LivePublication
-
-
-def live_redis_id_is_after(candidate: str, current: str) -> bool:
-    """Return whether one validated Redis cursor follows another."""
-    return _redis_id_tuple(candidate) > _redis_id_tuple(current)
 
 
 __all__ = [
+    "LiveEnvelope",
     "LivePublication",
     "LiveSubscription",
     "LiveSubscriptionClosed",
     "RunStreamHub",
-    "StreamEnvelope",
     "live_redis_id_is_after",
     "stream_live_channel",
 ]

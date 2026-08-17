@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -18,6 +17,12 @@ from app.public_execution import (
     validate_public_agent_progress_payload,
 )
 from app.run_projection import CHAT_PUBLIC_PROJECTION_VERSION
+from app.streaming.domain.live import (
+    REDIS_ID_PATTERN as _REDIS_ID_RE,
+    RUN_ID_PATTERN as _RUN_ID_RE,
+    TENANT_SCOPE_PATTERN as _TENANT_SCOPE_RE,
+    StreamContractError,
+)
 from app.streaming.events import (
     INTERNAL_STREAM_EVENT_SCHEMA,
     PUBLIC_STREAM_EVENT_TYPES,
@@ -29,11 +34,7 @@ STREAM_EVENT_SCHEMA = INTERNAL_STREAM_EVENT_SCHEMA
 STREAM_GAP_SCHEMA = "ai-platform.stream-gap.v3"
 STREAM_PROJECTION_VERSION = GENERATED_STREAM_PROJECTION_VERSION
 STREAM_DESIGN_ID = GENERATED_STREAM_DESIGN_ID
-STREAM_KEY_PREFIX = "ai-platform:sse:v3"
 PUBLIC_EVENT_TYPES = PUBLIC_STREAM_EVENT_TYPES
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
-_TENANT_SCOPE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_REDIS_ID_RE = re.compile(r"^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$")
 _FORBIDDEN = frozenset(
     {
         "args",
@@ -71,10 +72,6 @@ _WRAPPED_PUBLIC_EVENTS = {
         }
     ),
 }
-
-
-class StreamContractError(ValueError):
-    pass
 
 
 class StreamProjectionError(ValueError):
@@ -232,26 +229,6 @@ def tenant_scope(tenant_id: str, *, secret: str) -> str:
     return hmac.new(secret.encode(), tenant_id.encode(), hashlib.sha256).hexdigest()[
         :32
     ]
-
-
-def stream_key(*, tenant_scope_value: str, run_id: str, stream_incarnation: int) -> str:
-    if (
-        not _TENANT_SCOPE_RE.fullmatch(tenant_scope_value)
-        or not _RUN_ID_RE.fullmatch(run_id)
-        or stream_incarnation < 1
-    ):
-        raise StreamContractError("stream_key_invalid")
-    return f"{STREAM_KEY_PREFIX}:{{{tenant_scope_value}:{run_id}}}:{stream_incarnation}:events"
-
-
-def stream_live_channel(
-    *, tenant_scope_value: str, run_id: str, stream_incarnation: int
-) -> str:
-    return stream_key(
-        tenant_scope_value=tenant_scope_value,
-        run_id=run_id,
-        stream_incarnation=stream_incarnation,
-    ).removesuffix(":events") + ":live"
 
 
 def stable_event_id(
@@ -434,9 +411,3 @@ def committed_public_stream_event(
             "created_at": created_at,
         },
     }
-
-
-def _redis_id_tuple(value: str) -> tuple[int, int]:
-    if not _REDIS_ID_RE.fullmatch(value):
-        raise StreamContractError("stream_redis_id_invalid")
-    return tuple(map(int, value.split("-")))  # type: ignore[return-value]
