@@ -4,6 +4,7 @@ import test from "node:test";
 
 import React from "react";
 
+import { Permission } from "../../../types/auth.ts";
 import {
   AGENT_PROFILE_CATEGORIES,
   AGENT_PROFILE_CATEGORY_LABELS,
@@ -197,6 +198,19 @@ class TestElement extends TestNode {
 
   hasAttribute(name: string) {
     return this.attributes.has(name);
+  }
+
+  closest(selector: string): TestElement | null {
+    const match = selector.match(/^([a-z]+)?(?:\[([^=\]]+)(?:="([^"]*)")?\])?$/i);
+    const tagMatches = !match?.[1] || this.nodeName === match[1].toUpperCase();
+    const attributeMatches =
+      !match?.[2] ||
+      (this.hasAttribute(match[2]) &&
+        (match[3] === undefined || this.getAttribute(match[2]) === match[3]));
+    if (match && tagMatches && attributeMatches) return this;
+    return this.parentNode instanceof TestElement
+      ? this.parentNode.closest(selector)
+      : null;
   }
 
   getBoundingClientRect() {
@@ -445,7 +459,7 @@ function installDom() {
   return { document, window: windowTarget };
 }
 
-async function prepareShellHarness() {
+async function prepareShellHarness({ authenticated = false } = {}) {
   await import("../../../i18n/index.ts");
   const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
   const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
@@ -464,9 +478,22 @@ async function prepareShellHarness() {
     getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async () => undefined;
-  authApi.getCurrentUser = async () => {
-    throw new Error("logged out test session");
-  };
+  authApi.getCurrentUser = authenticated
+    ? async () => ({
+        id: "user-a",
+        tenant_id: "tenant-a",
+        username: "user-a",
+        email: "user-a@example.test",
+        roles: [],
+        permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE],
+        is_admin: false,
+        is_active: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      })
+    : async () => {
+        throw new Error("logged out test session");
+      };
   authApi.updateMetadata = async () => {
     throw new Error("no backend in mounted route test");
   };
@@ -741,14 +768,14 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   }
 });
 
-test("a bare Agent workspace is the empty Chat experience and does not create until send", async () => {
+test("a bare Agent workspace creates and submits one request on the first send", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
   const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
-  const shellHarness = await prepareShellHarness();
+  const shellHarness = await prepareShellHarness({ authenticated: true });
   const profile = {
     ...enterpriseProfileFields,
     agent_id: "agt_support",
@@ -761,14 +788,17 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
   const originalGetPublished = agentProfileApi.getPublished;
   const originalListConversations = agentProfileApi.listConversations;
   const originalCreateConversation = agentProfileApi.createConversation;
+  const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  const originalSubmitChat = sessionApi.submitChat;
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({
     sessions: [],
     next_cursor: null,
   });
   const selections: Array<{ selection: unknown; operationId: string }> = [];
-  const recordedSelections = () => selections.slice();
   agentProfileApi.createConversation = async (selection, operationId) => {
     selections.push({ selection, operationId });
     return {
@@ -788,6 +818,14 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
       },
     };
   };
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: profile.agent_id,
+    created_at: "2026-08-17T00:00:00Z",
+    updated_at: "2026-08-17T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
   sessionApi.getAuthoritative = async () => ({
     session_id: "session-support",
     workspace_id: "default",
@@ -804,6 +842,18 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
       category: profile.category,
     },
   });
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.markRead = async () => {};
+  const submissions: unknown[][] = [];
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    return {
+      session_id: "session-support",
+      run_id: null,
+      status: "needs_confirmation" as const,
+      suggestions: [],
+    };
+  }) as typeof sessionApi.submitChat;
   let currentPath = "";
   function LocationProbe() {
     const location = useLocation();
@@ -845,16 +895,43 @@ test("a bare Agent workspace is the empty Chat experience and does not create un
     assert.ok(container.querySelector("[data-agent-chat-opening]"));
     assert.match(container.textContent, /欢迎使用企业专家/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
-    assert.ok(container.querySelector("textarea"));
+    const composer = container.querySelector("textarea");
+    assert.ok(composer);
     assert.equal(container.querySelector("[data-agent-workspace-welcome]"), null);
     assert.equal(container.querySelector("[data-agent-workspace-start]"), null);
-    assert.deepEqual(recordedSelections(), []);
+
+    const starterPrompt = container
+      .querySelectorAll("button")
+      .find((button) => button.textContent.includes("帮我处理企业任务"));
+    assert.ok(starterPrompt);
+    await React.act(async () => {
+      starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+      for (let index = 0; index < 16; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(selections.length, 1);
+    assert.equal(
+      submissions.length,
+      1,
+      `the first send must reach submitChat; rendered UI: ${container.textContent}`,
+    );
+    assert.equal(submissions[0]?.[0], "帮我处理企业任务");
+    assert.equal(submissions[0]?.[1], "session-support");
+    assert.deepEqual(submissions[0]?.[10], {
+      agent_id: profile.agent_id,
+      expected_revision: profile.expected_revision,
+    });
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support");
   } finally {
     dom.window.sessionStorage = reliableSessionStorage;
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.submitChat = originalSubmitChat;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
