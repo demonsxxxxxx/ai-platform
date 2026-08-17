@@ -16,6 +16,12 @@ from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from app.settings import get_settings
+from app.streaming.api import (
+    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
+    redis_id_tuple as _redis_id_tuple,
+    stream_key,
+    stream_live_channel,
+)
 from app.streaming.contracts import (
     PUBLIC_EVENT_TYPES as PUBLIC_EVENT_TYPES,
     STREAM_DESIGN_ID,
@@ -36,12 +42,6 @@ from app.streaming.contracts import (
     stable_event_id,
     tenant_scope,
     validate_public_payload as validate_public_payload,
-)
-from app.streaming.domain.live import (
-    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
-    redis_id_tuple as _redis_id_tuple,
-    stream_key,
-    stream_live_channel,
 )
 
 SSE_PUBLISH_MAX_CONNECTIONS = 16

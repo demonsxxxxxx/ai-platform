@@ -17,7 +17,7 @@ from app.public_execution import (
     validate_public_agent_progress_payload,
 )
 from app.run_projection import CHAT_PUBLIC_PROJECTION_VERSION
-from app.streaming.domain.live import (
+from app.streaming.api import (
     REDIS_ID_PATTERN as _REDIS_ID_RE,
     RUN_ID_PATTERN as _RUN_ID_RE,
     TENANT_SCOPE_PATTERN as _TENANT_SCOPE_RE,
