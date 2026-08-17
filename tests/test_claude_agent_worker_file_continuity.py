@@ -278,10 +278,20 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("name", "content_type", "raw"),
+    ("name", "content_type", "raw", "error_code"),
     [
-        ("unsafe.pdf", PDF_CONTENT_TYPE, _unsafe_pdf_bytes()),
-        ("unsafe.docx", DOCX_CONTENT_TYPE, _unsafe_docx_bytes()),
+        (
+            "unsafe.pdf",
+            PDF_CONTENT_TYPE,
+            _unsafe_pdf_bytes(),
+            "context_file_pdf_active_content_unsupported",
+        ),
+        (
+            "unsafe.docx",
+            DOCX_CONTENT_TYPE,
+            _unsafe_docx_bytes(),
+            "context_file_docx_external_relationship_unsupported",
+        ),
     ],
     ids=("pdf-javascript", "docx-external-relationship"),
 )
@@ -291,6 +301,7 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     name,
     content_type,
     raw,
+    error_code,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -321,8 +332,11 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match="context_file_type_unsupported"):
+    with pytest.raises(ValueError, match=error_code) as captured:
         await adapter._materialize_files(payload(file_ids=["file-unsafe"]), workspace)
+
+    assert captured.value.attachment_index == 1
+    assert captured.value.file_kind in {"docx", "pdf"}
 
     assert list(workspace.iterdir()) == []
 

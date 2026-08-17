@@ -263,6 +263,45 @@ def test_context_file_size_terminal_projection_is_specific_and_safe():
     assert projection["event_payload"] == {}
 
 
+@pytest.mark.parametrize(
+    ("error_code", "detail_code", "message_fragment"),
+    [
+        (
+            "context_file_pdf_password_required",
+            "context_file_pdf_password_required",
+            "需要密码",
+        ),
+        (
+            "context_file_pdf_active_content_unsupported",
+            "context_file_unsafe_content",
+            "活动内容",
+        ),
+        (
+            "context_file_pdf_parse_failed",
+            "context_file_invalid",
+            "无法解析",
+        ),
+        (
+            "context_file_identity_mismatch",
+            "context_file_identity_mismatch",
+            "完整性校验失败",
+        ),
+    ],
+)
+def test_context_file_terminal_projection_is_actionable_and_private_safe(
+    error_code,
+    detail_code,
+    message_fragment,
+):
+    projection = public_terminal_projection("failed", error_code)
+
+    assert projection["detail_code"] == detail_code
+    assert message_fragment in projection["message"]
+    assert projection["event_payload"] == {}
+    assert "attachment_index" not in str(projection)
+    assert "exception_chain" not in str(projection)
+
+
 def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
     succeeded = public_chat_terminal_projection(
         {

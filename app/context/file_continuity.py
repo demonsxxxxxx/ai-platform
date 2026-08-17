@@ -285,10 +285,10 @@ async def materialize_run_context_files(
 
     file_names: list[str] = []
     attachment_metadata: list[ContextFileMetadata] = []
-    authorized_files: list[tuple[str, dict[str, Any], str, int]] = []
+    authorized_files: list[tuple[int, str, dict[str, Any], str, int]] = []
     materialized_name_keys: set[str] = set()
     async with transaction_factory() as conn:
-        for file_id in file_ids:
+        for attachment_index, file_id in enumerate(file_ids, start=1):
             row = await repository.get_scoped_context_file(
                 conn,
                 tenant_id=tenant_id,
@@ -299,17 +299,29 @@ async def materialize_run_context_files(
                 file_id=file_id,
             )
             if row is None:
-                raise ContextFileContentError("context_file_unavailable")
+                raise ContextFileContentError(
+                    "context_file_unavailable",
+                    attachment_index=attachment_index,
+                )
             normalized_row = dict(row)
             original_name = str(normalized_row.get("original_name") or file_id).replace("\\", "/")
             filename = Path(original_name).name or file_id
+            file_kind = Path(filename).suffix.casefold().lstrip(".")
             content_type = str(normalized_row.get("content_type") or "")
             try:
                 size_bytes = int(normalized_row.get("size_bytes"))
             except (TypeError, ValueError) as exc:
-                raise ContextFileContentError("context_file_identity_mismatch") from exc
+                raise ContextFileContentError(
+                    "context_file_identity_mismatch",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                ) from exc
             if size_bytes < 0:
-                raise ContextFileContentError("context_file_identity_mismatch")
+                raise ContextFileContentError(
+                    "context_file_identity_mismatch",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                )
             attachment_metadata.append(
                 ContextFileMetadata(file_id, filename, content_type, size_bytes)
             )
@@ -317,9 +329,15 @@ async def materialize_run_context_files(
             if typed_preprocessing:
                 name_key = filename.casefold()
                 if name_key in materialized_name_keys:
-                    raise ContextFileContentError("context_file_name_conflict")
+                    raise ContextFileContentError(
+                        "context_file_name_conflict",
+                        file_kind=file_kind,
+                        attachment_index=attachment_index,
+                    )
                 materialized_name_keys.add(name_key)
-                authorized_files.append((file_id, normalized_row, filename, size_bytes))
+                authorized_files.append(
+                    (attachment_index, file_id, normalized_row, filename, size_bytes)
+                )
 
     if not typed_preprocessing:
         return ContextFileMaterialization(
@@ -329,15 +347,19 @@ async def materialize_run_context_files(
             tuple(attachment_metadata),
         )
     if storage is None:
-        raise RuntimeError("typed attachment storage is unavailable")
-    if sum(item[3] for item in authorized_files) > _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES:
+        raise ContextFileContentError(
+            "context_file_storage_unavailable",
+            phase="storage",
+        )
+    if sum(item[4] for item in authorized_files) > _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES:
         raise ContextFileContentError("context_file_too_large")
 
     inputs_dir = workspace / "inputs"
     targets: list[tuple[Path, Path]] = []
     validated_contents: list[bytes] = []
     attachment_facts: list[MaterializedAttachmentFact] = []
-    for file_id, row, filename, size_bytes in authorized_files:
+    for attachment_index, file_id, row, filename, size_bytes in authorized_files:
+        file_kind = Path(filename).suffix.casefold().lstrip(".")
         target = workspace / filename
         ensure_creatable_inside(
             workspace,
@@ -356,20 +378,42 @@ async def materialize_run_context_files(
             or canonical_target.exists()
             or canonical_target.is_symlink()
         ):
-            raise ContextFileContentError("context_file_name_conflict")
+            raise ContextFileContentError(
+                "context_file_name_conflict",
+                file_kind=file_kind,
+                attachment_index=attachment_index,
+            )
         if size_bytes > MAX_CONTEXT_FILE_STAGE_BYTES:
-            raise ContextFileContentError("context_file_too_large")
+            raise ContextFileContentError(
+                "context_file_too_large",
+                file_kind=file_kind,
+                attachment_index=attachment_index,
+            )
         storage_key = str(row.get("storage_key") or "")
         if not storage_key:
-            raise ContextFileContentError("context_file_identity_mismatch")
+            raise ContextFileContentError(
+                "context_file_identity_mismatch",
+                file_kind=file_kind,
+                attachment_index=attachment_index,
+            )
         try:
             content = storage.get_bytes_bounded(
                 storage_key=storage_key,
                 max_bytes=size_bytes,
             )
         except ObjectStorageSizeLimitError as exc:
-            raise ContextFileContentError("context_file_identity_mismatch") from exc
-        validate_context_file_for_stage(row, content)
+            raise ContextFileContentError(
+                "context_file_identity_mismatch",
+                file_kind=file_kind,
+                attachment_index=attachment_index,
+            ) from exc
+        try:
+            validate_context_file_for_stage(row, content)
+        except ContextFileContentError as exc:
+            raise exc.bind_attachment(
+                attachment_index=attachment_index,
+                file_kind=file_kind,
+            )
         attachment_facts.append(
             MaterializedAttachmentFact(
                 file_id=file_id,
