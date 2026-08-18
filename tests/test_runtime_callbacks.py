@@ -1025,7 +1025,7 @@ def test_executor_callback_rejects_arbitrary_v2_lifecycles_without_public_persis
     assert "Caller selected Skill" not in str(persisted)
 
 
-def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_chunk(monkeypatch):
+def test_executor_callback_is_the_ordered_assistant_delta_ingress(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []
     published = []
@@ -1056,40 +1056,71 @@ def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_c
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
     patch_active_attempt(monkeypatch, runtime_callbacks)
     patch_callback_stream(monkeypatch, runtime_callbacks, published)
-    response = TestClient(create_app()).post(
-        "/api/ai/runtime/callbacks/executor",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(
-            batch_id="batch-a",
-            new_message=None,
-            state_patch={},
-            events=[{
-                "type": "assistant_delta",
-                "message": "executor message must not persist",
-                "payload": {
-                    "delta": "safe answer",
-                    "command": "private command",
-                    "path": "/private/path",
-                    "token": "private-token",
-                    "tool_name": "private-tool",
-                    "stdout": "private stdout",
-                    "stderr": "private stderr",
-                },
-            }],
+    client = TestClient(create_app())
+    responses = [
+        client.post(
+            "/api/ai/runtime/callbacks/executor",
+            headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+            json=callback_payload(
+                batch_id="batch-a",
+                new_message=None,
+                state_patch={},
+                events=[
+                    {
+                        "type": "assistant_delta",
+                        "message": "executor message must not persist",
+                        "payload": {
+                            "delta": "safe ",
+                            "command": "private command",
+                            "path": "/private/path",
+                            "token": "private-token",
+                            "tool_name": "private-tool",
+                            "stdout": "private stdout",
+                            "stderr": "private stderr",
+                        },
+                    }
+                ],
+            ),
         ),
-    )
+        client.post(
+            "/api/ai/runtime/callbacks/executor",
+            headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+            json=callback_payload(
+                batch_id="batch-b",
+                new_message=None,
+                state_patch={},
+                events=[
+                    {
+                        "type": "assistant_delta",
+                        "message": "executor message must not persist",
+                        "payload": {"delta": "answer"},
+                    }
+                ],
+            ),
+        ),
+    ]
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "accepted": True,
-        "batch_id": "batch-a",
-        "event_count": 2,
-    }
-    assert [event["event_type"] for event in persisted] == ["executor_callback"]
-    assert len(published) == 1
-    assert published[0].event_type == "assistant_text_delta"
-    assert published[0].payload == {"delta": "safe answer"}
-    assert "private command" not in published[0].canonical_bytes.decode()
+    assert [response.status_code for response in responses] == [200, 200]
+    assert [response.json() for response in responses] == [
+        {"accepted": True, "batch_id": "batch-a", "event_count": 2},
+        {"accepted": True, "batch_id": "batch-b", "event_count": 2},
+    ]
+    assert [event["event_type"] for event in persisted] == [
+        "executor_callback",
+        "executor_callback",
+    ]
+    assert [event.event_type for event in published] == [
+        "assistant_text_delta",
+        "assistant_text_delta",
+    ]
+    assert [event.payload for event in published] == [
+        {"delta": "safe "},
+        {"delta": "answer"},
+    ]
+    assert published[0].event_id != published[1].event_id
+    assert "private command" not in "".join(
+        event.canonical_bytes.decode() for event in published
+    )
 
 
 def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_commit(monkeypatch):

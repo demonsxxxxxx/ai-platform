@@ -7,6 +7,80 @@ def test_release_atomic_cutover_has_no_pg_live_reader_or_predispatch_sdk():
     assert cutover.check() == []
 
 
+def test_assistant_delta_ownership_guard_rejects_a_second_worker_ingress():
+    valid = {
+        "worker_source": "raise WorkerDirectAssistantDeltaError",
+        "redis_source": "class RunStreamPublisher: pass",
+        "callback_source": "canonical_assistant_delta_event(); await bridge.append(event)",
+        "executor_source": "async def run(): pass",
+        "adr_source": (
+            "assistant_text_delta` has one ingress\n"
+            "Adding any second assistant-text ingress requires a new accepted ADR\n"
+            "one logical delta cannot be published by both owners"
+        ),
+    }
+    assert cutover._assistant_delta_ownership_failures(**valid) == []
+
+    failures = cutover._assistant_delta_ownership_failures(
+        **{
+            **valid,
+            "worker_source": (
+                "raise WorkerDirectAssistantDeltaError\n"
+                "await stream_publisher.publish_assistant_delta(delta)"
+            ),
+        }
+    )
+
+    assert failures == ["worker direct assistant-delta publisher exists"]
+
+
+def test_assistant_delta_ownership_guard_rejects_direct_redis_bridge_append():
+    source = """
+from app.streaming.redis import RedisStreamBridge
+from app.streaming.sse_contract import canonical_assistant_delta_event
+
+async def publish(redis_client):
+    bridge = RedisStreamBridge(redis_client)
+    event = canonical_assistant_delta_event(delta="blocked")
+    await bridge.append(event)
+"""
+
+    assert cutover._worker_assistant_delta_ingress_exists(source) is True
+
+
+def test_assistant_delta_ownership_guard_rejects_aliased_bridge_import():
+    source = """
+from app.streaming.redis import RedisStreamBridge as Bridge
+
+async def publish(redis_client, event):
+    bridge = Bridge(redis_client)
+    await bridge.append(event)
+"""
+
+    assert cutover._worker_assistant_delta_ingress_exists(source) is True
+
+
+def test_assistant_delta_ownership_guard_rejects_public_event_literal():
+    source = """
+async def publish(bridge, payload):
+    await bridge.append({"event": "assistant_text_delta", "payload": payload})
+"""
+
+    assert cutover._worker_assistant_delta_ingress_exists(source) is True
+
+
+def test_assistant_delta_ownership_guard_requires_an_adr_for_a_second_ingress():
+    failures = cutover._assistant_delta_ownership_failures(
+        worker_source="raise WorkerDirectAssistantDeltaError",
+        redis_source="class RunStreamPublisher: pass",
+        callback_source="canonical_assistant_delta_event(); await bridge.append(event)",
+        executor_source="async def run(): pass",
+        adr_source="producer ownership is unspecified",
+    )
+
+    assert failures == ["ADR 0009 does not freeze assistant-delta producer ownership"]
+
+
 def test_checker_detects_a_retired_pg_live_call(monkeypatch):
     original = cutover._all_calls
 

@@ -1,8 +1,6 @@
-import asyncio
 import hashlib
 import json
 import re
-import time as _time
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
@@ -43,11 +41,21 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
+from app.execution.api import (
+    WorkerRunCancelled,
+    submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
+    time,
+)
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
     ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox,
 )
-from app.executors.base import ExecutorDispatchAccepted, ExecutorResult, RunExecutionOwner, RunPayload
+from app.executors.base import (
+    ExecutorDispatchAccepted,
+    ExecutorResult,
+    RunExecutionOwner,
+    RunPayload,
+)
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import (
@@ -72,7 +80,7 @@ from app.runtime.sandbox.executor_client import (
     normalize_executor_reported_failure,
 )
 from app.settings import get_settings
-from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
+from app.streaming.redis import RunStreamPublisher
 from app.streaming.worker_projection import (
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
@@ -102,13 +110,10 @@ from app.worker_principal_authority import (
 )
 
 
-class _WorkerClock:
-    @staticmethod
-    def monotonic() -> float:
-        return _time.monotonic()
-
-
-time = _WorkerClock()
+_submit_run_until_cancelled = _partial(
+    _submit_run_until_cancelled_with_owner,
+    owner_factory=RunExecutionOwner,
+)
 
 
 @dataclass(frozen=True)
@@ -119,95 +124,8 @@ class WorkerOutcome:
     error_message: str | None = None
 
 
-class WorkerRunCancelled(asyncio.CancelledError):
-    """Raised inside the worker when a running run observes a platform cancel request."""
-
-
-_RUN_CANCEL_POLL_INTERVAL_SECONDS = 1.0
-_RUN_STOP_ATTEMPT_TIMEOUT_SECONDS = 5.0
-_RUN_PROGRESS_INTERVAL_SECONDS = 15.0
-
-
-async def _submit_run_until_cancelled(
-    adapter: Any,
-    run_payload: RunPayload,
-    *,
-    event_sink: Any,
-    cancel_requested: Any,
-    poll_interval_seconds: float = _RUN_CANCEL_POLL_INTERVAL_SECONDS,
-    stop_timeout_seconds: float = _RUN_STOP_ATTEMPT_TIMEOUT_SECONDS,
-    progress_interval_seconds: float = _RUN_PROGRESS_INTERVAL_SECONDS,
-) -> ExecutorResult | ExecutorDispatchAccepted:
-    """Own one adapter until dispatch acceptance, result, or bounded cancellation."""
-
-    owner = RunExecutionOwner(run_payload.run_id)
-    submit_task = owner.start_adapter(adapter, run_payload, event_sink=event_sink)
-    last_progress_at = time.monotonic()
-
-    async def stop_until_quiescent(reason: str) -> None:
-        attempt = 0
-        while True:
-            attempt += 1
-            stop_result = await owner.stop(
-                reason=reason,
-                timeout_seconds=stop_timeout_seconds,
-            )
-            if stop_result.quiescent:
-                return
-            try:
-                await event_sink(
-                    event_type="cancel_requested",
-                    stage="status",
-                    message="任务取消仍在等待执行器安全停止",
-                    payload={
-                        "progress_kind": "waiting",
-                        "wait_reason": "cancellation",
-                        "heartbeat": True,
-                        "stop_status": stop_result.status,
-                        "stop_attempt": attempt,
-                        "visible_to_user": True,
-                        "severity": "warning",
-                    },
-                )
-            except WorkerRunCancelled:
-                pass
-            await asyncio.sleep(max(float(poll_interval_seconds), 0.0))
-
-    try:
-        await asyncio.sleep(0)
-        if submit_task.done():
-            return submit_task.result()
-        while True:
-            if await cancel_requested():
-                await stop_until_quiescent("cancel_requested")
-                raise WorkerRunCancelled
-            done, _ = await asyncio.wait(
-                {submit_task},
-                timeout=max(float(poll_interval_seconds), 0.0),
-            )
-            if submit_task in done:
-                return submit_task.result()
-            now = time.monotonic()
-            if now - last_progress_at >= max(float(progress_interval_seconds), 0.0):
-                await event_sink(
-                    event_type="run_started",
-                    stage="status",
-                    message="任务仍在处理中",
-                    payload={
-                        "progress_kind": "active",
-                        "heartbeat": True,
-                        "visible_to_user": True,
-                        "severity": "info",
-                    },
-                )
-                last_progress_at = now
-    except BaseException as exc:
-        if isinstance(exc, WorkerRunCancelled) and owner.done:
-            raise
-        if not owner.done:
-            reason = "cancel_requested" if isinstance(exc, WorkerRunCancelled) else "worker_interrupted"
-            await stop_until_quiescent(reason)
-        raise
+class WorkerDirectAssistantDeltaError(RuntimeError):
+    """Reject an unsupported second ingress for public assistant text."""
 
 
 class _WorkerSuccessCommitBlocked(Exception):
@@ -304,6 +222,8 @@ def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
         return exc.error_code, "Native tool sandbox admission failed"
     if isinstance(exc, SandboxExecutorHttpError):
         return exc.error_code, exc.public_message
+    if isinstance(exc, WorkerDirectAssistantDeltaError):
+        return "worker_direct_assistant_delta_forbidden", "Executor used an unsupported text ingress"
     return "executor_failure", "Executor failed"
 
 
@@ -2703,33 +2623,17 @@ async def process_run_payload(
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        event_stage = stage
-        event_message = message
-        event_payload = payload
-        persist_event = True
-        public_delta = None
         if event_type == "assistant_delta":
-            canonical_delta = canonical_assistant_delta_event(
-                stage=stage,
-                payload=payload,
-            )
-            if canonical_delta is None:
-                persist_event = False
-            else:
-                event_stage, event_message, event_payload = canonical_delta
-                persist_event = False
-                public_delta = str(event_payload["delta"])
-        if public_delta is not None:
-            await stream_publisher.publish_assistant_delta(public_delta)
+            raise WorkerDirectAssistantDeltaError
         if await persist_and_publish_worker_event(
             transaction,
             stream_publisher=stream_publisher,
             run_payload=run_payload,
-            persist_event=persist_event,
+            persist_event=True,
             event_type=event_type,
-            stage=event_stage,
-            message=event_message,
-            payload=event_payload,
+            stage=stage,
+            message=message,
+            payload=payload,
             record_run_step=_record_run_step_from_event,
         ):
             raise WorkerRunCancelled

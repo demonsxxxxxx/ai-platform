@@ -8,7 +8,7 @@ import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -39,7 +39,7 @@ from app.streaming.contracts import (
     canonical_json_bytes,
     committed_public_stream_event,
     new_envelope,
-    stable_event_id,
+    stable_event_id as stable_event_id,
     tenant_scope,
     validate_public_payload as validate_public_payload,
 )
@@ -939,8 +939,6 @@ class RunStreamPublisher:
     authority_secret: str
     bridge: RedisStreamBridge = field(default_factory=RedisStreamBridge)
     authority: StreamAuthority | None = None
-    source_sequence: int = 0
-    publication_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     async def prepare(self, conn: Any) -> None:
         self.authority = await create_or_get_stream_admission(
@@ -973,38 +971,6 @@ class RunStreamPublisher:
         ):
             raise StreamContractError("sse_stream_attempt_inactive")
         self.authority = authority
-
-    async def publish_assistant_delta(self, delta: str) -> None:
-        authority = self._authority()
-        if authority.state != "confirmed":
-            raise RuntimeError("sse_stream_admission_missing")
-        self.source_sequence += 1
-        open_envelope = StreamEnvelope.from_json(authority.open_payload_bytes)
-        try:
-            base = datetime.fromisoformat(
-                open_envelope.emitted_at.replace("Z", "+00:00")
-            )
-        except ValueError as exc:
-            raise StreamContractError("stream_open_emitted_at_invalid") from exc
-        emitted_at = _rfc3339_utc(base + timedelta(microseconds=self.source_sequence))
-        await self.bridge.append(
-            new_envelope(
-                event_id=stable_event_id(
-                    tenant_scope_value=authority.tenant_scope,
-                    run_id=self.run_id,
-                    attempt_id=self.attempt_id,
-                    batch_id=f"worker-event-sink:{self.publication_id}",
-                    item_index=self.source_sequence,
-                ),
-                tenant_scope_value=authority.tenant_scope,
-                run_id=self.run_id,
-                attempt_id=self.attempt_id,
-                stream_incarnation=authority.stream_incarnation,
-                event_type="assistant_text_delta",
-                payload={"delta": delta},
-                emitted_at=emitted_at,
-            )
-        )
 
     async def publish_committed_event(self, row: Mapping[str, object]) -> bool:
         return await publish_committed_stream_event(
