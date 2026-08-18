@@ -737,6 +737,147 @@ def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
     assert sentinel.read_text(encoding="utf-8") == "must survive temporary-root cleanup"
 
 
+def _windows_removal_error(winerror: int) -> OSError:
+    error = OSError(f"Windows removal failed with {winerror}")
+    setattr(error, "winerror", winerror)
+    return error
+
+
+def test_windows_cleanup_retry_window_uses_monotonic_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _readiness_module()
+    retry = module._WindowsDirectoryRemovalRetry()
+    times = iter((10.0, 10.05, 11.01))
+    delays: list[float] = []
+    error = _windows_removal_error(module.WINDOWS_ERROR_DIRECTORY_NOT_EMPTY)
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    assert retry.wait(error)
+    assert not retry.wait(error)
+    assert retry.attempts == 1
+    assert delays == [0.05]
+
+
+def test_windows_cleanup_does_not_retry_after_sleep_crosses_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _readiness_module()
+    target = tmp_path / "deadline"
+    target.mkdir()
+    times = iter((10.0, 11.01))
+    calls: list[Path] = []
+    delays: list[float] = []
+
+    def persistent_rmdir(path: str) -> None:
+        calls.append(Path(path))
+        raise _windows_removal_error(module.WINDOWS_ERROR_DIRECTORY_NOT_EMPTY)
+
+    monkeypatch.setattr(module.os, "rmdir", persistent_rmdir)
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    with pytest.raises(OSError) as raised:
+        module._remove_windows_cleanup_tree(str(target))
+
+    assert getattr(raised.value, "winerror", None) == module.WINDOWS_ERROR_DIRECTORY_NOT_EMPTY
+    assert calls == [target]
+    assert delays == [0.05]
+    assert target.exists()
+
+
+def test_windows_cleanup_retries_transient_directory_not_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _readiness_module()
+    target = tmp_path / "transient"
+    target.mkdir()
+    real_rmdir = module.os.rmdir
+    calls: list[Path] = []
+    delays: list[float] = []
+
+    def transient_rmdir(path: str) -> None:
+        calls.append(Path(path))
+        if len(calls) <= 2:
+            raise _windows_removal_error(module.WINDOWS_ERROR_DIRECTORY_NOT_EMPTY)
+        real_rmdir(path)
+
+    monkeypatch.setattr(module.os, "rmdir", transient_rmdir)
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    module._remove_windows_cleanup_tree(str(target))
+
+    assert calls == [target, target, target]
+    assert delays == [0.05, 0.1]
+    assert not target.exists()
+
+
+def test_windows_cleanup_stops_after_directory_not_empty_retry_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _readiness_module()
+    target = tmp_path / "persistent"
+    target.mkdir()
+    readiness = module.PrePushReadiness(tmp_path)
+    result = module._new_result(None, None, None)
+    calls: list[Path] = []
+    delays: list[float] = []
+
+    def persistent_rmdir(path: str) -> None:
+        calls.append(Path(path))
+        raise _windows_removal_error(module.WINDOWS_ERROR_DIRECTORY_NOT_EMPTY)
+
+    monkeypatch.setattr(module.os, "rmdir", persistent_rmdir)
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+    monkeypatch.setattr(
+        module,
+        "_remove_cleanup_tree",
+        lambda path: module._remove_windows_cleanup_tree(str(path)),
+    )
+
+    failure = readiness._cleanup_worktrees(result, target, ())
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert "temporary worktree directory removal failed" in str(failure)
+    assert calls == [target] * (module.WINDOWS_DIRECTORY_REMOVE_RETRY_LIMIT + 1)
+    assert delays == [0.05, 0.1, 0.2, 0.4]
+    assert target.exists()
+
+
+def test_windows_cleanup_does_not_retry_other_removal_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _readiness_module()
+    target = tmp_path / "denied"
+    target.mkdir()
+    calls: list[Path] = []
+
+    def denied_rmdir(path: str) -> None:
+        calls.append(Path(path))
+        raise _windows_removal_error(5)
+
+    monkeypatch.setattr(module.os, "rmdir", denied_rmdir)
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda delay: pytest.fail(f"unexpected retry delay: {delay}"),
+    )
+
+    with pytest.raises(OSError) as raised:
+        module._remove_windows_cleanup_tree(str(target))
+
+    assert getattr(raised.value, "winerror", None) == 5
+    assert calls == [target]
+    assert target.exists()
+
+
 def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_windows_separators(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module)
