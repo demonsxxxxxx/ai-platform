@@ -1191,9 +1191,7 @@ export function ChatAppContent({
             throw new Error("agent_workspace_revision_mismatch");
           }
           setAgentConversationState(conversationState("bound", id, identity));
-          navigate(
-            `${agentWorkspaceRouteBasePath}/${encodeURIComponent(id)}`,
-          );
+          await handleSelectSession(id);
           setMobileSidebarOpen(false);
           return;
         } catch {
@@ -1212,7 +1210,6 @@ export function ChatAppContent({
     [
       agentWorkspace,
       agentWorkspaceDetailPath,
-      agentWorkspaceRouteBasePath,
       clearMessages,
       clearSelectedSkill,
       handleSelectSession,
