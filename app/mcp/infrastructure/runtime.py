@@ -5,7 +5,6 @@ import base64
 import hashlib
 import ipaddress
 import json
-import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -18,10 +17,20 @@ import httpx
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.auth import AuthPrincipal
-from app.redis_client import RedisClientHandle, get_redis_client
-from app.settings import get_settings
-from app.validation import assert_safe_id, assert_safe_principal_user_id
+from app.mcp.domain.errors import (
+    McpRelayError,
+    McpRuntimeContextError,
+    McpToolSelectionRequired,
+)
+from app.mcp.domain.headers import (
+    MCP_JWT_AUTHORIZATION_HEADER,
+    normalize_static_mcp_headers,
+)
+from app.mcp.domain.identifiers import (
+    assert_safe_mcp_id as assert_safe_id,
+    assert_safe_mcp_principal_user_id as assert_safe_principal_user_id,
+)
+from app.mcp.domain.targets import normalize_mcp_targets
 
 
 MCP_RUNTIME_CONTEXT_TTL_SECONDS = 5 * 60
@@ -36,10 +45,8 @@ MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT = 10
 MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT = 1000
 MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS = 60
 MCP_CAPABILITY_HEADER = "X-MCP-Broker-Capability"
-MCP_JWT_AUTHORIZATION_HEADER = "JWT-Authorization"
 _MCP_CONTEXT_AAD_PREFIX = b"ai-platform:mcp-runtime-context:v1:"
 _MCP_SERVER_CREDENTIAL_AAD_PREFIX = b"ai-platform:mcp-server-credential:v1:"
-_HTTP_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _RELAY_FORWARD_HEADERS = frozenset(
     {
         "accept",
@@ -64,22 +71,42 @@ _FORBIDDEN_RELAY_HEADERS = frozenset(
 )
 
 
-class McpRuntimeContextError(ValueError):
-    """A public-safe runtime context failure category."""
-
-    def __init__(self, code: str, *, status_code: int = 409) -> None:
-        super().__init__(code)
-        self.code = code
-        self.status_code = status_code
+class RedisClientHandle(Protocol):
+    """Structural Redis client contract supplied by bootstrap."""
 
 
-class McpRelayError(McpRuntimeContextError):
-    """A public-safe host relay failure category."""
+class McpPrincipal(Protocol):
+    tenant_id: str
+    user_id: str
 
 
-class McpToolSelectionRequired(McpRelayError):
-    def __init__(self) -> None:
-        super().__init__("mcp_tool_selection_required", status_code=409)
+_settings_provider: Callable[[], object] | None = None
+_redis_provider: Callable[[], RedisClientHandle] | None = None
+_relay_target_reader: Callable[[str, str], Awaitable[dict[str, Any] | None]] | None = None
+
+
+def configure_runtime_dependencies(
+    *,
+    settings_provider: Callable[[], object],
+    redis_provider: Callable[[], RedisClientHandle],
+    relay_target_reader: Callable[[str, str], Awaitable[dict[str, Any] | None]],
+) -> None:
+    global _settings_provider, _redis_provider, _relay_target_reader
+    _settings_provider = settings_provider
+    _redis_provider = redis_provider
+    _relay_target_reader = relay_target_reader
+
+
+def get_settings() -> object:
+    if _settings_provider is None:
+        raise McpRuntimeContextError("mcp_runtime_not_configured", status_code=503)
+    return _settings_provider()
+
+
+def get_redis_client() -> RedisClientHandle:
+    if _redis_provider is None:
+        raise McpRuntimeContextError("mcp_runtime_not_configured", status_code=503)
+    return _redis_provider()
 
 
 @dataclass(frozen=True)
@@ -88,7 +115,7 @@ class McpContextPrincipal:
     user_id: str
 
     @classmethod
-    def from_principal(cls, principal: AuthPrincipal) -> "McpContextPrincipal":
+    def from_principal(cls, principal: McpPrincipal) -> "McpContextPrincipal":
         return cls(
             tenant_id=assert_safe_id(principal.tenant_id, "tenant_id"),
             user_id=assert_safe_principal_user_id(principal.user_id),
@@ -481,29 +508,6 @@ def extract_bearer_jwt(value: str | None) -> str:
     return token.strip()
 
 
-def normalize_static_mcp_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
-    """Normalize persisted static headers and reserve the dynamic JWT header."""
-
-    normalized: dict[str, str] = {}
-    names_by_folded: set[str] = set()
-    for raw_name, raw_value in (headers or {}).items():
-        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
-            raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
-        name = raw_name.strip()
-        if not _HTTP_HEADER_NAME_PATTERN.fullmatch(name):
-            raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
-        if "\r" in raw_value or "\n" in raw_value or "\x00" in raw_value:
-            raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
-        folded = name.casefold()
-        if folded == MCP_JWT_AUTHORIZATION_HEADER.casefold():
-            raise McpRuntimeContextError("mcp_header_conflict", status_code=400)
-        if folded in names_by_folded:
-            raise McpRuntimeContextError("mcp_header_duplicate", status_code=400)
-        names_by_folded.add(folded)
-        normalized[name] = raw_value
-    return normalized
-
-
 def _mcp_server_credential_aad(*, tenant_id: str, server_id: str) -> bytes:
     return (
         _MCP_SERVER_CREDENTIAL_AAD_PREFIX
@@ -582,50 +586,6 @@ def open_mcp_server_credentials(
         raise McpRelayError("mcp_server_credentials_invalid", status_code=503) from exc
     except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
         raise McpRelayError("mcp_server_credentials_invalid", status_code=503) from exc
-
-
-def normalize_mcp_targets(value: Mapping[str, object] | None) -> dict[str, tuple[str, ...]]:
-    """Return a fail-closed, server-grouped capability target map."""
-
-    normalized: dict[str, tuple[str, ...]] = {}
-    for raw_server_id, raw_tool_names in (value or {}).items():
-        try:
-            server_id = assert_safe_id(str(raw_server_id), "mcp_server_id")
-        except ValueError as exc:
-            raise McpRuntimeContextError("mcp_target_selection_invalid", status_code=403) from exc
-        if not isinstance(raw_tool_names, (list, tuple)):
-            raise McpRuntimeContextError("mcp_target_selection_invalid", status_code=403)
-        tool_names = tuple(
-            dict.fromkeys(
-                name
-                for item in raw_tool_names
-                if isinstance(item, str)
-                for name in (item.strip(),)
-                if name and "\x00" not in name and "\r" not in name and "\n" not in name
-            )
-        )
-        if not tool_names:
-            raise McpRuntimeContextError("mcp_target_selection_invalid", status_code=403)
-        normalized[server_id] = tool_names
-    return normalized
-
-
-def mcp_targets_from_policy_subjects(value: object) -> dict[str, tuple[str, ...]]:
-    """Derive capability targets only from worker-authorized canonical subjects."""
-
-    targets: dict[str, list[str]] = {}
-    if not isinstance(value, (list, tuple)):
-        return {}
-    for subject in value:
-        if not isinstance(subject, dict):
-            continue
-        identity = str(subject.get("identity") or "")
-        server_id = str(subject.get("mcp_server") or "")
-        tool_name = str(subject.get("mcp_tool") or "")
-        if not identity.startswith("mcp__") or not server_id or not tool_name:
-            continue
-        targets.setdefault(server_id, []).append(tool_name)
-    return normalize_mcp_targets(targets)
 
 
 def _utc_iso8601(timestamp: int) -> str:
@@ -792,7 +752,7 @@ class McpRuntimeContextManager:
         finally:
             await self.store.release_lock(lock_key, lock_token)
 
-    async def create_context(self, *, principal: AuthPrincipal, bearer_jwt: str) -> dict[str, Any]:
+    async def create_context(self, *, principal: McpPrincipal, bearer_jwt: str) -> dict[str, Any]:
         jwt = extract_bearer_jwt(bearer_jwt)
         now = self._now()
         payload = _jwt_payload(jwt, now=now)
@@ -863,7 +823,7 @@ class McpRuntimeContextManager:
             raise McpRuntimeContextError("mcp_context_busy", status_code=503)
 
     @staticmethod
-    def _assert_principal(record: _RuntimeContextRecord, principal: AuthPrincipal) -> None:
+    def _assert_principal(record: _RuntimeContextRecord, principal: McpPrincipal) -> None:
         binding = McpContextPrincipal.from_principal(principal)
         if record.tenant_id != binding.tenant_id or record.user_id != binding.user_id:
             raise McpRuntimeContextError("mcp_context_principal_mismatch", status_code=403)
@@ -872,7 +832,7 @@ class McpRuntimeContextManager:
         self,
         *,
         context_id: str,
-        principal: AuthPrincipal,
+        principal: McpPrincipal,
         run_id: str,
     ) -> _RuntimeContextRecord:
         assert_safe_id(run_id, "run_id")
@@ -1168,35 +1128,21 @@ def bounded_tool_view(
 async def resolve_registered_mcp_target(tenant_id: str, server_id: str) -> McpRelayTarget:
     """Resolve one active tenant registration without accepting a caller URL."""
 
-    from app import repositories
-    from app.db import transaction
-
     safe_tenant_id = assert_safe_id(tenant_id, "tenant_id")
     safe_server_id = assert_safe_id(server_id, "mcp_server_id")
-    try:
-        async with transaction() as conn:
-            row = await repositories.get_mcp_relay_target(
-                conn,
-                tenant_id=safe_tenant_id,
-                server_name=safe_server_id,
-            )
-    except repositories.RepositoryConflictError as exc:
-        raise McpRelayError("mcp_server_target_invalid", status_code=503) from exc
+    if _relay_target_reader is None:
+        raise McpRelayError("mcp_runtime_not_configured", status_code=503)
+    row = await _relay_target_reader(safe_tenant_id, safe_server_id)
     if row is None:
         raise McpRelayError("mcp_server_not_available", status_code=403)
     envelope = str(row.get("credential_envelope") or "")
-    if envelope:
-        endpoint, static_headers = open_mcp_server_credentials(
-            tenant_id=safe_tenant_id,
-            server_id=safe_server_id,
-            envelope=envelope,
-        )
-    else:
-        metadata = row.get("metadata_json")
-        if isinstance(metadata, dict) and metadata.get("header_names"):
-            raise McpRelayError("mcp_server_credentials_invalid", status_code=503)
-        endpoint = str(row.get("registered_endpoint") or "")
-        static_headers = {}
+    if not envelope:
+        raise McpRelayError("mcp_server_not_available", status_code=503)
+    endpoint, static_headers = open_mcp_server_credentials(
+        tenant_id=safe_tenant_id,
+        server_id=safe_server_id,
+        envelope=envelope,
+    )
     if not endpoint:
         raise McpRelayError("mcp_server_not_available", status_code=503)
     return McpRelayTarget(
@@ -1370,7 +1316,7 @@ class HostMcpRelay:
         self,
         *,
         context_id: str,
-        principal: AuthPrincipal,
+        principal: McpPrincipal,
         run_id: str,
         selected_tool_names: list[str] | tuple[str, ...] | None = None,
     ) -> McpRuntimePreflight:
@@ -1459,7 +1405,7 @@ class HostMcpRelay:
 async def preflight_mcp_admission(
     *,
     context_id: str | None,
-    principal: AuthPrincipal,
+    principal: McpPrincipal,
     run_id: str,
     selected_tool_names: list[str] | tuple[str, ...] | None,
     mcp_required: bool,

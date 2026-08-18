@@ -163,6 +163,23 @@ create table if not exists mcp_servers (
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
+update mcp_servers
+set endpoint_redacted = ''
+where endpoint_redacted <> '';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_servers_endpoint_not_persisted'
+  ) then
+    alter table mcp_servers
+      add constraint mcp_servers_endpoint_not_persisted
+      check (endpoint_redacted = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_servers validate constraint mcp_servers_endpoint_not_persisted;
+
 alter table mcp_servers
   add column if not exists catalog_generation bigint not null default 0,
   add column if not exists catalog_sync_attempt bigint not null default 0,
@@ -342,6 +359,23 @@ create table if not exists mcp_tools (
   visible_to_user boolean not null default true,
   created_at timestamptz not null default now()
 );
+
+update mcp_tools
+set endpoint = ''
+where endpoint <> '';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_tools_endpoint_not_persisted'
+  ) then
+    alter table mcp_tools
+      add constraint mcp_tools_endpoint_not_persisted
+      check (endpoint = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_tools validate constraint mcp_tools_endpoint_not_persisted;
 
 create table if not exists tool_policies (
   tenant_id text not null references tenants(id),

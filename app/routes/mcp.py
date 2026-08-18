@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -27,14 +26,15 @@ from app.mcp.catalog import (
     McpToolCatalogSyncCommand,
     McpToolCatalogSynchronizer,
 )
-from app.mcp.runtime import (
-    HostMcpRelay,
+from app.mcp.api import (
     McpRelayError,
-    McpRelayAuthFailureLimiter,
     McpRuntimeContextError,
+    create_host_mcp_relay,
+    get_mcp_relay_auth_failure_limiter,
     get_mcp_runtime_context_manager,
     normalize_static_mcp_headers,
     open_mcp_server_credentials,
+    record_mcp_server_credential,
     seal_mcp_server_credentials,
 )
 from app.tool_policy import evaluate_tool_policy
@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
 MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer()
 MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
-MCP_RELAY_AUTH_FAILURE_LIMITER = McpRelayAuthFailureLimiter()
+MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
+HostMcpRelay = create_host_mcp_relay
 
 
 def _mcp_runtime_http_error(exc: McpRuntimeContextError) -> HTTPException:
@@ -233,21 +234,6 @@ def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
                 }
             )
         raise HTTPException(status_code=422, detail=safe_errors) from exc
-
-
-def _redacted_endpoint(raw_url: str | None) -> str:
-    if not raw_url:
-        return ""
-    parsed = urlsplit(raw_url)
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    hostname = parsed.hostname or ""
-    if not hostname:
-        return ""
-    netloc = hostname
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
 def _credential_metadata(request: McpServerLifecycleRequest) -> dict[str, Any]:
@@ -583,7 +569,6 @@ async def _write_server(
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
-    endpoint = _redacted_endpoint(request.url)
     credential_envelope: str | None = None
     if request.url or request.headers:
         try:
@@ -616,7 +601,7 @@ async def _write_server(
                 transport=request.transport,
                 enabled=request.enabled,
                 is_system=is_system,
-                endpoint_redacted=endpoint,
+                endpoint_redacted="",
                 allowed_roles=request.allowed_roles,
                 role_quotas=_role_quotas_payload(request.role_quotas),
                 department_ids=request.department_ids,
@@ -650,7 +635,7 @@ async def _write_server(
                 ),
                 updated_by=principal.user_id,
             )
-            await repositories.record_mcp_server_credential(
+            await record_mcp_server_credential(
                 conn,
                 tenant_id=principal.tenant_id,
                 server_name=name,

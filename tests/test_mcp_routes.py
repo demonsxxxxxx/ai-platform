@@ -337,7 +337,7 @@ def install_mcp_route_fakes(
         fake_mark_catalog_unavailable,
         raising=False,
     )
-    monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
+    monkeypatch.setattr(mcp, "record_mcp_server_credential", fake_record_credential)
     monkeypatch.setattr(
         mcp.mcp_repository,
         "get_mcp_server_catalog_sync_snapshot",
@@ -1073,7 +1073,7 @@ def test_mcp_lifecycle_redacts_url_userinfo_before_persistence(monkeypatch):
     assert "raw-secret" not in serialized
     assert "raw-query-secret" not in serialized
     upsert_call = next(payload for name, payload in calls if name == "upsert_server")
-    assert upsert_call["endpoint_redacted"] == "https://mcp.example:8443/sse"
+    assert upsert_call["endpoint_redacted"] == ""
     assert "raw-secret" not in str(upsert_call)
     assert "raw-query-secret" not in str(upsert_call)
 

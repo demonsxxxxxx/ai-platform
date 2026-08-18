@@ -501,7 +501,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
 async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
     monkeypatch, roles, message, selected_tools, context_id, expected_authorizations
 ):
-    calls = {"authorization": 0}
+    calls = {"authorization": 0, "bindings": []}
     preflight_calls = []
 
     async def authorize_run(*_args, **_kwargs):
@@ -535,6 +535,9 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     async def noop(*_args, **_kwargs):
         return None
 
+    async def bind_context(_conn, **kwargs):
+        calls["bindings"].append(kwargs)
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
     monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_tools)
@@ -546,6 +549,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr(repository_module, "append_event", noop)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.bind_run_mcp_context", bind_context)
 
     async def preflight_stub(**kwargs):
         preflight_calls.append(kwargs)
@@ -574,6 +578,17 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     assert len(preflight_calls) == 1
     assert preflight_calls[0]["mcp_required"] is bool(expected_tools)
     assert preflight_calls[0]["context_id"] == context_id
+    assert calls["bindings"] == (
+        [
+            {
+                "tenant_id": "tenant-a",
+                "run_id": "run-polarity",
+                "mcp_context_id": context_id,
+            }
+        ]
+        if expected_tools
+        else []
+    )
 
 
 @pytest.mark.parametrize(
@@ -1580,6 +1595,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     submission = _pending_submission_row()
     committed: list[tuple[str, object]] = []
     transaction_outcomes: list[tuple[str, list[tuple[str, object]]]] = []
+    invalidated: list[str] = []
 
     class TransactionState:
         def __init__(self) -> None:
@@ -1601,7 +1617,10 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         return submission
 
     async def get_run(*_args, **_kwargs):
-        return _durable_run_row()
+        return {
+            **_durable_run_row(),
+            "mcp_context_id": "mcpctx-durable",
+        }
 
     async def fail_enqueue(_payload):
         raise QueueAdmissionRejected("queue_payload_invalid")
@@ -1620,6 +1639,13 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     async def finalize(conn, **kwargs):
         conn.pending.append(("submission", kwargs["state"]))
 
+    async def invalidate(context_id):
+        assert committed == [
+            ("run", "run-durable"),
+            ("submission", "enqueue_failed"),
+        ]
+        invalidated.append(context_id)
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
@@ -1628,6 +1654,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr("app.routes.chat.invalidate_mcp_runtime_context", invalidate)
 
     with pytest.raises(HTTPException) as exc_info:
         await _admit_chat_submission(
@@ -1641,6 +1668,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         ("commit", []),
         ("commit", [("run", "run-durable"), ("submission", "enqueue_failed")]),
     ]
+    assert invalidated == ["mcpctx-durable"]
 
 
 @pytest.mark.asyncio
@@ -4261,6 +4289,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     queue_readback_available = enqueue_failure_mode != "after_publish_unknown"
     enqueue_payloads: list[dict[str, object]] = []
     published_payloads: list[dict[str, object]] = []
+    invalidated_contexts: list[str] = []
     profile_manifest = snapshot_manifest("profile-specialist")
     secondary_profile_manifest = snapshot_manifest("profile-reference-search")
 
@@ -4333,7 +4362,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 },
             ),
             model={"id": "model-a", "value": "provider-model-a"},
-            mcp_tool_ids=(),
+            mcp_tool_ids=("qa-search",) if force_creation_rollback else (),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -4523,6 +4552,16 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def noop(*_args, **_kwargs):
         return None
 
+    async def preflight(**kwargs):
+        if kwargs["mcp_required"]:
+            calls.append("mcp_preflight")
+
+    async def bind_mcp_context(*_args, **_kwargs):
+        calls.append("bind_mcp_context")
+
+    async def invalidate_mcp_context(context_id):
+        invalidated_contexts.append(context_id)
+
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
     monkeypatch.setattr(
         "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
@@ -4563,6 +4602,12 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.preflight_mcp_admission", preflight)
+    monkeypatch.setattr("app.routes.chat.bind_run_mcp_context", bind_mcp_context)
+    monkeypatch.setattr(
+        "app.routes.chat.invalidate_mcp_runtime_context",
+        invalidate_mcp_context,
+    )
     monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
@@ -4587,6 +4632,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "agent_id": "agt_support",
             "expected_revision": 7,
         }
+    if force_creation_rollback:
+        request_payload["mcp_context_id"] = "mcpctx-profile-rollback"
     chat_request = ChatStreamRequest.model_validate(request_payload)
     query_agent_id = "agt_support" if restored_continuation else "general-agent"
     if force_creation_rollback:
@@ -4608,6 +4655,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_submission["state"] == "rejected_before_persist"
         assert committed_submission["rejection_code"] == "chat_submission_internal_error"
         assert "enqueue" not in calls
+        assert "mcp_preflight" in calls
+        assert "bind_mcp_context" in calls
+        assert invalidated_contexts == ["mcpctx-profile-rollback"]
         return
 
     if enqueue_failure_mode == "definitive_rejection":

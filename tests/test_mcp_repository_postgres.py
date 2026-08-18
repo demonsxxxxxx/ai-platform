@@ -70,7 +70,7 @@ async def _insert_tool(
           id, server_id, name, description, transport_type, endpoint, auth_mode,
           allowed_tools, status, write_capable, risk_level, visible_to_user
         ) values (
-          %s, %s, %s, 'test tool', 'streamable_http', 'https://mcp.example.test/v1', 'none',
+          %s, %s, %s, 'test tool', 'streamable_http', '', 'none',
           '["query"]'::jsonb, 'active', false, 'low', true
         )
         """,

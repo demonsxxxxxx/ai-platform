@@ -3299,21 +3299,18 @@ async def record_mcp_server_credential(
     credential_fingerprint: str,
     metadata: dict[str, Any],
     updated_by: str,
-    credential_envelope: str = "",
 ) -> None:
-    """Record public metadata plus an opaque encrypted connection envelope."""
+    """Record credential fingerprint metadata without storing raw credential values."""
 
     await conn.execute(
         """
         insert into mcp_server_credentials(
-          tenant_id, server_name, credential_fingerprint, metadata_json,
-          credential_envelope, updated_by, updated_at
+          tenant_id, server_name, credential_fingerprint, metadata_json, updated_by, updated_at
         )
-        values (%s, %s, %s, %s::jsonb, %s, %s, now())
+        values (%s, %s, %s, %s::jsonb, %s, now())
         on conflict (tenant_id, server_name) do update
         set credential_fingerprint = excluded.credential_fingerprint,
             metadata_json = excluded.metadata_json,
-            credential_envelope = excluded.credential_envelope,
             updated_by = excluded.updated_by,
             updated_at = now()
         """,
@@ -3322,71 +3319,9 @@ async def record_mcp_server_credential(
             server_name,
             credential_fingerprint,
             dumps_json(metadata),
-            credential_envelope,
             updated_by,
         ),
     )
-
-
-async def get_mcp_relay_target(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-) -> dict[str, Any] | None:
-    """Resolve one active MCP target and its current tool fence for the host relay."""
-
-    cursor = await conn.execute(
-        """
-        select credentials.credential_envelope, credentials.metadata_json,
-          coalesce(
-            array_agg(distinct mcp_tools.endpoint) filter (
-              where mcp_tools.endpoint is not null and mcp_tools.endpoint <> ''
-            ),
-            array[]::text[]
-          ) as registered_endpoints,
-          coalesce(
-            array_agg(distinct (mcp_tools.allowed_tools ->> 0)) filter (
-              where mcp_tools.status = 'active'
-                and tool_policies.status = 'active'
-                and mcp_tools.allowed_tools ->> 0 is not null
-            ),
-            array[]::text[]
-          ) as active_tool_names
-        from mcp_servers
-        join mcp_server_credentials credentials
-          on credentials.tenant_id = mcp_servers.tenant_id
-         and credentials.server_name = mcp_servers.name
-        join tenant_capability_distributions distributions
-          on distributions.tenant_id = mcp_servers.tenant_id
-         and distributions.capability_kind = 'mcp_server'
-         and distributions.capability_id = mcp_servers.name
-         and distributions.status = 'active'
-        left join mcp_tools
-          on mcp_tools.server_id = mcp_servers.name
-        left join tool_policies
-          on tool_policies.tenant_id = mcp_servers.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
-        where mcp_servers.tenant_id = %s
-          and mcp_servers.name = %s
-          and mcp_servers.status = 'active'
-        group by credentials.credential_envelope, credentials.metadata_json
-        """,
-        (tenant_id, server_name),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
-    result = dict(row)
-    registered_endpoints = {
-        str(endpoint)
-        for endpoint in result.pop("registered_endpoints", [])
-        if isinstance(endpoint, str) and endpoint
-    }
-    if len(registered_endpoints) > 1:
-        raise RepositoryConflictError("mcp_server_endpoint_conflict")
-    result["registered_endpoint"] = next(iter(registered_endpoints), None)
-    return result
 
 
 async def list_admin_tool_policies(
@@ -3806,7 +3741,6 @@ async def create_run(
     run_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
-    mcp_context_id: str | None = None,
 ) -> str:
     _require_json_size(
         input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large"
@@ -3840,13 +3774,11 @@ async def create_run(
           principal_roles, principal_department_id, auth_source,
           authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
-          mcp_context_id, status, input_json, queued_at,
+          status, input_json, queued_at,
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
-          %s, %s, %s, %s, %s, %s, %s, %s,
-          'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -3875,7 +3807,6 @@ async def create_run(
             authority_checked_at or None,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
-            mcp_context_id,
             dumps_json(input_json),
             session_generation,
             tenant_id,
@@ -9270,27 +9201,11 @@ async def copy_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
-    new_run_id: str | None = None,
-    mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
     if source is None:
         return None
     source_input = source["input_json"] if isinstance(source.get("input_json"), dict) else {}
-    source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
-    source_context_id = source.get("mcp_context_id") or source_input.get("mcp_context_id")
-    source_requires_mcp_context = bool(
-        source_context_id
-        or (
-            isinstance(source_execution_input, dict)
-            and extract_run_mcp_tool_ids(source_execution_input)
-        )
-    )
-    if source_requires_mcp_context and not mcp_context_id:
-        # A Broker context is bound to the source Run/Attempt. Retry/resume
-        # must obtain a fresh context and preflight it before a child exists;
-        # never create a child that silently loses the required capability.
-        raise RepositoryConflictError("mcp_context_required_for_retry")
     sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
     inherited_roles = normalize_roles(source.get("principal_roles") or [])
     inherited_department_id = str(source.get("principal_department_id") or "")
@@ -9300,11 +9215,21 @@ async def copy_run_as_new_task(
         source.get("authority_source") or inherited_auth_source or ""
     )
     inherited_authority_checked_at = source.get("authority_checked_at")
+    source_execution_input = (
+        source_input.get("input")
+        if isinstance(source_input.get("input"), dict)
+        else source_input
+    )
     if isinstance(source_execution_input, dict):
         source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
         source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}
+    requires_fresh_mcp_context = bool(
+        source.get("mcp_context_id")
+        or source_input.get("mcp_context_id")
+        or extract_run_mcp_tool_ids(source_execution_input)
+    )
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
     source_execution_kind = str(
         source.get("execution_kind")
@@ -9406,10 +9331,7 @@ async def copy_run_as_new_task(
         )
     else:
         raise RepositoryConflictError("run_execution_skill_identity_mismatch")
-    effective_mcp_context_id = (
-        mcp_context_id if source_requires_mcp_context else None
-    )
-    new_run_id = new_run_id or new_id("run")
+    new_run_id = new_id("run")
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
     completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
         conn,
@@ -9447,7 +9369,6 @@ async def copy_run_as_new_task(
         ),
     )
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
-    copied_input_json["mcp_context_id"] = effective_mcp_context_id
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
     _require_json_size(copied_input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
@@ -9467,10 +9388,9 @@ async def copy_run_as_new_task(
           principal_roles, principal_department_id, auth_source,
           authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
-          mcp_context_id, status, input_json, queued_at, copied_from_run_id,
-          session_generation
+          status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -9492,7 +9412,6 @@ async def copy_run_as_new_task(
             inherited_authority_checked_at,
             admitted_profile_revision,
             admitted_profile_hash,
-            effective_mcp_context_id,
             dumps_json(copied_input_json),
             run_id,
             session_generation,
@@ -9540,17 +9459,9 @@ async def copy_run_as_new_task(
         "principal_department_id": inherited_department_id,
         "auth_source": inherited_auth_source,
         "release_policy_version": "",
+        "_requires_fresh_mcp_context": requires_fresh_mcp_context,
         **copied_execution_snapshot,
     }
-
-
-def _validate_replay_mcp_context_pair(
-    *,
-    new_run_id: str | None,
-    mcp_context_id: str | None,
-) -> None:
-    if (new_run_id is None) != (mcp_context_id is None):
-        raise RepositoryConflictError("mcp_context_required_for_retry")
 
 
 async def retry_run_as_new_task(
@@ -9559,13 +9470,7 @@ async def retry_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
-    new_run_id: str | None = None,
-    mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
-    _validate_replay_mcp_context_pair(
-        new_run_id=new_run_id,
-        mcp_context_id=mcp_context_id,
-    )
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
         return None
@@ -9580,18 +9485,11 @@ async def retry_run_as_new_task(
     )
     if active_retry is not None:
         raise RepositoryConflictError("retry_already_active")
-    copy_kwargs: dict[str, Any] = {}
-    if new_run_id is not None or mcp_context_id is not None:
-        copy_kwargs = {
-            "new_run_id": new_run_id,
-            "mcp_context_id": mcp_context_id,
-        }
     copied = await copy_run_as_new_task(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
-        **copy_kwargs,
     )
     if copied is None:
         return None
@@ -9637,14 +9535,8 @@ async def resume_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
-    new_run_id: str | None = None,
-    mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Create a queued resume child run from a non-active source with reusable output."""
-    _validate_replay_mcp_context_pair(
-        new_run_id=new_run_id,
-        mcp_context_id=mcp_context_id,
-    )
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
         return None
@@ -9666,18 +9558,11 @@ async def resume_run_as_new_task(
     )
     if active_resume is not None:
         raise RepositoryConflictError("resume_already_active")
-    copy_kwargs: dict[str, Any] = {}
-    if new_run_id is not None or mcp_context_id is not None:
-        copy_kwargs = {
-            "new_run_id": new_run_id,
-            "mcp_context_id": mcp_context_id,
-        }
     copied = await copy_run_as_new_task(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
-        **copy_kwargs,
     )
     if copied is None:
         return None
@@ -9727,7 +9612,6 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
     context_snapshot = source.get("context_snapshot")
     skill_version = source.get("skill_version")
     context_snapshot_id = source.get("context_snapshot_id")
-    mcp_context_id = source.get("mcp_context_id")
     model_id = source.get("model_id")
     model_value = source.get("model_value")
     agent_profile = source.get("agent_profile")
@@ -9755,7 +9639,6 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
         ),
         "context_snapshot_id": context_snapshot_id if isinstance(context_snapshot_id, str) else None,
         "context_snapshot": dict(context_snapshot) if isinstance(context_snapshot, dict) else {},
-        "mcp_context_id": mcp_context_id if isinstance(mcp_context_id, str) else None,
         "model_id": model_id if isinstance(model_id, str) else None,
         "model_value": model_value if isinstance(model_value, str) else None,
         "schema_version": schema_version

@@ -107,6 +107,22 @@ def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
     allowed_tools = tool.get("allowed_tools")
     endpoint = str(tool.get("endpoint") or "")
     parsed = urlsplit(endpoint)
+    catalog_managed = (
+        str(tool.get("catalog_status") or "legacy") == "active"
+        and str(tool.get("server_catalog_status") or "legacy") == "available"
+    )
+    endpoint_is_usable = (
+        endpoint == ""
+        if catalog_managed
+        else bool(
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc
+            and not parsed.username
+            and not parsed.password
+            and not parsed.query
+            and not parsed.fragment
+        )
+    )
     return bool(
         SAFE_ID_PATTERN.fullmatch(server_id)
         and SAFE_ID_PATTERN.fullmatch(tool_id)
@@ -114,12 +130,7 @@ def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
         and len(allowed_tools) == 1
         and isinstance(allowed_tools[0], str)
         and SAFE_ID_PATTERN.fullmatch(allowed_tools[0])
-        and parsed.scheme in {"http", "https"}
-        and parsed.netloc
-        and not parsed.username
-        and not parsed.password
-        and not parsed.query
-        and not parsed.fragment
+        and endpoint_is_usable
         and str(tool.get("transport_type") or "").lower() in {"http", "streamable_http", "sse"}
         and str(tool.get("auth_mode") or "").lower() == "none"
         and str(tool.get("catalog_status") or "legacy") in {"legacy", "active"}
@@ -542,13 +553,13 @@ async def publish_mcp_tool_catalog(
               id, server_id, name, description, transport_type, endpoint, auth_mode,
               allowed_tools, status, write_capable, risk_level, visible_to_user
             )
-            values (%s, %s, %s, %s, 'streamable_http', %s, 'none', %s::jsonb, %s, %s, %s, true)
+            values (%s, %s, %s, %s, 'streamable_http', '', 'none', %s::jsonb, %s, %s, %s, true)
             on conflict (id) do update
             set server_id = excluded.server_id,
                 name = excluded.name,
                 description = excluded.description,
                 transport_type = excluded.transport_type,
-                endpoint = excluded.endpoint,
+                endpoint = '',
                 auth_mode = excluded.auth_mode,
                 allowed_tools = excluded.allowed_tools,
                 status = excluded.status,
@@ -561,7 +572,6 @@ async def publish_mcp_tool_catalog(
                 server_name,
                 MCP_PUBLIC_TOOL_LABEL,
                 MCP_PUBLIC_TOOL_DESCRIPTION,
-                endpoint,
                 _repositories().dumps_json([remote_name]),
                 catalog_status,
                 tool.write_capable,

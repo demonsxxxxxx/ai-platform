@@ -209,12 +209,13 @@ async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_
     )
 
     registry_writes = [params for sql, params in conn.calls if "insert into mcp_tools" in sql]
-    registry_by_remote_name = {json.loads(params[5])[0]: params[6:9] for params in registry_writes}
+    registry_by_remote_name = {json.loads(params[4])[0]: params[5:8] for params in registry_writes}
     policy_writes = [params for sql, params in conn.calls if "insert into tool_policies" in sql]
     policy_by_reason = {params[4]: ("active", params[2], params[3]) for params in policy_writes}
 
     assert result["catalog_status"] == "available"
     assert result["catalog_selectable_count"] == 3
+    assert all("https://mcp.example/tools" not in params for params in registry_writes)
     assert registry_by_remote_name == {
         "read_tool": ("active", False, "low"),
         "write_tool": ("active", True, "high"),
@@ -344,7 +345,7 @@ async def test_annotation_unknown_catalog_tool_uses_existing_chat_distribution_a
         "tool_id": "mcpt-compatible",
         "server_id": "compatible-server",
         "transport_type": "streamable_http",
-        "endpoint": "https://mcp.example/tools",
+        "endpoint": "",
         "auth_mode": "none",
         "allowed_tools": ["unknown_tool"],
         "catalog_status": "active",
@@ -395,6 +396,21 @@ async def test_annotation_unknown_catalog_tool_uses_existing_chat_distribution_a
 
     assert [tool["tool_id"] for tool in authorized] == ["mcpt-compatible"]
     assert unauthorized == []
+
+
+def test_catalog_runtime_metadata_rejects_persisted_plaintext_endpoint():
+    tool = {
+        "tool_id": "mcpt-compatible",
+        "server_id": "compatible-server",
+        "transport_type": "streamable_http",
+        "endpoint": "https://mcp.example/tools",
+        "auth_mode": "none",
+        "allowed_tools": ["unknown_tool"],
+        "catalog_status": "active",
+        "server_catalog_status": "available",
+    }
+
+    assert mcp_repository.mcp_runtime_metadata_usable(tool) is False
 
 
 def test_only_the_code_owned_ragflow_builtin_has_legacy_catalog_authority():

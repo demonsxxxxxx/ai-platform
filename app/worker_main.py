@@ -12,6 +12,7 @@ import uuid
 
 from app import queue
 from app import repositories
+from app.bootstrap.mcp import configure_mcp_runtime
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -624,6 +625,7 @@ async def run_once(
     run_initial_maintenance: bool = True,
     run_background_maintenance: bool = True,
 ) -> WorkerOutcome:
+    configure_mcp_runtime()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
     if run_initial_maintenance:

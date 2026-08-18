@@ -15,7 +15,8 @@ from cryptography.x509.oid import NameOID
 from fastapi import HTTPException, Request, Response
 
 from app.auth import AuthPrincipal
-from app.mcp.runtime import (
+from app.mcp.domain.targets import mcp_targets_from_policy_subjects
+from app.mcp.infrastructure.runtime import (
     MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT,
     MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
     HostMcpRelay,
@@ -29,10 +30,10 @@ from app.mcp.runtime import (
     McpToolSelectionRequired,
     McpValidatedTarget,
     bounded_tool_view,
-    mcp_targets_from_policy_subjects,
     normalize_static_mcp_headers,
     open_mcp_server_credentials,
     preflight_mcp_admission,
+    resolve_registered_mcp_target,
     seal_mcp_server_credentials,
     validate_registered_mcp_target,
 )
@@ -69,7 +70,7 @@ def _settings(
 ) -> int:
     key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii").rstrip("=")
     monkeypatch.setattr(
-        "app.mcp.runtime.get_settings",
+        "app.mcp.infrastructure.runtime.get_settings",
         lambda: Settings(
             mcp_context_encryption_keys_json=json.dumps({"current": key}),
             mcp_context_current_key_id="current",
@@ -249,6 +250,26 @@ async def test_runtime_target_rechecks_dns_policy_before_dispatch(monkeypatch):
         await validate_registered_mcp_target("https://mcp.example/tools")
     with pytest.raises(McpRelayError, match="mcp_server_target_invalid"):
         await validate_registered_mcp_target("https://mcp.example/tools?jwt=secret")
+
+
+@pytest.mark.asyncio
+async def test_registered_target_never_falls_back_to_plaintext_catalog_endpoint(
+    monkeypatch,
+):
+    async def target_reader(_tenant_id, _server_id):
+        return {
+            "credential_envelope": "",
+            "registered_endpoint": "https://plaintext.example/mcp",
+            "active_tool_names": ["search"],
+        }
+
+    monkeypatch.setattr(
+        "app.mcp.infrastructure.runtime._relay_target_reader",
+        target_reader,
+    )
+
+    with pytest.raises(McpRelayError, match="mcp_server_not_available"):
+        await resolve_registered_mcp_target("tenant-a", "inventory-mcp")
 
 
 @pytest.mark.asyncio

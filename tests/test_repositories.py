@@ -15,6 +15,7 @@ from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
+from app.mcp.infrastructure import postgres as mcp_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.errors import (
     RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
@@ -113,42 +114,22 @@ def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
 
 
 @pytest.mark.asyncio
-async def test_mcp_relay_target_rejects_conflicting_registered_endpoints():
-    conflict = SingleRowConnection(
+async def test_mcp_relay_target_never_reads_plaintext_tool_endpoints():
+    connection = SingleRowConnection(
         {
             "credential_envelope": "sealed",
             "metadata_json": {},
-            "registered_endpoints": [
-                "https://first.example/mcp",
-                "https://second.example/mcp",
-            ],
             "active_tool_names": ["search"],
         }
     )
-
-    with pytest.raises(RepositoryConflictError, match="mcp_server_endpoint_conflict"):
-        await repositories.get_mcp_relay_target(
-            conflict,
-            tenant_id="default",
-            server_name="inventory",
-        )
-
-    stable = SingleRowConnection(
-        {
-            "credential_envelope": "sealed",
-            "metadata_json": {},
-            "registered_endpoints": ["https://inventory.example/mcp"],
-            "active_tool_names": ["search"],
-        }
-    )
-    target = await repositories.get_mcp_relay_target(
-        stable,
+    target = await mcp_persistence.get_mcp_relay_target(
+        connection,
         tenant_id="default",
         server_name="inventory",
     )
     assert target is not None
-    assert target["registered_endpoint"] == "https://inventory.example/mcp"
-    assert "max(mcp_tools.endpoint)" not in stable.sql
+    assert target["credential_envelope"] == "sealed"
+    assert "mcp_tools.endpoint" not in connection.sql
 
 
 @pytest.fixture(autouse=True)
@@ -2083,13 +2064,7 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     )
     assert "execution_kind, skill_id" in insert_sql
     assert insert_params[6:8] == ("harness_chat", None)
-    persisted_input = json.loads(
-        next(
-            value
-            for value in insert_params
-            if isinstance(value, str) and value.startswith("{")
-        )
-    )
+    persisted_input = json.loads(insert_params[19])
     assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
     assert persisted_input["skill_manifests"] == []
 
@@ -7053,7 +7028,7 @@ async def test_record_mcp_server_credential_keeps_only_hash_metadata_and_sealed_
 
     conn = CredentialConnection()
 
-    await repositories.record_mcp_server_credential(
+    await mcp_persistence.record_mcp_server_credential(
         conn,
         tenant_id="tenant-a",
         server_name="qa-mcp",
@@ -11610,7 +11585,6 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
         "skill_manifests": [{"skill_id": "general-chat", "content_hash": "hash-a"}],
         "context_snapshot_id": "ctx-a",
         "context_snapshot": {"context_snapshot_id": "ctx-a"},
-        "mcp_context_id": None,
         "model_id": "model-catalog-a",
         "model_value": "provider-model-a",
         "schema_version": "ai-platform.run-payload.v1",

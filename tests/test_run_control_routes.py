@@ -264,16 +264,6 @@ async def test_retry_with_fresh_mcp_context_preflights_and_persists_exact_child_
     async def no_op(*_args, **_kwargs):
         return None
 
-    async def source_run(*_args, **_kwargs):
-        return {
-            "id": "run-source",
-            "mcp_context_id": "mcpctx-source",
-            "input_json": {
-                "input": {"message": "retry", "mcp_tool_ids": ["inventory-search"]},
-                "mcp_context_id": "mcpctx-source",
-            },
-        }
-
     async def preflight(**kwargs):
         observed["preflight"] = kwargs
         return object()
@@ -281,11 +271,14 @@ async def test_retry_with_fresh_mcp_context_preflights_and_persists_exact_child_
     async def retry(_conn, **kwargs):
         observed["retry"] = kwargs
         return {
-            "run_id": kwargs["new_run_id"],
+            "run_id": "run-child",
             "session_id": "session-a",
             "status": "queued",
-            "mcp_context_id": kwargs["mcp_context_id"],
+            "input": {"message": "retry", "mcp_tool_ids": ["inventory-search"]},
         }
+
+    async def bind(_conn, **kwargs):
+        observed["bind"] = kwargs
 
     async def prepare(_conn, **kwargs):
         observed["prepared"] = kwargs["copied"]
@@ -308,8 +301,8 @@ async def test_retry_with_fresh_mcp_context_preflights_and_persists_exact_child_
     manager = Manager()
     monkeypatch.setattr(runs_routes, "transaction", transaction)
     monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
-    monkeypatch.setattr(runs_routes.repositories, "get_authorized_run", source_run)
     monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "bind_run_mcp_context", bind)
     monkeypatch.setattr(runs_routes, "get_mcp_runtime_context_manager", lambda: manager)
     monkeypatch.setattr(runs_routes.repositories, "retry_run_as_new_task", retry)
     monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", prepare)
@@ -332,9 +325,157 @@ async def test_retry_with_fresh_mcp_context_preflights_and_persists_exact_child_
     preflight_call = observed["preflight"]
     retry_call = observed["retry"]
     assert preflight_call["context_id"] == "mcpctx-fresh"
-    assert preflight_call["run_id"] == retry_call["new_run_id"] == result.run_id
+    assert preflight_call["run_id"] == result.run_id == "run-child"
     assert preflight_call["selected_tool_names"] == ("inventory-search",)
-    assert retry_call["mcp_context_id"] == "mcpctx-fresh"
+    assert "new_run_id" not in retry_call
+    assert "mcp_context_id" not in retry_call
+    assert observed["bind"] == {
+        "tenant_id": "default",
+        "run_id": "run-child",
+        "mcp_context_id": "mcpctx-fresh",
+    }
+    assert observed["prepared"]["mcp_context_id"] == "mcpctx-fresh"
+    assert "invalidated" not in observed
+
+
+@pytest.mark.asyncio
+async def test_retry_invalidates_fresh_mcp_context_when_binding_rolls_back(monkeypatch):
+    from app.routes import runs as runs_routes
+
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def retry(_conn, **_kwargs):
+        return {
+            "run_id": "run-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {"mcp_tool_ids": ["inventory-search"]},
+        }
+
+    async def preflight(**_kwargs):
+        return object()
+
+    async def fail_bind(*_args, **_kwargs):
+        raise RuntimeError("database binding failed")
+
+    async def invalidate(context_id):
+        observed["invalidated"] = context_id
+
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, "retry_run_as_new_task", retry)
+    monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "bind_run_mcp_context", fail_bind)
+    monkeypatch.setattr(runs_routes, "invalidate_mcp_runtime_context", invalidate)
+
+    with pytest.raises(RuntimeError, match="database binding failed"):
+        await runs_routes._mutate_run_control_child(
+            run_id="run-source",
+            action="retry",
+            operation_id=UUID(RUN_CONTROL_OPERATION_ID),
+            principal=AuthPrincipal(
+                tenant_id="default",
+                user_id="user-a",
+                display_name="User A",
+                source="company-login",
+            ),
+            mcp_context_id="mcpctx-fresh",
+        )
+
+    assert observed == {"invalidated": "mcpctx-fresh"}
+
+
+@pytest.mark.parametrize("bind_failure", [False, True], ids=["success", "rollback"])
+@pytest.mark.asyncio
+async def test_copy_with_fresh_mcp_context_preflights_and_binds_child(
+    monkeypatch,
+    bind_failure,
+):
+    from app.models import RunControlMutationRequest
+    from app.routes import runs as runs_routes
+
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def copy(_conn, **_kwargs):
+        return {
+            "run_id": "run-copy-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {},
+            "_requires_fresh_mcp_context": True,
+        }
+
+    async def preflight(**kwargs):
+        observed["preflight"] = kwargs
+
+    async def bind(_conn, **kwargs):
+        observed["bind"] = kwargs
+        if bind_failure:
+            raise RuntimeError("database binding failed")
+
+    async def invalidate(context_id):
+        observed["invalidated"] = context_id
+
+    async def prepare(_conn, **kwargs):
+        observed["prepared"] = kwargs["copied"]
+        return {"run_id": kwargs["copied"]["run_id"]}
+
+    async def enqueue(_payload):
+        return 1
+
+    async def insight(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, "copy_run_as_new_task", copy)
+    monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "bind_run_mcp_context", bind)
+    monkeypatch.setattr(runs_routes, "invalidate_mcp_runtime_context", invalidate)
+    monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr(runs_routes, "enqueue_run", enqueue)
+    monkeypatch.setattr(runs_routes, "queue_insight_for_status", insight)
+
+    copy_call = runs_routes.copy_run(
+        "run-source",
+        request=RunControlMutationRequest(mcp_context_id="mcpctx-fresh"),
+        principal=AuthPrincipal(
+            tenant_id="default",
+            user_id="user-a",
+            display_name="User A",
+            source="company-login",
+        ),
+    )
+    if bind_failure:
+        with pytest.raises(RuntimeError, match="database binding failed"):
+            await copy_call
+        assert observed["invalidated"] == "mcpctx-fresh"
+        return
+    result = await copy_call
+
+    assert result.run_id == "run-copy-child"
+    assert observed["preflight"]["context_id"] == "mcpctx-fresh"
+    assert observed["preflight"]["run_id"] == "run-copy-child"
+    assert observed["preflight"]["selected_tool_names"] == ()
+    assert observed["bind"] == {
+        "tenant_id": "default",
+        "run_id": "run-copy-child",
+        "mcp_context_id": "mcpctx-fresh",
+    }
     assert observed["prepared"]["mcp_context_id"] == "mcpctx-fresh"
     assert "invalidated" not in observed
 
@@ -3368,6 +3509,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
             "session_id": "ses_old",
             "agent_id": "qa-word-review",
             "skill_id": "qa-file-reviewer",
+            "mcp_context_id": "mcpctx-source",
             "input_json": {
                 "skillIds": ["qa-file-reviewer"],
                 "allowedSkills": ["qa-file-reviewer"],
@@ -3435,6 +3577,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert copied["release_policy_version"] == ""
     assert copied["model_id"] == "model-catalog-a"
     assert copied["model_value"] == "provider-model-a"
+    assert copied["_requires_fresh_mcp_context"] is True
     assert "executor_type" not in copied["input"]
     assert "skill_ids" not in copied["input"]
     assert "skillIds" not in copied["input"]
@@ -3456,6 +3599,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in persisted_json
     assert "/var/lib/ai-platform" not in persisted_json
     persisted_input = json.loads(persisted_json)
+    assert "mcp_context_id" not in persisted_input
     assert persisted_input["model_id"] == "model-catalog-a"
     assert persisted_input["model_value"] == "provider-model-a"
     persisted_snapshot = repositories.copied_run_execution_snapshot(persisted_input)
@@ -4185,28 +4329,63 @@ async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
         await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
 
 
-@pytest.mark.parametrize(
-    ("operation", "replay_kwargs"),
-    [
-        (repository_module.retry_run_as_new_task, {"new_run_id": "run-child"}),
-        (repository_module.retry_run_as_new_task, {"mcp_context_id": "mcpctx-child"}),
-        (repository_module.resume_run_as_new_task, {"new_run_id": "run-child"}),
-        (repository_module.resume_run_as_new_task, {"mcp_context_id": "mcpctx-child"}),
-    ],
-)
+@pytest.mark.parametrize(("action", "repository_method"), [("retry", "retry_run_as_new_task"), ("resume", "resume_run_as_new_task")])
 @pytest.mark.asyncio
-async def test_replay_requires_run_and_mcp_context_ids_together(
-    operation,
-    replay_kwargs,
+async def test_replay_mcp_source_requires_fresh_context_before_transaction_commit(
+    monkeypatch,
+    action,
+    repository_method,
 ):
-    with pytest.raises(RepositoryConflictError, match="mcp_context_required_for_retry"):
-        await operation(
-            object(),
-            tenant_id="default",
-            user_id="user-a",
+    from app.routes import runs as runs_routes
+
+    observed: list[str] = []
+
+    @asynccontextmanager
+    async def transaction():
+        try:
+            yield object()
+        except RepositoryConflictError:
+            observed.append("rolled_back")
+            raise
+        else:
+            observed.append("committed")
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def mutation(*_args, **_kwargs):
+        observed.append("child_created_in_transaction")
+        return {
+            "run_id": "run-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {"mcp_tool_ids": ["inventory-search"]},
+        }
+
+    async def fail_prepare(*_args, **_kwargs):
+        raise AssertionError("an MCP replay without a fresh context must not be prepared")
+
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, repository_method, mutation)
+    monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", fail_prepare)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs_routes._mutate_run_control_child(
             run_id="run-source",
-            **replay_kwargs,
+            action=action,
+            operation_id=UUID(RUN_CONTROL_OPERATION_ID),
+            principal=AuthPrincipal(
+                tenant_id="default",
+                user_id="user-a",
+                display_name="User A",
+                source="company-login",
+            ),
         )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "mcp_context_required_for_retry"
+    assert observed == ["child_created_in_transaction", "rolled_back"]
 
 
 @pytest.mark.asyncio

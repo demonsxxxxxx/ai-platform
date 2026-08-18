@@ -484,6 +484,8 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "name text not null" in schema
     assert "transport text not null default 'streamable_http'" in schema
     assert "endpoint_redacted text not null default ''" in schema
+    assert "mcp_servers_endpoint_not_persisted" in schema
+    assert "check (endpoint_redacted = '')" in schema
     assert "credential_state text not null default 'not_configured'" in schema
     assert "credential_fingerprint text not null default ''" in schema
     assert "allowed_roles jsonb not null default '[]'::jsonb" in schema
@@ -494,6 +496,8 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "metadata_json jsonb not null default '{}'::jsonb" in schema
     assert "primary key (tenant_id, server_name)" in schema
     assert "idx_mcp_servers_tenant_status" in schema
+    assert "mcp_tools_endpoint_not_persisted" in schema
+    assert "check (endpoint = '')" in schema
 
 
 def test_schema_declares_tool_permission_inbox_index():

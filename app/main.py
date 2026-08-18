@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool
 from app.redis_client import close_redis_client
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_mcp_runtime()
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
     app.add_middleware(

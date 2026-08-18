@@ -50,7 +50,7 @@ from app.execution_boundary import (
 from app.executors.base import ExecutorDispatchAccepted, ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
-from app.mcp.runtime import (
+from app.mcp.api import (
     McpRuntimeContextError,
     get_mcp_runtime_context_manager,
     mcp_targets_from_policy_subjects,

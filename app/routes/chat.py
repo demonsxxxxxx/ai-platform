@@ -49,9 +49,11 @@ from app.intent_router import (
     route_intent,
 )
 from app.model_catalog import resolve_model_selection
-from app.mcp.runtime import (
+from app.mcp.api import (
     McpRuntimeContextError,
+    bind_run_mcp_context,
     get_mcp_runtime_context_manager,
+    invalidate_mcp_runtime_context,
     preflight_mcp_admission,
 )
 from app.models import (
@@ -538,6 +540,19 @@ async def _persist_pre_persistence_rejection(
             )
 
 
+def _persisted_mcp_context_id(run: object) -> str | None:
+    if not isinstance(run, dict):
+        return None
+    input_json = run.get("input_json")
+    persisted = (
+        input_json.get("mcp_context_id")
+        if isinstance(input_json, dict)
+        else None
+    )
+    context_id = run.get("mcp_context_id") or persisted
+    return str(context_id) if isinstance(context_id, str) and context_id else None
+
+
 async def _admit_chat_submission(
     *,
     principal: AuthPrincipal,
@@ -548,6 +563,7 @@ async def _admit_chat_submission(
     profile_bound = False
     profile_resolution: ChatSubmissionResponse | None = None
     profile_enqueue_error: Exception | None = None
+    terminal_mcp_context_id: str | None = None
     async with transaction() as conn:
         submission = await repositories.get_chat_submission(
             conn,
@@ -676,13 +692,15 @@ async def _admit_chat_submission(
                 if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
                     profile_enqueue_error
                 ):
-                    await repositories.mark_run_enqueue_failed(
+                    terminalization = await repositories.mark_run_enqueue_failed(
                         conn,
                         tenant_id=principal.tenant_id,
                         user_id=principal.user_id,
                         run_id=run_id,
                         trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
                     )
+                    if terminalization.completed:
+                        terminal_mcp_context_id = _persisted_mcp_context_id(run)
                     await repositories.finalize_chat_submission(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -720,6 +738,7 @@ async def _admit_chat_submission(
         if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
             profile_enqueue_error
         ):
+            await invalidate_mcp_runtime_context(terminal_mcp_context_id)
             raise HTTPException(status_code=503, detail="queue_enqueue_failed") from profile_enqueue_error
         if profile_resolution is None:
             raise HTTPException(status_code=409, detail="chat_submission_not_admitted")
@@ -764,13 +783,15 @@ async def _admit_chat_submission(
             # Only the queue module's deterministic pre-admission rejection
             # can produce enqueue_failed.  This transaction is distinct from
             # planning and commits before the HTTP error.
-            await repositories.mark_run_enqueue_failed(
+            terminalization = await repositories.mark_run_enqueue_failed(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
                 trace_id=str(current_run.get("trace_id") or standard_trace_id(run_id)),
             )
+            if terminalization.completed:
+                terminal_mcp_context_id = _persisted_mcp_context_id(current_run)
             await repositories.finalize_chat_submission(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -779,6 +800,7 @@ async def _admit_chat_submission(
                 state="enqueue_failed",
                 rejection_code="queue_enqueue_failed",
             )
+        await invalidate_mcp_runtime_context(terminal_mcp_context_id)
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
 
     # Record the queue identity in a fresh transaction as well.  This can be
@@ -1587,6 +1609,7 @@ async def chat_stream(
     effective_workspace_id = request.workspace_id
     inherited_mcp_selection = False
     admitted_agent_profile = None
+    bound_mcp_context_id: str | None = None
     try:
         async with transaction() as conn:
             # Global submission order: user advisory -> session row -> Agent
@@ -2169,6 +2192,7 @@ async def chat_stream(
                 mcp_required=bool(mcp_tool_ids),
                 context_manager=get_mcp_runtime_context_manager(),
             )
+            bound_mcp_context_id = effective_mcp_context_id
             await repositories.ensure_workspace_belongs_to_tenant(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -2203,6 +2227,8 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
+                    await invalidate_mcp_runtime_context(bound_mcp_context_id)
+                    bound_mcp_context_id = None
                     return _existing_chat_submission_response(
                         claimed_submission,
                         request=request,
@@ -2257,7 +2283,6 @@ async def chat_stream(
                 "principal_roles": principal.roles,
                 "principal_department_id": principal.department_id,
                 "auth_source": principal.source,
-                "mcp_context_id": effective_mcp_context_id,
                 "authz_policy_version": principal.authz_policy_version,
                 "authority_source": principal.authority_source or principal.source,
                 "authority_checked_at": principal.authority_checked_at or None,
@@ -2270,6 +2295,13 @@ async def chat_stream(
                     }
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
+            if effective_mcp_context_id:
+                await bind_run_mcp_context(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    mcp_context_id=effective_mcp_context_id,
+                )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
                     conn,
@@ -2418,6 +2450,7 @@ async def chat_stream(
                 }
             )
     except McpRuntimeContextError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         code = exc.code
         await _persist_pre_persistence_rejection(
             principal=principal,
@@ -2432,6 +2465,7 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise HTTPException(status_code=exc.status_code, detail=code) from exc
     except HTTPException as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         authorization_error = exc.__cause__
         if isinstance(authorization_error, repositories.RepositoryAuthorizationError):
             await _audit_capability_denial(principal, authorization_error, source="chat_stream")
@@ -2451,6 +2485,7 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise
     except repositories.RepositoryAuthorizationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
         error_code = (
@@ -2471,6 +2506,7 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
     except RepositoryNotFoundError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
@@ -2485,6 +2521,7 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=404, code=code) from exc
         raise HTTPException(status_code=404, detail=code) from exc
     except SkillVersionMaterializationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
@@ -2499,6 +2536,7 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
     except RepositoryConflictError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
@@ -2513,6 +2551,7 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
     except Exception as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         diagnostic_id = _new_submission_diagnostic_id()
         _log_safe_submission_exception(
             phase="admission_transaction",
@@ -2577,6 +2616,7 @@ async def chat_stream(
                 run_id=run_id,
                 trace_id=standard_trace_id(run_id),
             )
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     queue_position = int(queue_admission.queue_position)
     async with transaction() as conn:
