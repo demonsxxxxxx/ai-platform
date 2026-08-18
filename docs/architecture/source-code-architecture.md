@@ -619,9 +619,33 @@ packages/layers, allowed public cross-domain modules, approved root modules,
 governed symbol owners, canonical registry module/key/settings-selector owners,
 and frozen hot files. A candidate-only
 `.architecture-governance-exception.json` binds an exception to exact base/head,
-paths, owner, reason, and removal condition. The gate itself MUST be introduced
-in a later PR so the candidate that defines it cannot certify its own
-correctness.
+paths, owner, reason, and removal condition. The checker applies an exception
+only when the candidate adds or changes that file. An exception inherited
+unchanged from the base is inactive: it cannot exempt new findings and cannot
+lock later candidates after its original merge. Candidates SHOULD delete an
+inherited inactive exception when they are otherwise performing an authority-only
+cleanup. The gate itself MUST be introduced in a later PR so the candidate that
+defines it cannot certify its own correctness.
+
+The immutable authority rule has one fail-closed recovery case. If the exact
+base policy cannot validate only because `approved_root_modules` no longer
+matches the exact base Git tree, a candidate MAY restore that inventory without
+an administrator bypass. The trusted base checker accepts the candidate policy
+only when all of the following hold:
+
+- the authority commit equals the base commit;
+- the candidate modifies `architecture-policy.json` in place and optionally deletes
+  the stale `.architecture-governance-exception.json`;
+- every policy field except `approved_root_modules` is semantically unchanged;
+- the approved inventory exactly equals the unchanged base and candidate
+  `app/*.py` root-module inventory;
+- no candidate architecture exception remains; and
+- the candidate policy still validates against the authority schema and all
+  normal policy contracts.
+
+This recovery path cannot change source, workflows, schemas, architecture
+rules, exception scope, or any other policy value. Every broader repair remains
+blocked and requires the normal trusted governance process.
 
 ## 13. Review checklist for every backend PR
 
