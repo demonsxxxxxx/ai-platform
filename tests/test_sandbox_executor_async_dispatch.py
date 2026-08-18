@@ -2,9 +2,14 @@ import asyncio
 import threading
 import time
 
+import httpx
 from fastapi.testclient import TestClient
 
-from app.runtime.sandbox.executor_app import create_executor_app as _create_executor_app
+from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.sandbox.executor_app import (
+    _CallbackRetryPolicy,
+    create_executor_app as _create_executor_app,
+)
 from tests.test_sandbox_executor_app import (
     EXECUTOR_AUTH_TOKEN,
     TRUSTED_CALLBACK_BASE_URL,
@@ -98,6 +103,55 @@ def test_v2_dispatch_returns_accepted_and_delivers_terminal_callback(tmp_path):
             ).status_code
             == 404
         )
+
+
+def test_v2_delivery_exhaustion_still_delivers_failed_terminal_callback(tmp_path):
+    callbacks: list[dict[str, object]] = []
+    assistant_attempts: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, _token):
+        callbacks.append(payload)
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts.append(payload)
+            raise httpx.ConnectError(
+                "callback unavailable",
+                request=httpx.Request("POST", url),
+            )
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        nonterminal_callback_retry_policy=_CallbackRetryPolicy(
+            max_attempts=2,
+            attempt_timeout_seconds=0.05,
+            initial_backoff_seconds=0,
+            max_backoff_seconds=0,
+            jitter_ratio=0,
+        ),
+    )
+    with TestClient(app) as client:
+        response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert response.status_code == 202
+        status_payload = _wait_for_status(client, "failed")
+        assert status_payload["terminal_result"]["error_code"] == "stream_delivery_exhausted"
+
+        terminal = _wait_for_terminal_callback(callbacks, "failed")
+        assert len(terminal) == 1
+        assert terminal[0]["terminal_result"]["error_code"] == "stream_delivery_exhausted"
+
+    assert len(assistant_attempts) == 2
+    assert assistant_attempts[0] == assistant_attempts[1]
 
 
 def test_v2_dispatch_is_idempotent_while_original_task_is_running(tmp_path):
