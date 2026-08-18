@@ -74,6 +74,18 @@ def default_create_run_workspace_guard(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def default_replay_source_mcp_lookup(monkeypatch):
+    async def no_source_run(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        no_source_run,
+        raising=False,
+    )
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()

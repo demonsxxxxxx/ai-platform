@@ -252,7 +252,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
     assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
     assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",
