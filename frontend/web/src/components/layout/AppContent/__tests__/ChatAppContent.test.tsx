@@ -50,6 +50,24 @@ const safeWorkspace = {
   expected_revision: safeIdentity.revision,
 } as const;
 
+test("Agent workspace history selection loads before changing its session route", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  const handlerStart = source.indexOf("const handleSelectSessionAndClose");
+  const handlerEnd = source.indexOf("const handleNewSessionAndClose", handlerStart);
+  assert.notEqual(handlerStart, -1);
+  assert.notEqual(handlerEnd, -1);
+
+  const handler = source.slice(handlerStart, handlerEnd);
+  assert.match(
+    handler,
+    /setAgentConversationState\(conversationState\("bound", id, identity\)\);\s*await handleSelectSession\(id\);/,
+  );
+  assert.doesNotMatch(
+    handler,
+    /navigate\(\s*`\$\{agentWorkspaceRouteBasePath\}\/\$\{encodeURIComponent\(id\)\}`/,
+  );
+});
+
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetPublished = agentProfileApi.getPublished;
