@@ -32,6 +32,13 @@ import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 /**
  * SSE Connection context
  */
+export interface ReplayGapRecoveryOwner {
+  sessionId: string;
+  runId: string;
+  streamVersion: number;
+  promise: Promise<void>;
+}
+
 export interface SSEConnectionContext extends EventHandlerContext {
   isMountedRef?: React.MutableRefObject<boolean>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
@@ -42,6 +49,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
   > | null>;
   retryCountRef: React.MutableRefObject<number>;
   statusRetryCountRef?: React.MutableRefObject<number>;
+  replayGapRecoveryRef?: React.MutableRefObject<ReplayGapRecoveryOwner | null>;
   messagesRef: React.MutableRefObject<Message[]>;
   hydrateTerminalRun?: (
     sessionId: string,
@@ -84,6 +92,7 @@ export interface SSETokenDependencies {
   now?: () => number;
   setStartupTimeout?: typeof globalThis.setTimeout;
   clearStartupTimeout?: typeof globalThis.clearTimeout;
+  replayGapDependencies?: ReconnectDependencies;
 }
 
 /**
@@ -175,7 +184,20 @@ function isRefreshRetryRequested(error: unknown): error is RefreshRetryRequested
   return error instanceof RefreshRetryRequested;
 }
 
+class SSEReplayGapError extends Error {
+  constructor() {
+    super("sse_replay_gap");
+    this.name = "SSEReplayGapError";
+  }
+}
+
+function isSSEReplayGapError(error: unknown): error is SSEReplayGapError {
+  return error instanceof SSEReplayGapError;
+}
+
 export const MAX_STATUS_QUERY_RETRIES = 2;
+export const MAX_REPLAY_GAP_STATUS_POLLS = 3;
+export const REPLAY_GAP_STATUS_POLL_DELAY_MS = 1_000;
 /** Per-attempt ceiling for an authoritative run status read. */
 export const AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS = 8_000;
 /** Maximum reconnects after continuous transport loss for one session/run. */
@@ -185,6 +207,7 @@ type ReconnectDependencies = {
   connect?: typeof connectToSSE;
   statusAttemptTimeoutMs?: number;
   reconnectDelay?: typeof getReconnectDelay;
+  replayGapStatusPollDelayMs?: number;
 };
 
 export type AuthoritativeStatusQueryResult =
@@ -272,6 +295,150 @@ export async function queryAuthoritativeRunStatus({
   }
 
   return { kind: "stale" };
+}
+
+export async function recoverReplayGap(
+  ctx: SSEConnectionContext,
+  {
+    sessionId,
+    runId,
+    messageId,
+    streamVersion,
+  }: {
+    sessionId: string;
+    runId: string;
+    messageId: string;
+    streamVersion: number;
+  },
+  dependencies: ReconnectDependencies = {},
+): Promise<void> {
+  const isCurrent = () =>
+    isCurrentSSETarget(ctx, sessionId, runId, streamVersion);
+  const existing = ctx.replayGapRecoveryRef?.current;
+  if (
+    existing &&
+    existing.sessionId === sessionId &&
+    existing.runId === runId &&
+    existing.streamVersion === streamVersion
+  ) {
+    return existing.promise;
+  }
+
+  if (!isCurrent()) {
+    return;
+  }
+
+  const acceptedStreamCursorRef = ctx.acceptedStreamCursorRef;
+  const cursor = acceptedStreamCursorRef?.current;
+  if (
+    acceptedStreamCursorRef &&
+    cursor?.sessionId === sessionId &&
+    cursor.runId === runId
+  ) {
+    acceptedStreamCursorRef.current = {
+      sessionId: null,
+      runId: null,
+      eventId: null,
+      streamIncarnation: null,
+    };
+  }
+  const acceptedRunEventSequenceRef = ctx.acceptedRunEventSequenceRef;
+  const sequence = acceptedRunEventSequenceRef?.current;
+  if (
+    acceptedRunEventSequenceRef &&
+    sequence?.sessionId === sessionId &&
+    sequence.runId === runId
+  ) {
+    acceptedRunEventSequenceRef.current = {
+      sessionId: null,
+      runId: null,
+      sequence: null,
+    };
+  }
+  ctx.publicStreamPresentation?.flush({
+    sessionId,
+    runId,
+    assistantMessageId: messageId,
+    streamVersion,
+  });
+  ctx.publicStreamPresentation?.invalidate();
+  ctx.setMessages((messages) =>
+    messages.map((message) =>
+      message.id === messageId ? { ...message, isStreaming: false } : message,
+    ),
+  );
+  ctx.setConnectionStatus("recovering_gap");
+  ctx.setIsInitializingSandbox(false);
+
+  const owner: ReplayGapRecoveryOwner = {
+    sessionId,
+    runId,
+    streamVersion,
+    promise: Promise.resolve(),
+  };
+  const settleUnavailable = () => {
+    if (!isCurrent()) {
+      return;
+    }
+    if (ctx.onRunStatusUnavailable?.(runId, messageId)) {
+      return;
+    }
+    ctx.setConnectionStatus("disconnected");
+    ctx.setIsInitializingSandbox(false);
+  };
+  const delayMs = Math.max(
+    0,
+    dependencies.replayGapStatusPollDelayMs ?? REPLAY_GAP_STATUS_POLL_DELAY_MS,
+  );
+  const promise = (async () => {
+    try {
+      for (let poll = 0; poll < MAX_REPLAY_GAP_STATUS_POLLS; poll += 1) {
+        const statusResult = await queryAuthoritativeRunStatus({
+          sessionId,
+          runId,
+          isCurrent,
+          statusRetryCountRef: { current: 0 },
+          getStatus: dependencies.getStatus,
+          attemptTimeoutMs: dependencies.statusAttemptTimeoutMs,
+        });
+        if (statusResult.kind === "stale") {
+          return;
+        }
+        if (statusResult.kind === "unavailable") {
+          settleUnavailable();
+          return;
+        }
+        const status = terminalRunStatus(statusResult.status);
+        if (status) {
+          if (!isCurrent()) {
+            return;
+          }
+          if (ctx.hydrateTerminalRun) {
+            await ctx.hydrateTerminalRun(sessionId, runId, status, messageId);
+          } else {
+            ctx.onRunTerminal?.(runId, status, messageId);
+          }
+          return;
+        }
+        if (poll + 1 < MAX_REPLAY_GAP_STATUS_POLLS) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+          if (!isCurrent()) {
+            return;
+          }
+        }
+      }
+      settleUnavailable();
+    } finally {
+      if (ctx.replayGapRecoveryRef?.current === owner) {
+        ctx.replayGapRecoveryRef.current = null;
+      }
+    }
+  })();
+  owner.promise = promise;
+  if (ctx.replayGapRecoveryRef) {
+    ctx.replayGapRecoveryRef.current = owner;
+  }
+  return promise;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -504,10 +671,10 @@ export async function connectToSSE(
             throw new Error("sse_event_json_invalid");
           }
           if (event.event === "gap") {
-            // Preserve the run owner so the caller can reconcile against
-            // durable status/history. A replay gap is not a terminal fact.
+            // A trim/missing-continuity gap is not recoverable by reconnecting
+            // with the prior cursor: that would append an unprovable live tail.
             receivedNonTerminalApplicationError = true;
-            throw new Error("sse_replay_gap");
+            throw new SSEReplayGapError();
           }
           const eventId = event.id;
           if (!eventId) {
@@ -651,6 +818,24 @@ export async function connectToSSE(
       startupDeadline,
     ]);
   } catch (err) {
+    if (isSSEReplayGapError(err)) {
+      streamAbortController.abort();
+      if (abortControllerRef.current === streamAbortController) {
+        abortControllerRef.current = null;
+      }
+      isConnectingRef.current = false;
+      await recoverReplayGap(
+        ctx,
+        {
+          sessionId: targetSessionId,
+          runId: targetRunId,
+          messageId,
+          streamVersion,
+        },
+        tokenDependencies.replayGapDependencies,
+      );
+      return;
+    }
     if (isRefreshRetryRequested(err)) {
       // The signal is valid only for this exact captured controller and its
       // session/run/generation. A stale callback must not touch a replacement

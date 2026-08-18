@@ -13,6 +13,7 @@ import {
   MAX_STATUS_QUERY_RETRIES,
   queryAuthoritativeRunStatus,
   reconnectSSE,
+  recoverReplayGap,
   type SSEConnectionContext,
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
@@ -2292,10 +2293,11 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
   assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
 });
 
-test("replay gap preserves the run owner and performs durable status reconciliation", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("replay gap preserves partial output until an active run reaches terminal hydration", async () => {
   let statusCalls = 0;
-  let reconnectCalls = 0;
+  let hydrateCalls = 0;
+  let capturedInit: Parameters<SSEFetchEventSource>[1] | undefined;
+  const connectionStates: string[] = [];
   const context = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
@@ -2303,6 +2305,7 @@ test("replay gap preserves the run owner and performs durable status reconciliat
     reconnectTimeoutRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
     messagesRef: {
       current: [
         {
@@ -2312,7 +2315,7 @@ test("replay gap preserves the run owner and performs durable status reconciliat
           timestamp: new Date(),
           isStreaming: true,
         },
-      ],
+      ] as Message[],
     },
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
@@ -2326,52 +2329,104 @@ test("replay gap preserves the run owner and performs durable status reconciliat
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
-    isReconnectFromHistoryRef: { current: false },
     setSessionId: () => undefined,
-    setMessages: () => undefined,
-    setConnectionStatus: () => undefined,
+    setMessages: (update: Message[] | ((current: Message[]) => Message[])) => {
+      context.messagesRef.current =
+        typeof update === "function" ? update(context.messagesRef.current) : update;
+    },
+    setConnectionStatus: (status: string) => connectionStates.push(status),
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
-  } satisfies SSEConnectionContext & {
-    isReconnectFromHistoryRef: { current: boolean };
-  };
+    hydrateTerminalRun: async () => {
+      hydrateCalls += 1;
+    },
+  } satisfies SSEConnectionContext;
 
-  await assert.rejects(
-    connectToSSE(
-      "session-1",
-      "run-1",
-      "assistant-1",
-      context,
-      false,
-      async (_input, init) => {
-        await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "gap",
-          data: JSON.stringify({ recovery: "reload_durable_state" }),
-        } as never);
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      capturedInit = init;
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.({
+        event: "gap",
+        data: JSON.stringify({ recovery: "reload_durable_state" }),
+      } as never);
+    },
+    {
+      replayGapDependencies: {
+        getStatus: async () => {
+          statusCalls += 1;
+          return {
+            session_id: "session-1",
+            run_id: "run-1",
+            status: statusCalls === 1 ? "running" : "succeeded",
+          };
+        },
+        replayGapStatusPollDelayMs: 0,
       },
-    ),
-    /sse_replay_gap/,
+    },
   );
-  assert.equal(context.currentRunIdRef.current, "run-1");
 
-  await reconnectSSE(context, {
-    getStatus: async () => {
-      statusCalls += 1;
-      return { session_id: "session-1", run_id: "run-1", status: "running" };
-    },
-    connect: async () => {
-      reconnectCalls += 1;
-    },
-    reconnectDelay: () => 0,
+  assert.equal(statusCalls, 2);
+  assert.equal(hydrateCalls, 1);
+  assert.doesNotThrow(() =>
+    capturedInit?.onmessage?.({ event: "message", data: "not-json" } as never),
+  );
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: null,
+    runId: null,
+    eventId: null,
+    streamIncarnation: null,
   });
-  t.mock.timers.tick(1);
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.equal(statusCalls, 1);
-  assert.equal(reconnectCalls, 1);
+  assert.deepEqual(context.acceptedRunEventSequenceRef.current, {
+    sessionId: null,
+    runId: null,
+    sequence: null,
+  });
+  assert.equal(context.messagesRef.current[0]?.content, "partial");
+  assert.equal(context.messagesRef.current[0]?.isStreaming, false);
+  assert.deepEqual(connectionStates, ["connecting", "connected", "recovering_gap"]);
   assert.equal(context.currentRunIdRef.current, "run-1");
+});
+
+test("does not mutate shared state when a stale owner receives a replay gap", async () => {
+  const states: string[] = [];
+  const context = {
+    isMountedRef: { current: true },
+    sessionIdRef: { current: "session-new" },
+    currentRunIdRef: { current: "run-new" },
+    streamVersionRef: { current: 2 },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: "session-old",
+        runId: "run-old",
+        eventId: "run-old:1:1-0",
+        streamIncarnation: 1,
+      },
+    },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-old", runId: "run-old", sequence: 8 },
+    },
+    replayGapRecoveryRef: { current: null },
+    setMessages: () => assert.fail("stale gap must not mutate messages"),
+    setConnectionStatus: (status: string) => states.push(status),
+    setIsInitializingSandbox: () => assert.fail("stale gap must not mutate sandbox state"),
+  } as unknown as SSEConnectionContext;
+
+  await recoverReplayGap(context, {
+    sessionId: "session-old",
+    runId: "run-old",
+    messageId: "assistant-old",
+    streamVersion: 1,
+  });
+
+  assert.deepEqual(states, []);
+  assert.equal(context.acceptedStreamCursorRef!.current.eventId, "run-old:1:1-0");
+  assert.equal(context.acceptedRunEventSequenceRef!.current.sequence, 8);
 });
 
 test("drops a queued reconnect timer after session switch or unmount", async (t) => {
