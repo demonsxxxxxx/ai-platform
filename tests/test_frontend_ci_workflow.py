@@ -1,6 +1,7 @@
 import importlib.metadata
 from pathlib import Path
 import tomllib
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -75,7 +76,8 @@ def _jsonschema_contract_namespace() -> dict[str, object]:
         line.removeprefix("          ") for line in workflow[start:end].splitlines()
     )
     namespace: dict[str, object] = {"__name__": "workflow_contract"}
-    exec(source, namespace)
+    with patch("subprocess.check_call"):
+        exec(source, namespace)
     return namespace
 
 
@@ -148,6 +150,34 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert required["name"] == "frontend required"
     assert required["needs"] == ["frontend", "frontend-image"]
     assert required["if"] == "${{ always() }}"
+    image_job = workflow.split("  frontend-image:", 1)[1].split("  required:", 1)[0]
+    required_job = workflow.split("  required:", 1)[1]
+    assert "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}" in image_job
+    assert "fetch-depth: 0" in image_job
+    assert "- name: Determine frontend image impact" in image_job
+    assert "python tools/ci_image_scope.py" in image_job
+    assert '--event-name "$GITHUB_EVENT_NAME"' in image_job
+    assert '--role frontend' in image_job
+    assert '--base-ref "$IMAGE_BASE_COMMIT"' in image_job
+    assert '--head-ref "$IMAGE_SOURCE_COMMIT"' in image_job
+    assert "- name: Report frontend image validation not affected" in image_job
+    assert "if: steps.image-scope.outputs.build != 'true'" in image_job
+    assert "reason=packaged_inputs_unchanged" in image_job
+    assert "base_commit=%s head_commit=%s" in image_job
+    for step_name in [
+        "Set up Python for Linux contracts",
+        "Install Linux contract test dependencies",
+        "Verify Linux frontend healthcheck contract",
+        "Resolve image source repository",
+        "Build frontend image",
+        "Block fixable frontend image vulnerabilities",
+        "Verify image build provenance",
+        "Verify frontend image startup",
+    ]:
+        step = image_job.split(f"- name: {step_name}", 1)[1].split("\n      - name:", 1)[0]
+        assert "if: steps.image-scope.outputs.build == 'true'" in step
+    assert "IMAGE_RESULT: ${{ needs.frontend-image.result }}" in required_job
+    assert "IMAGE_DISPOSITION" not in required_job
     for job_name in [*required["needs"], "required"]:
         job = jobs[job_name]
         assert isinstance(job, dict)
@@ -237,8 +267,10 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert expected_split_steps in workflow
     expected_linux_steps = (
         "      - name: Install Linux contract test dependencies\n"
+        "        if: steps.image-scope.outputs.build == 'true'\n"
         "        run: python -m pip install pytest\n\n"
         "      - name: Verify Linux frontend healthcheck contract\n"
+        "        if: steps.image-scope.outputs.build == 'true'\n"
         f"        run: {LINUX_PYTEST_COMMAND}"
     )
     assert expected_linux_steps in workflow
