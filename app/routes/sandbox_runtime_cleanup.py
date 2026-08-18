@@ -42,7 +42,7 @@ class SandboxRuntimeCleanupError(RuntimeError):
         self.failed_leases = failed_leases or []
 
 
-def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
+def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | None:
     provider = str(row.get("provider") or "fake")
     if provider not in {"fake", "docker", "opensandbox"}:
         return None
@@ -168,7 +168,7 @@ async def stop_sandbox_leases(
     stopped_leases: list[dict[str, Any]] = []
     failed_leases: list[dict[str, Any]] = []
     for row in sandbox_leases or []:
-        lease = _container_lease_from_row(row)
+        lease = container_lease_from_persisted_row(row)
         if lease is None:
             failures.append(
                 {

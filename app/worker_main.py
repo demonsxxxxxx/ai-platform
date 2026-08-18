@@ -21,6 +21,7 @@ from app.control_plane_contracts import (
 from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
+from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.redis_client import close_redis_client
@@ -698,7 +699,7 @@ async def run_once(
         return _queue_ownership_lost_outcome(message.payload.get("run_id"))
     if outcome.status == "ownership_lost":
         return outcome
-    if outcome.status in {"succeeded", "failed", "skipped", "cancelled"}:
+    if outcome.status in {"running", "succeeded", "failed", "skipped", "cancelled"}:
         try:
             mutation = await queue.ack_run(message.raw, message_id=message.message_id)
         except Exception:
@@ -719,16 +720,38 @@ async def run_once(
     return outcome
 
 
+def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
+    if not task.done():
+        return
+    if task.cancelled():
+        raise RuntimeError(f"background task cancelled unexpectedly: {task.get_name()}")
+    error = task.exception()
+    if error is not None:
+        raise RuntimeError(f"background task failed: {task.get_name()}") from error
+    raise RuntimeError(f"background task exited unexpectedly: {task.get_name()}")
+
+
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
     await require_schema_current()
     registry = AdapterRegistry()
     worker_id = default_worker_id()
+    reconciler_stop = asyncio.Event()
+    reconciler_task = asyncio.create_task(
+        run_executor_terminal_reconciler(
+            reconciler_stop,
+            registry=registry,
+            worker_id=worker_id,
+        ),
+        name="ai-platform-executor-terminal-reconciler",
+    )
     heartbeat_task = asyncio.create_task(
         _worker_runtime_heartbeat_until_done(f"{socket.gethostname()}:{os.getpid()}"),
         name="ai-platform-worker-runtime-heartbeat",
     )
     try:
         while True:
+            _raise_if_background_task_stopped(reconciler_task)
+            _raise_if_background_task_stopped(heartbeat_task)
             try:
                 outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
             except Exception:
@@ -738,10 +761,13 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
             if outcome.status == "idle":
                 await asyncio.sleep(idle_sleep_seconds)
     finally:
-        if not heartbeat_task.done():
-            heartbeat_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat_task
+        reconciler_stop.set()
+        for task in (reconciler_task, heartbeat_task):
+            if not task.done():
+                task.cancel()
+        for task in (reconciler_task, heartbeat_task):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await _close_runtime_clients()
 
 
@@ -784,6 +810,15 @@ async def run_worker_pool(
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
     await run_worker_maintenance(settings)
+    reconciler_stop = asyncio.Event()
+    reconciler_task = asyncio.create_task(
+        run_executor_terminal_reconciler(
+            reconciler_stop,
+            registry=AdapterRegistry(),
+            worker_id=process_worker_id,
+        ),
+        name="ai-platform-executor-terminal-reconciler",
+    )
     maintenance_task = asyncio.create_task(
         _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings)),
         name="ai-platform-worker-maintenance",
@@ -804,12 +839,13 @@ async def run_worker_pool(
         for index in range(resolved_worker_count)
     ]
     try:
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, reconciler_task, maintenance_task, heartbeat_task)
     finally:
-        for task in [*tasks, maintenance_task, heartbeat_task]:
+        reconciler_stop.set()
+        for task in [*tasks, reconciler_task, maintenance_task, heartbeat_task]:
             if not task.done():
                 task.cancel()
-        for task in [*tasks, maintenance_task, heartbeat_task]:
+        for task in [*tasks, reconciler_task, maintenance_task, heartbeat_task]:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await _close_runtime_clients()

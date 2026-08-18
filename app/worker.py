@@ -47,7 +47,7 @@ from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
     ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox,
 )
-from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
+from app.executors.base import ExecutorDispatchAccepted, ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import (
@@ -137,8 +137,8 @@ async def _submit_run_until_cancelled(
     poll_interval_seconds: float = _RUN_CANCEL_POLL_INTERVAL_SECONDS,
     stop_timeout_seconds: float = _RUN_STOP_ATTEMPT_TIMEOUT_SECONDS,
     progress_interval_seconds: float = _RUN_PROGRESS_INTERVAL_SECONDS,
-) -> ExecutorResult:
-    """Own one adapter until result or confirmed, bounded cancellation quiescence."""
+) -> ExecutorResult | ExecutorDispatchAccepted:
+    """Own one adapter until dispatch acceptance, result, or bounded cancellation."""
 
     owner = RunExecutionOwner(run_payload.run_id)
     submit_task = owner.start_adapter(adapter, run_payload, event_sink=event_sink)
@@ -219,6 +219,13 @@ class _WorkerTerminalAfterTransaction:
     outcome: WorkerOutcome
     payload: QueueRunPayload
     reconciled_parent: Any | None
+
+
+@dataclass(frozen=True)
+class _WorkerExecutorReconciliation:
+    result: ExecutorResult
+    lease_row: dict[str, Any]
+    claim_token: str
 
 
 @dataclass(frozen=True)
@@ -2228,6 +2235,7 @@ async def process_run_payload(
     registry: AdapterRegistry | None = None,
     *,
     worker_id: str | None = None,
+    reconciliation: _WorkerExecutorReconciliation | None = None,
 ) -> WorkerOutcome:
     try:
         envelope = parse_leased_queue_envelope(raw)
@@ -2254,6 +2262,7 @@ async def process_run_payload(
     run_identity = _payload_identity(payload)
     runtime_sandbox_lease: _WorkerRuntimeSandboxLease | None = None
     runtime_sandbox_lease_released = False
+    runtime_sandbox_execution_detached = False
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     capability_authorization: _WorkerCapabilityAuthorization | None = None
@@ -2266,7 +2275,34 @@ async def process_run_payload(
             principal_resolver=resolve_current_principal,
         )
         async with transaction() as conn:
-            locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            locked = (
+                await repositories.get_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                )
+                if reconciliation is not None
+                else await repositories.mark_run_running(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                )
+            )
+            if reconciliation is not None and locked is not None:
+                if str(locked.get("status") or "") != "running":
+                    return WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_terminal_state",
+                        "Run already reached a terminal state",
+                    )
+                if str(reconciliation.lease_row.get("attempt_id") or "") != attempt_id:
+                    return WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_reconciliation_attempt",
+                        "Executor reconciliation attempt is stale",
+                    )
             if not locked:
                 existing_run = await repositories.get_run(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
                 if existing_run is None:
@@ -2603,7 +2639,7 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            if not _ordinary_run_uses_runtime_sandbox(
+            if reconciliation is None and not _ordinary_run_uses_runtime_sandbox(
                 payload,
                 context_snapshot=context_ref["context_snapshot"],
             ):
@@ -2700,12 +2736,16 @@ async def process_run_payload(
 
     async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
         nonlocal runtime_sandbox_lease_released
+        if reconciliation is not None:
+            return
         if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
             return
         await _release_worker_runtime_sandbox_lease(conn, runtime_sandbox_lease, reason=reason)
         runtime_sandbox_lease_released = True
 
     async def cleanup_runtime_sandbox_lease_after_interruption() -> None:
+        if runtime_sandbox_execution_detached:
+            return
         if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
             return
         try:
@@ -2715,30 +2755,40 @@ async def process_run_payload(
             return
 
     try:
-        async with transaction() as conn:
-            await stream_publisher.prepare(conn)
-        await stream_publisher.open()
-        async with transaction() as conn:
-            await stream_publisher.confirm(conn)
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
-        async def cancel_requested() -> bool:
+        if reconciliation is not None:
+            started_at = time.monotonic()
+            result: ExecutorResult | ExecutorDispatchAccepted = reconciliation.result
+        else:
             async with transaction() as conn:
-                return await repositories.is_cancel_requested(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                )
+                await stream_publisher.prepare(conn)
+            await stream_publisher.open()
+            async with transaction() as conn:
+                await stream_publisher.confirm(conn)
 
-        started_at = time.monotonic()
-        result = await _submit_run_until_cancelled(
-            adapter,
-            run_payload,
-            event_sink=event_sink,
-            cancel_requested=cancel_requested,
-        )
-        await stream_publisher.aclose()
+            async def cancel_requested() -> bool:
+                async with transaction() as conn:
+                    return await repositories.is_cancel_requested(
+                        conn,
+                        tenant_id=run_payload.tenant_id,
+                        run_id=run_payload.run_id,
+                    )
+
+            started_at = time.monotonic()
+            result = await _submit_run_until_cancelled(
+                adapter,
+                run_payload,
+                event_sink=event_sink,
+                cancel_requested=cancel_requested,
+            )
+            await stream_publisher.aclose()
+        if isinstance(result, ExecutorDispatchAccepted):
+            if not result.lease_id:
+                raise ValueError("executor_dispatch_acceptance_lease_missing")
+            runtime_sandbox_execution_detached = True
+            return WorkerOutcome(status="running", run_id=run_payload.run_id)
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         result = _normalize_sandbox_reported_failure(result)
@@ -2948,6 +2998,20 @@ async def process_run_payload(
     reconciled_parent = None
     try:
         async with transaction() as conn:
+            locked_run = await repositories.get_run(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                for_update=True,
+            )
+            if locked_run is None or str(locked_run.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+                raise _WorkerSuccessCommitBlocked()
+            if reconciliation is not None and not await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
+                conn,
+                lease_id=str(reconciliation.lease_row["id"]),
+                claim_token=reconciliation.claim_token,
+            ):
+                raise RuntimeError("executor_reconciliation_claim_lost")
             pending_permission_blocks_success = (
                 result.status == "succeeded"
                 and await repositories.has_pending_tool_permission_requests(
@@ -3390,3 +3454,61 @@ async def process_run_payload(
                 )
     await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome
+
+
+async def reconcile_executor_terminal_result(
+    *,
+    lease_row: dict[str, Any],
+    result: ExecutorResult,
+    registry: AdapterRegistry | None = None,
+    worker_id: str | None = None,
+    claim_token: str,
+) -> WorkerOutcome:
+    context = lease_row.get("executor_reconciliation_context_json")
+    if not isinstance(context, dict):
+        raise ValueError("executor_reconciliation_context_missing")
+    adapter_context = context.get("adapter_context")
+    if not isinstance(adapter_context, dict):
+        raise ValueError("executor_reconciliation_adapter_context_missing")
+    run_payload_value = context.get("run_payload")
+    if not isinstance(run_payload_value, dict):
+        raise ValueError("executor_reconciliation_run_payload_missing")
+    run_payload = RunPayload(**run_payload_value)
+    adapter_name = str(context.get("adapter_name") or "").strip()
+    if not adapter_name:
+        raise ValueError("executor_reconciliation_adapter_name_missing")
+    queue_payload = QueueRunPayload(
+        tenant_id=run_payload.tenant_id,
+        workspace_id=run_payload.workspace_id,
+        user_id=run_payload.user_id,
+        session_id=run_payload.session_id,
+        run_id=run_payload.run_id,
+        agent_id=run_payload.agent_id,
+        execution_kind=run_payload.execution_kind,
+        skill_id=run_payload.skill_id,
+        file_ids=run_payload.file_ids,
+        input={},
+        executor_type=adapter_name,
+        skill_version=run_payload.skill_version or None,
+        release_decision=run_payload.release_decision,
+        skill_manifests=run_payload.skill_manifests,
+        context_snapshot_id=run_payload.context_snapshot_id or None,
+        context_snapshot=run_payload.context_snapshot,
+        model_id=run_payload.model_id or None,
+        model_value=run_payload.model_value or None,
+        agent_profile=run_payload.agent_profile,
+        schema_version=run_payload.schema_version,
+    )
+    return await process_run_payload(
+        {
+            **queue_payload.model_dump(mode="json"),
+            "_queue_attempt_id": run_payload.attempt_id,
+        },
+        registry,
+        worker_id=worker_id,
+        reconciliation=_WorkerExecutorReconciliation(
+            result=result,
+            lease_row=lease_row,
+            claim_token=claim_token,
+        ),
+    )

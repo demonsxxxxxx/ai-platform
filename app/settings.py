@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     sandbox_container_start_timeout_seconds: int = Field(default=30)
     sandbox_cleanup_timeout_seconds: int = Field(default=30)
     sandbox_executor_health_timeout_seconds: int = Field(default=60)
+    sandbox_executor_dispatch_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     opensandbox_domain: str = Field(default="127.0.0.1:8080")
     opensandbox_protocol: str = Field(default="http")
     opensandbox_api_key: str = Field(default="")

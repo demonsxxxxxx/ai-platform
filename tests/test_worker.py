@@ -13,11 +13,17 @@ from app.auth import AuthPrincipal, is_ai_admin
 from app.execution.api import validated_context_file_diagnostic
 from app.executors.base import (
     ArtifactManifest,
+    ExecutorDispatchAccepted,
     ExecutorResult,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_PAYLOAD_SCHEMA_VERSION_V2,
     RunExecutionOwner,
     RunPayload,
 )
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
+from app.executors.claude_agent_worker import (
+    ClaudeAgentWorkerAdapter,
+    _sandbox_reconciliation_payload,
+)
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
@@ -2324,6 +2330,87 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
         item[0] == "event" and item[1] in {"run_failed", "run_cancelled"}
         for item in calls
     )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_reconciliation_payload_excludes_prompt_and_private_context():
+    payload = RunPayload(
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        session_id="session-1",
+        run_id="run-1",
+        attempt_id="attempt-1",
+        agent_id="agent-1",
+        skill_id=None,
+        file_ids=["file-private"],
+        input={
+            "prompt": "private prompt",
+            "api_key": "private key",
+            "platform_model_id": "model-1",
+        },
+        execution_kind=RUN_EXECUTION_KIND_HARNESS_CHAT,
+        trace_id="trace-1",
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        context_snapshot={"private": "snapshot"},
+        context_pack={"private": "pack"},
+        model_id="model-1",
+        model_value="provider-model",
+    )
+
+    stored = _sandbox_reconciliation_payload(payload)
+    restored = RunPayload(**stored)
+
+    assert restored.run_id == payload.run_id
+    assert stored["input"] == {"platform_model_id": "model-1"}
+    assert stored["file_ids"] == []
+    assert "context_snapshot" not in stored
+    assert "context_pack" not in stored
+    assert "agent_profile" not in stored
+    assert "private prompt" not in json.dumps(stored)
+    assert "private key" not in json.dumps(stored)
+
+
+async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):
+    calls = []
+    raw = base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
+
+    class AcceptedAdapter:
+        name = "fake"
+
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload.run_id))
+            return ExecutorDispatchAccepted(
+                run_id=payload.run_id,
+                attempt_id=payload.attempt_id,
+                lease_id="lease-a",
+                provider="opensandbox",
+                adapter_context={},
+                timings={"dispatch_ms": 12},
+            )
+
+    async def mark_run_running(_conn, **_kwargs):
+        return locked_run_from_payload(raw)
+
+    async def append_event(_conn, **_kwargs):
+        return "evt-a"
+
+    async def append_message(*_args, **_kwargs):
+        raise AssertionError("dispatch acceptance must not create an assistant message")
+
+    async def complete_run(*_args, **_kwargs):
+        raise AssertionError("dispatch acceptance must not terminalize the run")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+
+    outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
+
+    assert outcome == WorkerOutcome("running", "run-a")
+    assert calls == [("adapter", "run-a")]
 
 
 @pytest.mark.asyncio

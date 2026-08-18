@@ -23,9 +23,11 @@ from app.platform.postgres.errors import RepositoryConflictError as PlatformRepo
 from app.skills.infrastructure import postgres as skill_persistence
 from app.runs.api import RunTerminalizationProgress
 from app.platform.postgres.sandbox_leases import (
+    SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
     create_sandbox_lease,
     fence_sandbox_lease_release,
+    record_sandbox_executor_terminal,
 )
 from app.streaming import redis as streaming_redis
 from app.repositories import (
@@ -9605,6 +9607,76 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
     assert "status = 'active'" in renew_sql
     assert "(expires_at is null or expires_at > now())" in renew_sql
     assert renew_params == (900, "tenant-a", "user-a", "run-a", "lease-a")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_executor_terminal_receipt_is_attempt_fenced_and_idempotent():
+    class TerminalConnection:
+        def __init__(self):
+            self.current = {
+                "id": "lease-a",
+                "executor_status": None,
+                "executor_terminal_json": None,
+                "executor_terminal_received_at": None,
+            }
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if normalized.startswith("select * from sandbox_leases"):
+                return SingleRowCursor(dict(self.current))
+            if normalized.startswith("update sandbox_leases set executor_status"):
+                self.current = {
+                    **self.current,
+                    "executor_status": params[0],
+                    "executor_terminal_json": {"status": "completed", "run_id": "run-a"},
+                    "executor_terminal_received_at": datetime.now(timezone.utc),
+                }
+                return SingleRowCursor(dict(self.current))
+            raise AssertionError(normalized)
+
+    conn = TerminalConnection()
+    terminal = {"status": "completed", "run_id": "run-a"}
+
+    recorded = await record_sandbox_executor_terminal(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="completed",
+        terminal_result=terminal,
+    )
+    duplicate = await record_sandbox_executor_terminal(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="completed",
+        terminal_result=terminal,
+    )
+    assert recorded["executor_terminal_json"] == terminal
+    assert duplicate["executor_terminal_json"] == terminal
+    update_calls = [call for call in conn.calls if call[0].startswith("update sandbox_leases")]
+    assert len(update_calls) == 1
+    assert "attempt_id = %s" in update_calls[0][0]
+    assert "status = 'active'" in update_calls[0][0]
+
+    with pytest.raises(
+        SandboxExecutorTerminalConflictError,
+        match="sandbox_executor_terminal_conflict",
+    ):
+        await record_sandbox_executor_terminal(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-a",
+            executor_status="failed",
+            terminal_result={"status": "failed", "run_id": "run-a"},
+        )
 
 
 @pytest.mark.asyncio
