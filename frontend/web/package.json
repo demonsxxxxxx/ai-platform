@@ -13,7 +13,7 @@
     "smoke:prd-closure": "node scripts/prd-closure-browser-smoke.mjs",
     "smoke:company-rbac": "node scripts/company-rbac-browser-smoke.mjs",
     "smoke:route-layout": "node scripts/route-layout-browser-smoke.mjs",
-    "test:agent-market": "tsx --test src/features/agent-market/__tests__/*.test.ts* src/hooks/useAgent/__tests__/useAgentMarketBinding.test.tsx",
+    "test:agent-market": "tsx --test src/features/agent-market/__tests__/AgentIdentityAvatar.test.ts src/features/agent-market/__tests__/AgentMarketRoute.behavior.test.tsx src/features/agent-market/__tests__/AgentMarketRoute.test.tsx src/features/agent-market/__tests__/agentMarketSelection.test.ts src/features/agent-market/__tests__/agentProfileFileAcceptance.test.ts src/features/agent-market/__tests__/AgentWorkspaceRoute.test.tsx src/features/agent-market/__tests__/App.test.tsx src/features/agent-market/__tests__/useAgentConversationList.test.ts src/hooks/useAgent/__tests__/useAgentMarketBinding.test.tsx",
     "test:chat-submission": "tsx --test src/components/mcp/__tests__/mcpHeaderValidation.test.ts src/hooks/__tests__/useAuthProvider.test.tsx src/hooks/useAgent/__tests__/useAgent.test.ts src/hooks/useAgent/__tests__/useAgentMcpSubmission.test.tsx src/services/api/__tests__/mcpRuntime.test.ts src/services/api/__tests__/session.test.ts src/utils/__tests__/mcpGatewayAuth.test.ts",
     "test:company-rbac-browser-smoke-source": "tsx --test src/__tests__/companyRbacBrowserSmokeSource.test.ts",
     "test:prd-closure-smoke-source": "tsx --test src/__tests__/frontendPrdClosureSmokeSource.test.ts",
