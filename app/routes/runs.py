@@ -151,6 +151,21 @@ def _run_requires_fresh_mcp_context(run: object) -> bool:
     )
 
 
+async def _source_run_requires_fresh_mcp_context(
+    conn,
+    *,
+    principal: AuthPrincipal,
+    run_id: str,
+) -> bool:
+    source = await repositories.get_authorized_run(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        run_id=run_id,
+    )
+    return _run_requires_fresh_mcp_context(source)
+
+
 async def _audit_capability_denial(
     principal: AuthPrincipal,
     error: repositories.RepositoryAuthorizationError,
@@ -1235,6 +1250,12 @@ async def copy_run(
                     copied_input
                 )
                 source_requires_mcp = _run_requires_fresh_mcp_context(copied)
+                if not source_requires_mcp:
+                    source_requires_mcp = await _source_run_requires_fresh_mcp_context(
+                        conn,
+                        principal=principal,
+                        run_id=run_id,
+                    )
                 mcp_context_id = (
                     request.mcp_context_id if request is not None else None
                 )
@@ -1493,6 +1514,12 @@ async def _mutate_run_control_child(
                             copied_input
                         )
                         source_requires_mcp = _run_requires_fresh_mcp_context(copied)
+                        if not source_requires_mcp:
+                            source_requires_mcp = await _source_run_requires_fresh_mcp_context(
+                                conn,
+                                principal=principal,
+                                run_id=run_id,
+                            )
                         if source_requires_mcp and not mcp_context_id:
                             raise RepositoryConflictError(
                                 "mcp_context_required_for_retry"

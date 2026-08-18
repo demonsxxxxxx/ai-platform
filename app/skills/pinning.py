@@ -7,9 +7,8 @@ import json
 from pathlib import Path
 import re
 import shutil
-from typing import Any
+from typing import Any, Callable
 
-from app.path_safety import ensure_creatable_inside
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status
@@ -66,6 +65,8 @@ def materialize_pinned_skill(
     skill_name: str,
     pin: dict[str, Any],
     snapshot_root: Path,
+    *,
+    path_guard: Callable[[str | Path, str | Path, str], None],
 ) -> BuiltinSkill:
     if Path(skill_name).name != skill_name:
         raise ValueError(f"invalid pinned skill name: {skill_name}")
@@ -74,7 +75,7 @@ def materialize_pinned_skill(
         raise ValueError(f"pinned skill missing content hash: {skill_name}")
     target = snapshot_root / skill_name
     workspace_root = snapshot_root.parents[1]
-    ensure_creatable_inside(
+    path_guard(
         workspace_root,
         target,
         "pinned skill path must stay inside the run workspace",
@@ -82,7 +83,7 @@ def materialize_pinned_skill(
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
-    ensure_creatable_inside(
+    path_guard(
         workspace_root,
         target,
         "pinned skill path must stay inside the run workspace",
@@ -109,7 +110,7 @@ def materialize_pinned_skill(
         if total_bytes > MAX_SKILL_SNAPSHOT_TOTAL_BYTES:
             raise ValueError(f"pinned skill snapshot too large: {skill_name}")
         output = target / relative_path
-        ensure_creatable_inside(
+        path_guard(
             target,
             output,
             f"invalid pinned skill file path: {skill_name}",
@@ -140,6 +141,8 @@ def select_pinned_skills(
     allowed_skill_names: list[str],
     pins: dict[str, dict[str, Any]],
     snapshot_root: Path,
+    *,
+    path_guard: Callable[[str | Path, str | Path, str], None],
 ) -> tuple[list[BuiltinSkill], list[dict[str, str]]]:
     selected: list[BuiltinSkill] = []
     mismatches: list[dict[str, str]] = []
@@ -160,7 +163,14 @@ def select_pinned_skills(
         expected = str(pin.get("content_hash") or pin.get("version") or "")
         if pin.get("files"):
             try:
-                selected.append(materialize_pinned_skill(skill_name, pin, snapshot_root))
+                selected.append(
+                    materialize_pinned_skill(
+                        skill_name,
+                        pin,
+                        snapshot_root,
+                        path_guard=path_guard,
+                    )
+                )
             except PinnedSkillMismatch as exc:
                 mismatches.append(
                     {

@@ -1015,6 +1015,7 @@ class ClaudeAgentWorkerAdapter:
             allowed_skill_names,
             pinned_manifests,
             _pinned_snapshot_root(workspace),
+            path_guard=ensure_creatable_inside,
         )
         if not pin_mismatches:
             return None
@@ -1312,6 +1313,7 @@ class ClaudeAgentWorkerAdapter:
                 allowed_skill_names,
                 pinned_manifests,
                 _pinned_snapshot_root(resolved_workspace),
+                path_guard=ensure_creatable_inside,
             )
         if pin_mismatches:
             if event_sink is not None:

@@ -15,9 +15,11 @@ from app.agent_apps.capability_state import (
     bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
 from app.agent_profiles import reauthorize_bound_profile_for_worker_dispatch
-from app.auth import AuthPrincipal, normalize_roles
+from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
+    CapabilityAccessContext,
+    CapabilityAccessDecision,
     CapabilityDistributionSubject,
     capability_distribution_audit_payload,
     resolve_capability_access,
@@ -45,14 +47,15 @@ from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
     ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox,
 )
-from app.execution.application.worker_capabilities import (
+from app.execution.api import (
     WorkerCapabilityAuthorization as _WorkerCapabilityAuthorization,
     WorkerCapabilityDecision as _WorkerCapabilityDecision,
-    denied_capability_decision as _denied_capability_decision,
+    WorkerCapabilityPorts as _WorkerCapabilityPorts,
+    denied_capability_decision,
     mcp_capability_subject,
     payload_with_authorized_mcp_registration,
-    reauthorize_mcp_capabilities as _reauthorize_mcp_capabilities,
-    worker_capability_context as _worker_capability_context,
+    reauthorize_mcp_capabilities,
+    worker_capability_context,
     worker_capability_record as _worker_capability_record,
 )
 from app.executors.base import ExecutorDispatchAccepted, ExecutorResult, RunExecutionOwner, RunPayload
@@ -106,6 +109,7 @@ from app.tool_permission_lifecycle import (
     drain_run_tool_permission_terminalization,
     reconcile_terminalized_permission_run,
 )
+from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_canonical_sha256, assert_safe_id
 from app.worker_principal_authority import (
     _identity_mismatch_fields,
@@ -114,7 +118,39 @@ from app.worker_principal_authority import (
     _resolve_current_principal_before_dispatch,
 )
 
-_mcp_capability_subject = mcp_capability_subject
+_WORKER_CAPABILITY_PORTS = _WorkerCapabilityPorts(
+    capability_access_context=CapabilityAccessContext,
+    capability_access_decision=CapabilityAccessDecision,
+    capability_distribution_subject=CapabilityDistributionSubject,
+    evaluate_tool_policy=evaluate_tool_policy,
+    get_capability_distribution_row=lambda *args, **kwargs: repositories.get_capability_distribution_row(
+        *args, **kwargs
+    ),
+    get_mcp_tool_registry_entry=lambda *args, **kwargs: repositories.get_mcp_tool_registry_entry(
+        *args, **kwargs
+    ),
+    is_ai_admin=is_ai_admin,
+    mcp_runtime_metadata_usable=repositories.mcp_runtime_metadata_usable,
+    repository_conflict_error=repositories.RepositoryConflictError,
+    resolve_capability_access=resolve_capability_access,
+    sanitize_public_text=sanitize_public_text,
+)
+_worker_capability_context = _partial(
+    worker_capability_context,
+    ports=_WORKER_CAPABILITY_PORTS,
+)
+_denied_capability_decision = _partial(
+    denied_capability_decision,
+    ports=_WORKER_CAPABILITY_PORTS,
+)
+_mcp_capability_subject = _partial(
+    mcp_capability_subject,
+    ports=_WORKER_CAPABILITY_PORTS,
+)
+_reauthorize_mcp_capabilities = _partial(
+    reauthorize_mcp_capabilities,
+    ports=_WORKER_CAPABILITY_PORTS,
+)
 _payload_with_authorized_mcp_registration = payload_with_authorized_mcp_registration
 _builtin_capability_subjects = _partial(
     builtin_capability_subjects,

@@ -5,27 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin
-from app.capability_distribution import (
-    CapabilityAccessContext,
-    CapabilityAccessDecision,
-    CapabilityDistributionSubject,
-    resolve_capability_access,
-)
-from app.control_plane_contracts import sanitize_public_text
-from app.models import QueueRunPayload
-from app.required_tool_contract import (
-    RequiredCapabilityDecision,
-)
-from app.tool_policy import evaluate_tool_policy
-
-
 @dataclass(frozen=True)
 class WorkerCapabilityDecision:
     capability_kind: str
     capability_id: str
-    decision: CapabilityAccessDecision
+    decision: Any
 
 
 @dataclass(frozen=True)
@@ -40,20 +24,35 @@ class WorkerToolPolicyAudit:
 
 @dataclass(frozen=True)
 class WorkerCapabilityAuthorization:
-    payload: QueueRunPayload
-    principal: AuthPrincipal
+    payload: Any
+    principal: Any
     decisions: tuple[WorkerCapabilityDecision, ...]
     denial: WorkerCapabilityDecision | None = None
     tool_policy_audits: tuple[WorkerToolPolicyAudit, ...] = ()
-    required_tool_decision: RequiredCapabilityDecision | None = None
+    required_tool_decision: Any | None = None
 
 
-def worker_capability_context(principal: AuthPrincipal) -> CapabilityAccessContext:
-    return CapabilityAccessContext(
+@dataclass(frozen=True)
+class WorkerCapabilityPorts:
+    capability_access_context: Any
+    capability_access_decision: Any
+    capability_distribution_subject: Any
+    evaluate_tool_policy: Any
+    get_capability_distribution_row: Any
+    get_mcp_tool_registry_entry: Any
+    is_ai_admin: Any
+    mcp_runtime_metadata_usable: Any
+    repository_conflict_error: type[Exception]
+    resolve_capability_access: Any
+    sanitize_public_text: Any
+
+
+def worker_capability_context(principal: Any, *, ports: WorkerCapabilityPorts) -> Any:
+    return ports.capability_access_context(
         tenant_id=principal.tenant_id,
         department_id=principal.department_id,
         roles=principal.roles,
-        is_admin=is_ai_admin(principal),
+        is_admin=ports.is_ai_admin(principal),
         permissions=principal.permissions,
     )
 
@@ -61,9 +60,10 @@ def worker_capability_context(principal: AuthPrincipal) -> CapabilityAccessConte
 def denied_capability_decision(
     reason: str,
     *,
-    source: CapabilityAccessDecision | None = None,
-) -> CapabilityAccessDecision:
-    return CapabilityAccessDecision(
+    source: Any | None = None,
+    ports: WorkerCapabilityPorts,
+) -> Any:
+    return ports.capability_access_decision(
         visible=False,
         usable=False,
         manageable=False,
@@ -78,7 +78,7 @@ def denied_capability_decision(
 def worker_capability_record(
     capability_kind: str,
     capability_id: str,
-    decision: CapabilityAccessDecision,
+    decision: Any,
 ) -> WorkerCapabilityDecision:
     return WorkerCapabilityDecision(
         capability_kind=capability_kind,
@@ -99,19 +99,21 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
 
 def mcp_capability_subject(
     tool: dict[str, Any],
-    distribution: CapabilityAccessDecision,
+    distribution: Any,
+    *,
+    ports: WorkerCapabilityPorts,
 ) -> dict[str, Any] | None:
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
     allowed_tools = tool.get("allowed_tools")
-    if not repositories.mcp_runtime_metadata_usable(tool):
+    if not ports.mcp_runtime_metadata_usable(tool):
         return None
     tool_identifier = allowed_tools[0]
     subject: dict[str, Any] = {
         "identity": f"mcp__{server_id}__{tool_identifier}",
         "mcp_server": server_id,
         "mcp_tool": tool_identifier,
-        "public_tool_label": (sanitize_public_text(tool.get("name")) or tool_id)[:120],
+        "public_tool_label": (ports.sanitize_public_text(tool.get("name")) or tool_id)[:120],
         "public_tool_category": "mcp",
         "registered": True,
         "declared": True,
@@ -154,11 +156,11 @@ def canonical_authorized_mcp_scope(
 
 
 def payload_with_authorized_mcp_registration(
-    payload: QueueRunPayload,
+    payload: Any,
     *,
     allowed_entries: list[dict[str, Any]],
     tool_policy_subjects: list[dict[str, Any]],
-) -> QueueRunPayload:
+) -> Any:
     allowed_tool_ids = {
         str(entry.get("tool_id") or "").strip()
         for entry in allowed_entries
@@ -183,19 +185,20 @@ def payload_with_authorized_mcp_registration(
 async def reauthorize_mcp_capabilities(
     conn: Any,
     *,
-    payload: QueueRunPayload,
+    payload: Any,
     run_identity: dict[str, str],
-    principal: AuthPrincipal,
-    context: CapabilityAccessContext,
+    principal: Any,
+    context: Any,
     decisions: list[WorkerCapabilityDecision],
     requested_tool_ids: list[str],
     tool_policy_subjects: list[dict[str, Any]],
-    required_tool_decision: RequiredCapabilityDecision,
+    required_tool_decision: Any,
+    ports: WorkerCapabilityPorts,
 ) -> WorkerCapabilityAuthorization:
     allowed_entries: list[dict[str, Any]] = []
     tool_policy_audits: list[WorkerToolPolicyAudit] = []
     for tool_id in requested_tool_ids:
-        tool = await repositories.get_mcp_tool_registry_entry(
+        tool = await ports.get_mcp_tool_registry_entry(
             conn,
             tenant_id=run_identity["tenant_id"],
             tool_id=tool_id,
@@ -204,7 +207,7 @@ async def reauthorize_mcp_capabilities(
             denial = worker_capability_record(
                 "mcp_tool",
                 tool_id,
-                denied_capability_decision("distribution_missing"),
+                denied_capability_decision("distribution_missing", ports=ports),
             )
             return WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
         server_id = str(tool.get("server_id") or "").strip()
@@ -212,26 +215,26 @@ async def reauthorize_mcp_capabilities(
             denial = worker_capability_record(
                 "mcp_tool",
                 tool_id,
-                denied_capability_decision("distribution_inheritance_missing"),
+                denied_capability_decision("distribution_inheritance_missing", ports=ports),
             )
             return WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
         try:
-            server_distribution = await repositories.get_capability_distribution_row(
+            server_distribution = await ports.get_capability_distribution_row(
                 conn,
                 tenant_id=run_identity["tenant_id"],
                 capability_kind="mcp_server",
                 capability_id=server_id,
             )
-        except repositories.RepositoryConflictError:
+        except ports.repository_conflict_error:
             denial = worker_capability_record(
                 "mcp_tool",
                 tool_id,
-                denied_capability_decision("distribution_scope_invalid"),
+                denied_capability_decision("distribution_scope_invalid", ports=ports),
             )
             return WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        distribution_decision = resolve_capability_access(
+        distribution_decision = ports.resolve_capability_access(
             context,
-            CapabilityDistributionSubject(
+            ports.capability_distribution_subject(
                 capability_kind="mcp_tool",
                 capability_id=tool_id,
                 lifecycle_status=_mcp_tool_lifecycle_status(tool),
@@ -250,7 +253,7 @@ async def reauthorize_mcp_capabilities(
                 tool_record,
             )
 
-        mcp_subject = mcp_capability_subject(tool, distribution_decision)
+        mcp_subject = mcp_capability_subject(tool, distribution_decision, ports=ports)
         if mcp_subject is None:
             denial = worker_capability_record(
                 "mcp_tool",
@@ -258,11 +261,12 @@ async def reauthorize_mcp_capabilities(
                 denied_capability_decision(
                     "mcp_runtime_metadata_invalid",
                     source=distribution_decision,
+                    ports=ports,
                 ),
             )
             return WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
 
-        tool_gate = evaluate_tool_policy(
+        tool_gate = ports.evaluate_tool_policy(
             tool={
                 "requested_identity": mcp_subject["identity"],
                 "declared_identities": [mcp_subject["identity"]],
@@ -294,6 +298,7 @@ async def reauthorize_mcp_capabilities(
                 denied_capability_decision(
                     tool_gate.reason,
                     source=distribution_decision,
+                    ports=ports,
                 ),
             )
             return WorkerCapabilityAuthorization(
@@ -310,7 +315,7 @@ async def reauthorize_mcp_capabilities(
         denial = worker_capability_record(
             "mcp_tool",
             str(allowed_entries[0].get("tool_id") or "mcp_tool"),
-            denied_capability_decision("mcp_sandbox_executor_required"),
+            denied_capability_decision("mcp_sandbox_executor_required", ports=ports),
         )
         return WorkerCapabilityAuthorization(
             payload,

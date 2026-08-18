@@ -9225,11 +9225,6 @@ async def copy_run_as_new_task(
         source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}
-    requires_fresh_mcp_context = bool(
-        source.get("mcp_context_id")
-        or source_input.get("mcp_context_id")
-        or extract_run_mcp_tool_ids(source_execution_input)
-    )
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
     source_execution_kind = str(
         source.get("execution_kind")
@@ -9459,7 +9454,6 @@ async def copy_run_as_new_task(
         "principal_department_id": inherited_department_id,
         "auth_source": inherited_auth_source,
         "release_policy_version": "",
-        "_requires_fresh_mcp_context": requires_fresh_mcp_context,
         **copied_execution_snapshot,
     }
 

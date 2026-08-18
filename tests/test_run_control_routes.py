@@ -175,6 +175,9 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
 
+    async def get_authorized_source_run(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
         update_auth_snapshot,
@@ -228,6 +231,11 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(
         "app.routes.runs.repositories.record_run_control_operation",
         record_run_control_operation,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        get_authorized_source_run,
         raising=False,
     )
 
@@ -416,8 +424,10 @@ async def test_copy_with_fresh_mcp_context_preflights_and_binds_child(
             "session_id": "session-a",
             "status": "queued",
             "input": {},
-            "_requires_fresh_mcp_context": True,
         }
+
+    async def source_run(*_args, **_kwargs):
+        return {"mcp_context_id": "mcpctx-source", "input_json": {"input": {}}}
 
     async def preflight(**kwargs):
         observed["preflight"] = kwargs
@@ -443,6 +453,7 @@ async def test_copy_with_fresh_mcp_context_preflights_and_binds_child(
     monkeypatch.setattr(runs_routes, "transaction", transaction)
     monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
     monkeypatch.setattr(runs_routes.repositories, "copy_run_as_new_task", copy)
+    monkeypatch.setattr(runs_routes.repositories, "get_authorized_run", source_run)
     monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
     monkeypatch.setattr(runs_routes, "bind_run_mcp_context", bind)
     monkeypatch.setattr(runs_routes, "invalidate_mcp_runtime_context", invalidate)
@@ -3577,7 +3588,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert copied["release_policy_version"] == ""
     assert copied["model_id"] == "model-catalog-a"
     assert copied["model_value"] == "provider-model-a"
-    assert copied["_requires_fresh_mcp_context"] is True
+    assert "_requires_fresh_mcp_context" not in copied
     assert "executor_type" not in copied["input"]
     assert "skill_ids" not in copied["input"]
     assert "skillIds" not in copied["input"]

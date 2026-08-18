@@ -2,12 +2,9 @@ from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    PrivateAttr,
-    field_validator,
+    AliasChoices, BaseModel,
+    ConfigDict, Field,
+    PrivateAttr, field_validator,
     model_validator,
 )
 
