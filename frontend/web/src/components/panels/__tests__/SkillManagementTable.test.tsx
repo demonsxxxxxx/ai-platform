@@ -30,6 +30,13 @@ test("Skill workbench separates runtime and catalog visibility without a public 
   assert.match(table, /entry\.version/);
   assert.match(table, /entry\.id === selectedSkillId/);
   assert.doesNotMatch(table, /onPublish|publishToMarketplace|republish|unpublish/);
+  assert.match(list, /setPageSize\(Number\(event\.target\.value\)\)/);
+  assert.match(list, /skills\.paginationPageSize/);
+  assert.match(list, /skill-catalog-view-switcher/);
+  assert.match(list, /data-skill-management-metrics/);
+  assert.match(panel, /catalogView/);
+  assert.match(panel, /setPage=\{setCatalogPage\}/);
+  assert.match(panel, /setPageSize=\{actions\.setPageSize\}/);
   assert.match(list, /<SkillManagementTable/);
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
   assert.match(list, /skills\.adminReleaseZipTitle/);
@@ -57,6 +64,10 @@ test("management rows expose stable icon actions and a read-only state", () => {
   assert.match(source, /skills\.managementTable\.exportSkill/);
   assert.match(source, /skills\.managementTable\.deleteSkill/);
   assert.match(source, /!hasActions/);
+  assert.match(source, /data-catalog-status=\{entry\.catalogStatus\}/);
+  assert.match(source, /skills\.managementTable\.internalRuntime/);
+  assert.match(source, /skills\.managementTable\.internalDependency/);
+  assert.match(source, /CatalogStatusIcon/);
   assert.match(source, /skills\.managementTable\.readOnly/);
   assert.match(
     source,
@@ -81,6 +92,9 @@ test("Chinese management table translations stay complete", () => {
     "exportSkill",
     "fileCount",
     "hidden",
+    "internal",
+    "internalDependency",
+    "internalRuntime",
     "listLabel",
     "notInDirectory",
     "notPublished",

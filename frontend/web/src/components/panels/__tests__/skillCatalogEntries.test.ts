@@ -119,6 +119,88 @@ test("admin draft records remain visible in the canonical list", () => {
   assert.equal(filterSkillCatalogEntries(entries, "missing", []).length, 0);
 });
 
+test("legacy admin rows defer user availability to the authorized runtime projection", () => {
+  const [entry] = buildSkillCatalogEntries(
+    [runtimeSkill("baoyu-translate")],
+    [
+      adminSkill("baoyu-translate", "baoyu-translate", {
+        latestVersionStatus: "active",
+        currentVersion: null,
+        rolloutPercent: null,
+      }),
+    ],
+  );
+
+  assert.equal(entry?.catalogStatus, "available");
+  assert.equal(entry?.runtimeEnabled, true);
+});
+
+test("an active admin-only seed is retained as an internal dependency", () => {
+  const [entry] = buildSkillCatalogEntries([], [
+    adminSkill("minimax-docx", "Minimax DOCX", {
+      latestVersionStatus: "active",
+      currentVersion: null,
+      rolloutPercent: null,
+      visibleToUser: false,
+    }),
+  ]);
+
+  assert.equal(entry?.catalogStatus, "internal");
+  assert.equal(entry?.actionName, null);
+  assert.equal(entry?.runtimeEnabled, null);
+});
+
+test("an active user-visible seed without runtime authority stays unpublished", () => {
+  const [entry] = buildSkillCatalogEntries([], [
+    adminSkill("pending-runtime", "Pending Runtime", {
+      latestVersionStatus: "active",
+      currentVersion: null,
+      rolloutPercent: null,
+      visibleToUser: true,
+    }),
+  ]);
+
+  assert.equal(entry?.catalogStatus, "unpublished");
+});
+
+test("catalog views separate available, internal, and restricted entries", () => {
+  const entries = buildSkillCatalogEntries(
+    [runtimeSkill("visible-skill")],
+    [
+      adminSkill("visible-skill", "visible-skill"),
+      adminSkill("internal-skill", "Internal Skill", {
+        latestVersionStatus: "active",
+        currentVersion: null,
+        visibleToUser: false,
+      }),
+      adminSkill("draft-skill", "Draft Skill", {
+        latestVersionStatus: "draft",
+        currentVersion: null,
+        visibleToUser: false,
+      }),
+    ],
+  );
+
+  assert.deepEqual(
+    filterSkillCatalogEntries(entries, "", [], "available").map(
+      (entry) => entry.id,
+    ),
+    ["visible-skill"],
+  );
+  assert.deepEqual(
+    filterSkillCatalogEntries(entries, "", [], "internal").map(
+      (entry) => entry.id,
+    ),
+    ["internal-skill"],
+  );
+  assert.deepEqual(
+    filterSkillCatalogEntries(entries, "", [], "restricted").map(
+      (entry) => entry.id,
+    ),
+    ["draft-skill"],
+  );
+});
+
 test("a server-paginated catalog is not sliced for a second time", () => {
   const entries = buildSkillCatalogEntries(
     [runtimeSkill("skill-21"), runtimeSkill("skill-22")],
@@ -161,6 +243,51 @@ test("the complete authorized catalog is paginated locally", () => {
   assert.equal(page.total, 22);
 });
 
+test("the current catalog size renders as two local pages by default", () => {
+  const entries = buildSkillCatalogEntries(
+    Array.from({ length: 14 }, (_, index) => runtimeSkill(`skill-${index + 1}`)),
+    [],
+  );
+
+  const firstPage = resolveSkillCatalogPage({
+    entries,
+    page: 1,
+    pageSize: 10,
+    localPagination: true,
+    serverTotal: 999,
+  });
+  const secondPage = resolveSkillCatalogPage({
+    entries,
+    page: 2,
+    pageSize: 10,
+    localPagination: true,
+    serverTotal: 999,
+  });
+
+  assert.equal(firstPage.entries.length, 10);
+  assert.equal(firstPage.page, 1);
+  assert.equal(secondPage.entries.length, 4);
+  assert.equal(secondPage.page, 2);
+});
+
+test("local pagination clamps stale pages after filtering", () => {
+  const entries = buildSkillCatalogEntries(
+    Array.from({ length: 3 }, (_, index) => runtimeSkill(`skill-${index + 1}`)),
+    [],
+  );
+
+  const page = resolveSkillCatalogPage({
+    entries,
+    page: 4,
+    pageSize: 10,
+    localPagination: true,
+    serverTotal: 999,
+  });
+
+  assert.equal(page.page, 1);
+  assert.equal(page.entries.length, 3);
+});
+
 test("management metrics stay catalog-wide when the visible list is filtered", () => {
   const entries = buildSkillCatalogEntries(
     [runtimeSkill("enabled-visible"), runtimeSkill("disabled-hidden")],
@@ -177,5 +304,6 @@ test("management metrics stay catalog-wide when the visible list is filtered", (
     total: 2,
     enabled: 1,
     visible: 1,
+    internal: 0,
   });
 });
