@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/write-build-provenance.mjs",
-    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && corepack pnpm run test:agent-market && corepack pnpm run test:prd-closure-smoke-source && corepack pnpm run test:company-rbac-browser-smoke-source && corepack pnpm run test:skill-admin-ui && corepack pnpm run test:control-plane-ui && corepack pnpm run test:sse && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs",
+    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && corepack pnpm run test:agent-market && corepack pnpm run test:chat-submission && corepack pnpm run test:prd-closure-smoke-source && corepack pnpm run test:company-rbac-browser-smoke-source && corepack pnpm run test:skill-admin-ui && corepack pnpm run test:control-plane-ui && corepack pnpm run test:sse && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs",
     "lint": "eslint .",
     "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
     "preview": "vite preview",
@@ -14,6 +14,7 @@
     "smoke:company-rbac": "node scripts/company-rbac-browser-smoke.mjs",
     "smoke:route-layout": "node scripts/route-layout-browser-smoke.mjs",
     "test:agent-market": "tsx --test src/features/agent-market/__tests__/*.test.ts* src/hooks/useAgent/__tests__/useAgentMarketBinding.test.tsx",
+    "test:chat-submission": "tsx --test src/hooks/useAgent/__tests__/useAgent.test.ts src/hooks/useAgent/__tests__/useAgentMcpSubmission.test.tsx src/services/api/__tests__/mcpRuntime.test.ts src/services/api/__tests__/session.test.ts",
     "test:company-rbac-browser-smoke-source": "tsx --test src/__tests__/companyRbacBrowserSmokeSource.test.ts",
     "test:prd-closure-smoke-source": "tsx --test src/__tests__/frontendPrdClosureSmokeSource.test.ts",
     "test:skill-admin-ui": "tsx --test src/__tests__/AppRouteFallback.test.ts src/__tests__/launchpadRoute.test.ts src/__tests__/routeLayoutBrowserSmokeSource.test.ts src/components/panels/__tests__/SkillDistributionGovernancePanel.test.tsx src/components/panels/__tests__/SkillManagementTable.test.tsx src/components/panels/__tests__/SkillsHubPanel.test.tsx src/components/panels/__tests__/skillCatalogEntries.test.ts src/components/workbench/__tests__/routeLayoutContract.test.ts src/hooks/__tests__/useSkillsArchiveRace.test.tsx",

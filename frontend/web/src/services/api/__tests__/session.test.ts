@@ -249,6 +249,10 @@ test("run-control mutations use the shared cookie-session transport and forward 
 
 test("MCP retry obtains a fresh context and reuses the exact operation id", async () => {
   const originalFetch = globalThis.fetch;
+  const originalLocalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
   const controller = new AbortController();
   const calls: Array<{
     url: string;
@@ -309,6 +313,11 @@ test("MCP retry obtains a fresh context and reuses the exact operation id", asyn
   } finally {
     globalThis.fetch = originalFetch;
     clearMcpGatewayJwt();
+    if (originalLocalStorage) {
+      Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+    } else {
+      Reflect.deleteProperty(globalThis, "localStorage");
+    }
   }
 });
 

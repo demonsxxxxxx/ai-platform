@@ -822,7 +822,7 @@ async def relay_mcp_jsonrpc(
     except McpRuntimeContextError as exc:
         if exc.status_code in {401, 403}:
             try:
-                failure_count = await MCP_RELAY_AUTH_FAILURE_LIMITER.record_failure(
+                failure_counts = await MCP_RELAY_AUTH_FAILURE_LIMITER.record_failure(
                     source_fingerprint=source_fingerprint,
                     capability_fingerprint=capability_fingerprint,
                 )
@@ -834,7 +834,8 @@ async def relay_mcp_jsonrpc(
                     "mcp_source_sha256": source_fingerprint,
                     "mcp_capability_sha256": capability_fingerprint,
                     "mcp_error_code": exc.code,
-                    "mcp_failure_count": failure_count,
+                    "mcp_source_failure_count": failure_counts.source,
+                    "mcp_capability_failure_count": failure_counts.capability,
                 },
             )
         raise _mcp_runtime_http_error(exc) from exc

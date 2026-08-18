@@ -32,7 +32,8 @@ MCP_CONTEXT_KEY_PREFIX = "ai-platform:mcp:runtime-context:v1:"
 MCP_CONTEXT_LOCK_PREFIX = "ai-platform:mcp:runtime-context-lock:v1:"
 MCP_CONTEXT_LOCK_TTL_SECONDS = 120
 MCP_RELAY_AUTH_FAILURE_KEY_PREFIX = "ai-platform:mcp:relay-auth-failure:v1:"
-MCP_RELAY_AUTH_FAILURE_LIMIT = 10
+MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT = 10
+MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT = 1000
 MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS = 60
 MCP_CAPABILITY_HEADER = "X-MCP-Broker-Capability"
 MCP_JWT_AUTHORIZATION_HEADER = "JWT-Authorization"
@@ -113,6 +114,12 @@ class McpResolvedCapability:
     capability: McpBrokerCapability
     jwt: str = field(repr=False)
     jwt_fingerprint: str
+
+
+@dataclass(frozen=True)
+class McpRelayAuthFailureCounts:
+    source: int
+    capability: int
 
 
 @dataclass(frozen=True)
@@ -322,7 +329,7 @@ class RedisRuntimeContextStore:
 
 
 class McpRelayAuthFailureLimiter:
-    """Bound repeated relay authorization failures by source and capability."""
+    """Bound capability failures without coupling callers on shared egress."""
 
     def __init__(self, *, redis: RedisClientHandle | None = None) -> None:
         self._redis = redis
@@ -353,7 +360,11 @@ class McpRelayAuthFailureLimiter:
                 "mcp_relay_limiter_unavailable",
                 status_code=503,
             ) from exc
-        if any(count >= MCP_RELAY_AUTH_FAILURE_LIMIT for count in counts):
+        source_count, capability_count = counts
+        if (
+            capability_count >= MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT
+            or source_count >= MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT
+        ):
             raise McpRuntimeContextError(
                 "mcp_relay_rate_limited",
                 status_code=429,
@@ -364,26 +375,31 @@ class McpRelayAuthFailureLimiter:
         *,
         source_fingerprint: str,
         capability_fingerprint: str,
-    ) -> int:
+    ) -> McpRelayAuthFailureCounts:
         source_key, capability_key = self._keys(
             source_fingerprint,
             capability_fingerprint,
         )
         try:
             result = await self._client().eval(
-                "local maximum = 0 "
+                "local counts = {} "
                 "for index, key in ipairs(KEYS) do "
                 "local count = redis.call('incr', key) "
                 "if count == 1 then redis.call('expire', key, ARGV[1]) end "
-                "if count > maximum then maximum = count end "
+                "counts[index] = count "
                 "end "
-                "return maximum",
+                "return counts",
                 2,
                 source_key,
                 capability_key,
                 MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS,
             )
-            return int(result or 0)
+            if not isinstance(result, (list, tuple)) or len(result) != 2:
+                raise ValueError("mcp_relay_limiter_result_invalid")
+            return McpRelayAuthFailureCounts(
+                source=int(result[0] or 0),
+                capability=int(result[1] or 0),
+            )
         except Exception as exc:  # noqa: BLE001 - Redis failures must fail closed.
             raise McpRuntimeContextError(
                 "mcp_relay_limiter_unavailable",

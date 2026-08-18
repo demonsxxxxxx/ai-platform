@@ -4185,6 +4185,30 @@ async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
         await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
 
 
+@pytest.mark.parametrize(
+    ("operation", "replay_kwargs"),
+    [
+        (repository_module.retry_run_as_new_task, {"new_run_id": "run-child"}),
+        (repository_module.retry_run_as_new_task, {"mcp_context_id": "mcpctx-child"}),
+        (repository_module.resume_run_as_new_task, {"new_run_id": "run-child"}),
+        (repository_module.resume_run_as_new_task, {"mcp_context_id": "mcpctx-child"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_replay_requires_run_and_mcp_context_ids_together(
+    operation,
+    replay_kwargs,
+):
+    with pytest.raises(RepositoryConflictError, match="mcp_context_required_for_retry"):
+        await operation(
+            object(),
+            tenant_id="default",
+            user_id="user-a",
+            run_id="run-source",
+            **replay_kwargs,
+        )
+
+
 @pytest.mark.asyncio
 async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkeypatch):
     from app import repositories

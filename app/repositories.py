@@ -9544,6 +9544,15 @@ async def copy_run_as_new_task(
     }
 
 
+def _validate_replay_mcp_context_pair(
+    *,
+    new_run_id: str | None,
+    mcp_context_id: str | None,
+) -> None:
+    if (new_run_id is None) != (mcp_context_id is None):
+        raise RepositoryConflictError("mcp_context_required_for_retry")
+
+
 async def retry_run_as_new_task(
     conn: AsyncConnection,
     *,
@@ -9553,6 +9562,10 @@ async def retry_run_as_new_task(
     new_run_id: str | None = None,
     mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
+    _validate_replay_mcp_context_pair(
+        new_run_id=new_run_id,
+        mcp_context_id=mcp_context_id,
+    )
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
         return None
@@ -9628,6 +9641,10 @@ async def resume_run_as_new_task(
     mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Create a queued resume child run from a non-active source with reusable output."""
+    _validate_replay_mcp_context_pair(
+        new_run_id=new_run_id,
+        mcp_context_id=mcp_context_id,
+    )
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
         return None

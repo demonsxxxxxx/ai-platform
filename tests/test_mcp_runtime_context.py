@@ -2,17 +2,26 @@ import asyncio
 import base64
 import ipaddress
 import json
-from datetime import datetime
+import ssl
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from fastapi import HTTPException, Request, Response
 
 from app.auth import AuthPrincipal
 from app.mcp.runtime import (
+    MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT,
+    MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
     HostMcpRelay,
     InMemoryRuntimeContextStore,
+    McpRelayAuthFailureLimiter,
+    McpRelayAuthFailureCounts,
     McpRelayError,
     McpRelayTarget,
     McpRuntimeContextError,
@@ -264,6 +273,113 @@ async def test_runtime_target_pins_the_validated_address_and_preserves_tls_ident
         host_header="mcp.example:8443",
         sni_hostname="mcp.example",
     )
+
+
+@pytest.mark.asyncio
+async def test_relay_uses_original_hostname_for_real_tls_handshake(tmp_path, monkeypatch):
+    _settings(monkeypatch)
+    hostname = "mcp.example"
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(minutes=5))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(hostname)]),
+            critical=False,
+        )
+        .sign(private_key, hashes.SHA256())
+    )
+    certificate_path = tmp_path / "mcp-cert.pem"
+    key_path = tmp_path / "mcp-key.pem"
+    certificate_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(certificate_path, key_path)
+    client_context = ssl.create_default_context(cafile=str(certificate_path))
+    observed_sni: list[str | None] = []
+    server_context.set_servername_callback(
+        lambda _socket, server_name, _context: observed_sni.append(server_name)
+    )
+
+    async def handle_request(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            body = b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    server = await asyncio.start_server(
+        handle_request,
+        "127.0.0.1",
+        0,
+        ssl=server_context,
+    )
+    port = int(server.sockets[0].getsockname()[1])
+    endpoint = f"https://{hostname}:{port}/mcp"
+
+    async def pin_target(_endpoint: str) -> McpValidatedTarget:
+        return McpValidatedTarget(
+            endpoint=endpoint,
+            connect_url=f"https://127.0.0.1:{port}/mcp",
+            host_header=f"{hostname}:{port}",
+            sni_hostname=hostname,
+        )
+
+    relay = HostMcpRelay(
+        context_manager=object(),  # type: ignore[arg-type]
+        target_validator=pin_target,
+        client_factory=lambda **kwargs: httpx.AsyncClient(
+            verify=client_context,
+            trust_env=False,
+            **kwargs,
+        ),
+    )
+    try:
+        response = await relay._post(
+            target=McpRelayTarget(
+                endpoint=endpoint,
+                static_headers={},
+                active_tool_names=("search",),
+            ),
+            jwt="company.jwt",
+            payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert response.status_code == 200
+    assert response.json()["result"]["tools"] == []
+    assert observed_sni == [hostname]
 
 
 @pytest.mark.asyncio
@@ -637,8 +753,65 @@ async def test_runtime_context_route_reads_only_jwt_authorization_and_sets_no_st
 
 
 @pytest.mark.asyncio
+async def test_relay_auth_limiter_does_not_block_capabilities_on_shared_egress():
+    class Redis:
+        def __init__(self, *, source_count: int, capability_count: int):
+            self.source_count = source_count
+            self.capability_count = capability_count
+
+        async def mget(self, *keys: str):
+            return [
+                self.source_count if ":source:" in key else self.capability_count
+                for key in keys
+            ]
+
+        async def eval(self, _script: str, key_count: int, *_args: object):
+            assert key_count == 2
+            return [self.source_count + 1, self.capability_count + 1]
+
+    shared_source = Redis(
+        source_count=MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT - 1,
+        capability_count=0,
+    )
+    limiter = McpRelayAuthFailureLimiter(redis=shared_source)
+    await limiter.ensure_allowed(
+        source_fingerprint="shared-egress",
+        capability_fingerprint="valid-caller",
+    )
+    counts = await limiter.record_failure(
+        source_fingerprint="shared-egress",
+        capability_fingerprint="valid-caller",
+    )
+    assert counts == McpRelayAuthFailureCounts(
+        source=MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
+        capability=1,
+    )
+
+    exhausted_capability = Redis(
+        source_count=MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT - 1,
+        capability_count=MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT,
+    )
+    with pytest.raises(McpRuntimeContextError, match="mcp_relay_rate_limited"):
+        await McpRelayAuthFailureLimiter(redis=exhausted_capability).ensure_allowed(
+            source_fingerprint="shared-egress",
+            capability_fingerprint="failing-caller",
+        )
+
+    abusive_source = Redis(
+        source_count=MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
+        capability_count=0,
+    )
+    with pytest.raises(McpRuntimeContextError, match="mcp_relay_rate_limited"):
+        await McpRelayAuthFailureLimiter(redis=abusive_source).ensure_allowed(
+            source_fingerprint="abusive-egress",
+            capability_fingerprint="rotated-token",
+        )
+
+
+@pytest.mark.asyncio
 async def test_relay_route_throttles_and_audits_safe_authorization_fingerprints(
     monkeypatch,
+    caplog,
 ):
     calls: list[tuple[str, str, str | None]] = []
 
@@ -648,7 +821,7 @@ async def test_relay_route_throttles_and_audits_safe_authorization_fingerprints(
 
         async def record_failure(self, *, source_fingerprint, capability_fingerprint):
             calls.append(("failure", source_fingerprint, capability_fingerprint))
-            return 1
+            return McpRelayAuthFailureCounts(source=23, capability=2)
 
     class Relay:
         def __init__(self, **_kwargs):
@@ -659,6 +832,7 @@ async def test_relay_route_throttles_and_audits_safe_authorization_fingerprints(
 
     monkeypatch.setattr(mcp_routes, "MCP_RELAY_AUTH_FAILURE_LIMITER", Limiter())
     monkeypatch.setattr(mcp_routes, "HostMcpRelay", Relay)
+    caplog.set_level("WARNING", logger=mcp_routes.__name__)
     request = Request(
         {
             "type": "http",
@@ -683,6 +857,14 @@ async def test_relay_route_throttles_and_audits_safe_authorization_fingerprints(
     assert all(len(item[1]) == 64 and len(item[2] or "") == 64 for item in calls)
     assert "10.0.0.7" not in repr(calls)
     assert "private-token" not in repr(calls)
+    audit_record = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "mcp_relay_auth_failure"
+    )
+    assert audit_record.mcp_source_failure_count == 23
+    assert audit_record.mcp_capability_failure_count == 2
+    assert not hasattr(audit_record, "mcp_failure_count")
 
 
 @pytest.mark.asyncio
