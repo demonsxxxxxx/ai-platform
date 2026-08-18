@@ -40,7 +40,7 @@ import { feedbackApi } from "../services/api/feedback";
 import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
 import {
-  BROWSER_AUTH_INCARCINATION_EVENT,
+  BROWSER_AUTH_INCARNATION_EVENT,
   getBrowserAuthIncarnation,
 } from "./browserAuthCoordinator";
 import { Permission } from "../types/auth";
@@ -957,12 +957,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setBrowserAuthIncarnation(incarnation);
     };
     window.addEventListener(
-      BROWSER_AUTH_INCARCINATION_EVENT,
+      BROWSER_AUTH_INCARNATION_EVENT,
       handleAuthIncarnationChange,
     );
     return () =>
       window.removeEventListener(
-        BROWSER_AUTH_INCARCINATION_EVENT,
+        BROWSER_AUTH_INCARNATION_EVENT,
         handleAuthIncarnationChange,
       );
   }, [

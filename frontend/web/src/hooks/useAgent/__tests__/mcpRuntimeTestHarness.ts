@@ -8,6 +8,7 @@ export function installSuccessfulMcpRuntimeContext(
 ) {
   const originalFetch = globalThis.fetch;
   const contextIds: string[] = [];
+  const previousJwt = storage.getItem(MCP_GATEWAY_JWT_STORAGE_KEY);
   storage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, "company.jwt");
   globalThis.fetch = (async (input) => {
     assert.equal(String(input), "/api/ai/mcp/runtime-contexts");
@@ -25,7 +26,11 @@ export function installSuccessfulMcpRuntimeContext(
     contextIds,
     restore() {
       globalThis.fetch = originalFetch;
-      storage.removeItem(MCP_GATEWAY_JWT_STORAGE_KEY);
+      if (previousJwt === null) {
+        storage.removeItem(MCP_GATEWAY_JWT_STORAGE_KEY);
+      } else {
+        storage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, previousJwt);
+      }
     },
   };
 }

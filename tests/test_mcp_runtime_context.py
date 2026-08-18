@@ -760,10 +760,16 @@ async def test_relay_auth_limiter_does_not_block_capabilities_on_shared_egress()
             self.capability_count = capability_count
 
         async def mget(self, *keys: str):
-            return [
-                self.source_count if ":source:" in key else self.capability_count
-                for key in keys
-            ]
+            values = []
+            for key in keys:
+                if ":source:" in key:
+                    value = self.source_count
+                elif ":capability:" in key:
+                    value = self.capability_count
+                else:
+                    value = None
+                values.append(None if value is None else str(value).encode("ascii"))
+            return values
 
         async def eval(self, _script: str, key_count: int, *_args: object):
             assert key_count == 2

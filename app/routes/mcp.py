@@ -584,15 +584,17 @@ async def _write_server(
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
     endpoint = _redacted_endpoint(request.url)
-    try:
-        credential_envelope = seal_mcp_server_credentials(
-            tenant_id=principal.tenant_id,
-            server_id=name,
-            endpoint=request.url,
-            static_headers=request.headers,
-        )
-    except McpRuntimeContextError as exc:
-        raise _mcp_runtime_http_error(exc) from exc
+    credential_envelope: str | None = None
+    if request.url or request.headers:
+        try:
+            credential_envelope = seal_mcp_server_credentials(
+                tenant_id=principal.tenant_id,
+                server_id=name,
+                endpoint=request.url,
+                static_headers=request.headers,
+            )
+        except McpRuntimeContextError as exc:
+            raise _mcp_runtime_http_error(exc) from exc
     try:
         async with transaction() as conn:
             await repositories.ensure_user(

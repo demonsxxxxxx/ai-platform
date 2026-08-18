@@ -786,6 +786,34 @@ def test_mcp_lifecycle_rejects_case_insensitive_duplicate_static_headers(monkeyp
     assert response.json()["detail"] == "mcp_header_duplicate"
 
 
+def test_command_mcp_without_connection_material_skips_credential_sealing(monkeypatch):
+    from app.routes import mcp
+
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+
+    def fail_if_sealed(**_kwargs):
+        pytest.fail("command-only MCP must not require credential encryption")
+
+    monkeypatch.setattr(mcp, "seal_mcp_server_credentials", fail_if_sealed)
+    response = TestClient(create_app()).post(
+        "/api/mcp/",
+        json={
+            "name": "command-only",
+            "transport": "sandbox",
+            "command": "run-command-mcp",
+        },
+        headers=headers(roles="admin"),
+    )
+
+    assert response.status_code == 200
+    credential_write = next(
+        payload
+        for name, payload in calls
+        if name == "record_credential" and payload["server_name"] == "command-only"
+    )
+    assert credential_write["credential_envelope"] is None
+
+
 def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
     install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
