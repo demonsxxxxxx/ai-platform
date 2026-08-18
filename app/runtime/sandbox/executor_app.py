@@ -506,7 +506,6 @@ async def _deliver_nonterminal_callback(
             )
             raise _CallbackDeliveryError("stream_delivery_rejected")
         return
-    raise _CallbackDeliveryError("stream_delivery_exhausted")
 
 
 def _write_runtime_marker(workspace_root: Path, request: ExecutorTaskRequest) -> Path:
