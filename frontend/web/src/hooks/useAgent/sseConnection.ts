@@ -76,11 +76,14 @@ export function clearReconnectTimeout(
 
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
-/** Injectable token operations keep the 401 handoff race testable. */
+/** Injectable connection dependencies keep auth and startup races testable. */
 export interface SSETokenDependencies {
   getValidAccessToken?: typeof getValidAccessToken;
   getRefreshToken?: typeof getRefreshToken;
   refreshAccessToken?: typeof refreshAccessToken;
+  now?: () => number;
+  setStartupTimeout?: typeof globalThis.setTimeout;
+  clearStartupTimeout?: typeof globalThis.clearTimeout;
 }
 
 /**
@@ -117,6 +120,43 @@ export function isNonRetryableSSEAuthenticationError(
       error.failure === "refresh_unavailable" ||
       error.failure === "refresh_failed")
   );
+}
+
+export const MAX_SSE_STARTUP_RETRIES = 3;
+export const SSE_STARTUP_RETRY_BUDGET_MS = 10_000;
+const SSE_STARTUP_RETRY_BASE_DELAY_MS = 250;
+const SSE_RETRYABLE_STARTUP_CODES = new Set([
+  "sse_stream_not_admitted",
+  "sse_stream_not_confirmed",
+]);
+
+class RetryableSSEStartupError extends Error {
+  constructor(readonly code: string) {
+    super("sse_startup_not_ready");
+    this.name = "RetryableSSEStartupError";
+  }
+}
+
+class SSEStartupRetryExhaustedError extends Error {
+  constructor() {
+    super("sse_startup_retry_exhausted");
+    this.name = "SSEStartupRetryExhaustedError";
+  }
+}
+
+function retryableSSEStartupCode(response: Response): string | null {
+  if (
+    response.status !== 409 ||
+    response.headers.get("X-SSE-Retryable") !== "true"
+  ) {
+    return null;
+  }
+  const code = response.headers.get("X-SSE-Error-Code") || "";
+  return SSE_RETRYABLE_STARTUP_CODES.has(code) ? code : null;
+}
+
+function getSSEStartupRetryDelay(retryCount: number): number {
+  return SSE_STARTUP_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, retryCount - 1);
 }
 
 /**
@@ -310,6 +350,11 @@ export async function connectToSSE(
   const getCurrentRefreshToken = tokenDependencies.getRefreshToken || getRefreshToken;
   const refreshCurrentAccessToken =
     tokenDependencies.refreshAccessToken || refreshAccessToken;
+  const now = tokenDependencies.now || Date.now;
+  const setStartupTimeout =
+    tokenDependencies.setStartupTimeout || globalThis.setTimeout;
+  const clearStartupTimeout =
+    tokenDependencies.clearStartupTimeout || globalThis.clearTimeout;
 
   // Never let a deferred connection for an old session/run abort the active
   // stream. The target check also gives run-less terminal SSE frames a stream
@@ -366,11 +411,30 @@ export async function connectToSSE(
 
   let receivedTerminalEvent = false;
   let receivedNonTerminalApplicationError = false;
+  let startupRetryCount = 0;
+  const startupRetryStartedAt = now();
+  let startupDeadlineTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  const startupDeadline = new Promise<never>((_resolve, reject) => {
+    startupDeadlineTimer = setStartupTimeout(() => {
+      if (!isCurrentStream()) {
+        return;
+      }
+      console.warn("[SSE] Startup retry exhausted", {
+        code: "sse_startup_deadline_exceeded",
+        attempts: startupRetryCount,
+        elapsedMs: now() - startupRetryStartedAt,
+        outcome: "exhausted",
+      });
+      streamAbortController.abort();
+      reject(new SSEStartupRetryExhaustedError());
+    }, SSE_STARTUP_RETRY_BUDGET_MS);
+  });
 
   setConnectionStatus("connecting");
 
   try {
-    await fetchStream(
+    await Promise.race([
+      fetchStream(
       `/api/chat/sessions/${targetSessionId}/stream?run_id=${targetRunId}`,
       {
         credentials: "include",
@@ -410,8 +474,19 @@ export async function connectToSSE(
             // launched inside this callback from the original owner promise.
             throw new RefreshRetryRequested();
           }
+          const startupCode = retryableSSEStartupCode(response);
+          if (startupCode) {
+            throw new RetryableSSEStartupError(startupCode);
+          }
           if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            throw new Error(
+              response.headers.get("X-SSE-Error-Code") ||
+                `HTTP error! status: ${response.status}`,
+            );
+          }
+          if (startupDeadlineTimer) {
+            clearStartupTimeout(startupDeadlineTimer);
+            startupDeadlineTimer = null;
           }
           console.log("[SSE] Connection established");
           setConnectionStatus("connected");
@@ -503,6 +578,32 @@ export async function connectToSSE(
           if (!isCurrentStream()) {
             return;
           }
+          if (err instanceof RetryableSSEStartupError) {
+            const elapsedMs = now() - startupRetryStartedAt;
+            if (
+              startupRetryCount >= MAX_SSE_STARTUP_RETRIES ||
+              elapsedMs >= SSE_STARTUP_RETRY_BUDGET_MS
+            ) {
+              console.warn("[SSE] Startup retry exhausted", {
+                code: err.code,
+                attempts: startupRetryCount,
+                elapsedMs,
+                outcome: "exhausted",
+              });
+              throw new SSEStartupRetryExhaustedError();
+            }
+            startupRetryCount += 1;
+            const delayMs = getSSEStartupRetryDelay(startupRetryCount);
+            console.info("[SSE] Startup retry scheduled", {
+              code: err.code,
+              attempt: startupRetryCount,
+              delayMs,
+              elapsedMs,
+              outcome: "scheduled",
+            });
+            setConnectionStatus("connecting");
+            return delayMs;
+          }
           console.error(
             formatSafeDiagnosticLog("[SSE] Connection failed", err),
           );
@@ -546,7 +647,9 @@ export async function connectToSSE(
           );
         },
       },
-    );
+    ),
+      startupDeadline,
+    ]);
   } catch (err) {
     if (isRefreshRetryRequested(err)) {
       // The signal is valid only for this exact captured controller and its
@@ -598,6 +701,9 @@ export async function connectToSSE(
     }
     throw err;
   } finally {
+    if (startupDeadlineTimer) {
+      clearStartupTimeout(startupDeadlineTimer);
+    }
     if (isCurrentStream()) {
       isConnectingRef.current = false;
     }

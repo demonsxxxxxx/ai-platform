@@ -11,6 +11,7 @@ from app.streaming.api import LiveSubscriptionClosed, live_redis_id_is_after
 from app.streaming.events import STREAM_DESIGN_ID
 from app.streaming.redis import (
     ResumeDecision,
+    SseAuthorityConflictError,
     SseAuthorityLease,
     StreamAuthority,
     StreamCursor,
@@ -202,6 +203,78 @@ def terminal_rows():
         ),
         entry("4-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
     )
+
+
+async def connect_expect_conflict():
+    with pytest.raises(HTTPException) as exc_info:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([])),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+    return exc_info.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    [
+        ("sse_stream_not_confirmed", True),
+        ("sse_authority_revoked", False),
+    ],
+)
+async def test_v3_authority_conflict_has_stable_retry_classification(
+    monkeypatch, code, retryable
+):
+    patch_authority(monkeypatch)
+
+    async def conflicting_authority(conn, *, tenant_id, run_id):
+        raise SseAuthorityConflictError(code)
+
+    monkeypatch.setattr(route, "get_stream_authority", conflicting_authority)
+
+    error = await connect_expect_conflict()
+
+    assert error.status_code == 409
+    assert error.detail == {"code": code, "retryable": retryable}
+    assert error.headers == {
+        "X-SSE-Error-Code": code,
+        "X-SSE-Retryable": str(retryable).lower(),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run_status", "code", "retryable"),
+    [
+        ("running", "sse_stream_not_admitted", True),
+        ("succeeded", "sse_run_already_terminal", False),
+    ],
+)
+async def test_v3_missing_authority_distinguishes_startup_from_terminal_run(
+    monkeypatch, run_status, code, retryable
+):
+    patch_authority(
+        monkeypatch,
+        run={"id": "run-a", "session_id": "session-a", "status": run_status},
+    )
+
+    async def missing_authority(conn, *, tenant_id, run_id):
+        return None
+
+    monkeypatch.setattr(route, "get_stream_authority", missing_authority)
+
+    error = await connect_expect_conflict()
+
+    assert error.status_code == 409
+    assert error.detail == {"code": code, "retryable": retryable}
+    assert error.headers == {
+        "X-SSE-Error-Code": code,
+        "X-SSE-Retryable": str(retryable).lower(),
+    }
 
 
 @pytest.mark.asyncio
