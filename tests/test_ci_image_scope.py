@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -49,6 +50,36 @@ def test_non_pull_request_events_always_build_images(
         role=role,
         changed_paths=(),
     ) == (True, "required_event")
+
+
+def _local_docker_copy_sources(dockerfile: Path) -> tuple[str, ...]:
+    sources: list[str] = []
+    for raw_line in dockerfile.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("COPY "):
+            continue
+        tokens = shlex.split(line)
+        if any(token.startswith("--from=") for token in tokens[1:]):
+            continue
+        operands = [token for token in tokens[1:] if not token.startswith("--")]
+        sources.extend(operands[:-1])
+    return tuple(sources)
+
+
+@pytest.mark.parametrize(
+    ("role", "dockerfile"),
+    [("backend", "Dockerfile"), ("frontend", "frontend/web/Dockerfile")],
+)
+def test_classifier_covers_every_local_docker_copy_source(
+    role: str, dockerfile: str
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    sources = _local_docker_copy_sources(root / dockerfile)
+    assert sources
+    for source in sources:
+        source_path = root / source
+        probe = f"{source.rstrip('/')}/__image_scope_probe__" if source_path.is_dir() else source
+        assert image_inputs_affected(role, [probe]), source
 
 
 def _git(repo: Path, *args: str) -> str:
