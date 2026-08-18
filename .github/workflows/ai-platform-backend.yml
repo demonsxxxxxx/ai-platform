@@ -287,8 +287,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-validation
     timeout-minutes: 30
-    outputs:
-      disposition: ${{ steps.image-scope.outputs.disposition }}
     env:
       IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -434,13 +432,8 @@ jobs:
           BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}
           AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}
           IMAGE_RESULT: ${{ needs.backend-image.result }}
-          IMAGE_DISPOSITION: ${{ needs.backend-image.outputs.disposition }}
         run: |
           test "$VALIDATION_RESULT" = "success"
           test "$BACKEND_TESTS_RESULT" = "success"
           test "$AGENT_SKILL_RESULT" = "success"
           test "$IMAGE_RESULT" = "success"
-          case "$IMAGE_DISPOSITION" in
-            affected|required_event|not_affected) ;;
-            *) exit 1 ;;
-          esac

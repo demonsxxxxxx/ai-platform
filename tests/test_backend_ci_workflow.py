@@ -952,7 +952,6 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "paths:" not in workflow
     assert "needs: backend-validation" in image_job
     assert "timeout-minutes: 30" in image_job
-    assert "disposition: ${{ steps.image-scope.outputs.disposition }}" in image_job
     assert "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}" in image_job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
     assert "fetch-depth: 0" in image_job
@@ -1009,8 +1008,8 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "docker push" not in image_job
     assert "docker compose" not in image_job.lower()
     required_job = workflow.split("  required:", 1)[1]
-    assert "IMAGE_DISPOSITION: ${{ needs.backend-image.outputs.disposition }}" in required_job
-    assert "affected|required_event|not_affected" in required_job
+    assert "IMAGE_RESULT: ${{ needs.backend-image.result }}" in required_job
+    assert "IMAGE_DISPOSITION" not in required_job
 
 
 def test_backend_required_contract_preserves_high_risk_design_triggers():

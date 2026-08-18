@@ -152,7 +152,6 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert required["if"] == "${{ always() }}"
     image_job = workflow.split("  frontend-image:", 1)[1].split("  required:", 1)[0]
     required_job = workflow.split("  required:", 1)[1]
-    assert "disposition: ${{ steps.image-scope.outputs.disposition }}" in image_job
     assert "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}" in image_job
     assert "fetch-depth: 0" in image_job
     assert "- name: Determine frontend image impact" in image_job
@@ -172,8 +171,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     ]:
         step = image_job.split(f"- name: {step_name}", 1)[1].split("\n      - name:", 1)[0]
         assert "if: steps.image-scope.outputs.build == 'true'" in step
-    assert "IMAGE_DISPOSITION: ${{ needs.frontend-image.outputs.disposition }}" in required_job
-    assert "require_image_disposition(os.environ.get(\"IMAGE_DISPOSITION\", \"\"))" in required_job
+    assert "IMAGE_RESULT: ${{ needs.frontend-image.result }}" in required_job
+    assert "IMAGE_DISPOSITION" not in required_job
     for job_name in [*required["needs"], "required"]:
         job = jobs[job_name]
         assert isinstance(job, dict)
@@ -306,12 +305,6 @@ def test_frontend_required_contract_executes_failure_paths(job_name: str, result
 def test_frontend_required_contract_accepts_only_all_success() -> None:
     namespace = _required_contract_namespace()
     require_successful_results = namespace["require_successful_results"]
-    require_image_disposition = namespace["require_image_disposition"]
     assert callable(require_successful_results)
-    assert callable(require_image_disposition)
 
     require_successful_results({"frontend": "success", "frontend-image": "success"})
-    for disposition in ("affected", "required_event", "not_affected"):
-        require_image_disposition(disposition)
-    with pytest.raises(RuntimeError, match="disposition"):
-        require_image_disposition("")

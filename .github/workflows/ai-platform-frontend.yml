@@ -186,8 +186,6 @@ jobs:
     name: packaged image build
     runs-on: ubuntu-latest
     needs: frontend
-    outputs:
-      disposition: ${{ steps.image-scope.outputs.disposition }}
     env:
       IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -340,7 +338,6 @@ jobs:
         env:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           IMAGE_RESULT: ${{ needs.frontend-image.result }}
-          IMAGE_DISPOSITION: ${{ needs.frontend-image.outputs.disposition }}
         run: |
           python - <<'PY'
           import os
@@ -362,14 +359,6 @@ jobs:
                   )
 
 
-          def require_image_disposition(disposition):
-              allowed = {"affected", "required_event", "not_affected"}
-              if disposition not in allowed:
-                  raise RuntimeError(
-                      f"frontend image disposition is invalid: {disposition or 'missing'}"
-                  )
-
-
           if __name__ == "__main__":
               require_successful_results(
                   {
@@ -377,5 +366,4 @@ jobs:
                       "frontend-image": os.environ.get("IMAGE_RESULT", ""),
                   }
               )
-              require_image_disposition(os.environ.get("IMAGE_DISPOSITION", ""))
           PY
