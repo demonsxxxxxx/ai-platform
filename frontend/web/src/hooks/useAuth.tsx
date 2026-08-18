@@ -474,6 +474,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
+        clearMcpGatewayJwt();
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
         const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!applyAuthenticatedUser(currentUser, owner)) {
@@ -566,6 +567,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
+        clearMcpGatewayJwt();
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
         const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!applyAuthenticatedUser(currentUser, owner)) {

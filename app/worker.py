@@ -70,7 +70,9 @@ from app.models import QueueRunPayload
 from app.mcp.api import (
     McpRuntimeContextError,
     get_mcp_runtime_context_manager,
+    invalidate_mcp_runtime_context,
     mcp_targets_from_policy_subjects,
+    persisted_mcp_context_id,
     queue_input_with_mcp_context,
 )
 from app.principal_authority import (
@@ -217,6 +219,14 @@ class _WorkerAdminBypassAudit:
     target_id: str
     trace_id: str
     payload_json: dict[str, Any]
+
+
+async def _invalidate_terminal_mcp_context(
+    context_id: str | None,
+    outcome: WorkerOutcome,
+) -> None:
+    if outcome.status in {"succeeded", "failed", "cancelled"}:
+        await invalidate_mcp_runtime_context(context_id)
 
 
 _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
@@ -1068,7 +1078,7 @@ def _payload_from_locked_run(
     try:
         candidate["input"] = queue_input_with_mcp_context(
             candidate["input"],
-            locked_run.get("mcp_context_id"),
+            persisted_mcp_context_id(locked_run),
         )
         return QueueRunPayload.model_validate(candidate)
     except (TypeError, ValueError, ValidationError):
@@ -1923,6 +1933,7 @@ async def process_run_payload(
     runtime_sandbox_lease_released = False
     mcp_broker_capability_token = ""
     runtime_sandbox_execution_detached = False
+    trusted_terminal_mcp_context_id: str | None = None
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     capability_authorization: _WorkerCapabilityAuthorization | None = None
@@ -1948,6 +1959,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
+            trusted_terminal_mcp_context_id = persisted_mcp_context_id(locked)
             if reconciliation is not None and locked is not None:
                 if str(locked.get("status") or "") != "running":
                     return WorkerOutcome(
@@ -2312,15 +2324,21 @@ async def process_run_payload(
                 )
     finally:
         if terminal_after_transaction is not None:
-            await _finalize_multi_agent_parent_after_child_commit(
-                terminal_after_transaction.payload,
-                terminal_after_transaction.reconciled_parent,
-            )
-            await publish_pending_run_terminal(
-                transaction,
-                tenant_id=terminal_after_transaction.payload.tenant_id,
-                run_id=terminal_after_transaction.payload.run_id,
-            )
+            try:
+                await _finalize_multi_agent_parent_after_child_commit(
+                    terminal_after_transaction.payload,
+                    terminal_after_transaction.reconciled_parent,
+                )
+                await publish_pending_run_terminal(
+                    transaction,
+                    tenant_id=terminal_after_transaction.payload.tenant_id,
+                    run_id=terminal_after_transaction.payload.run_id,
+                )
+            finally:
+                await _invalidate_terminal_mcp_context(
+                    trusted_terminal_mcp_context_id,
+                    terminal_after_transaction.outcome,
+                )
 
     run_payload = RunPayload(
         tenant_id=run_identity["tenant_id"],
@@ -2532,7 +2550,18 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        try:
+            await finalize_parent_and_publish(
+                transaction,
+                _finalize_multi_agent_parent_after_child_commit,
+                payload,
+                reconciled_parent,
+            )
+        finally:
+            await _invalidate_terminal_mcp_context(
+                payload.input.get("mcp_context_id"),
+                WorkerOutcome("cancelled", payload.run_id),
+            )
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         await stream_publisher.aclose()
@@ -2597,7 +2626,18 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        try:
+            await finalize_parent_and_publish(
+                transaction,
+                _finalize_multi_agent_parent_after_child_commit,
+                payload,
+                reconciled_parent,
+            )
+        finally:
+            await _invalidate_terminal_mcp_context(
+                payload.input.get("mcp_context_id"),
+                outcome_after_exception,
+            )
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -3127,7 +3167,18 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+    try:
+        await finalize_parent_and_publish(
+            transaction,
+            _finalize_multi_agent_parent_after_child_commit,
+            payload,
+            reconciled_parent,
+        )
+    finally:
+        await _invalidate_terminal_mcp_context(
+            payload.input.get("mcp_context_id"),
+            terminal_outcome,
+        )
     return terminal_outcome
 
 

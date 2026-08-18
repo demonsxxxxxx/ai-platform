@@ -30,6 +30,7 @@ from app.mcp.api import (
     McpRelayError,
     McpRuntimeContextError,
     create_host_mcp_relay,
+    discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
     get_mcp_runtime_context_manager,
     normalize_static_mcp_headers,
@@ -773,6 +774,18 @@ async def create_mcp_runtime_context(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return result
+
+
+@router.delete("/mcp/runtime-contexts/{context_id}", status_code=204)
+@router.delete("/ai/mcp/runtime-contexts/{context_id}", status_code=204)
+async def discard_mcp_runtime_context(
+    context_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    """Best-effort discard without revealing context existence or ownership."""
+
+    await discard_unbound_mcp_runtime_context(context_id, principal)
+    return Response(status_code=204)
 
 
 @router.post("/mcp/relay/{server_id}", response_model=None)

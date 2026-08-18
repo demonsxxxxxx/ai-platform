@@ -102,3 +102,19 @@ export function installMcpAuthHandoff(): () => void {
   opener.postMessage({ type: MCP_AUTH_READY_MESSAGE, nonce }, sourceOrigin);
   return cleanup;
 }
+
+export function installMcpAuthHandoffLifecycle(
+  authIncarnationEvent: string,
+  installer: () => () => void = installMcpAuthHandoff,
+): () => void {
+  let cleanupHandoff = installer();
+  const restart = () => {
+    cleanupHandoff();
+    cleanupHandoff = installer();
+  };
+  window.addEventListener(authIncarnationEvent, restart);
+  return () => {
+    window.removeEventListener(authIncarnationEvent, restart);
+    cleanupHandoff();
+  };
+}

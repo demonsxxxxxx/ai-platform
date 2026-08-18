@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createMcpRuntimeContext,
+  discardMcpRuntimeContext,
   prepareMcpRuntimeContext,
 } from "../mcpRuntime.ts";
 import { ApiRequestError } from "../fetch.ts";
@@ -83,6 +84,30 @@ test("runtime context 401 clears only the MCP credential", async () => {
     );
     assert.equal(getMcpGatewayJwt(), null);
     assert.equal(values.get("ai_platform_session_present"), "cookie-session-marker");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runtime context discard is an opaque principal-scoped DELETE", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), init });
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  try {
+    await discardMcpRuntimeContext("mcpctx/a");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, "/api/ai/mcp/runtime-contexts/mcpctx%2Fa");
+    assert.equal(calls[0]?.init?.method, "DELETE");
+    assert.equal(calls[0]?.init?.credentials, "include");
+    assert.ok(calls[0]?.init?.signal instanceof AbortSignal);
+    assert.equal(
+      new Headers(calls[0]?.init?.headers).get("JWT-Authorization"),
+      null,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

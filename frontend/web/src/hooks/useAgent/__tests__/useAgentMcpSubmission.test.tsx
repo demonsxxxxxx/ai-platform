@@ -134,15 +134,20 @@ test("auth changes during MCP context creation prevent chat submission", async (
 
     assert.deepEqual(outcome, { status: "failed" });
     assert.equal(submissions, 0);
-    const mcpRequests = requests.filter(
-      (request) => request.url === "/api/ai/mcp/runtime-contexts",
+    const mcpRequests = requests.filter((request) =>
+      request.url.startsWith("/api/ai/mcp/runtime-contexts"),
     );
-    assert.equal(mcpRequests.length, 1);
+    assert.equal(mcpRequests.length, 2);
     assert.equal(mcpRequests[0]?.init?.method, "POST");
     assert.equal(
       new Headers(mcpRequests[0]?.init?.headers).get("JWT-Authorization"),
       "Bearer company.jwt",
     );
+    assert.equal(
+      mcpRequests[1]?.url,
+      "/api/ai/mcp/runtime-contexts/mcpctx-stale-owner",
+    );
+    assert.equal(mcpRequests[1]?.init?.method, "DELETE");
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     globalThis.fetch = originalFetch;

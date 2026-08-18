@@ -874,6 +874,45 @@ async def test_runtime_context_route_reads_only_jwt_authorization_and_sets_no_st
 
 
 @pytest.mark.asyncio
+async def test_runtime_context_discard_route_is_principal_scoped_and_opaque(monkeypatch):
+    now = _settings(monkeypatch)
+    store = InMemoryRuntimeContextStore(clock=lambda: now)
+    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
+    token = _jwt(exp=now + 900)
+    owned = await manager.create_context(
+        principal=_principal(), bearer_jwt=f"Bearer {token}"
+    )
+    other = await manager.create_context(
+        principal=_principal(user_id="user-b"), bearer_jwt=f"Bearer {token}"
+    )
+
+    async def discard(context_id, principal):
+        await manager.discard_unbound_context(context_id, principal)
+
+    monkeypatch.setattr(mcp_routes, "discard_unbound_mcp_runtime_context", discard)
+
+    responses = [
+        await mcp_routes.discard_mcp_runtime_context(
+            context_id=owned["mcp_context_id"], principal=_principal()
+        ),
+        await mcp_routes.discard_mcp_runtime_context(
+            context_id=other["mcp_context_id"], principal=_principal()
+        ),
+        await mcp_routes.discard_mcp_runtime_context(
+            context_id="mcpctx_missing", principal=_principal()
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [204, 204, 204]
+    assert await store.get(
+        f"ai-platform:mcp:runtime-context:v1:{owned['mcp_context_id']}"
+    ) is None
+    assert await store.get(
+        f"ai-platform:mcp:runtime-context:v1:{other['mcp_context_id']}"
+    ) is not None
+
+
+@pytest.mark.asyncio
 async def test_relay_auth_limiter_does_not_block_capabilities_on_shared_egress():
     class Redis:
         def __init__(self, *, source_count: int, capability_count: int):

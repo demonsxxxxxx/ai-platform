@@ -1031,6 +1031,42 @@ def test_mcp_lifecycle_rejects_blank_roles_before_repository_writes(monkeypatch,
     )
 
 
+def test_runtime_context_discard_requires_principal_and_is_opaque(monkeypatch):
+    from app.routes import mcp as mcp_routes
+
+    install_mcp_route_fakes(monkeypatch)
+    calls = []
+
+    async def discard(context_id, principal):
+        calls.append((context_id, principal.user_id, principal.tenant_id))
+
+    monkeypatch.setattr(
+        mcp_routes,
+        "discard_unbound_mcp_runtime_context",
+        discard,
+    )
+    client = TestClient(create_app())
+
+    unauthorized = client.delete("/api/ai/mcp/runtime-contexts/mcpctx-owned")
+    owned = client.delete(
+        "/api/ai/mcp/runtime-contexts/mcpctx-owned",
+        headers=headers(),
+    )
+    missing = client.delete(
+        "/api/ai/mcp/runtime-contexts/mcpctx-missing",
+        headers=headers(),
+    )
+
+    assert unauthorized.status_code == 401
+    assert owned.status_code == 204
+    assert missing.status_code == 204
+    assert owned.content == missing.content == b""
+    assert calls == [
+        ("mcpctx-owned", "ordinary", "default"),
+        ("mcpctx-missing", "ordinary", "default"),
+    ]
+
+
 def test_mcp_lifecycle_validation_errors_do_not_echo_secret_inputs(monkeypatch):
     install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())

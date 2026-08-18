@@ -7,8 +7,10 @@ import {
   clearMcpGatewayJwt,
   getMcpGatewayJwt,
   isMcpAuthHandoffMessage,
+  installMcpAuthHandoffLifecycle,
   setMcpGatewayJwt,
 } from "../mcpGatewayAuth.ts";
+import { BROWSER_AUTH_INCARNATION_EVENT } from "../../hooks/browserAuthCoordinator.ts";
 
 test("MCP JWT storage is isolated under its dedicated localStorage key", () => {
   const values = new Map<string, string>();
@@ -76,5 +78,42 @@ test("credential changes notify same-tab catalog consumers", () => {
       configurable: true,
       value: originalWindow,
     });
+  }
+});
+
+test("auth incarnation changes replace the active MCP auth handoff", () => {
+  const target = new EventTarget();
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: target,
+  });
+  const installs: number[] = [];
+  const cleanups: number[] = [];
+  const installer = () => {
+    const installation = installs.length + 1;
+    installs.push(installation);
+    return () => cleanups.push(installation);
+  };
+
+  try {
+    const stop = installMcpAuthHandoffLifecycle(
+      BROWSER_AUTH_INCARNATION_EVENT,
+      installer,
+    );
+    target.dispatchEvent(new Event(BROWSER_AUTH_INCARNATION_EVENT));
+    assert.deepEqual(installs, [1, 2]);
+    assert.deepEqual(cleanups, [1]);
+
+    stop();
+    assert.deepEqual(cleanups, [1, 2]);
+    target.dispatchEvent(new Event(BROWSER_AUTH_INCARNATION_EVENT));
+    assert.deepEqual(installs, [1, 2]);
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, "window", originalWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
   }
 });

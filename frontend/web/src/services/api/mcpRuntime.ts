@@ -20,6 +20,7 @@ const MCP_JWT_REJECTION_CODES = new Set([
   "mcp_jwt_invalid",
   "mcp_jwt_expired_or_missing",
 ]);
+const MCP_RUNTIME_CONTEXT_DISCARD_TIMEOUT_MS = 1_000;
 
 function projectRuntimeContext(value: unknown): McpRuntimeContextResponse {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -77,6 +78,32 @@ export async function createMcpRuntimeContext(
     throw error;
   }
   return projectRuntimeContext(await response.json().catch(() => null));
+}
+
+export async function discardMcpRuntimeContext(
+  contextId: string,
+): Promise<void> {
+  if (!contextId) return;
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(),
+    MCP_RUNTIME_CONTEXT_DISCARD_TIMEOUT_MS,
+  );
+  try {
+    await cookieSessionFetch(
+      `${API_BASE}/api/ai/mcp/runtime-contexts/${encodeURIComponent(contextId)}`,
+      {
+        method: "DELETE",
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      },
+    );
+  } catch {
+    // The server TTL remains the final cleanup fence.
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
 }
 
 export async function prepareMcpRuntimeContext(options: {
