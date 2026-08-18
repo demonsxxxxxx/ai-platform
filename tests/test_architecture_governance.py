@@ -768,6 +768,21 @@ def test_root_inventory_repair_may_delete_stale_exception(
     assert _evaluate(repo, broken_authority, broken_authority, head).status == "pass"
 
 
+def test_root_inventory_repair_rejects_older_authority_than_broken_base(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, original_authority = governance_repo
+    broken_base = _broken_root_inventory_authority(repo)
+    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
+    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
+    head = _commit(repo, "attempt repair from stale authority")
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, original_authority, broken_base, head)
+
+    assert caught.value.code == "invalid_policy_repair"
+
+
 @pytest.mark.parametrize(
     ("extra_path", "mutate_policy", "keep_exception"),
     [

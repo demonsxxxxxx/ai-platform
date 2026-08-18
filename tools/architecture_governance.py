@@ -372,6 +372,11 @@ class ArchitectureEvaluator:
         )
         _validate_json_schema_instance(policy, schema)
         changes = self._git.changes(base, head)
+        if authority != base and any(change.path == POLICY_PATH for change in changes):
+            self._reject_invalid_base_policy_repair(
+                schema=schema,
+                base=base,
+            )
         try:
             _validate_policy(policy, self._git, authority)
         except ArchitectureError as exc:
@@ -415,6 +420,26 @@ class ArchitectureEvaluator:
             exempted_findings=tuple(exempted),
             exception=exception,
         )
+
+    def _reject_invalid_base_policy_repair(
+        self,
+        *,
+        schema: dict[str, Any],
+        base: str,
+    ) -> None:
+        base_policy = _load_json_object(
+            self._git.text(base, POLICY_PATH),
+            path=POLICY_PATH,
+            error_code="invalid_policy_repair",
+        )
+        try:
+            _validate_json_schema_instance(base_policy, schema)
+            _validate_policy(base_policy, self._git, base)
+        except ArchitectureError as exc:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "policy changes cannot repair an invalid base when authority_ref differs from base_ref",
+            ) from exc
 
     def _load_root_inventory_repair(
         self,
