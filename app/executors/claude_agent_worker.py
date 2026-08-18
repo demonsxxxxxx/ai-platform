@@ -52,11 +52,6 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
     sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
-from app.executors.claude.pinned_skills import (
-    pin_manifests_for_result as _pin_manifests_for_result,
-    pinned_skill_manifests as _pinned_skill_manifests,
-    select_pinned_skills as _select_pinned_skills,
-)
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
 from app.file_parser_contracts import (
@@ -97,6 +92,11 @@ from app.skills.catalog import (
     load_runtime_authorized_skill_catalog,
 )
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.skills.pinning import (
+    pin_manifests_for_result as _pin_manifests_for_result,
+    pinned_skill_manifests as _pinned_skill_manifests,
+    select_pinned_skills as _select_pinned_skills,
+)
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
@@ -463,7 +463,7 @@ def _merged_pinned_skill_manifests(
     payload: RunPayload,
     catalog: AuthorizedSkillCatalogResolution | None,
 ) -> dict[str, dict[str, Any]]:
-    pinned = _pinned_skill_manifests(payload)
+    pinned = _pinned_skill_manifests(payload.skill_manifests)
     if catalog is None:
         return pinned
     for manifest in catalog.manifests:
@@ -1007,7 +1007,7 @@ class ClaudeAgentWorkerAdapter:
         _prepare_run_workspace(settings.claude_agent_workspace_root, workspace)
 
         skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
-        pinned_manifests = _pinned_skill_manifests(payload)
+        pinned_manifests = _pinned_skill_manifests(payload.skill_manifests)
         available_names = list(dict.fromkeys([skill.name for skill in skills] + list(pinned_manifests)))
         allowed_skill_names = _allowed_skill_names(payload, available_names)
         _selected_skills, pin_mismatches = _select_pinned_skills(
@@ -2597,7 +2597,7 @@ def _allowed_skill_names(
     if not requested:
         return []
     selected = list(dict.fromkeys(name for name in requested if name in available))
-    pinned_manifests = _pinned_skill_manifests(payload)
+    pinned_manifests = _pinned_skill_manifests(payload.skill_manifests)
     if pinned_manifests:
         return _with_pinned_manifest_dependencies(selected, pinned_manifests)
     return _with_skill_dependencies(selected, available)
@@ -2626,7 +2626,7 @@ def _inferred_used_skill_names(payload: RunPayload, staged_skill_names: list[str
     used: list[str] = []
     if payload.skill_id and payload.skill_id in staged:
         used.append(payload.skill_id)
-        pinned_manifests = _pinned_skill_manifests(payload)
+        pinned_manifests = _pinned_skill_manifests(payload.skill_manifests)
         if pinned_manifests and payload.skill_id in pinned_manifests:
             dependency_ids = _string_list(pinned_manifests[payload.skill_id].get("dependency_ids"))
         else:
