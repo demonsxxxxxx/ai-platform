@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import hmac
 import inspect
 import json
@@ -126,6 +127,68 @@ class _CallbackBatchIdFactory:
     def next_id(self) -> str:
         self._sequence += 1
         return f"callback-{self._namespace}-{self._sequence}"
+
+
+@dataclass(frozen=True)
+class _CallbackBatchContent:
+    batch_id: str
+    serialized_payload: str
+    payload_digest: str
+    item_indexes: tuple[int, ...]
+
+    @classmethod
+    def freeze(cls, payload: CallbackPayload) -> _CallbackBatchContent:
+        batch_id = str(payload.get("batch_id") or "")
+        if not batch_id:
+            raise ValueError("callback batch ID is required")
+        serialized_payload = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        events = payload.get("events")
+        event_count = len(events) if isinstance(events, list) else 0
+        return cls(
+            batch_id=batch_id,
+            serialized_payload=serialized_payload,
+            payload_digest=hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest(),
+            item_indexes=tuple(range(event_count)),
+        )
+
+    def payload(self) -> CallbackPayload:
+        return json.loads(self.serialized_payload)
+
+
+@dataclass
+class _CallbackBatchDelivery:
+    content: _CallbackBatchContent
+    state: str = "created"
+    attempts: int = 0
+    error_code: str | None = None
+
+    def begin_attempt(self) -> None:
+        if self.state not in {"created", "sending"}:
+            raise RuntimeError(f"callback batch cannot send from {self.state}")
+        self.state = "sending"
+        self.attempts += 1
+
+    def accept(self) -> None:
+        if self.state != "sending":
+            raise RuntimeError(f"callback batch cannot accept from {self.state}")
+        self.state = "accepted"
+
+    def exhaust(self, error_code: str) -> None:
+        if self.state != "sending":
+            raise RuntimeError(f"callback batch cannot exhaust from {self.state}")
+        self.state = "exhausted"
+        self.error_code = error_code
+
+    def cancel(self) -> None:
+        if self.state in {"accepted", "exhausted", "cancelled"}:
+            return
+        self.state = "cancelled"
+        self.error_code = "executor_cancelled"
 
 
 class _PrivateExecutionFact(NamedTuple):
@@ -453,59 +516,73 @@ def _callback_error_reason(exc: Exception) -> str:
 async def _deliver_nonterminal_callback(
     callback_sender: CallbackSender,
     url: str,
-    payload: CallbackPayload,
+    batch: _CallbackBatchDelivery,
     token: str,
     *,
     retry_policy: _CallbackRetryPolicy,
     retry_sleep: CallbackRetrySleep,
 ) -> None:
-    frozen_payload = json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    event_count = len(payload.get("events") or [])
-    for attempt in range(1, retry_policy.max_attempts + 1):
-        try:
-            result = await asyncio.wait_for(
-                _dispatch_callback(
-                    callback_sender,
-                    url,
-                    json.loads(frozen_payload),
-                    token,
-                ),
-                timeout=retry_policy.attempt_timeout_seconds,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            reason = _callback_error_reason(exc)
-            log_context = {
-                "callback_batch_id": str(payload.get("batch_id") or ""),
-                "callback_attempt": attempt,
-                "callback_reason": reason,
-            }
-            if not _callback_error_is_retryable(exc):
-                _logger.warning("sandbox_callback_delivery_rejected", extra=log_context)
-                raise _CallbackDeliveryError("stream_delivery_rejected") from exc
-            if attempt >= retry_policy.max_attempts:
-                _logger.error("sandbox_callback_delivery_exhausted", extra=log_context)
-                raise _CallbackDeliveryError("stream_delivery_exhausted") from exc
-            _logger.warning("sandbox_callback_delivery_retry", extra=log_context)
-            await retry_sleep(retry_policy.delay_after_attempt(attempt))
-            continue
-        if not _callback_acknowledges_exact_batch(result, event_count=event_count):
-            _logger.warning(
-                "sandbox_callback_delivery_rejected",
-                extra={
-                    "callback_batch_id": str(payload.get("batch_id") or ""),
+    event_count = len(batch.content.item_indexes)
+    try:
+        for attempt in range(1, retry_policy.max_attempts + 1):
+            batch.begin_attempt()
+            try:
+                result = await asyncio.wait_for(
+                    _dispatch_callback(
+                        callback_sender,
+                        url,
+                        batch.content.payload(),
+                        token,
+                    ),
+                    timeout=retry_policy.attempt_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                reason = _callback_error_reason(exc)
+                log_context = {
+                    "callback_batch_id": batch.content.batch_id,
+                    "callback_batch_digest": batch.content.payload_digest,
                     "callback_attempt": attempt,
-                    "callback_reason": "invalid_receipt",
-                },
-            )
-            raise _CallbackDeliveryError("stream_delivery_rejected")
-        return
+                    "callback_reason": reason,
+                }
+                if not _callback_error_is_retryable(exc):
+                    batch.exhaust("stream_delivery_rejected")
+                    _logger.warning("sandbox_callback_delivery_rejected", extra=log_context)
+                    raise _CallbackDeliveryError("stream_delivery_rejected") from exc
+                if attempt >= retry_policy.max_attempts:
+                    batch.exhaust("stream_delivery_exhausted")
+                    _logger.error("sandbox_callback_delivery_exhausted", extra=log_context)
+                    raise _CallbackDeliveryError("stream_delivery_exhausted") from exc
+                _logger.warning("sandbox_callback_delivery_retry", extra=log_context)
+                await retry_sleep(retry_policy.delay_after_attempt(attempt))
+                continue
+            if not _callback_acknowledges_exact_batch(result, event_count=event_count):
+                batch.exhaust("stream_delivery_rejected")
+                _logger.warning(
+                    "sandbox_callback_delivery_rejected",
+                    extra={
+                        "callback_batch_id": batch.content.batch_id,
+                        "callback_batch_digest": batch.content.payload_digest,
+                        "callback_attempt": attempt,
+                        "callback_reason": "invalid_receipt",
+                    },
+                )
+                raise _CallbackDeliveryError("stream_delivery_rejected")
+            batch.accept()
+            return
+    except asyncio.CancelledError:
+        batch.cancel()
+        _logger.info(
+            "sandbox_callback_batch_cancelled",
+            extra={
+                "callback_batch_id": batch.content.batch_id,
+                "callback_batch_digest": batch.content.payload_digest,
+                "callback_attempt": batch.attempts,
+                "callback_batch_state": batch.state,
+            },
+        )
+        raise
 
 
 def _write_runtime_marker(workspace_root: Path, request: ExecutorTaskRequest) -> Path:
@@ -1977,19 +2054,27 @@ def create_executor_app(
             runner_events_open["value"] = False
             stop_all_active_progress()
 
+        def seal_runner_events_after_delivery_cancellation() -> None:
+            runner_events_open["value"] = False
+            stop_all_active_progress()
+
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             if stream_delivery_failure["error_code"] is not None:
                 return False
+            batch = _CallbackBatchDelivery(
+                content=_CallbackBatchContent.freeze(event.model_dump())
+            )
             try:
                 await _deliver_nonterminal_callback(
                     resolved_callback_sender,
                     request.callback_url,
-                    event.model_dump(),
+                    batch,
                     request.callback_token,
                     retry_policy=resolved_nonterminal_callback_retry_policy,
                     retry_sleep=resolved_callback_retry_sleep,
                 )
             except asyncio.CancelledError:
+                seal_runner_events_after_delivery_cancellation()
                 raise
             except _CallbackDeliveryError as exc:
                 callback_errors.append(event.status)
