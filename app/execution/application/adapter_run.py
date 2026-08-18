@@ -1,13 +1,7 @@
 import asyncio
 import time as _time
+from collections.abc import Callable
 from typing import Any
-
-from app.executors.base import (
-    ExecutorDispatchAccepted,
-    ExecutorResult,
-    RunExecutionOwner,
-    RunPayload,
-)
 
 
 class _WorkerClock:
@@ -30,17 +24,18 @@ _RUN_PROGRESS_INTERVAL_SECONDS = 15.0
 
 async def submit_run_until_cancelled(
     adapter: Any,
-    run_payload: RunPayload,
+    run_payload: Any,
     *,
+    owner_factory: Callable[[str], Any],
     event_sink: Any,
     cancel_requested: Any,
     poll_interval_seconds: float = _RUN_CANCEL_POLL_INTERVAL_SECONDS,
     stop_timeout_seconds: float = _RUN_STOP_ATTEMPT_TIMEOUT_SECONDS,
     progress_interval_seconds: float = _RUN_PROGRESS_INTERVAL_SECONDS,
-) -> ExecutorResult | ExecutorDispatchAccepted:
+) -> Any:
     """Own one adapter until dispatch acceptance, result, or bounded cancellation."""
 
-    owner = RunExecutionOwner(run_payload.run_id)
+    owner = owner_factory(run_payload.run_id)
     submit_task = owner.start_adapter(adapter, run_payload, event_sink=event_sink)
     last_progress_at = time.monotonic()
 

@@ -43,14 +43,19 @@ from app.control_plane_contracts import (
 from app.db import transaction
 from app.execution.application.adapter_run import (
     WorkerRunCancelled,
-    submit_run_until_cancelled as _submit_run_until_cancelled,
+    submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
     ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox,
 )
-from app.executors.base import ExecutorDispatchAccepted, ExecutorResult, RunPayload
+from app.executors.base import (
+    ExecutorDispatchAccepted,
+    ExecutorResult,
+    RunExecutionOwner,
+    RunPayload,
+)
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import (
@@ -102,6 +107,12 @@ from app.worker_principal_authority import (
     _locked_run_identity,
     _payload_identity,
     _resolve_current_principal_before_dispatch,
+)
+
+
+_submit_run_until_cancelled = _partial(
+    _submit_run_until_cancelled_with_owner,
+    owner_factory=RunExecutionOwner,
 )
 
 
