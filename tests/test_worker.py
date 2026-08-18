@@ -75,8 +75,7 @@ class _RuntimeManagerStub:
 
 
 @pytest.fixture(autouse=True)
-def admitted_sse_stream(monkeypatch):
-    published = []
+def stub_sse_stream_publisher(monkeypatch):
     class Publisher:
         def __init__(self, tenant_id, run_id, attempt_id, authority_secret):
             self.run_id = run_id
@@ -90,14 +89,10 @@ def admitted_sse_stream(monkeypatch):
         async def confirm(self, conn):
             return None
 
-        async def publish_assistant_delta(self, delta):
-            published.append(types.SimpleNamespace(event_type="assistant_text_delta", payload={"delta": delta}))
-
         async def aclose(self):
             return None
 
     monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
-    return published
 
 
 def test_worker_preserves_only_typed_safe_executor_failures():
@@ -8504,43 +8499,18 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_records_general_chat_token_events(monkeypatch):
-    events = []
+async def test_worker_rejects_direct_assistant_delta_ingress(monkeypatch):
+    calls = []
 
     class StreamingAdapter:
         async def submit_run(self, payload, event_sink=None):
-            if event_sink:
-                await event_sink(
-                    event_type="assistant_delta",
-                    stage="thinking",
-                    message="private reasoning",
-                    payload={"delta": "private reasoning", "visible_to_user": True},
-                )
-                await event_sink(
-                    event_type="assistant_delta",
-                    stage="message",
-                    message="raw sdk fallback",
-                    payload={"content": "raw sdk fallback", "visible_to_user": True},
-                )
-                await event_sink(
-                    event_type="assistant_delta",
-                    stage="message",
-                    message="executor text must not persist",
-                    payload={
-                        "delta": "你好",
-                        "visible_to_user": True,
-                        "tool_args": {"path": "/var/lib/private"},
-                        "raw_sdk_event": {"type": "content_block_delta"},
-                    },
-                )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="streaming-test/1",
-                executor_type="claude-agent-worker",
-                executor_version="test",
-                capabilities={"streaming": True},
-                result={"message": "你好"},
+            await event_sink(
+                event_type="assistant_delta",
+                stage="message",
+                message="must not use the Worker ingress",
+                payload={"delta": "must not use the Worker ingress"},
             )
+            raise AssertionError("a rejected direct delta must stop the adapter")
 
     class Registry:
         def get(self, executor_type):
@@ -8550,26 +8520,34 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
         return True
 
     async def append_event(conn, **kwargs):
-        events.append(kwargs)
-        return f"evt_{len(events)}"
+        calls.append(("event", kwargs["event_type"]))
+        return f"evt_{len(calls)}"
 
     async def complete_run(conn, **kwargs):
-        events.append({"event_type": "complete_run", "result_json": kwargs["result_json"]})
-        return True
+        raise AssertionError("a rejected direct delta must not complete the Run")
+
+    async def fail_run(conn, *, error_code, **kwargs):
+        calls.append(("failed", error_code))
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     payload = base_payload(skill_id="general-chat", executor_type="claude-agent-worker")
     outcome = await process_run_payload(payload, registry=Registry(), worker_id="worker-stream")
 
-    assert outcome.status == "succeeded"
-    assistant_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert assistant_deltas == []
+    assert outcome.status == "failed"
+    assert outcome.error_code == "worker_direct_assistant_delta_forbidden"
+    assert ("failed", "worker_direct_assistant_delta_forbidden") in calls
+    assert not any(event_type == "assistant_delta" for kind, event_type in calls if kind == "event")
 
 
 @pytest.mark.asyncio
@@ -8612,91 +8590,6 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
     assert outcome.status == "succeeded"
     assert ("complete", "最终回答") in calls
     assert ("message", "assistant", "最终回答", "run-a") in calls
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("public_chunks", "public_answer"),
-    [
-        (["Verified final answer ", "streams safely."], "Verified final answer streams safely."),
-        ([], ""),
-    ],
-)
-async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
-    monkeypatch,
-    admitted_sse_stream,
-    public_chunks,
-    public_answer,
-):
-    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
-    events = []
-    messages = []
-
-    class StreamingMessageAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            for chunk in public_chunks:
-                await event_sink(
-                    event_type="assistant_delta",
-                    stage="message",
-                    message=chunk,
-                    payload={"delta": chunk, "visible_to_user": True, "severity": "info"},
-                )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"streaming": True},
-                result={"message": public_answer},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        events.append(kwargs)
-        return f"evt_{len(events)}"
-
-    async def complete_run(conn, **kwargs):
-        events.append({"event_type": "complete_run", "result_json": kwargs["result_json"]})
-        return True
-
-    async def append_message(conn, **kwargs):
-        messages.append(kwargs)
-        return "msg-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": StreamingMessageAdapter()}),
-    )
-
-    assert outcome.status == "succeeded"
-    persisted_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert persisted_deltas == []
-    streamed = [item.payload["delta"] for item in admitted_sse_stream if item.event_type == "assistant_text_delta"]
-    assert streamed == public_chunks
-    completed = next(event["result_json"] for event in events if event["event_type"] == "complete_run")
-    assert completed["message"] == public_answer
-    assert len(messages) == 1
-    assert {
-        key: messages[0][key]
-        for key in ("tenant_id", "session_id", "run_id", "role", "content")
-    } == {
-        "tenant_id": "tenant-a",
-        "session_id": "session-a",
-        "run_id": "run-a",
-        "role": "assistant",
-        "content": public_answer,
-    }
-    assert sealed_pre_capability_text not in json.dumps(
-        {"events": events, "messages": messages},
-    )
 
 
 @pytest.mark.asyncio

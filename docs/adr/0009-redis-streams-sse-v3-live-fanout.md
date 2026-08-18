@@ -94,6 +94,30 @@ The Streaming context owns public projection, protocol validation, Redis
 live/replay behavior, cursor/gap policy, and SSE translation. It does not own
 Run lifecycle, callback receipts, terminal truth, or raw SDK events.
 
+## Producer ownership
+
+The public Stream is shared transport, not shared semantic ownership. Each fact
+has exactly one producer boundary:
+
+| Supported execution path | Public events owned | Producer boundary |
+|---|---|---|
+| Worker admission and dispatch for all Run types | `stream_open`, Worker-originated `semantic_stage` and `semantic_progress` | Worker process through `RunStreamPublisher` |
+| Claude single-Run writing tiers and MCP Runs | `assistant_text_delta`, runtime-originated `semantic_stage` and `semantic_progress` | Authenticated sandbox callback through `runtime_callbacks` and `RedisStreamBridge` |
+| Inline completion and detached sandbox reconciliation | `terminal`, `end` | Worker terminalization/reconciler from committed PostgreSQL intent |
+| Browser transport controls | heartbeat comments and replay `gap` controls only; no durable public event | API SSE reader |
+
+Claude execution always requires a real sandbox and does not permit local SDK
+execution. Therefore `assistant_text_delta` has one ingress: the authenticated
+runtime callback. Worker adapters must not publish `assistant_delta`; such an
+attempt fails closed instead of falling back to a generic semantic event.
+Sandbox code cannot connect directly to PostgreSQL or Redis, and Worker code
+does not call its own callback HTTP endpoint.
+
+Adding any second assistant-text ingress requires a new accepted ADR that names
+its disjoint execution mode, authority and event identity, plus a negative test
+proving that one logical delta cannot be published by both owners. A source
+allowlist or fallback branch is not sufficient authority.
+
 ## Protocol
 
 `schemas/public_run_stream.v3.schema.json` is the sole wire source. A checked-in
