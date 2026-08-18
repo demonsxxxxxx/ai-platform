@@ -68,7 +68,6 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
             "parent_run_id": "run-parent",
         },
         "nested": {
-            "mcp_context_id": "mcpctx-private",
             "multi_agent_dispatch": {"parent_run_id": "run-nested"},
             "parent_run_id": "run-parent-root",
             "dispatch_state": "handed_off",
@@ -86,7 +85,6 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
     assert "resume" not in sanitized
     assert "multi_agent_dispatch" not in sanitized
     assert "multi_agent_dispatch" not in sanitized["nested"]
-    assert "mcp_context_id" not in sanitized["nested"]
     assert "parent_run_id" not in sanitized["nested"]
     assert "dispatch_state" not in sanitized["nested"]
     assert "dispatch_child_run_id" not in sanitized["nested"]

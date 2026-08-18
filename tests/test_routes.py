@@ -13,9 +13,17 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
-from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
+from app.models import (
+    AgentAppRunRequest,
+    ChatStreamRequest,
+    ChatStreamResponse,
+    CreateRunRequest,
+    QueueRunPayload,
+    SandboxLeaseRequest,
+)
 from app.repositories import RepositoryConflictError
 from app.routes import lambchat_compat as lambchat_module
+from app.routes import agent_profiles as agent_profiles_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import (
@@ -112,6 +120,54 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+@pytest.mark.asyncio
+async def test_dedicated_agent_run_forwards_mcp_context_to_chat_admission(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def get_session(_conn, **_kwargs):
+        return {"workspace_id": "workspace-a", "agent_id": "agent-a"}
+
+    async def chat_stream(request, *, agent_id, principal):
+        observed["request"] = request
+        observed["agent_id"] = agent_id
+        observed["user_id"] = principal.user_id
+        return ChatStreamResponse(
+            session_id=request.session_id,
+            run_id="run-a",
+            status="queued",
+            submission_id=str(request.submission_id),
+        )
+
+    monkeypatch.setattr(agent_profiles_module, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        agent_profiles_module.repositories,
+        "get_authorized_session_projection",
+        get_session,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
+
+    response = await agent_profiles_module._submit_dedicated_agent_run(
+        agent_id="agent-a",
+        session_id="session-a",
+        request=AgentAppRunRequest(
+            message="Use the selected MCP tool",
+            submission_id="11111111-1111-4111-8111-111111111111",
+            mcp_context_id="mcpctx-profile",
+        ),
+        principal=principal(),
+    )
+
+    request = observed["request"]
+    assert isinstance(request, ChatStreamRequest)
+    assert request.mcp_context_id == "mcpctx-profile"
+    assert observed == {
+        "request": request,
+        "agent_id": "agent-a",
+        "user_id": "user-a",
+    }
+    assert response.run_id == "run-a"
 
 
 def test_selected_skill_contract_is_shared_nested_and_strict():

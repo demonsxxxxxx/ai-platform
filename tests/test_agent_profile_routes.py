@@ -137,7 +137,6 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
             "submission_id": "11111111-1111-4111-8111-111111111111",
             "file_ids": ["file-a"],
             "user_timezone": "Asia/Shanghai",
-            "mcp_context_id": "mcpctx-profile",
         },
     )
 
@@ -152,7 +151,6 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
     assert chat_request["selected_agent_profile"] is None
     assert chat_request["selected_skill"] is None
     assert chat_request["selected_mcp_tool_ids"] is None
-    assert chat_request["mcp_context_id"] == "mcpctx-profile"
     assert "model_id" not in chat_request
 
 
