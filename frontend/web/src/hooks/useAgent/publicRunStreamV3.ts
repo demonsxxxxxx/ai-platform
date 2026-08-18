@@ -1,10 +1,13 @@
 import {
   PUBLIC_RUN_STREAM_SCHEMA,
   STREAM_DESIGN_ID,
-  STREAM_PROJECTION_VERSION,
   type PublicRunStreamEventV3,
 } from "../../generated/publicRunStreamV3";
-import type { EventData, EventType } from "./types";
+import {
+  CHAT_PUBLIC_PROJECTION_VERSION,
+  type EventData,
+  type EventType,
+} from "./types";
 
 const EVENT_FIELDS = new Set([
   "schema",
@@ -150,7 +153,9 @@ export function adaptPublicRunStreamEventV3({
         event: "message:chunk",
         data: {
           ...base,
-          projection_version: STREAM_PROJECTION_VERSION,
+          // This compatibility event feeds the existing chat reducer, whose
+          // versioned text projection is distinct from the v3 transport envelope.
+          projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
           projection_kind: "assistant_delta",
           content: parsed.payload.delta,
         },

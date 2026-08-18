@@ -248,8 +248,24 @@ test("SSE uses the same explicit cookie-session credential boundary", () => {
   assert.match(source, /credentials:\s*"include"/);
 });
 
-test("reconnect sends only the last reducer-accepted native Redis cursor", async () => {
+test("renders a valid v3 replay after rejected SSE admission and persists the accepted cursor", async () => {
   const { context } = createTokenRefreshContext();
+  context.messagesRef.current = [
+    {
+      id: "assistant-old",
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      isStreaming: true,
+      parts: [],
+    },
+  ];
+  context.setMessages = (updater) => {
+    context.messagesRef.current =
+      typeof updater === "function"
+        ? updater(context.messagesRef.current)
+        : updater;
+  };
   context.acceptedStreamCursorRef = {
     current: { sessionId: null, runId: null, eventId: null },
   };
@@ -257,6 +273,11 @@ test("reconnect sends only the last reducer-accepted native Redis cursor", async
   const seen: Array<Record<string, string>> = [];
   const fetchStream: SSEFetchEventSource = async (_input, init) => {
     seen.push((init.headers || {}) as Record<string, string>);
+    if (seen.length === 1) {
+      await init.onopen?.(new Response(null, { status: 409 }));
+      return;
+    }
+    if (seen.length === 3) return;
     await init.onopen?.(new Response(null, { status: 200 }));
     init.onmessage?.(
       v3Frame({
@@ -287,13 +308,17 @@ test("reconnect sends only the last reducer-accepted native Redis cursor", async
     getRefreshToken: () => null,
   };
 
+  await assert.rejects(
+    connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens),
+    /HTTP error! status: 409/,
+  );
   await connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens);
-  await connectToSSE("session-old", "run-old", "assistant-old", context, false, async (_input, init) => {
-    seen.push((init.headers || {}) as Record<string, string>);
-  }, tokens);
+  await connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens);
 
   assert.equal(seen[0]?.["Last-Event-ID"], undefined);
-  assert.equal(seen[1]?.["Last-Event-ID"], "run-old:1:2-0");
+  assert.equal(seen[1]?.["Last-Event-ID"], undefined);
+  assert.equal(context.messagesRef.current[0]?.content, "accepted");
+  assert.equal(seen[2]?.["Last-Event-ID"], "run-old:1:2-0");
 });
 
 test("retries an SSE close that arrives before a terminal stream event", () => {
