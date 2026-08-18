@@ -172,6 +172,31 @@ def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
     return failures
 
 
+def _worker_assistant_delta_ingress_exists(source: str) -> bool:
+    try:
+        node = ast.parse(source)
+    except SyntaxError:
+        return True
+    forbidden_symbols = {
+        "RedisStreamBridge",
+        "canonical_assistant_delta_event",
+        "publish_assistant_delta",
+    }
+    for candidate in ast.walk(node):
+        if isinstance(candidate, ast.Constant) and candidate.value == "assistant_text_delta":
+            return True
+        if isinstance(candidate, (ast.Name, ast.Attribute)):
+            name = candidate.id if isinstance(candidate, ast.Name) else candidate.attr
+            if name in forbidden_symbols:
+                return True
+        if isinstance(candidate, (ast.Import, ast.ImportFrom)) and any(
+            alias.name.rsplit(".", 1)[-1] in forbidden_symbols
+            for alias in candidate.names
+        ):
+            return True
+    return False
+
+
 def _assistant_delta_ownership_failures(
     *,
     worker_source: str,
@@ -181,7 +206,10 @@ def _assistant_delta_ownership_failures(
     adr_source: str,
 ) -> list[str]:
     failures: list[str] = []
-    if "publish_assistant_delta" in worker_source or "publish_assistant_delta" in redis_source:
+    if (
+        _worker_assistant_delta_ingress_exists(worker_source)
+        or "publish_assistant_delta" in redis_source
+    ):
         failures.append("worker direct assistant-delta publisher exists")
     if "raise WorkerDirectAssistantDeltaError" not in worker_source:
         failures.append("worker assistant-delta ingress does not fail closed")
