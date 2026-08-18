@@ -151,6 +151,64 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
 
 
 @pytest.mark.asyncio
+async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(monkeypatch):
+    persisted = []
+    released = []
+
+    async def claim(_conn, **_kwargs):
+        return [_suspect_lease_row()]
+
+    async def persist(lease_row, **kwargs):
+        persisted.append((lease_row, kwargs))
+
+    async def release(_conn, **kwargs):
+        released.append(kwargs)
+        return True
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            raise RuntimeError("provider-confirmed sandbox loss")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        claim,
+    )
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler.container_lease_from_persisted_row", lambda _row: object()
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.create_container_provider", lambda: Provider()
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.is_authoritative_not_found_error", lambda _exc: True
+    )
+    monkeypatch.setattr("app.executor_reconciler._persist_probe_terminal", persist)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        release,
+    )
+
+    processed = await probe_suspect_executor_tasks_once()
+
+    assert processed == 1
+    assert len(persisted) == 1
+    assert persisted[0][0]["id"] == "lease-a"
+    assert persisted[0][1] == {
+        "executor_status": "failed",
+        "terminal_result": {
+            "run_id": "run-a",
+            "status": "failed",
+            "error_code": "sandbox_executor_lost",
+            "error_message": "Sandbox executor stopped responding",
+        },
+    }
+    assert released == []
+
+
+@pytest.mark.asyncio
 async def test_reconciler_owns_workspace_terminalization_and_release(monkeypatch):
     calls = []
 

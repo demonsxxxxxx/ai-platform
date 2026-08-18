@@ -5792,6 +5792,41 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_n
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_error_code_not_found(
+    monkeypatch,
+):
+    from opensandbox.exceptions import SandboxApiException, SandboxError
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    provider._sandboxes.clear()
+
+    def authoritative_not_found(cls, sandbox_id, **_kwargs):
+        raise SandboxApiException(
+            f"sandbox {sandbox_id} is absent",
+            status_code=500,
+            error=SandboxError(
+                code="DOCKER::SANDBOX_NOT_FOUND",
+                message="sandbox is absent",
+            ),
+        )
+
+    monkeypatch.setattr(FakeOpenSandbox, "connect", classmethod(authoritative_not_found))
+
+    stop_result = await provider.stop(lease, reason="expired")
+
+    assert stop_result.status == "not_found"
+    assert sandbox.killed is False
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_provider_stop_retains_tracking_for_sdk_not_found_from_get_info(monkeypatch):
     from opensandbox.exceptions import SandboxApiException
 

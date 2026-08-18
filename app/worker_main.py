@@ -23,7 +23,10 @@ from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
-from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
+from app.routes.sandbox_runtime_cleanup import (
+    SandboxRuntimeCleanupError,
+    cleanup_expired_sandbox_runtime_leases,
+)
 from app.redis_client import close_redis_client
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
@@ -185,7 +188,13 @@ async def _heartbeat_until_done(
 
 async def cleanup_expired_sandbox_leases() -> None:
     async with transaction() as conn:
-        await cleanup_expired_sandbox_runtime_leases(conn, provider_factory=create_container_provider)
+        try:
+            await cleanup_expired_sandbox_runtime_leases(
+                conn,
+                provider_factory=create_container_provider,
+            )
+        except SandboxRuntimeCleanupError:
+            logger.exception("Sandbox runtime cleanup maintenance failed")
         await repositories.cleanup_expired_sandbox_leases(conn)
 
 
