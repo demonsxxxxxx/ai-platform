@@ -423,7 +423,7 @@ async def test_internal_test_cleanup_rebuilds_only_exact_direct_runtime_evidence
     drift_key,
     drift_value,
 ):
-    from app.routes.sandbox_runtime_cleanup import _container_lease_from_row
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
 
     settings = InternalTestCleanupSettings()
     labels = internal_test_cleanup_labels()
@@ -445,7 +445,7 @@ async def test_internal_test_cleanup_rebuilds_only_exact_direct_runtime_evidence
     )
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
 
-    lease = _container_lease_from_row(row)
+    lease = container_lease_from_persisted_row(row)
 
     if drift_key is None:
         assert lease is not None

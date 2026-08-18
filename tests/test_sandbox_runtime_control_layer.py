@@ -337,10 +337,30 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(mo
 
     async def append_event_batch(conn, **kwargs):
         batches.append(kwargs)
-        return {"accepted": True, "duplicate": False}
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "callback_received_at": "2026-08-17T00:00:00Z",
+        }
 
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("batched callback must not use per-event persistence")
+
+    class _Authority:
+        attempt_id = "attempt-a"
+        state = "confirmed"
+        tenant_scope = "tenant-a"
+        stream_incarnation = 1
+
+    class _Bridge:
+        async def append(self, envelope):
+            return "1-0"
+
+        async def aclose(self):
+            return None
+
+    async def get_authority(conn, *, tenant_id, run_id):
+        return _Authority()
 
     monkeypatch.setattr(runtime_callbacks, "transaction", _FakeTransaction)
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
@@ -351,10 +371,12 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(mo
     )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_event_batch)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    monkeypatch.setattr(runtime_callbacks, "RedisStreamBridge", _Bridge)
 
     response = await runtime_callbacks.record_executor_callback(_callback())
 
-    assert response == {"accepted": True, "event_count": 3}
+    assert response == {"accepted": True, "event_count": 2}
     assert len(batches) == 1
     assert {
         key: batches[0][key]
@@ -367,7 +389,6 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(mo
     }
     assert [event["event_type"] for event in batches[0]["events"]] == [
         "executor_callback",
-        "assistant_delta",
         "tool_call_delta",
     ]
 

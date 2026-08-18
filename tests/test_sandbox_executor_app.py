@@ -139,6 +139,11 @@ def public_execution_events(callbacks):
     return [event for callback in callbacks for event in callback.get("events", []) if event["type"].startswith("execution_")]
 
 
+def _synchronous_executor_endpoint(app):
+    app.state.dispatch_in_background = False
+    return next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+
+
 def create_test_client(tmp_path, **kwargs) -> TestClient:
     return TestClient(
         create_executor_app(
@@ -148,9 +153,61 @@ def create_test_client(tmp_path, **kwargs) -> TestClient:
             expected_run_id="run-a",
             expected_attempt_id="qat-attempt-a",
             trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+            dispatch_in_background=False,
             **kwargs,
         )
     )
+
+
+def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tmp_path):
+    started = threading.Event()
+    cancelled = threading.Event()
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert response.status_code == 202
+        assert started.wait(timeout=2)
+
+    assert cancelled.is_set()
+    terminal_callbacks = [callback for callback in callbacks if callback.get("terminal_result")]
+    assert len(terminal_callbacks) == 1
+    assert terminal_callbacks[0]["status"] == "cancelled"
+    assert terminal_callbacks[0]["terminal_result"]["status"] == "cancelled"
+
+
+def test_removed_v1_execute_route_returns_404(tmp_path):
+    client = create_test_client(tmp_path)
+
+    response = client.post(
+        "/v1/tasks/execute",
+        json=task_payload(),
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 404
 
 
 def write_minimal_docx(path: Path) -> None:
@@ -655,7 +712,7 @@ def test_executor_http_response_preserves_private_required_capability_evidence(t
 
     client = create_test_client(tmp_path, executor_runner=executor_runner)
     response = client.post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=task_payload(),
         headers=auth_headers(),
     )
@@ -778,7 +835,7 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -817,7 +874,7 @@ def test_executor_system_prompt_uses_private_sdk_channel_without_public_leakage(
         callback_sender=lambda _url, payload, _token: callbacks.append(payload) or callback_ack(payload),
     )
 
-    response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
+    response = client.post("/v2/tasks", json=raw, headers=auth_headers())
 
     assert response.status_code == 200
     assert captured["prompt"] == malicious_user_prompt
@@ -831,7 +888,7 @@ def test_executor_system_prompt_uses_private_sdk_channel_without_public_leakage(
         tmp_path,
         callback_sender=lambda _url, payload, _token: callback_ack(payload),
     )
-    legacy_response = legacy_client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    legacy_response = legacy_client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
     assert legacy_response.status_code == 200
     assert "system_prompt" not in captured
 
@@ -899,7 +956,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     raw = selected_mcp_task_payload()
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
+    response = client.post("/v2/tasks", json=raw, headers=auth_headers())
 
     assert response.status_code == 200
     assert len(acknowledgements) == 2
@@ -988,7 +1045,7 @@ def test_executor_rejects_call_id_reused_across_mcp_and_bash(
     raw["config"]["tool_policy_subjects"].append({"identity": "Bash"})
 
     body = client.post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=raw,
         headers=auth_headers(),
     ).json()
@@ -1040,7 +1097,7 @@ def test_executor_rejects_call_id_reused_across_write_and_mcp(tmp_path, monkeypa
         tmp_path,
         callback_sender=lambda _url, payload, _token: callback_ack(payload),
     ).post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=raw,
         headers=auth_headers(),
     ).json()
@@ -1082,7 +1139,7 @@ def test_executor_rejects_incomplete_non_bash_local_tool(
         tmp_path,
         callback_sender=lambda _url, payload, _token: callback_ack(payload),
     ).post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=raw,
         headers=auth_headers(),
     ).json()
@@ -1113,7 +1170,7 @@ def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp
         callback_sender=lambda _url, payload, _token: callbacks.append(payload) or callback_ack(payload),
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     emitted = [event for callback in callbacks for event in callback.get("events", [])]
@@ -1153,7 +1210,7 @@ def test_executor_active_progress_is_bounded_rate_limited_and_invocation_scoped(
         return {"status": "failed", "error_code": "controlled_failure", "error_message": "Stopped"}
     monkeypatch.setattr(executor_app, "_ACTIVE_PROGRESS_INTERVAL_SECONDS", interval_seconds)
     client = create_test_client(tmp_path, executor_runner=executor_runner, callback_sender=callback_sender)
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
     assert response.status_code == 200
     assert response.json()["error_code"] == "controlled_failure"
     events = public_execution_events(callbacks)
@@ -1198,7 +1255,7 @@ def test_executor_active_progress_drains_on_callback_failure_runner_completion_o
     raw = task_payload()
     raw["config"]["resource_limits"]["max_seconds"] = 0.05 if mode == "cancelled" else 60
     client = create_test_client(tmp_path, executor_runner=executor_runner, callback_sender=callback_sender)
-    response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
+    response = client.post("/v2/tasks", json=raw, headers=auth_headers())
     progress_count = sum(event["type"] == "execution_progress" for event in public_execution_events(callbacks))
     assert progress_count >= 1 if mode == "cancelled" else progress_count == 1
     assert runner_cancelled == ([True] if mode == "cancelled" else [])
@@ -1391,7 +1448,7 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
 
-    body = client.post("/v1/tasks/execute", json=selected_mcp_task_payload(), headers=auth_headers()).json()
+    body = client.post("/v2/tasks", json=selected_mcp_task_payload(), headers=auth_headers()).json()
 
     assert [item is False for item in acknowledgements] == [True, True]
     assert body["status"] == "failed"
@@ -1519,7 +1576,7 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
 
-    body = client.post("/v1/tasks/execute", json=selected_mcp_task_payload(), headers=auth_headers()).json()
+    body = client.post("/v2/tasks", json=selected_mcp_task_payload(), headers=auth_headers()).json()
 
     assert cancellation_propagated == [cancel_target]
     assert later_capability_results == [False, False, False]
@@ -1651,7 +1708,7 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
@@ -1717,7 +1774,7 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -1777,7 +1834,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
         executor_runner=executor_runner,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -1843,7 +1900,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     ]
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -1903,7 +1960,7 @@ shutil.copyfile(source, output / \"translated.docx\")
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -1954,7 +2011,7 @@ Path("untrusted-runner-executed").write_text("unexpected", encoding="utf-8")
     payload["config"]["tool_policy_subjects"] = skill_only_baoyu_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -1996,7 +2053,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -2032,7 +2089,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -2056,7 +2113,7 @@ def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_pa
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["error_code"] == "controlled_skill_input_name_invalid"
@@ -2091,7 +2148,7 @@ def test_executor_runs_real_staged_baoyu_entrypoint_and_produces_translated_docx
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -2129,7 +2186,7 @@ def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_pa
     payload["config"]["tool_policy_subjects"] = qa_policy
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -2161,7 +2218,7 @@ def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, m
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -2191,7 +2248,7 @@ def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -2360,7 +2417,7 @@ time.sleep(10)
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    endpoint = _synchronous_executor_endpoint(app)
     request = ExecutorTaskRequest.model_validate(payload)
 
     try:
@@ -2399,7 +2456,7 @@ def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, mo
     payload["config"]["tool_policy_subjects"] = denied_policy
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
@@ -2462,7 +2519,7 @@ def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
 
     client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -2502,7 +2559,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
 
     client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -2891,7 +2948,7 @@ def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path
 
     client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -2921,7 +2978,7 @@ def test_executor_execute_rejects_context_scope_for_different_run(tmp_path, monk
     }
 
     response = create_test_client(tmp_path).post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=payload,
         headers=auth_headers(),
     )
@@ -2941,7 +2998,7 @@ def test_executor_execute_reports_platform_timeout_probe_as_nonterminal_observat
 
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -2989,7 +3046,7 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     )
 
     started_at = time.monotonic()
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
     elapsed = time.monotonic() - started_at
 
     assert response.status_code == 200
@@ -3051,7 +3108,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    endpoint = _synchronous_executor_endpoint(app)
     request = ExecutorTaskRequest.model_validate(payload)
     loop = asyncio.get_running_loop()
     previous_exception_handler = loop.get_exception_handler()
@@ -3141,7 +3198,7 @@ async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    endpoint = _synchronous_executor_endpoint(app)
     request = ExecutorTaskRequest.model_validate(payload)
     endpoint_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
 
@@ -3224,7 +3281,7 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
 
     client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
 
-    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -3242,7 +3299,7 @@ def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_
         executor_runner=executor_runner,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
@@ -3275,7 +3332,7 @@ async def test_executor_execute_rejects_invalid_deadline_without_invoking_runner
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    endpoint = _synchronous_executor_endpoint(app)
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": invalid_max_seconds}
     request = ExecutorTaskRequest.model_validate(payload)
@@ -3316,7 +3373,7 @@ def test_executor_execute_accepts_supported_async_callable_forms(tmp_path, runne
         executor_runner=executor_runner,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -3340,7 +3397,7 @@ def test_executor_execute_rejects_sync_wrapper_before_positive_deadline_control(
         executor_runner=sync_wrapper,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
@@ -3362,7 +3419,7 @@ def test_executor_execute_classifies_decorated_runner_timeout_as_internal_failur
         executor_runner=decorated_runner,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
@@ -3395,7 +3452,7 @@ async def test_executor_execute_preserves_caller_cancellation(tmp_path):
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    endpoint = _synchronous_executor_endpoint(app)
     request = ExecutorTaskRequest.model_validate(task_payload())
 
     execute_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
@@ -3428,7 +3485,7 @@ async def test_executor_execute_reports_cleanup_failure_when_caller_cancellation
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    endpoint = _synchronous_executor_endpoint(app)
     request = ExecutorTaskRequest.model_validate(task_payload())
 
     execute_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
@@ -3455,7 +3512,7 @@ def test_executor_execute_fails_closed_for_sync_runner_with_positive_deadline(tm
         executor_runner=executor_runner,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
@@ -3469,7 +3526,7 @@ def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):
         callback_sender=lambda url, payload, token: {},
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     marker = Path(tmp_path) / "runtime" / "run-a.json"
@@ -3539,7 +3596,7 @@ def test_executor_execute_fails_closed_when_runtime_marker_write_fails(
         monkeypatch.setattr(Path, "write_text", failing_write_text)
 
     response = client.post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=sensitive_task_payload(),
         headers=auth_headers(),
     )
@@ -3569,7 +3626,7 @@ def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
         callback_sender=lambda url, payload, token: {},
     )
 
-    response = client.post("/v1/tasks/execute", json=sensitive_task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=sensitive_task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     content = (Path(tmp_path) / "runtime" / "run-a.json").read_text(encoding="utf-8")
@@ -3601,7 +3658,7 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -3630,7 +3687,7 @@ def test_executor_finished_observation_marker_path_is_container_path(tmp_path, m
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     assert callbacks[-1]["status"] == "running"
@@ -3643,7 +3700,7 @@ def test_executor_finished_observation_marker_path_is_container_path(tmp_path, m
 def test_executor_execute_rejects_missing_executor_credential(tmp_path):
     client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=task_payload())
+    response = client.post("/v2/tasks", json=task_payload())
 
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid_executor_credential"}
@@ -3653,7 +3710,7 @@ def test_executor_execute_rejects_wrong_executor_credential(tmp_path):
     client = create_test_client(tmp_path)
 
     response = client.post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=task_payload(),
         headers=auth_headers("wrong-token"),
     )
@@ -3662,7 +3719,7 @@ def test_executor_execute_rejects_wrong_executor_credential(tmp_path):
     assert response.json() == {"detail": "invalid_executor_credential"}
 
 
-def test_executor_execute_rejects_replay_after_first_dispatch(tmp_path, monkeypatch):
+def test_executor_execute_returns_same_terminal_result_for_idempotent_redispatch(tmp_path, monkeypatch):
     class StubSettings:
         claude_agent_sdk_enabled = True
 
@@ -3677,19 +3734,23 @@ def test_executor_execute_rejects_replay_after_first_dispatch(tmp_path, monkeypa
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
-    first = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
-    second = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    first = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+    second = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert first.status_code == 200
-    assert second.status_code == 409
-    assert second.json() == {"detail": "executor_request_replayed"}
+    assert second.status_code == 202
+    assert second.json() == {
+        "run_id": "run-a",
+        "attempt_id": "qat-attempt-a",
+        "status": "accepted",
+    }
 
 
 def test_executor_execute_rejects_untrusted_callback_target(tmp_path):
     client = create_test_client(tmp_path)
 
     response = client.post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=task_payload(
             "http://169.254.169.254/latest/meta-data",
             callback_base_url="http://169.254.169.254",
@@ -3710,7 +3771,7 @@ def test_executor_execute_rejects_missing_executor_scope_binding(tmp_path):
         )
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 503
     assert response.json() == {"detail": "executor_scope_not_configured"}
@@ -3720,7 +3781,7 @@ def test_executor_execute_rejects_wrong_executor_scope(tmp_path):
     client = create_test_client(tmp_path)
 
     response = client.post(
-        "/v1/tasks/execute",
+        "/v2/tasks",
         json=task_payload(callback_url=TRUSTED_CALLBACK_URL) | {"session_id": "session-b"},
         headers=auth_headers(),
     )

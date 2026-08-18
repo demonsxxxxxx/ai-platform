@@ -17,6 +17,10 @@ _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = worker_main.progress_pending_
 _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE = worker_main.reconcile_stale_runs_for_worker
 
 
+async def _controlled_terminal_reconciler(stop_event, **_kwargs):
+    await stop_event.wait()
+
+
 def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
     commit = "8" * 40
     heartbeat = tmp_path / "worker-runtime-heartbeat.json"
@@ -868,7 +872,8 @@ async def test_stale_run_fence_renews_through_stage_and_drain_transactions(monke
 
 
 @pytest.mark.asyncio
-async def test_run_once_acknowledges_completed_message(monkeypatch):
+@pytest.mark.parametrize("outcome_status", ["running", "succeeded"])
+async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch, outcome_status):
     calls = []
 
     async def reclaim_expired_leases(**_kwargs):
@@ -880,7 +885,7 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process", payload["run_id"], worker_id))
-        return WorkerOutcome(status="succeeded", run_id="run-a")
+        return WorkerOutcome(status=outcome_status, run_id="run-a")
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
@@ -902,7 +907,7 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
     outcome = await run_once(timeout_seconds=1, worker_id="worker-a", heartbeat_interval_seconds=60)
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == outcome_status
     assert calls == [("reclaim",), ("lease", "worker-a"), ("process", "run-a", "worker-a"), ("ack", "raw-run", "msg-a")]
 
 
@@ -1810,6 +1815,7 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
     monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
 
@@ -1845,6 +1851,7 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
     monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
@@ -1881,6 +1888,7 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
 
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._run_worker_slot", fake_run_worker_slot)
 
     task = asyncio.create_task(worker_main.run_worker_pool(worker_count=3, poll_timeout_seconds=2, idle_sleep_seconds=0.25))

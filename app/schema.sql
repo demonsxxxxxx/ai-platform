@@ -2151,6 +2151,17 @@ create table if not exists sandbox_leases (
   runtime_executor_url text,
   runtime_workspace_container_path text,
   runtime_handle_verified_at timestamptz,
+  executor_status text not null default 'pending',
+  executor_heartbeat_at timestamptz,
+  executor_terminal_json jsonb,
+  executor_terminal_received_at timestamptz,
+  executor_reconciliation_context_json jsonb,
+  executor_reconciliation_status text not null default 'waiting_terminal',
+  executor_reconciliation_claim_token text,
+  executor_reconciliation_claimed_at timestamptz,
+  executor_reconciliation_attempt_count integer not null default 0,
+  executor_reconciliation_error text not null default '',
+  executor_reconciled_at timestamptz,
   heartbeat_at timestamptz,
   expires_at timestamptz,
   released_at timestamptz,
@@ -2170,10 +2181,32 @@ alter table sandbox_leases add column if not exists runtime_container_name text;
 alter table sandbox_leases add column if not exists runtime_executor_url text;
 alter table sandbox_leases add column if not exists runtime_workspace_container_path text;
 alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz;
+alter table sandbox_leases add column if not exists executor_status text not null default 'pending';
+alter table sandbox_leases add column if not exists executor_heartbeat_at timestamptz;
+alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
+alter table sandbox_leases add column if not exists executor_terminal_received_at timestamptz;
+alter table sandbox_leases add column if not exists executor_reconciliation_context_json jsonb;
+alter table sandbox_leases add column if not exists executor_reconciliation_status text not null default 'waiting_terminal';
+alter table sandbox_leases add column if not exists executor_reconciliation_claim_token text;
+alter table sandbox_leases add column if not exists executor_reconciliation_claimed_at timestamptz;
+alter table sandbox_leases add column if not exists executor_reconciliation_attempt_count integer not null default 0;
+alter table sandbox_leases add column if not exists executor_reconciliation_error text not null default '';
+alter table sandbox_leases add column if not exists executor_reconciled_at timestamptz;
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
+alter table sandbox_leases add constraint chk_sandbox_leases_executor_status
+  check (executor_status in ('pending', 'accepted', 'running', 'completed', 'failed', 'cancelled'));
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_reconciliation_status;
+alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconciliation_status
+  check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized'));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
 
--- Rollback for the additive runtime handle columns:
+-- Rollback for the additive async execution columns:
+-- alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
+-- alter table sandbox_leases drop column if exists executor_terminal_received_at;
+-- alter table sandbox_leases drop column if exists executor_terminal_json;
+-- alter table sandbox_leases drop column if exists executor_heartbeat_at;
+-- alter table sandbox_leases drop column if exists executor_status;
 -- drop index if exists idx_sandbox_leases_attempt;
 -- alter table sandbox_leases drop column if exists attempt_id;
 -- alter table sandbox_leases drop column if exists runtime_handle_verified_at;

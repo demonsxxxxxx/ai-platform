@@ -5,6 +5,7 @@ from app.runtime.sandbox.contracts import (
     ContainerStatus,
     ContainerLease,
     ExecutorCallbackEvent,
+    ExecutorTerminalResult,
     SandboxRuntimeRequest,
     WorkspaceLease,
 )
@@ -35,6 +36,33 @@ def request_payload(**overrides):
     }
     values.update(overrides)
     return values
+
+
+def test_terminal_callback_rejects_empty_success_result():
+    with pytest.raises(ValidationError, match="non-empty message"):
+        ExecutorTerminalResult.model_validate(
+            {"status": "succeeded", "run_id": "run-a"}
+        )
+
+
+def test_terminal_callback_rejects_unstructured_failure_result():
+    with pytest.raises(ValidationError, match="structured error fields"):
+        ExecutorTerminalResult.model_validate(
+            {"status": "failed", "run_id": "run-a"}
+        )
+
+
+def test_terminal_callback_accepts_structured_failure_result():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_failed",
+            "error_message": "Executor failed",
+        }
+    )
+
+    assert result.error_code == "executor_failed"
 
 
 def test_sandbox_runtime_request_requires_platform_identity():

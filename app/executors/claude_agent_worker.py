@@ -37,6 +37,7 @@ from app.execution_boundary import (
 )
 from app.executors.base import (
     ArtifactManifest,
+    ExecutorDispatchAccepted,
     ExecutorEventSink,
     ExecutorResult,
     RunExecutionOwner,
@@ -246,6 +247,26 @@ class _AuthorizedAttachmentMetadata:
     file_name: str
     content_type: str
     size_bytes: int
+
+
+@dataclass(frozen=True)
+class PreparedSandboxFinalization:
+    """Non-secret context required to normalize an asynchronous terminal receipt."""
+
+    workspace: Path
+    allowed_skill_names: list[str]
+    staged_skill_names: list[str]
+    skill_manifests: list[dict[str, Any]]
+    public_skill_metadata: dict[str, dict[str, str]]
+    attachment_contract: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _PersistedSandboxRuntimeResult:
+    status: str
+    provider: str
+    executor_response: dict[str, Any]
+    timings: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -613,7 +634,7 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         event_sink: ExecutorEventSink | None = None,
         execution_owner: RunExecutionOwner | None = None,
-    ) -> ExecutorResult:
+    ) -> ExecutorResult | ExecutorDispatchAccepted:
         decision = _execution_boundary_decision(payload)
         if decision.fail_closed:
             return ExecutorResult(
@@ -1420,7 +1441,7 @@ class ClaudeAgentWorkerAdapter:
         event_sink: ExecutorEventSink | None = None,
         sandbox_runtime: SandboxRuntime | None = None,
         execution_owner: RunExecutionOwner | None = None,
-    ) -> ExecutorResult:
+    ) -> ExecutorResult | ExecutorDispatchAccepted:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
         context_manifest = _context_manifest_from_pack(context_pack)
@@ -1456,6 +1477,26 @@ class ClaudeAgentWorkerAdapter:
                     error_code="attachment_parser_staging_not_authorized"
                 )
             runtime_context_manifest["attachment_preprocessing"] = attachment_contract
+        adapter_reconciliation_context = {
+            "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
+            "run_payload": _sandbox_reconciliation_payload(payload),
+            "workspace": str(prepared.workspace),
+            "allowed_skill_names": list(prepared.allowed_skill_names),
+            "staged_skill_names": list(prepared.staged_skill_names),
+            "skill_manifests": _skill_manifests(
+                prepared.selected_skills,
+                used_skill_names=[],
+                pins=prepared.pinned_manifests,
+            ),
+            "public_skill_metadata": dict(prepared.public_skill_metadata),
+            "attachment_contract": attachment_contract,
+        }
+        reconciliation_context = {
+            "schema_version": "ai-platform.executor-reconciliation.v1",
+            "adapter_name": "claude-agent-worker",
+            "run_payload": _sandbox_reconciliation_payload(payload),
+            "adapter_context": adapter_reconciliation_context,
+        }
         request = SandboxRuntimeRequest(
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -1495,6 +1536,7 @@ class ClaudeAgentWorkerAdapter:
             mcp_broker_capability=payload.mcp_broker_capability,
             governed_permission_wait=False,
             require_selected_skill_invocation=not bool(payload.agent_profile),
+            reconciliation_context=reconciliation_context,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None
@@ -1515,6 +1557,15 @@ class ClaudeAgentWorkerAdapter:
             event_sink=runtime_event_sink,
             execution_owner=execution_owner,
         )
+        if str(getattr(runtime_result, "status", "") or "").lower() == "accepted":
+            return ExecutorDispatchAccepted(
+                run_id=payload.run_id,
+                attempt_id=payload.attempt_id,
+                lease_id=str(getattr(runtime_result, "lease_id", "") or ""),
+                provider=_runtime_provider(runtime_result),
+                adapter_context=adapter_reconciliation_context,
+                timings=dict(getattr(runtime_result, "timings", {}) or {}),
+            )
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
 
     def _sandbox_provider_required_result(
@@ -1609,10 +1660,48 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
+    def reconcile_sandbox_terminal(
+        self,
+        payload: RunPayload,
+        *,
+        adapter_context: dict[str, Any],
+        terminal_result: dict[str, Any],
+        provider: str,
+        timings: dict[str, Any] | None = None,
+    ) -> ExecutorResult:
+        if adapter_context.get("schema_version") != "ai-platform.claude-agent-reconciliation-context.v1":
+            raise ValueError("sandbox_reconciliation_context_schema_invalid")
+        workspace_value = str(adapter_context.get("workspace") or "").strip()
+        if not workspace_value:
+            raise ValueError("sandbox_reconciliation_workspace_missing")
+        prepared = PreparedSandboxFinalization(
+            workspace=Path(workspace_value),
+            allowed_skill_names=_string_list(adapter_context.get("allowed_skill_names")),
+            staged_skill_names=_string_list(adapter_context.get("staged_skill_names")),
+            skill_manifests=[
+                dict(item)
+                for item in adapter_context.get("skill_manifests", [])
+                if isinstance(item, dict)
+            ],
+            public_skill_metadata={
+                str(key): dict(value)
+                for key, value in dict(adapter_context.get("public_skill_metadata") or {}).items()
+                if isinstance(value, dict)
+            },
+            attachment_contract=dict(adapter_context.get("attachment_contract") or {}),
+        )
+        runtime_result = _PersistedSandboxRuntimeResult(
+            status=str(terminal_result.get("status") or ""),
+            provider=provider,
+            executor_response=dict(terminal_result),
+            timings=dict(timings or {}),
+        )
+        return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
+
     def _executor_result_from_sandbox_runtime(
         self,
         payload: RunPayload,
-        prepared: PreparedSdkRun,
+        prepared: PreparedSdkRun | PreparedSandboxFinalization,
         runtime_result: object,
     ) -> ExecutorResult:
         executor_response = (
@@ -1635,7 +1724,9 @@ class ClaudeAgentWorkerAdapter:
         parser_evidence = executor_response.get("attachment_parser_evidence")
         try:
             attachment_requirements = attachment_requirements_from_contract(
-                _attachment_preprocessing_contract(payload, prepared)
+                prepared.attachment_contract
+                if isinstance(prepared, PreparedSandboxFinalization)
+                else _attachment_preprocessing_contract(payload, prepared)
             )
         except AttachmentPreprocessingError as exc:
             return self._attachment_parser_failure_result(
@@ -1696,10 +1787,17 @@ class ClaudeAgentWorkerAdapter:
         )
         used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
         inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
-        skill_manifests = _skill_manifests(
-            prepared.selected_skills,
-            used_skill_names=used_skill_names,
-            pins=prepared.pinned_manifests,
+        skill_manifests = (
+            _skill_manifests_from_catalog(
+                prepared.skill_manifests,
+                used_skill_names=used_skill_names,
+            )
+            if isinstance(prepared, PreparedSandboxFinalization)
+            else _skill_manifests(
+                prepared.selected_skills,
+                used_skill_names=used_skill_names,
+                pins=prepared.pinned_manifests,
+            )
         )
         sandbox_timings = getattr(runtime_result, "timings", {})
         if not isinstance(sandbox_timings, dict):
@@ -1884,7 +1982,7 @@ class ClaudeAgentWorkerAdapter:
         *,
         sandbox_runtime: SandboxRuntime | None = None,
         execution_owner: RunExecutionOwner | None = None,
-    ) -> ExecutorResult | None:
+    ) -> ExecutorResult | ExecutorDispatchAccepted | None:
         settings = get_settings()
         if not settings.claude_agent_sdk_enabled:
             return None
@@ -2759,6 +2857,52 @@ def _pin_manifests_for_result(pins: dict[str, dict[str, Any]], allowed_skill_nam
         manifest["used"] = False
         manifests.append(manifest)
     return manifests
+
+
+def _sandbox_reconciliation_payload(payload: RunPayload) -> dict[str, Any]:
+    """Persist only non-secret fields required by durable terminalization."""
+
+    source_input = payload.input if isinstance(payload.input, dict) else {}
+    return {
+        "tenant_id": payload.tenant_id,
+        "workspace_id": payload.workspace_id,
+        "user_id": payload.user_id,
+        "session_id": payload.session_id,
+        "run_id": payload.run_id,
+        "attempt_id": payload.attempt_id,
+        "agent_id": payload.agent_id,
+        "skill_id": payload.skill_id,
+        "file_ids": [],
+        "input": {
+            key: source_input[key]
+            for key in ("_runtime_tool_policy_subjects", "platform_model_id")
+            if key in source_input
+        },
+        "execution_kind": payload.execution_kind,
+        "trace_id": payload.trace_id,
+        "skill_version": payload.skill_version,
+        "release_decision": dict(payload.release_decision),
+        "skill_manifests": [dict(item) for item in payload.skill_manifests],
+        "context_snapshot_id": payload.context_snapshot_id,
+        "model_id": payload.model_id,
+        "model_value": payload.model_value,
+        "schema_version": payload.schema_version,
+    }
+
+
+def _skill_manifests_from_catalog(
+    manifests: list[dict[str, Any]],
+    *,
+    used_skill_names: list[str],
+) -> list[dict[str, Any]]:
+    used = set(used_skill_names)
+    return [
+        {
+            **dict(manifest),
+            "used": str(manifest.get("skill_id") or "") in used,
+        }
+        for manifest in manifests
+    ]
 
 
 def _skill_manifests(selected_skills, *, used_skill_names: list[str], pins: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:

@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.13.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.17.3"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -201,6 +201,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "artifacts",
         "object_deletion_outbox",
         "audit_logs",
+        "sandbox_leases",
     )
     assert (
         "agent_profile_revisions",
@@ -243,6 +244,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert (
         "object_deletion_outbox",
         "object_deletion_outbox_file_id_fkey",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_executor_status",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_executor_reconciliation_status",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
@@ -305,6 +314,22 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "f",
             "FOREIGN KEY (file_id) REFERENCES files(id)",
         ),
+        (
+            "sandbox_leases",
+            "chk_sandbox_leases_executor_status",
+            "c",
+            "CHECK (executor_status = ANY (ARRAY["
+            "'pending'::text, 'accepted'::text, 'running'::text, "
+            "'completed'::text, 'failed'::text, 'cancelled'::text]))",
+        ),
+        (
+            "sandbox_leases",
+            "chk_sandbox_leases_executor_reconciliation_status",
+            "c",
+            "CHECK (executor_reconciliation_status = ANY (ARRAY["
+            "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
+            "'retry'::text, 'finalized'::text]))",
+        ),
     )
     assert (
         "object_deletion_outbox",
@@ -312,6 +337,22 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "int8",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "sandbox_leases",
+        "executor_terminal_json",
+        "jsonb",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "sandbox_leases",
+        "executor_status",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "idx_sandbox_leases_attempt",
+        False,
+    ) in schema_migrations.CRITICAL_INDEXES
     migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
     assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
         "state = 'pending' or state = 'processing' or state = 'failed' "
@@ -346,7 +387,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "41964bd844347ca3fe3c287828dfc6350992b8269c918af6bdca12ee22d51f77"
+        "72edb6ad08e4c44fc653707b00c9e0ca1f77581f137392dbbff8812326737056"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -355,3 +396,22 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     assert "rename column supported_file_types" not in schema
     assert "drop column supported_file_types" not in schema
     assert "legacy_supported_file_types" not in schema
+
+
+def test_sandbox_executor_async_terminal_columns_are_additive():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    for column in (
+        "executor_status text",
+        "executor_heartbeat_at timestamptz",
+        "executor_terminal_json jsonb",
+        "executor_terminal_received_at timestamptz",
+        "executor_reconciliation_context_json jsonb",
+        "executor_reconciliation_status text",
+        "executor_reconciliation_claim_token text",
+        "executor_reconciliation_claimed_at timestamptz",
+        "executor_reconciliation_attempt_count integer",
+        "executor_reconciliation_error text",
+        "executor_reconciled_at timestamptz",
+    ):
+        assert f"alter table sandbox_leases add column if not exists {column}" in schema

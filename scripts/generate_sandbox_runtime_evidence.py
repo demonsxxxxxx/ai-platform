@@ -1876,7 +1876,7 @@ def submit_executor_task(
         },
     }
     request = urllib_request.Request(
-        f"{executor_url.rstrip('/')}/v1/tasks/execute",
+        f"{executor_url.rstrip('/')}/v2/tasks",
         data=_json_bytes(payload),
         headers={"Content-Type": "application/json"},
         method="POST",
