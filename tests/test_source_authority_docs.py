@@ -76,6 +76,11 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
         "required_dependency_missing",
         "passed_with_skips",
         "spawnSync",
+        "only direct-pytest exception",
+        "Git-tracked",
+        "any skip returns a non-zero exit",
+        "a fixture cannot own a production runtime task",
+        "tasks created only by a test",
     ):
         assert execution_rule in local_test_execution
     assert re.search(r"Only risk categories .* non-applicable", workflow_flat)

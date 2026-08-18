@@ -12,11 +12,12 @@ one explicit Git worktree. It does not select tests automatically and does not
 replace required CI, exact-ref pre-push readiness, deployment checks, or
 External Acceptance.
 
-The introducing change for the runner proves the runner directly with the
-repository's existing pytest command, after first creating `.pytest-tmp/`, and
-uses a fresh workspace-local basetemp child. After the runner is accepted on
-`main`, Agents use it for ordinary local pytest stages. A candidate-owned runner
-cannot certify its own introduction as trusted readiness authority.
+The only direct-pytest exception is the runner's introducing change. That
+bootstrap records the exact command and target worktree, first creates
+`.pytest-tmp/`, and uses a fresh workspace-local basetemp child. After the
+runner is accepted on `main`, every ordinary local pytest stage must use the
+runner and its worktree lock. A candidate-owned runner cannot certify its own
+introduction as trusted readiness authority.
 
 ## Required Entry Point
 
@@ -41,14 +42,16 @@ python tools/run_test_stage.py \
 ```
 
 Use `--require-zero-skips` when the result is intended to prove a required
-integration dependency. An opt-in local integration may omit that flag and may
-skip, but the resulting `passed_with_skips` report is not required-integration
-evidence.
+integration dependency. With that flag, any skip returns a non-zero exit and
+is classified as `required_dependency_missing`. An opt-in local integration
+may omit the flag and may skip, but the resulting `passed_with_skips` report is
+not required-integration evidence.
 
-The runner accepts only explicit `tests/*.py` files or `file.py::node`
-selectors. It rejects directories, pytest options, absolute paths, missing
-files, selectors outside `tests/`, duplicate selectors, and invocations from a
-worktree subdirectory or a different checkout.
+The runner accepts only explicit selectors for Git-tracked `tests/*.py` files
+or their `file.py::node` forms. It rejects directories, pytest options,
+absolute paths, missing or untracked files, selectors outside `tests/`,
+duplicate selectors, and invocations from a worktree subdirectory or a
+different checkout.
 
 ## Execution Invariants
 
@@ -68,8 +71,9 @@ Each stage:
   records only the removed variable names, and never reports environment values.
 
 Only one stage may run in a worktree. `test_runner_busy` means another stage
-owns the lock; do not bypass the lock or start pytest directly. Independent
-worktrees may run independent stages when their task ownership permits it.
+owns the lock; after the runner is accepted on `main`, do not bypass the lock
+or start pytest directly. Independent worktrees may run independent stages
+when their task ownership permits it.
 
 A timeout is an unknown test result, not a partial pass. The last verbose node
 printed is diagnostic context only. No preceding dots, completed modules, or
@@ -101,8 +105,10 @@ A test touching event loops, background tasks, clients, subprocesses, ports,
 Redis, database pools, or application lifespan must prove cleanup as part of
 the owning behavior:
 
-- production tasks have an explicit supervisor, registry, fixture, or lifespan
-  owner; a bare untracked `asyncio.create_task` is not acceptable;
+- production tasks have an explicit supervisor, registry, or application
+  lifespan owner; a fixture cannot own a production runtime task;
+- tasks created only by a test may be owned and closed by that test's fixture;
+  a bare untracked `asyncio.create_task` is not acceptable;
 - waits use a bounded deadline and tests use events, barriers, or queues instead
   of long real sleeps to establish ordering;
 - clients and applications use context managers or explicit `close`/`aclose`;
@@ -131,6 +137,12 @@ Use these categories in issue, PR, and handoff records:
 | `baseline_reproduced` | The exact failing node and normalized failure signature reproduce at the fixed base. | Record the base evidence and track the defect separately; do not deselect it permanently. |
 | `governance_violation` | Source or verification violates repository authority. | Fix the named rule and rerun against a new fixed subject when needed. |
 
+A stage classified as `invalid_test_plan`, `test_timeout`,
+`infrastructure_failure`, or `governance_violation` fails closed with a
+non-zero exit. `--require-zero-skips` likewise returns non-zero with
+`required_dependency_missing` when any test skips. An ordinary pytest failure
+preserves pytest's native failure exit code.
+
 The runner does not automatically rerun failures or declare a baseline match.
 Baseline comparison uses the same node ID, dependency versions, environment,
 and command against the locked base. A historical failure or a different stack
@@ -158,6 +170,8 @@ Report the observed evidence level precisely:
 Do not:
 
 - wrap several suites in `spawnSync` or another all-output capture;
+- after the one introducing-change bootstrap exception above, start pytest
+  directly instead of using the accepted runner;
 - start pytest from the user profile, repository parent, or a stale worktree;
 - supply a system temporary directory as basetemp;
 - bypass the worktree lock after `test_runner_busy`;
