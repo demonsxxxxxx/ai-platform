@@ -238,8 +238,6 @@ def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
 
 def _credential_metadata(request: McpServerLifecycleRequest) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    if request.headers:
-        metadata["header_names"] = sorted(str(key) for key in request.headers)
     if request.env_keys:
         metadata["env_keys"] = sorted(request.env_keys)
     if request.command:
@@ -805,6 +803,7 @@ async def relay_mcp_jsonrpc(
             server_id=server_id,
             payload=payload,
             incoming_headers=request.headers,
+            response_headers=response.headers,
         )
     except McpRuntimeContextError as exc:
         if exc.status_code in {401, 403}:
@@ -828,7 +827,11 @@ async def relay_mcp_jsonrpc(
         raise _mcp_runtime_http_error(exc) from exc
     response.headers["Cache-Control"] = "no-store"
     if result is None:
-        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        headers = {"Cache-Control": "no-store"}
+        session_id = response.headers.get("Mcp-Session-Id")
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+        return Response(status_code=204, headers=headers)
     return result
 
 

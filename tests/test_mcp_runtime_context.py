@@ -153,6 +153,47 @@ async def test_runtime_context_is_sealed_and_capability_contains_only_server_too
 
 
 @pytest.mark.asyncio
+async def test_discard_unbound_context_preserves_bound_and_other_principal_contexts(monkeypatch):
+    now = _settings(monkeypatch)
+    store = InMemoryRuntimeContextStore(clock=lambda: now)
+    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
+    token = _jwt(exp=now + 900)
+    unbound = await manager.create_context(
+        principal=_principal(), bearer_jwt=f"Bearer {token}"
+    )
+    bound = await manager.create_context(
+        principal=_principal(), bearer_jwt=f"Bearer {token}"
+    )
+    other = await manager.create_context(
+        principal=_principal(user_id="user-b"), bearer_jwt=f"Bearer {token}"
+    )
+    await manager.bind_to_run(
+        context_id=bound["mcp_context_id"],
+        principal=_principal(),
+        run_id="run-bound",
+    )
+
+    assert await manager.discard_unbound_context(
+        unbound["mcp_context_id"], _principal()
+    ) is True
+    assert await manager.discard_unbound_context(
+        bound["mcp_context_id"], _principal()
+    ) is False
+    assert await manager.discard_unbound_context(
+        other["mcp_context_id"], _principal()
+    ) is False
+    assert await store.get(
+        f"ai-platform:mcp:runtime-context:v1:{unbound['mcp_context_id']}"
+    ) is None
+    assert await store.get(
+        f"ai-platform:mcp:runtime-context:v1:{bound['mcp_context_id']}"
+    ) is not None
+    assert await store.get(
+        f"ai-platform:mcp:runtime-context:v1:{other['mcp_context_id']}"
+    ) is not None
+
+
+@pytest.mark.asyncio
 async def test_runtime_context_ciphertext_cannot_be_relocated_to_another_context_key(
     monkeypatch,
 ):
@@ -415,6 +456,7 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
         seen.append(request)
         return httpx.Response(
             200,
+            headers={"Mcp-Session-Id": "downstream-session"},
             json={
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -446,6 +488,7 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
         target_validator=pin_target,
         client_factory=lambda **kwargs: _Client(handler, **kwargs),
     )
+    response_headers = {}
     result = await relay.forward(
         capability_token=capability.token,
         server_id="inventory-mcp",
@@ -456,6 +499,7 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
             "Cookie": "session=secret",
             "Mcp-Session-Id": "session-1",
         },
+        response_headers=response_headers,
     )
 
     assert result["result"]["tools"][0]["name"] == "search"
@@ -463,6 +507,7 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
     assert seen[0].headers["Authorization"] == "Basic service"
     assert seen[0].headers["X-API-Key"] == "static-secret"
     assert seen[0].headers["Mcp-Session-Id"] == "session-1"
+    assert response_headers == {"Mcp-Session-Id": "downstream-session"}
     assert "Cookie" not in seen[0].headers
     assert seen[0].url == httpx.URL("https://10.20.30.40/mcp")
     assert seen[0].headers["Host"] == "inventory.example"
@@ -933,6 +978,58 @@ async def test_relay_route_maps_non_relay_runtime_errors_to_safe_http_errors(mon
 
     assert getattr(exc_info.value, "status_code", None) == 503
     assert getattr(exc_info.value, "detail", None) == "mcp_context_corrupt"
+
+
+@pytest.mark.asyncio
+async def test_relay_route_preserves_downstream_session_header_for_json_and_no_content(
+    monkeypatch,
+):
+    class Limiter:
+        async def ensure_allowed(self, **_kwargs):
+            return None
+
+    class Relay:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def forward(self, **kwargs):
+            kwargs["response_headers"]["Mcp-Session-Id"] = "session-next"
+            if kwargs["payload"]["method"] == "notifications/initialized":
+                return None
+            return {"jsonrpc": "2.0", "id": 1, "result": {}}
+
+    monkeypatch.setattr(mcp_routes, "MCP_RELAY_AUTH_FAILURE_LIMITER", Limiter())
+    monkeypatch.setattr(mcp_routes, "HostMcpRelay", Relay)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/ai/mcp/relay/inventory",
+            "headers": [],
+            "client": ("10.0.0.7", 12345),
+        }
+    )
+    json_response = Response()
+
+    result = await mcp_routes.relay_mcp_jsonrpc(
+        server_id="inventory",
+        request=request,
+        response=json_response,
+        payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        capability="mcpbrk:private-token",
+    )
+    no_content = await mcp_routes.relay_mcp_jsonrpc(
+        server_id="inventory",
+        request=request,
+        response=Response(),
+        payload={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        capability="mcpbrk:private-token",
+    )
+
+    assert result == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert json_response.headers["Mcp-Session-Id"] == "session-next"
+    assert no_content.status_code == 204
+    assert no_content.headers["Mcp-Session-Id"] == "session-next"
 
 
 @pytest.mark.asyncio

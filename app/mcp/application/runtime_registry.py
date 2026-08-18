@@ -19,6 +19,8 @@ class McpRuntimeServices(Protocol):
 
     async def bind_run_context(self, conn: Any, **kwargs: Any) -> None: ...
 
+    async def migrate_legacy_credentials(self) -> dict[str, int]: ...
+
 
 _services: McpRuntimeServices | None = None
 

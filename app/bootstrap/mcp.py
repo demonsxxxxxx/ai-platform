@@ -43,6 +43,13 @@ class _McpRuntimeServices:
     async def bind_run_context(self, conn: Any, **kwargs: Any) -> None:
         await mcp_postgres.bind_run_mcp_context(conn, **kwargs)
 
+    async def migrate_legacy_credentials(self) -> dict[str, int]:
+        async with transaction() as conn:
+            return await mcp_postgres.migrate_legacy_mcp_credentials(
+                conn,
+                seal_credentials=mcp_runtime.seal_mcp_server_credentials,
+            )
+
 
 def configure_mcp_runtime() -> None:
     configure_mcp_runtime_services(_McpRuntimeServices())

@@ -171,5 +171,7 @@ async def apply_schema() -> None:
     """Compatibility entrypoint routed through versioned migrations."""
 
     from app.schema_migrations import apply_migrations
+    from app.mcp.api import migrate_legacy_mcp_credentials
 
     await apply_migrations()
+    await migrate_legacy_mcp_credentials()

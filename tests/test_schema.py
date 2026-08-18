@@ -486,6 +486,11 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "endpoint_redacted text not null default ''" in schema
     assert "mcp_servers_endpoint_not_persisted" in schema
     assert "check (endpoint_redacted = '')" in schema
+    assert "update mcp_servers set endpoint_redacted = ''" not in " ".join(schema.split())
+    assert (
+        "alter table mcp_servers validate constraint mcp_servers_endpoint_not_persisted"
+        not in " ".join(schema.split())
+    )
     assert "credential_state text not null default 'not_configured'" in schema
     assert "credential_fingerprint text not null default ''" in schema
     assert "allowed_roles jsonb not null default '[]'::jsonb" in schema
@@ -497,6 +502,13 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "primary key (tenant_id, server_name)" in schema
     assert "idx_mcp_servers_tenant_status" in schema
     assert "mcp_tools_endpoint_not_persisted" in schema
+    assert "update mcp_tools set endpoint = ''" not in " ".join(schema.split())
+    assert "endpoint = excluded.endpoint" not in schema
+    assert "where mcp_tools.endpoint = ''" in schema
+    assert (
+        "alter table mcp_tools validate constraint mcp_tools_endpoint_not_persisted"
+        not in " ".join(schema.split())
+    )
     assert "check (endpoint = '')" in schema
 
 

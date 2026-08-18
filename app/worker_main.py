@@ -21,6 +21,7 @@ from app.control_plane_contracts import (
 )
 from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
+from app.mcp.api import migrate_legacy_mcp_credentials
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -743,6 +744,8 @@ def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
 
 
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
+    configure_mcp_runtime()
+    await migrate_legacy_mcp_credentials()
     await require_schema_current()
     registry = AdapterRegistry()
     worker_id = default_worker_id()
@@ -817,6 +820,8 @@ async def run_worker_pool(
         await run_forever(poll_timeout_seconds=poll_timeout_seconds, idle_sleep_seconds=idle_sleep_seconds)
         return
 
+    configure_mcp_runtime()
+    await migrate_legacy_mcp_credentials()
     await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -864,6 +869,8 @@ async def run_worker_pool(
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     try:
+        configure_mcp_runtime()
+        await migrate_legacy_mcp_credentials()
         return await run_once(timeout_seconds=timeout_seconds)
     finally:
         await _close_runtime_clients()

@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.17.3"
+TARGET_SCHEMA_VERSION = "2026.08.18.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -30,6 +30,9 @@ CRITICAL_RELATIONS = (
     "object_deletion_outbox",
     "audit_logs",
     "sandbox_leases",
+    "mcp_servers",
+    "mcp_server_credentials",
+    "mcp_tools",
 )
 CRITICAL_COLUMNS = (
     ("agent_profile_revisions", "skill_set", "jsonb", True),
@@ -76,6 +79,8 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_attempt_count", "int4", True),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
+    ("runs", "mcp_context_id", "text", False),
+    ("mcp_server_credentials", "credential_envelope", "text", True),
 )
 CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
@@ -89,6 +94,8 @@ CRITICAL_CONSTRAINTS = (
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
     ("sandbox_leases", "chk_sandbox_leases_executor_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
+    ("mcp_servers", "mcp_servers_endpoint_not_persisted"),
+    ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
 )
 CRITICAL_TRIGGERS = (
     (
@@ -105,6 +112,18 @@ CRITICAL_TRIGGERS = (
     ),
 )
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "mcp_servers",
+        "mcp_servers_endpoint_not_persisted",
+        "c",
+        "CHECK (endpoint_redacted = ''::text)",
+    ),
+    (
+        "mcp_tools",
+        "mcp_tools_endpoint_not_persisted",
+        "c",
+        "CHECK (endpoint = ''::text)",
+    ),
     (
         "files",
         "chk_files_lifecycle_state",
@@ -860,6 +879,11 @@ async def _run_cli(command: str) -> int:
     try:
         if command == "apply":
             result = await apply_migrations()
+            from app.bootstrap.mcp import configure_mcp_runtime
+            from app.mcp.api import migrate_legacy_mcp_credentials
+
+            configure_mcp_runtime()
+            await migrate_legacy_mcp_credentials()
         else:
             async with transaction() as conn:
                 result = await schema_status(conn)

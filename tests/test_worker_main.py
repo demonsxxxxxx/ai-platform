@@ -79,6 +79,9 @@ def default_sandbox_cleanup(monkeypatch):
     async def require_schema_current():
         return {"ready": True}
 
+    async def migrate_legacy_mcp_credentials():
+        return {}
+
     async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
         return []
 
@@ -110,6 +113,11 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.require_schema_current",
         require_schema_current,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.migrate_legacy_mcp_credentials",
+        migrate_legacy_mcp_credentials,
         raising=False,
     )
     monkeypatch.setattr(
@@ -1815,15 +1823,24 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
     async def fake_close_redis_client():
         calls.append(("close_redis_client",))
 
+    async def migrate_mcp_credentials():
+        calls.append(("migrate_mcp_credentials",))
+        return {}
+
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
     monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr(
+        "app.worker_main.migrate_legacy_mcp_credentials",
+        migrate_mcp_credentials,
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await worker_main.run_forever(poll_timeout_seconds=2)
 
     assert calls == [
+        ("migrate_mcp_credentials",),
         ("run_once", 2, True),
         ("close_redis_client",),
         ("close_pool",),
@@ -1881,6 +1898,10 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
     async def fake_run_worker_maintenance(settings):
         calls.append(("maintenance", settings.worker_maintenance_interval_seconds))
 
+    async def migrate_mcp_credentials():
+        calls.append(("migrate_mcp_credentials",))
+        return {}
+
     async def fake_run_worker_slot(*, worker_id, poll_timeout_seconds, idle_sleep_seconds):
         calls.append(("slot", bool(worker_id), poll_timeout_seconds, idle_sleep_seconds))
         if len([call for call in calls if call[0] == "slot"]) == 3:
@@ -1889,6 +1910,10 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
 
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
+    monkeypatch.setattr(
+        "app.worker_main.migrate_legacy_mcp_credentials",
+        migrate_mcp_credentials,
+    )
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._run_worker_slot", fake_run_worker_slot)
 
@@ -1901,6 +1926,7 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
             await task
 
     assert calls == [
+        ("migrate_mcp_credentials",),
         ("maintenance", 60.0),
         ("slot", True, 2, 0.25),
         ("slot", True, 2, 0.25),
@@ -1982,14 +2008,23 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     async def fake_close_redis_client():
         calls.append(("close_redis_client",))
 
+    async def migrate_mcp_credentials():
+        calls.append(("migrate_mcp_credentials",))
+        return {}
+
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
     monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr(
+        "app.worker_main.migrate_legacy_mcp_credentials",
+        migrate_mcp_credentials,
+    )
 
     worker_main.main()
 
     assert calls == [
+        ("migrate_mcp_credentials",),
         ("run_once", 7),
         ("close_redis_client",),
         ("close_pool",),

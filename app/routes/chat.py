@@ -52,6 +52,7 @@ from app.model_catalog import resolve_model_selection
 from app.mcp.api import (
     McpRuntimeContextError,
     bind_run_mcp_context,
+    discard_unbound_mcp_runtime_context,
     get_mcp_runtime_context_manager,
     invalidate_mcp_runtime_context,
     preflight_mcp_admission,
@@ -1413,6 +1414,10 @@ async def chat_stream(
                 conn, tenant_id=principal.tenant_id, user_id=principal.user_id, submission_id=submission_id
             )
         if existing_submission_row:
+            await discard_unbound_mcp_runtime_context(
+                request.mcp_context_id,
+                principal,
+            )
             if _is_preledger_recovery_tombstone(
                 existing_submission_row,
                 principal=principal,
@@ -1821,6 +1826,10 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
+                    await discard_unbound_mcp_runtime_context(
+                        request.mcp_context_id,
+                        principal,
+                    )
                     return _existing_chat_submission_response(
                         claimed_submission,
                         request=request,

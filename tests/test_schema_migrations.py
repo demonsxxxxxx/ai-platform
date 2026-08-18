@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app import db
 from app import schema_migrations
 
 
@@ -188,8 +189,30 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
     assert state.schema_execute_count == 0
 
 
+@pytest.mark.asyncio
+async def test_apply_schema_runs_mcp_credential_migration_after_core_schema(monkeypatch):
+    calls = []
+
+    async def apply_core_schema():
+        calls.append("core_schema")
+
+    async def migrate_mcp_credentials():
+        calls.append("mcp_credentials")
+        return {}
+
+    monkeypatch.setattr(schema_migrations, "apply_migrations", apply_core_schema)
+    monkeypatch.setattr(
+        "app.mcp.api.migrate_legacy_mcp_credentials",
+        migrate_mcp_credentials,
+    )
+
+    await db.apply_schema()
+
+    assert calls == ["core_schema", "mcp_credentials"]
+
+
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.17.3"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.18.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -202,6 +225,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "audit_logs",
         "sandbox_leases",
+        "mcp_servers",
+        "mcp_server_credentials",
+        "mcp_tools",
     )
     assert (
         "agent_profile_revisions",
@@ -219,6 +245,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "agent_profile_revisions",
         "supported_file_types",
         "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "runs",
+        "mcp_context_id",
+        "text",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "mcp_server_credentials",
+        "credential_envelope",
+        "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -253,6 +291,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "sandbox_leases",
         "chk_sandbox_leases_executor_reconciliation_status",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "mcp_servers",
+        "mcp_servers_endpoint_not_persisted",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "mcp_tools",
+        "mcp_tools_endpoint_not_persisted",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
             "agent_profile_revisions",
@@ -273,6 +319,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "mcp_servers",
+            "mcp_servers_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint_redacted = ''::text)",
+        ),
+        (
+            "mcp_tools",
+            "mcp_tools_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint = ''::text)",
+        ),
         (
             "files",
             "chk_files_lifecycle_state",
@@ -387,7 +445,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "092002ab939029ced0d4d1b93536e9184142a98800db65bc56b05d747aaab48e"
+        "6bcb8eff6adf840126cee4954035dd15ca26a0ed61fe5f628ad95f897c5298f3"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

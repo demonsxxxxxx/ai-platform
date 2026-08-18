@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool
+from app.mcp.api import migrate_legacy_mcp_credentials
 from app.redis_client import close_redis_client
 from app.routes.agent_profiles import router as agent_profiles_router
 from app.routes.admin_runtime import router as admin_runtime_router
@@ -45,6 +46,7 @@ def _cors_origins(raw_value: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await migrate_legacy_mcp_credentials()
     run_stream_runtime = build_run_stream_runtime()
     app.state.run_stream_runtime = run_stream_runtime
     try:

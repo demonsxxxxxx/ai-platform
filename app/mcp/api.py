@@ -70,6 +70,29 @@ async def invalidate_mcp_runtime_context(context_id: str | None) -> None:
         pass
 
 
+async def discard_unbound_mcp_runtime_context(
+    context_id: str | None,
+    principal: Any,
+) -> None:
+    """Best-effort cleanup for an unused context supplied to an idempotent replay."""
+
+    if not context_id:
+        return
+    try:
+        await mcp_runtime_services().context_manager.discard_unbound_context(
+            context_id,
+            principal,
+        )
+    except Exception:  # noqa: BLE001 - expiry remains the final cleanup fence.
+        pass
+
+
+async def migrate_legacy_mcp_credentials() -> dict[str, int]:
+    """Idempotently move legacy plaintext MCP targets into encrypted envelopes."""
+
+    return await mcp_runtime_services().migrate_legacy_credentials()
+
+
 async def preflight_mcp_admission(
     *,
     context_id: str | None,
@@ -100,9 +123,11 @@ __all__ = [
     "bind_run_mcp_context",
     "configure_mcp_runtime_services",
     "create_host_mcp_relay",
+    "discard_unbound_mcp_runtime_context",
     "get_mcp_relay_auth_failure_limiter",
     "get_mcp_runtime_context_manager",
     "invalidate_mcp_runtime_context",
+    "migrate_legacy_mcp_credentials",
     "mcp_targets_from_policy_subjects",
     "normalize_mcp_targets",
     "normalize_static_mcp_headers",

@@ -10,7 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Protocol
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, MutableMapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -69,6 +69,8 @@ _FORBIDDEN_RELAY_HEADERS = frozenset(
         "x-real-ip",
     }
 )
+_MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
+_MCP_SESSION_ID_MAX_LENGTH = 256
 
 
 class RedisClientHandle(Protocol):
@@ -994,6 +996,27 @@ class McpRuntimeContextManager:
 
         await self.store.delete(_context_key(context_id))
 
+    async def discard_unbound_context(
+        self,
+        context_id: str,
+        principal: McpPrincipal,
+    ) -> bool:
+        """Delete only an unused context owned by the supplied principal."""
+
+        async with self._mutation_guard(context_id):
+            try:
+                _, record = await self._read_current(context_id)
+            except McpRuntimeContextError:
+                return False
+            try:
+                self._assert_principal(record, principal)
+            except McpRuntimeContextError:
+                return False
+            if record.bound_run_id is not None:
+                return False
+            await self.store.delete(_context_key(context_id))
+            return True
+
 
 _DEFAULT_RUNTIME_CONTEXT_MANAGER: McpRuntimeContextManager | None = None
 
@@ -1218,6 +1241,21 @@ class HostMcpRelay:
             raise McpRelayError("mcp_server_protocol_error", status_code=502)
         return payload
 
+    @staticmethod
+    def _copy_response_headers(
+        response: httpx.Response,
+        response_headers: MutableMapping[str, str] | None,
+    ) -> None:
+        if response_headers is None:
+            return
+        session_id = str(response.headers.get(_MCP_SESSION_ID_HEADER) or "")
+        if (
+            session_id
+            and len(session_id) <= _MCP_SESSION_ID_MAX_LENGTH
+            and all(0x21 <= ord(character) <= 0x7E for character in session_id)
+        ):
+            response_headers[_MCP_SESSION_ID_HEADER] = session_id
+
     async def _post(
         self,
         *,
@@ -1337,6 +1375,7 @@ class HostMcpRelay:
         server_id: str,
         payload: dict[str, Any],
         incoming_headers: Mapping[str, str] | None = None,
+        response_headers: MutableMapping[str, str] | None = None,
     ) -> dict[str, Any] | None:
         if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0":
             raise McpRelayError("mcp_jsonrpc_invalid", status_code=422)
@@ -1372,6 +1411,7 @@ class HostMcpRelay:
             if exc.code == "mcp_server_unauthorized":
                 await self.context_manager.invalidate_context(resolved.capability.context_id)
             raise
+        self._copy_response_headers(response, response_headers)
         if response.status_code == 401:
             await self.context_manager.invalidate_context(resolved.capability.context_id)
         if method == "notifications/initialized" and (

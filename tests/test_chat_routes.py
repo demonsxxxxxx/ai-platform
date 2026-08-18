@@ -60,6 +60,14 @@ def chat_submission_client(monkeypatch):
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
+
+    async def skip_mcp_credential_migration():
+        return {}
+
+    monkeypatch.setattr(
+        "app.main.migrate_legacy_mcp_credentials",
+        skip_mcp_credential_migration,
+    )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
 
@@ -445,6 +453,8 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     request = ChatStreamRequest(
         message="durable replay",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        selected_mcp_tool_ids=["qa-search"],
+        mcp_context_id="mcpctx-replay",
     )
     fingerprint = repository_module.chat_submission_fingerprint(
         {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
@@ -452,6 +462,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
         user_id="user-a",
     )
     calls = []
+    discarded = []
 
     async def existing_submission(conn, **kwargs):
         calls.append(kwargs)
@@ -470,9 +481,16 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     def forbidden_route(*_args, **_kwargs):
         raise AssertionError("replay must not route intent")
 
+    async def discard_context(context_id, replay_principal):
+        discarded.append((context_id, replay_principal.user_id))
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
     monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
+    monkeypatch.setattr(
+        "app.routes.chat.discard_unbound_mcp_runtime_context",
+        discard_context,
+    )
 
     response = await chat_stream(request, principal=principal())
 
@@ -485,6 +503,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
             "submission_id": str(request.submission_id),
         }
     ]
+    assert discarded == [("mcpctx-replay", "user-a")]
 
 
 @pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
@@ -758,8 +777,10 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         message="continue with selected tool",
         session_id="session-owned",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        mcp_context_id="mcpctx-concurrent",
     )
     calls: list[object] = []
+    discarded = []
 
     async def no_existing_submission(*_args, **_kwargs):
         return None
@@ -818,6 +839,9 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
             False,
         )
 
+    async def discard_context(context_id, replay_principal):
+        discarded.append((context_id, replay_principal.user_id))
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission)
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
@@ -839,6 +863,10 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         authorize_tools,
     )
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr(
+        "app.routes.chat.discard_unbound_mcp_runtime_context",
+        discard_context,
+    )
 
     response = await chat_stream(request, principal=principal())
 
@@ -852,6 +880,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         ("authorize", ["locked-search"]),
     ]
     assert calls[6][0] == "claim"
+    assert discarded == [("mcpctx-concurrent", "user-a")]
 
 
 @pytest.mark.asyncio

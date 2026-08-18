@@ -163,10 +163,6 @@ create table if not exists mcp_servers (
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
-update mcp_servers
-set endpoint_redacted = ''
-where endpoint_redacted <> '';
-
 do $$
 begin
   if not exists (
@@ -177,8 +173,6 @@ begin
       check (endpoint_redacted = '') not valid;
   end if;
 end $$;
-
-alter table mcp_servers validate constraint mcp_servers_endpoint_not_persisted;
 
 alter table mcp_servers
   add column if not exists catalog_generation bigint not null default 0,
@@ -360,10 +354,6 @@ create table if not exists mcp_tools (
   created_at timestamptz not null default now()
 );
 
-update mcp_tools
-set endpoint = ''
-where endpoint <> '';
-
 do $$
 begin
   if not exists (
@@ -374,8 +364,6 @@ begin
       check (endpoint = '') not valid;
   end if;
 end $$;
-
-alter table mcp_tools validate constraint mcp_tools_endpoint_not_persisted;
 
 create table if not exists tool_policies (
   tenant_id text not null references tenants(id),
@@ -2451,13 +2439,13 @@ on conflict (id) do update set
   name = excluded.name,
   description = excluded.description,
   transport_type = excluded.transport_type,
-  endpoint = excluded.endpoint,
   auth_mode = excluded.auth_mode,
   allowed_tools = excluded.allowed_tools,
   status = excluded.status,
   write_capable = excluded.write_capable,
   risk_level = excluded.risk_level,
-  visible_to_user = excluded.visible_to_user;
+  visible_to_user = excluded.visible_to_user
+where mcp_tools.endpoint = '';
 
 insert into tool_policies(tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason)
 values

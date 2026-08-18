@@ -1141,7 +1141,7 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
     serialized_calls = str(lifecycle_calls)
     assert "raw-secret" not in serialized_calls
     assert "run --token" not in serialized_calls
-    assert "X-Api-Key" in serialized_calls
+    assert "X-Api-Key" not in serialized_calls
 
 
 def test_mcp_directory_filters_servers_by_principal_department(monkeypatch):
