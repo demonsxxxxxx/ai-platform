@@ -41,7 +41,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
-from app.execution.application.adapter_run import (
+from app.execution.api import (
     WorkerRunCancelled,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
