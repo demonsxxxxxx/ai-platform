@@ -21,7 +21,9 @@ export function shouldShowStreamingFooterSkeleton({
   hasVisibleStreamingMessage: boolean;
 }): boolean {
   const lostStream =
-    connectionStatus === "disconnected" || connectionStatus === "reconnecting";
+    connectionStatus === "disconnected" ||
+    connectionStatus === "reconnecting" ||
+    connectionStatus === "recovering_gap";
 
   return (
     lostStream &&
