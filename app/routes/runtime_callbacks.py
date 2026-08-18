@@ -27,6 +27,7 @@ from app.runtime.sandbox.callback_tokens import (
 from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
+    executor_callback_receipt_event_count,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.runtime.sandbox.executor_signals import (
@@ -51,6 +52,24 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def _executor_callback_receipt(
+    callback: ExecutorCallbackEvent,
+    *,
+    deduplicated: bool,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "accepted": True,
+        "event_count": executor_callback_receipt_event_count(
+            input_event_count=len(callback.events)
+        ),
+    }
+    if callback.batch_id is not None:
+        receipt["batch_id"] = callback.batch_id
+    if deduplicated:
+        receipt["deduplicated"] = True
+    return receipt
 
 
 def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -86,6 +105,7 @@ async def record_executor_callback(
     public_deltas: list[tuple[int, str]] = []
     authority = None
     callback_emitted_at: str | None = None
+    callback_deduplicated = False
     tenant_id = ""
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(
@@ -192,6 +212,9 @@ async def record_executor_callback(
                 batch_id=callback.batch_id,
                 events=event_batch,
             )
+            callback_deduplicated = bool(
+                receipt.get("duplicate") if isinstance(receipt, dict) else False
+            )
             if public_deltas:
                 candidate = (
                     receipt.get("callback_received_at")
@@ -286,7 +309,10 @@ async def record_executor_callback(
                     status_code=409, detail="callback_run_authority_changed"
                 )
             if str(current_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
-                return {"accepted": True, "event_count": len(event_batch)}
+                return _executor_callback_receipt(
+                    callback,
+                    deduplicated=callback_deduplicated,
+                )
             await _require_current_runtime_attempt(
                 conn,
                 tenant_id=tenant_id,
@@ -335,7 +361,10 @@ async def record_executor_callback(
             ) from exc
         finally:
             await bridge.aclose()
-    return {"accepted": True, "event_count": len(event_batch)}
+    return _executor_callback_receipt(
+        callback,
+        deduplicated=callback_deduplicated,
+    )
 
 
 async def _require_current_runtime_attempt(

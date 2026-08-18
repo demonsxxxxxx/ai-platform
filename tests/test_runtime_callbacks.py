@@ -755,7 +755,7 @@ def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatc
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 5}
+    assert response.json() == {"accepted": True, "event_count": 4}
     persisted = [call for call in calls if call[0] != "identity"]
     assert [item[0:3] for item in persisted] == [
         ("executor_callback", "executor", "Executor callback: running"),
@@ -1102,8 +1102,8 @@ def test_executor_callback_is_the_ordered_assistant_delta_ingress(monkeypatch):
 
     assert [response.status_code for response in responses] == [200, 200]
     assert [response.json() for response in responses] == [
-        {"accepted": True, "event_count": 1},
-        {"accepted": True, "event_count": 1},
+        {"accepted": True, "batch_id": "batch-a", "event_count": 2},
+        {"accepted": True, "batch_id": "batch-b", "event_count": 2},
     ]
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
@@ -1206,7 +1206,7 @@ def test_executor_callback_rejects_empty_or_non_string_assistant_delta(monkeypat
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 1}
+    assert response.json() == {"accepted": True, "event_count": 2}
     assert [event["event_type"] for event in persisted] == ["executor_callback"]
 
 
@@ -1296,6 +1296,10 @@ def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 1}
+    assert response.json() == {
+        "accepted": True,
+        "batch_id": "batch-a",
+        "event_count": 1,
+    }
     assert [event["event_type"] for event in persisted] == ["executor_callback"]
     assert published[0].payload == {"delta": "text fallback"}
