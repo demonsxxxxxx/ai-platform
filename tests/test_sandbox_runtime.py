@@ -150,6 +150,45 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
 
 
 @pytest.mark.asyncio
+async def test_runtime_derives_mcp_relay_from_trusted_callback_target(tmp_path, monkeypatch):
+    sent = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
+
+    async def execute(_executor_url, task_request):
+        sent.append(task_request)
+        return {
+            "status": "accepted",
+            "session_id": task_request.session_id,
+            "run_id": task_request.run_id,
+        }
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+
+    await runtime.submit(
+        request(
+            mcp_relay_url="http://169.254.169.254/latest/meta-data",
+            mcp_broker_capability="mcpbrk:mcpctx-test:attempt-token",
+        )
+    )
+
+    assert sent[0].config["mcp_relay_url"] == "http://platform.test/api/ai/mcp/relay"
+    assert sent[0].config["mcp_broker_capability"] == "mcpbrk:mcpctx-test:attempt-token"
+    assert "169.254.169.254" not in str(sent[0].config)
+
+
+@pytest.mark.asyncio
 async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and_before_stop(tmp_path, monkeypatch):
     steps: list[str] = []
 

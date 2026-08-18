@@ -988,6 +988,8 @@
       "urlPlaceholder": "https://example.com/mcp",
       "validation": {
         "commandRequired": "サンドボックストランスポートにはコマンドが必要です",
+        "duplicateHeader": "ヘッダー名は重複できません",
+        "jwtHeaderConflict": "JWT-Authorization は現在のユーザーの MCP トークン用に予約されています",
         "nameRequired": "サーバー名は必須です",
         "urlRequired": "HTTP転送にはURLが必要です"
       },

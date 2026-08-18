@@ -24,6 +24,7 @@ import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastL
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
 import { APP_ROUTE_PATHS } from "./appRouteManifest";
+import { installMcpAuthHandoff } from "./utils/mcpGatewayAuth";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -325,6 +326,8 @@ function AuthPageWrapper({
 
 // Main App Component
 function App() {
+  useEffect(() => installMcpAuthHandoff(), []);
+
   return (
     <ThemeProvider>
       <ErrorBoundary>

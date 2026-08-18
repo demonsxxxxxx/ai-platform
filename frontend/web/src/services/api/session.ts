@@ -199,6 +199,7 @@ export function buildSubmitChatBody({
   selectedSkill,
   selectedAgentProfile,
   submissionId,
+  mcpContextId,
 }: {
   message: string;
   sessionId?: string;
@@ -212,6 +213,7 @@ export function buildSubmitChatBody({
   selectedSkill?: SelectedSkillRequest | null;
   selectedAgentProfile?: SelectedAgentProfileRequest | null;
   submissionId?: string;
+  mcpContextId?: string;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
     message,
@@ -229,6 +231,10 @@ export function buildSubmitChatBody({
 
   if (submissionId) {
     body.submission_id = submissionId;
+  }
+
+  if (mcpContextId) {
+    body.mcp_context_id = mcpContextId;
   }
 
   if (selectedSkill) {
@@ -563,6 +569,7 @@ export const sessionApi = {
     agentId?: string,
     selectedMcpToolIds?: string[],
     selectedAgentProfile?: SelectedAgentProfileRequest | null,
+    mcpContextId?: string,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
@@ -576,6 +583,7 @@ export const sessionApi = {
       selectedSkill,
       selectedAgentProfile,
       submissionId,
+      mcpContextId,
     });
     return authFetch(buildSubmitChatUrl(agentId), {
       method: "POST",

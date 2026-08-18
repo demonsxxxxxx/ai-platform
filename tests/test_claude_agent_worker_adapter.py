@@ -27,6 +27,7 @@ from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
     _allowed_skill_names,
+    _execution_boundary_decision,
     _inferred_used_skill_names,
     _ordinary_run_requires_sandbox,
     _required_artifact_types,
@@ -192,6 +193,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         skills=["qa-file-reviewer"],
         tool_policy_subjects=subjects,
         execution_policy="sandbox_brokered",
+        mcp_relay_url="https://platform.example/api/ai/mcp/relay",
+        mcp_broker_capability="mcpbrk:mcpctx-test:attempt-token",
     )
 
     assert result.error is None
@@ -206,7 +209,13 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "mcp__corp-search__query",
     ]
     assert captured["mcp_servers"] == {
-        "corp-search": {"type": "http", "url": "https://mcp.example.test/v1"}
+        "corp-search": {
+            "type": "http",
+            "url": "https://platform.example/api/ai/mcp/relay/corp-search",
+            "headers": {
+                "X-MCP-Broker-Capability": "mcpbrk:mcpctx-test:attempt-token"
+            },
+        }
     }
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
@@ -228,14 +237,12 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "https://mcp.example.test/v1?token=redacted",
         "https://mcp.example.test/v1#fragment",
     ):
-        assert sdk_runner._mcp_server_options(
-            {
-                "mcp__corp-search__query": {
-                    "mcp_server": "corp-search",
-                    "mcp_server_config": {"type": "http", "url": endpoint},
-                }
-            }
-        ) == {}
+        with pytest.raises(ValueError, match="dynamic MCP relay registration is invalid"):
+            sdk_runner._dynamic_mcp_server_option(
+                relay_url=endpoint,
+                capability="mcpbrk:mcpctx-test:attempt-token",
+                server_id="corp-search",
+            )
 
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
     allowed = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe"}})
@@ -2432,6 +2439,20 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
             },
         )
     ) is True
+
+
+def test_mcp_broker_capability_forces_inner_sandbox_brokered_execution():
+    decision = _execution_boundary_decision(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            input={"message": "use the MCP tool"},
+            mcp_broker_capability="mcpbrk:mcpctx-runtime:attempt-token",
+        )
+    )
+
+    assert decision.requires_real_sandbox is True
+    assert decision.permission_policy == "sandbox_brokered"
 
 
 def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):

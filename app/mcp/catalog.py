@@ -5,8 +5,8 @@ import ipaddress
 import json
 import socket
 import asyncio
-from dataclasses import dataclass, replace
-from typing import Any, Protocol
+from dataclasses import dataclass, field, replace
+from typing import Any, Mapping, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -88,6 +88,7 @@ class McpToolCatalogSyncCommand:
     credentialed: bool
     actor_id: str
     observed_attempt: int | None = None
+    static_headers: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,9 @@ class McpToolCatalogSyncResult:
 class McpToolDiscoveryAdapter(Protocol):
     """Discover every tool page from one already-authorized remote MCP transport."""
 
-    async def discover(self, endpoint: str) -> tuple[McpDiscoveredTool, ...]:
+    async def discover(
+        self, endpoint: str, *, static_headers: Mapping[str, str] | None = None
+    ) -> tuple[McpDiscoveredTool, ...]:
         """Return the complete remote manifest or raise a bounded discovery error."""
 
 
@@ -307,8 +310,9 @@ class StreamableHttpMcpToolDiscoveryAdapter:
         payload: dict[str, Any],
         *,
         session_id: str | None = None,
+        static_headers: Mapping[str, str] | None = None,
     ) -> tuple[dict[str, Any], str | None]:
-        headers = {"Accept": "application/json, text/event-stream"}
+        headers = {**dict(static_headers or {}), "Accept": "application/json, text/event-stream"}
         if session_id:
             headers["Mcp-Session-Id"] = session_id
         try:
@@ -317,7 +321,9 @@ class StreamableHttpMcpToolDiscoveryAdapter:
             raise McpToolDiscoveryError("transport_failure") from exc
         return _json_rpc_result(response), response.headers.get("mcp-session-id") or session_id
 
-    async def discover(self, endpoint: str) -> tuple[McpDiscoveredTool, ...]:
+    async def discover(
+        self, endpoint: str, *, static_headers: Mapping[str, str] | None = None
+    ) -> tuple[McpDiscoveredTool, ...]:
         safe_endpoint = await _validated_discovery_endpoint(endpoint)
         async with httpx.AsyncClient(timeout=self._timeout_seconds, follow_redirects=False) as client:
             initialize, session_id = await self._request(
@@ -333,6 +339,7 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                         "clientInfo": {"name": "ai-platform", "version": "1"},
                     },
                 },
+                static_headers=static_headers,
             )
             if not isinstance(initialize.get("protocolVersion"), str):
                 raise McpToolDiscoveryError("protocol_error")
@@ -341,6 +348,7 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                     safe_endpoint,
                     json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
                     headers={
+                        **dict(static_headers or {}),
                         "Accept": "application/json, text/event-stream",
                         **({"Mcp-Session-Id": session_id} if session_id else {}),
                     },
@@ -366,6 +374,7 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                         "params": params,
                     },
                     session_id=session_id,
+                    static_headers=static_headers,
                 )
                 raw_tools = result.get("tools")
                 if not isinstance(raw_tools, list):
@@ -414,7 +423,10 @@ class McpToolCatalogSynchronizer:
             row = await self._store.record_outcome(command, observed_attempt=attempt, reason=reason)
             return _result_from_row(row, published=False)
         try:
-            tools = await self._discovery.discover(command.endpoint or "")
+            tools = await self._discovery.discover(
+                command.endpoint or "",
+                static_headers=command.static_headers,
+            )
         except McpToolDiscoveryError as exc:
             row = await self._store.record_outcome(command, observed_attempt=attempt, reason=exc.reason)
             return _result_from_row(row, published=False)

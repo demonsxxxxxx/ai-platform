@@ -34,6 +34,11 @@ from app.intent_router import (
     route_intent,
 )
 from app.model_catalog import resolve_model_selection
+from app.mcp.runtime import (
+    McpRuntimeContextError,
+    get_mcp_runtime_context_manager,
+    preflight_mcp_admission,
+)
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -1754,11 +1759,12 @@ async def chat_stream(
                 decision_payload = explicit_payload
                 resolved_agent_id = str(decision_payload["agent_id"])
                 resolved_skill_id = str(decision_payload["skill_id"])
+            authorization_input = run_input
             authorization_kwargs = {
                 "tenant_id": principal.tenant_id,
                 "agent_id": resolved_agent_id,
                 "skill_id": resolved_skill_id,
-                "normalized_input": run_input,
+                "normalized_input": authorization_input,
                 "principal_department_id": principal.department_id,
                 "principal_roles": principal.roles,
                 "is_admin": is_ai_admin(principal),
@@ -1824,7 +1830,10 @@ async def chat_stream(
                         actor_department_id=principal.department_id,
                         actor_roles=principal.roles,
                         capability_kind="mcp_tool",
-                        capability_id=repositories.extract_run_mcp_tool_ids(run_input)[0],
+                        capability_id=(
+                            repositories.extract_run_mcp_tool_ids(run_input)
+                            or ["mcp_tool"]
+                        )[0],
                     ),
                 )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
@@ -1896,6 +1905,8 @@ async def chat_stream(
                     )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
+            mcp_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, run_input)
+            effective_mcp_context_id = request.mcp_context_id if mcp_tool_ids else None
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
                     "tenant_id": principal.tenant_id,
@@ -1913,12 +1924,21 @@ async def chat_stream(
                     "skill_manifests": skill_manifests,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    "mcp_context_id": effective_mcp_context_id,
                     **(
                         {"agent_profile": admitted_agent_profile.private_execution_input}
                         if admitted_agent_profile is not None
                         else {}
                     ),
                 }
+            )
+            await preflight_mcp_admission(
+                context_id=effective_mcp_context_id,
+                principal=principal,
+                run_id=run_id,
+                selected_tool_names=tuple(mcp_tool_ids),
+                mcp_required=bool(mcp_tool_ids),
+                context_manager=get_mcp_runtime_context_manager(),
             )
             await repositories.ensure_workspace_belongs_to_tenant(
                 conn,
@@ -1986,6 +2006,7 @@ async def chat_stream(
                     "intent": decision_payload,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    "mcp_context_id": effective_mcp_context_id,
                     **(
                         {"agent_profile": admitted_agent_profile.private_execution_input}
                         if admitted_agent_profile is not None
@@ -1995,6 +2016,7 @@ async def chat_stream(
                 "principal_roles": principal.roles,
                 "principal_department_id": principal.department_id,
                 "auth_source": principal.source,
+                "mcp_context_id": effective_mcp_context_id,
             }
             if admitted_agent_profile is not None:
                 run_create_kwargs.update(
@@ -2133,6 +2155,20 @@ async def chat_stream(
                     "context_snapshot": context_ref,
                 }
             )
+    except McpRuntimeContextError as exc:
+        code = exc.code
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request=request,
+            query_agent_id=query_agent_id,
+            workspace_id=effective_workspace_id,
+            session_id=request.session_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
+        raise HTTPException(status_code=exc.status_code, detail=code) from exc
     except HTTPException as exc:
         code = _submission_code(exc.detail)
         if 400 <= exc.status_code < 500:

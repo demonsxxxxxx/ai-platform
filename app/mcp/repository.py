@@ -242,13 +242,18 @@ async def get_mcp_server_catalog_sync_snapshot(
 
     cursor = await conn.execute(
         """
-        select name, transport, status, credential_fingerprint, credential_metadata_json,
+        select mcp_servers.name, mcp_servers.transport, mcp_servers.status,
+          mcp_servers.credential_fingerprint, mcp_servers.credential_metadata_json,
+          credentials.credential_envelope,
           catalog_generation, catalog_revision, catalog_status, catalog_unavailable_reason,
           catalog_sync_attempt, catalog_sync_lease_expires_at,
           catalog_discovered_count, catalog_selectable_count
         from mcp_servers
-        where tenant_id = %s
-          and name = %s
+        left join mcp_server_credentials credentials
+          on credentials.tenant_id = mcp_servers.tenant_id
+         and credentials.server_name = mcp_servers.name
+        where mcp_servers.tenant_id = %s
+          and mcp_servers.name = %s
         """,
         (tenant_id, name),
     )

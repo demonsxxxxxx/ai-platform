@@ -134,6 +134,7 @@ jobs:
           docker build \
             --build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }} \
             --build-arg AI_PLATFORM_BUILD_DIRTY=false \
+            --build-arg VITE_MCP_AUTH_SOURCE_ORIGIN=${{ vars.MCP_AUTH_SOURCE_ORIGIN }} \
             -t ai-platform-frontend:${{ github.sha }} \
             -f frontend/web/Dockerfile \
             .

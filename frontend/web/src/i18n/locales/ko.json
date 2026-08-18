@@ -988,6 +988,8 @@
       "urlPlaceholder": "https://example.com/mcp",
       "validation": {
         "commandRequired": "샌드박스 전송에는 명령어가 필요합니다",
+        "duplicateHeader": "헤더 이름은 중복될 수 없습니다",
+        "jwtHeaderConflict": "JWT-Authorization은 현재 사용자의 MCP 토큰용으로 예약되어 있습니다",
         "nameRequired": "서버 이름은 필수입니다",
         "urlRequired": "HTTP 전송에는 URL이 필요합니다"
       },

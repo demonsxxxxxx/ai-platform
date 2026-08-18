@@ -990,6 +990,8 @@
       "urlPlaceholder": "https://example.com/mcp",
       "validation": {
         "commandRequired": "Команда обязательна для транспорта песочницы",
+        "duplicateHeader": "Имена заголовков не должны повторяться",
+        "jwtHeaderConflict": "JWT-Authorization зарезервирован для MCP-токена текущего пользователя",
         "nameRequired": "Имя обязательно",
         "urlRequired": "URL обязателен для HTTP транспорта"
       },

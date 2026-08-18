@@ -7,6 +7,8 @@ import pytest
 from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
+
+
 def _settings():
     return types.SimpleNamespace(
         claude_agent_sdk_enabled=True,
@@ -24,6 +26,12 @@ def _settings():
         anthropic_auth_token="",
         openai_api_key="",
     )
+
+
+_MCP_RUNTIME_KWARGS = {
+    "mcp_relay_url": "https://platform.example/api/ai/mcp/relay",
+    "mcp_broker_capability": "mcpbrk:mcpctx-test:attempt-token",
+}
 
 
 def _subject(
@@ -256,6 +264,7 @@ async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering
         skill_id="general-chat",
         execution_policy=execution_policy,
         tool_policy_subjects=[_subject()],
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert captured["system_prompt"] == {
@@ -313,6 +322,7 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
         execution_policy="sandbox_brokered",
         tool_policy_subjects=subjects,
         on_text=deltas.append,
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.error is None
@@ -342,6 +352,7 @@ async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(monkeyp
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[valid, denied, malformed],
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.error is None
@@ -349,6 +360,82 @@ async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(monkeyp
     assert valid["identity"] in captured["allowed_tools"]
     assert denied["identity"] not in captured["allowed_tools"]
     assert malformed["identity"] not in captured["allowed_tools"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_runtime_registers_one_relay_per_selected_mcp_server(monkeypatch, tmp_path):
+    captured = {}
+    inventory = _subject(server_id="inventory-mcp", tool_name="search")
+    project = _subject(server_id="project-mcp", tool_name="get-project")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="search inventory and project",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[inventory, project],
+        mcp_relay_url="https://platform.example/api/ai/mcp/relay",
+        mcp_broker_capability="mcpbrk:mcpctx-test:attempt-token",
+    )
+
+    assert result.error is None
+    assert set(captured["mcp_servers"]) == {"inventory-mcp", "project-mcp"}
+    assert captured["mcp_servers"]["inventory-mcp"]["url"].endswith(
+        "/api/ai/mcp/relay/inventory-mcp"
+    )
+    assert captured["mcp_servers"]["project-mcp"]["url"].endswith(
+        "/api/ai/mcp/relay/project-mcp"
+    )
+    assert all(
+        config["headers"] == {
+            "X-MCP-Broker-Capability": "mcpbrk:mcpctx-test:attempt-token"
+        }
+        for config in captured["mcp_servers"].values()
+    )
+    assert inventory["identity"] in captured["allowed_tools"]
+    assert project["identity"] in captured["allowed_tools"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runtime_kwargs",
+    [
+        {},
+        {"mcp_relay_url": _MCP_RUNTIME_KWARGS["mcp_relay_url"]},
+        {"mcp_broker_capability": _MCP_RUNTIME_KWARGS["mcp_broker_capability"]},
+    ],
+)
+async def test_external_mcp_fails_closed_without_complete_relay_capability(
+    monkeypatch,
+    tmp_path,
+    runtime_kwargs,
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_subject()],
+        **runtime_kwargs,
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert "mcp_servers" not in captured
 
 
 def _actual_mcp_steps(outcome, subjects, text, probe):
@@ -398,6 +485,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         prompt="search", cwd=tmp_path, skill_id="general-chat", execution_policy="sandbox_brokered",
         tool_policy_subjects=subjects, on_text=deltas.append,
         on_capability_evidence=None if outcome == "missing" else acknowledge,
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert sealed_probe == []
@@ -450,6 +538,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         tool_policy_subjects=[subject],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
+        **_MCP_RUNTIME_KWARGS,
     )
 
     joined = "".join(deltas)
@@ -505,6 +594,7 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         tool_policy_subjects=[subject],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert observed_before_result == ["Verified MCP final answer streams ", "safely."]
@@ -545,6 +635,7 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
         tool_policy_subjects=[_skill_subject(skill_name), _subject()],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
+        **_MCP_RUNTIME_KWARGS,
     )
 
     sdk_prompt = _captured_sdk_prompt(captured)
@@ -837,6 +928,7 @@ async def test_sdk_mcp_selection_or_authorization_without_valid_pre_tool_use_nev
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_subject()],
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert not result.capability_evidence
@@ -880,6 +972,7 @@ async def test_sdk_mcp_pre_tool_use_requires_exact_internal_and_hook_allow(
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_subject()],
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.capability_evidence == []
@@ -913,6 +1006,7 @@ async def test_sdk_mcp_hook_omits_unknown_or_missing_tool_call_identity(monkeypa
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_subject()],
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.capability_evidence == []

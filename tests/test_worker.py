@@ -1147,6 +1147,29 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
     }
 
 
+def test_worker_mcp_context_forces_sandbox_without_client_tool_metadata(monkeypatch):
+    captured = {}
+
+    def decide(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(requires_real_sandbox=True)
+
+    monkeypatch.setattr(worker_module, "decide_execution_boundary", decide)
+    payload = QueueRunPayload.model_validate(
+        {
+            key: value
+            for key, value in base_payload(
+                input={"mode": "chat"},
+                mcp_context_id="mcpctx-runtime",
+            ).items()
+            if key != "_queue_attempt_id"
+        }
+    )
+
+    assert worker_module._ordinary_run_uses_runtime_sandbox(payload, context_snapshot={}) is True
+    assert captured["mcp_requires_sandbox"] is True
+
+
 def test_worker_propagates_exact_authorized_mcp_subject_without_permission_lookup_or_consume():
     payload = QueueRunPayload.model_validate(
         {key: value for key, value in base_payload(input={"mode": "file", "mcp_tool_ids": ["corp-search"]}).items() if key != "_queue_attempt_id"}
@@ -1182,10 +1205,8 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
             "identity": "mcp__corp-search-server__query",
         }
     ]
-    assert subject["mcp_server_config"] == {
-        "type": "http",
-        "url": "https://mcp.example.test/v1",
-    }
+    assert "mcp_server_config" not in subject
+    assert "https://mcp.example.test/v1" not in json.dumps(subject)
     assert subject["public_tool_label"] == "Corporate Search"
     assert subject["public_tool_category"] == "mcp"
     assert worker_module._mcp_capability_subject(
@@ -7724,10 +7745,27 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
             ("mcp_server", "server-step"): _task6_distribution("mcp_server", "server-step"),
         }
     )
+    raw["mcp_context_id"] = "mcpctx-worker-tools"
+    state["locked_run"]["mcp_context_id"] = "mcpctx-worker-tools"
+    claimed = {}
+
+    class RuntimeManager:
+        async def claim_attempt_lease(self, **kwargs):
+            claimed.update(kwargs)
+            return types.SimpleNamespace(token="mcpbrk:worker:tools")
+
+        async def release_attempt_lease(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(worker_module, "get_mcp_runtime_context_manager", RuntimeManager)
 
     outcome = await process_run_payload(raw, registry=registry)
 
     assert outcome.status == "succeeded"
+    assert claimed["targets"] == {
+        "server-global": ("query",),
+        "server-step": ("query",),
+    }
     assert ("tool_lookup", "tenant-a", "tool-global") in calls
     assert ("tool_lookup", "tenant-a", "tool-step") in calls
     registered_input = next(call[1] for call in calls if call[0] == "adapter")
@@ -8025,6 +8063,17 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         "server-admin",
         visible_to_user=False,
     )
+    raw["mcp_context_id"] = "mcpctx-worker-admin-bypass"
+    state["locked_run"]["mcp_context_id"] = "mcpctx-worker-admin-bypass"
+
+    class RuntimeManager:
+        async def claim_attempt_lease(self, **_kwargs):
+            return types.SimpleNamespace(token="mcpbrk:worker:admin-bypass")
+
+        async def release_attempt_lease(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(worker_module, "get_mcp_runtime_context_manager", RuntimeManager)
 
     outcome = await process_run_payload(raw, registry=registry)
 
@@ -8160,6 +8209,17 @@ async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_
     state["skill"]["executor_type"] = "claude-agent-worker"
     state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
     raw["executor_type"] = "claude-agent-worker"
+    raw["mcp_context_id"] = "mcpctx-worker-risk"
+    state["locked_run"]["mcp_context_id"] = "mcpctx-worker-risk"
+
+    class RuntimeManager:
+        async def claim_attempt_lease(self, **_kwargs):
+            return types.SimpleNamespace(token="mcpbrk:worker:risk")
+
+        async def release_attempt_lease(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(worker_module, "get_mcp_runtime_context_manager", RuntimeManager)
 
     outcome = await process_run_payload(raw, registry=registry)
 

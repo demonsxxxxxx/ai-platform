@@ -1183,6 +1183,8 @@
       "urlPlaceholder": "https://example.com/mcp",
       "validation": {
         "commandRequired": "Command is required for sandbox transport",
+        "duplicateHeader": "Header names must be unique",
+        "jwtHeaderConflict": "JWT-Authorization is reserved for the current user's MCP token",
         "nameRequired": "Name is required",
         "urlRequired": "URL is required for HTTP transports"
       },

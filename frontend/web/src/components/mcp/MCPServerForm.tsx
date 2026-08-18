@@ -11,6 +11,7 @@ import type {
 } from "../../types";
 import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import { EnvKeysSelector } from "./EnvKeysSelector";
+import { validateMcpStaticHeaderNames } from "./mcpHeaderValidation";
 import { RoleSelector } from "./RoleSelector";
 
 interface MCPServerFormProps {
@@ -208,6 +209,12 @@ export function MCPServerForm({
     } else {
       if (!url.trim()) {
         newErrors.url = t("mcp.form.validation.urlRequired");
+      }
+      const headerError = validateMcpStaticHeaderNames(headers);
+      if (headerError === "mcp_header_conflict") {
+        newErrors.headers = t("mcp.form.validation.jwtHeaderConflict");
+      } else if (headerError === "mcp_header_duplicate") {
+        newErrors.headers = t("mcp.form.validation.duplicateHeader");
       }
     }
 
@@ -525,6 +532,11 @@ export function MCPServerForm({
               ))}
               {headers.length === 0 && (
                 <p className="es-hint italic">{t("mcp.form.noHeaders")}</p>
+              )}
+              {errors.headers && (
+                <p className="es-hint" style={{ color: "#dc2626" }}>
+                  {errors.headers}
+                </p>
               )}
             </div>
           </div>

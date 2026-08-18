@@ -275,7 +275,8 @@ def _execution_boundary_decision(payload: RunPayload) -> ExecutionBoundaryDecisi
         executor_type=CLAUDE_WORKER_EXECUTOR,
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_execution_tier(payload),
-        mcp_requires_sandbox=any(
+        mcp_requires_sandbox=bool(payload.mcp_broker_capability)
+        or any(
             kind == "mcp"
             for kind, _identity in CapabilityExecutionPlan.from_tool_policy_subjects(
                 payload.input.get("_runtime_tool_policy_subjects")
@@ -1382,6 +1383,7 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),
+            mcp_broker_capability=payload.mcp_broker_capability,
             governed_permission_wait=False,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)

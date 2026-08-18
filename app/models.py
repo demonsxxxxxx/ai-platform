@@ -402,6 +402,7 @@ class CreateRunRequest(BaseModel):
     title: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
     file_ids: list[str] = Field(default_factory=list)
+    mcp_context_id: str | None = None
 
     @field_validator("tenant_id", "workspace_id", "agent_id")
     @classmethod
@@ -424,6 +425,11 @@ class CreateRunRequest(BaseModel):
         if value is None:
             return value
         return assert_safe_id(value, "session_id")
+
+    @field_validator("mcp_context_id")
+    @classmethod
+    def validate_mcp_context_id(cls, value: str | None):
+        return assert_safe_id(value, "mcp_context_id") if value else value
 
     @field_validator("file_ids")
     @classmethod
@@ -749,6 +755,7 @@ class QueueRunPayload(BaseModel):
     skill_manifests: list[dict[str, Any]] = Field(default_factory=list)
     context_snapshot_id: str | None = None
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
+    mcp_context_id: str | None = None
     model_id: str | None = None
     model_value: str | None = None
     agent_profile: dict[str, Any] | None = None
@@ -768,6 +775,11 @@ class QueueRunPayload(BaseModel):
     @classmethod
     def validate_optional_context_snapshot_id(cls, value: str | None):
         return assert_safe_id(value, "context_snapshot_id") if value else value
+
+    @field_validator("mcp_context_id")
+    @classmethod
+    def validate_mcp_context_id(cls, value: str | None):
+        return assert_safe_id(value, "mcp_context_id") if value else value
 
     @field_validator("model_id")
     @classmethod
@@ -1060,6 +1072,7 @@ class ChatStreamRequest(BaseModel):
     enabled_skills: list[str] | None = None
     disabled_mcp_tools: list[str] = Field(default_factory=list)
     selected_mcp_tool_ids: list[str] | None = None
+    mcp_context_id: str | None = None
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
     submission_id: UUID | None = None
@@ -1173,6 +1186,11 @@ class ChatStreamRequest(BaseModel):
     @classmethod
     def validate_optional_session(cls, value: str | None):
         return assert_safe_id(value, "session_id") if value else value
+
+    @field_validator("mcp_context_id")
+    @classmethod
+    def validate_mcp_context_id(cls, value: str | None):
+        return assert_safe_id(value, "mcp_context_id") if value else value
 
     @field_validator("file_ids")
     @classmethod

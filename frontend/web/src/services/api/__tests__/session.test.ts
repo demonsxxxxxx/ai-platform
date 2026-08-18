@@ -260,6 +260,21 @@ test("preserves MCP selection tri-state in the structured Chat request", () => {
   assert.deepEqual(selected.selected_mcp_tool_ids, ["tenant-search"]);
 });
 
+test("carries selected platform MCP IDs with only the opaque context id", () => {
+  const body = buildSubmitChatBody({
+    message: "use an MCP tool",
+    mcpContextId: "mcpctx_opaque",
+    selectedMcpToolIds: ["inventory-read"],
+  });
+
+  assert.equal(body.mcp_context_id, "mcpctx_opaque");
+  assert.deepEqual(body.selected_mcp_tool_ids, ["inventory-read"]);
+  assert.equal("mcp_gateway_tool_names" in body, false);
+  assert.equal("jwt" in body, false);
+  assert.equal("token" in body, false);
+  assert.equal("authorization" in body, false);
+});
+
 test("carries an opaque submission id and resolves its exact status route", () => {
   assert.deepEqual(
     buildSubmitChatBody({

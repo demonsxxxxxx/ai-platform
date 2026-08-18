@@ -3691,18 +3691,21 @@ async def record_mcp_server_credential(
     credential_fingerprint: str,
     metadata: dict[str, Any],
     updated_by: str,
+    credential_envelope: str = "",
 ) -> None:
-    """Record credential fingerprint metadata without storing raw credential values."""
+    """Record public metadata plus an opaque encrypted connection envelope."""
 
     await conn.execute(
         """
         insert into mcp_server_credentials(
-          tenant_id, server_name, credential_fingerprint, metadata_json, updated_by, updated_at
+          tenant_id, server_name, credential_fingerprint, metadata_json,
+          credential_envelope, updated_by, updated_at
         )
-        values (%s, %s, %s, %s::jsonb, %s, now())
+        values (%s, %s, %s, %s::jsonb, %s, %s, now())
         on conflict (tenant_id, server_name) do update
         set credential_fingerprint = excluded.credential_fingerprint,
             metadata_json = excluded.metadata_json,
+            credential_envelope = excluded.credential_envelope,
             updated_by = excluded.updated_by,
             updated_at = now()
         """,
@@ -3711,9 +3714,55 @@ async def record_mcp_server_credential(
             server_name,
             credential_fingerprint,
             dumps_json(metadata),
+            credential_envelope,
             updated_by,
         ),
     )
+
+
+async def get_mcp_relay_target(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    server_name: str,
+) -> dict[str, Any] | None:
+    """Resolve one active MCP target and its current tool fence for the host relay."""
+
+    cursor = await conn.execute(
+        """
+        select credentials.credential_envelope, credentials.metadata_json,
+          max(mcp_tools.endpoint) as registered_endpoint,
+          coalesce(
+            array_agg(distinct (mcp_tools.allowed_tools ->> 0)) filter (
+              where mcp_tools.status = 'active'
+                and tool_policies.status = 'active'
+                and mcp_tools.allowed_tools ->> 0 is not null
+            ),
+            array[]::text[]
+          ) as active_tool_names
+        from mcp_servers
+        join mcp_server_credentials credentials
+          on credentials.tenant_id = mcp_servers.tenant_id
+         and credentials.server_name = mcp_servers.name
+        join tenant_capability_distributions distributions
+          on distributions.tenant_id = mcp_servers.tenant_id
+         and distributions.capability_kind = 'mcp_server'
+         and distributions.capability_id = mcp_servers.name
+         and distributions.status = 'active'
+        left join mcp_tools
+          on mcp_tools.server_id = mcp_servers.name
+        left join tool_policies
+          on tool_policies.tenant_id = mcp_servers.tenant_id
+         and tool_policies.tool_id = mcp_tools.id
+        where mcp_servers.tenant_id = %s
+          and mcp_servers.name = %s
+          and mcp_servers.status = 'active'
+        group by credentials.credential_envelope, credentials.metadata_json
+        """,
+        (tenant_id, server_name),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
 
 
 async def list_admin_tool_policies(
@@ -4198,6 +4247,7 @@ async def create_run(
     run_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
+    mcp_context_id: str | None = None,
 ) -> str:
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
@@ -4217,11 +4267,11 @@ async def create_run(
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
-          status, input_json, queued_at,
+          mcp_context_id, status, input_json, queued_at,
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -4246,6 +4296,7 @@ async def create_run(
             auth_source,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
+            mcp_context_id,
             dumps_json(input_json),
             session_generation,
             tenant_id,
@@ -9831,11 +9882,20 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     if source is None:
         return None
     source_input = source["input_json"] if isinstance(source.get("input_json"), dict) else {}
+    source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
+    source_context_id = source.get("mcp_context_id") or source_input.get("mcp_context_id")
+    if source_context_id or (
+        isinstance(source_execution_input, dict)
+        and extract_run_mcp_tool_ids(source_execution_input)
+    ):
+        # A Broker context is bound to the source Run/Attempt. Retry/resume
+        # must obtain a fresh context and preflight it before a child exists;
+        # never create a child that silently loses the required capability.
+        raise RepositoryConflictError("mcp_context_required_for_retry")
     sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
     inherited_roles = normalize_roles(source.get("principal_roles") or [])
     inherited_department_id = str(source.get("principal_department_id") or "")
     inherited_auth_source = source.get("auth_source")
-    source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
     if isinstance(source_execution_input, dict):
         source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
         source_execution_input.pop("resume", None)
@@ -9909,6 +9969,9 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
+    # An MCP context is bound to the source Run and must never be copied to a
+    # new retry/resume Run. The client must obtain a fresh context first.
+    copied_input_json["mcp_context_id"] = None
     session_generation = await allocate_session_run_generation(
         conn,
         tenant_id=tenant_id,
@@ -10119,6 +10182,7 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
     context_snapshot = source.get("context_snapshot")
     skill_version = source.get("skill_version")
     context_snapshot_id = source.get("context_snapshot_id")
+    mcp_context_id = source.get("mcp_context_id")
     model_id = source.get("model_id")
     model_value = source.get("model_value")
     agent_profile = source.get("agent_profile")
@@ -10134,6 +10198,7 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
         else [],
         "context_snapshot_id": context_snapshot_id if isinstance(context_snapshot_id, str) else None,
         "context_snapshot": dict(context_snapshot) if isinstance(context_snapshot, dict) else {},
+        "mcp_context_id": mcp_context_id if isinstance(mcp_context_id, str) else None,
         "model_id": model_id if isinstance(model_id, str) else None,
         "model_value": model_value if isinstance(model_value, str) else None,
         "schema_version": schema_version

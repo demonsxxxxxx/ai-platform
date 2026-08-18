@@ -3537,6 +3537,7 @@ def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities()
 @pytest.mark.asyncio
 async def test_create_run_capability_distribution_ensures_user_and_binds_auth_snapshot(monkeypatch):
     calls = []
+    preflight_calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return skill()
@@ -3573,6 +3574,10 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         calls.append(("enqueue", payload["user_id"], payload["tenant_id"], payload["run_id"]))
         return 1
 
+    async def fake_preflight(**kwargs):
+        preflight_calls.append(kwargs)
+        return None
+
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.runs.repositories.ensure_user", fake_ensure_user)
@@ -3585,6 +3590,11 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.run_mcp_tool_ids_for_skill",
+        lambda *_args, **_kwargs: ["legacy-static-tool"],
+    )
+    monkeypatch.setattr("app.routes.runs.preflight_mcp_admission", fake_preflight)
 
     response = await create_run(
         CreateRunRequest(
@@ -3593,6 +3603,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             user_id="forged-user",
             agent_id="qa-word-review",
             capability_id="document_review",
+            mcp_context_id="mcpctx-agent-profile",
         ),
         principal=principal(
             user_id="phaseb-smoke",
@@ -3616,6 +3627,9 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     enqueue_index = next(index for index, item in enumerate(calls) if item[0] == "enqueue")
     assert snapshot_index < event_index < enqueue_index
     assert any(item[0:3] == ("enqueue", "phaseb-smoke", "default") and item[3].startswith("run_") for item in calls)
+    assert len(preflight_calls) == 1
+    assert preflight_calls[0]["context_id"] == "mcpctx-agent-profile"
+    assert preflight_calls[0]["mcp_required"] is True
 
 
 @pytest.mark.asyncio

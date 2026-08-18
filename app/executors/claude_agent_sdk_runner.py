@@ -11,7 +11,7 @@ from datetime import datetime
 from inspect import isawaitable
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from app.context_manifest import (
     available_context_retrieval_tools,
@@ -1127,10 +1127,28 @@ def _authorized_parameter_keys(subject: dict[str, Any], tool_name: str) -> set[s
 def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_input: object) -> bool:
     if not isinstance(tool_input, dict):
         return False
-    allowed_keys = _authorized_parameter_keys(subject, tool_name)
-    if not allowed_keys or not set(tool_input).issubset(allowed_keys):
+    schema = subject.get("mcp_tool_schema")
+    schema_authoritative = isinstance(schema, dict)
+    schema_properties = schema.get("properties") if isinstance(schema, dict) else None
+    if isinstance(schema_properties, dict):
+        allowed_keys = {
+            str(key) for key in schema_properties if isinstance(key, str) and key
+        }
+    elif isinstance(schema, dict) and schema.get("additionalProperties") is False:
+        allowed_keys = set()
+    elif isinstance(schema, dict):
+        # The registered MCP remains the schema authority when JSON Schema
+        # does not enumerate properties; relay scope still fixes the identity.
+        allowed_keys = set(tool_input)
+    else:
+        allowed_keys = _authorized_parameter_keys(subject, tool_name)
+    if (not allowed_keys and not schema_authoritative) or not set(tool_input).issubset(allowed_keys):
         return False
-    required = subject.get("required_parameter_keys", list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())))
+    required = subject.get("required_parameter_keys")
+    if required is None and isinstance(schema, dict):
+        required = schema.get("required", ())
+    if required is None:
+        required = list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
     if isinstance(required, list):
         if not all(isinstance(key, str) and key for key in required):
             return False
@@ -1313,27 +1331,60 @@ def _native_tool_proxy_input(tool_input: object) -> dict[str, Any] | None:
     return {"command": proxy_command, "timeout": timeout_ms}
 
 
-def _mcp_server_options(subjects: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
-    servers: dict[str, dict[str, str]] = {}
-    for identity, subject in subjects.items():
-        config = subject.get("mcp_server_config")
-        if not identity.startswith("mcp__") or not isinstance(config, dict):
-            continue
-        server_id, transport = str(subject.get("mcp_server") or ""), str(config.get("type") or "").lower()
-        endpoint = str(config.get("url") or "")
-        parsed = urlsplit(endpoint)
-        if (
-            not server_id or transport not in {"http", "sse"}
-            or parsed.scheme not in {"http", "https"} or not parsed.netloc
-            or any((parsed.username, parsed.password, parsed.query, parsed.fragment))
-        ):
-            continue
-        candidate = {"type": transport, "url": endpoint}
-        existing = servers.get(server_id)
-        if existing is not None and existing != candidate:
-            raise ValueError("conflicting MCP server registration")
-        servers[server_id] = candidate
-    return servers
+def _dynamic_mcp_server_option(
+    *, relay_url: str, capability: str, server_id: str
+) -> dict[str, Any]:
+    """Register one capability-bound relay URL without exposing MCP secrets."""
+
+    parsed = urlsplit(str(relay_url or "").strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not str(capability or "").startswith("mcpbrk:")
+        or not server_id
+    ):
+        raise ValueError("dynamic MCP relay registration is invalid")
+    normalized_path = (parsed.path or "/").rstrip("/")
+    return {
+        "type": "http",
+        "url": urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"{normalized_path}/{quote(server_id, safe='')}",
+                "",
+                "",
+            )
+        ),
+        "headers": {"X-MCP-Broker-Capability": capability},
+    }
+
+
+def _dynamic_mcp_server_options(
+    subjects: dict[str, dict[str, Any]],
+    *,
+    relay_url: str,
+    capability: str,
+) -> dict[str, dict[str, Any]]:
+    server_ids = {
+        str(subject.get("mcp_server") or "")
+        for identity, subject in subjects.items()
+        if identity.startswith("mcp__")
+        and str(subject.get("mcp_server") or "")
+        and str(subject.get("mcp_server") or "") != "ai-platform-context"
+    }
+    return {
+        server_id: _dynamic_mcp_server_option(
+            relay_url=relay_url,
+            capability=capability,
+            server_id=server_id,
+        )
+        for server_id in sorted(server_ids)
+    }
 
 
 async def run_claude_agent_sdk(
@@ -1357,6 +1408,8 @@ async def run_claude_agent_sdk(
     execution_profile: str = "",
     attachment_contexts: list[ParsedAttachmentContext] | None = None,
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
+    mcp_relay_url: str = "",
+    mcp_broker_capability: str = "",
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
@@ -1562,14 +1615,28 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
+    external_mcp_selected = any(
+        identity.startswith("mcp__") for identity in authorized_subjects
+    )
     try:
-        mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
+        if sandbox_brokered and external_mcp_selected:
+            if not mcp_relay_url or not mcp_broker_capability:
+                raise ValueError("MCP relay capability is required")
+            mcp_servers = _dynamic_mcp_server_options(
+                authorized_subjects,
+                relay_url=mcp_relay_url,
+                capability=mcp_broker_capability,
+            )
+        else:
+            mcp_servers = {}
     except ValueError:
         return ClaudeAgentSdkRunResult(used_sdk=True, error=_SDK_TOOL_ADMISSION_FAILED, turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED))
     if context_retrieval_server is not None and (not sandbox_brokered or internal_context_subjects):
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
-        tool_policy_subjects,
+        list(authorized_subjects.values())
+        if sandbox_brokered and external_mcp_selected
+        else tool_policy_subjects,
         required_skill_identity=selected_sdk_skill,
         registered_mcp_servers=mcp_servers,
     )

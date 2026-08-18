@@ -39,6 +39,7 @@ import {
   hasEffectivePermission,
 } from "../components/governance/permissionProjection";
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
+import { clearMcpGatewayJwt } from "../utils/mcpGatewayAuth";
 import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
 
@@ -249,6 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isCurrentAuthOperation, publishAuthIncarnationForCurrentMarker]);
 
   const applyLoggedOut = useCallback((owner: AuthOperationOwner): boolean => {
+    clearMcpGatewayJwt();
     return clearAuthPresentation(owner, true);
   }, [clearAuthPresentation]);
 

@@ -65,6 +65,12 @@ browser using same-origin `/api/*`; the deployed thin shell proxies those calls
 to ai-platform. Split frontend/backend browser API origins are not part of the
 current ai-platform contract.
 
+The MCP-only company JWT handoff is enabled only when
+`VITE_MCP_AUTH_SOURCE_ORIGIN` is an exact Origin such as
+`https://lims.example.internal` (no path or trailing slash). Packaged builds
+receive it from the `MCP_AUTH_SOURCE_ORIGIN` GitHub Actions repository variable.
+If it is absent or malformed, the cross-Origin handoff remains fail-closed.
+
 ## API Boundary
 
 The frontend must consume ai-platform public/admin projections only. It must not

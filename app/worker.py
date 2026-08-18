@@ -41,6 +41,11 @@ from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.mcp.runtime import (
+    McpRuntimeContextError,
+    get_mcp_runtime_context_manager,
+    mcp_targets_from_policy_subjects,
+)
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     PrincipalAuthorityDenied,
@@ -264,6 +269,8 @@ def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
 
     if isinstance(exc, NativeToolAdmissionError):
         return exc.error_code, "Native tool sandbox admission failed"
+    if isinstance(exc.__cause__, McpRuntimeContextError):
+        return exc.__cause__.code, "MCP runtime context is unavailable"
     return "executor_failure", str(exc)
 
 
@@ -1083,6 +1090,7 @@ LOCKED_RUN_SNAPSHOT_FIELDS = (
     "skill_manifests",
     "context_snapshot_id",
     "context_snapshot",
+    "mcp_context_id",
     "model_id",
     "model_value",
     "agent_profile",
@@ -1104,6 +1112,10 @@ def _payload_from_locked_run(
         **run_identity,
         **{field: input_json[field] for field in LOCKED_RUN_SNAPSHOT_FIELDS if field in input_json},
     }
+    if "mcp_context_id" in locked_run:
+        # The dedicated run column is authoritative over caller-controlled
+        # input JSON, while the ID itself remains the only queue-visible value.
+        candidate["mcp_context_id"] = locked_run.get("mcp_context_id")
     try:
         return QueueRunPayload.model_validate(candidate)
     except ValidationError:
@@ -1221,10 +1233,6 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "write_capable": bool(tool.get("write_capable")),
         "allowed_parameter_keys": ["query"],
         "required_parameter_keys": ["query"],
-    }
-    subject["mcp_server_config"] = {
-        "type": "sse" if str(tool.get("transport_type") or "").lower() == "sse" else "http",
-        "url": str(tool.get("endpoint") or ""),
     }
     subject.update(capability_id=tool_id)
     return subject
@@ -1886,7 +1894,9 @@ def _ordinary_run_uses_runtime_sandbox(
         executor_type=payload.executor_type,
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_context_execution_tier(context_snapshot),
-        mcp_requires_sandbox=bool(repositories.extract_run_mcp_tool_ids(payload.input)),
+        mcp_requires_sandbox=bool(
+            payload.mcp_context_id or repositories.extract_run_mcp_tool_ids(payload.input)
+        ),
     ).requires_real_sandbox
 
 
@@ -2082,6 +2092,7 @@ async def process_run_payload(
     run_identity = _payload_identity(payload)
     runtime_sandbox_lease: _WorkerRuntimeSandboxLease | None = None
     runtime_sandbox_lease_released = False
+    mcp_broker_capability_token = ""
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     capability_authorization: _WorkerCapabilityAuthorization | None = None
@@ -2459,6 +2470,28 @@ async def process_run_payload(
             return
 
     try:
+        mcp_targets = mcp_targets_from_policy_subjects(
+            run_payload.input.get("_runtime_tool_policy_subjects")
+        )
+        if mcp_targets and not payload.mcp_context_id:
+            raise RuntimeError("mcp_context_required")
+        if payload.mcp_context_id:
+            try:
+                capability = await get_mcp_runtime_context_manager().claim_attempt_lease(
+                    context_id=payload.mcp_context_id,
+                    tenant_id=payload.tenant_id,
+                    user_id=payload.user_id,
+                    run_id=payload.run_id,
+                    attempt_id=attempt_id,
+                    targets=mcp_targets,
+                )
+            except McpRuntimeContextError as exc:
+                raise RuntimeError(exc.code) from exc
+            run_payload = replace(
+                run_payload,
+                mcp_broker_capability=capability.token,
+            )
+            mcp_broker_capability_token = capability.token
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
@@ -2980,6 +3013,10 @@ async def process_run_payload(
                 )
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
+        if mcp_broker_capability_token:
+            await get_mcp_runtime_context_manager().release_attempt_lease(
+                token=mcp_broker_capability_token,
+            )
     if terminal_outcome.status == "skipped":
         terminalization_progress = await drain_run_tool_permission_terminalization(
             tenant_id=payload.tenant_id,

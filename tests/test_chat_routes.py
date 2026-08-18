@@ -455,18 +455,20 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
 
 @pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
 @pytest.mark.parametrize(
-    ("message", "selected_tools", "expected_authorizations"),
+    ("message", "selected_tools", "context_id", "expected_authorizations"),
     [
-        ("不要调用 MCP，只解释它是什么", ["qa-search"], 0),
-        ("请调用 MCP 搜索员工手册", ["qa-search"], 1),
+        ("不要调用 MCP，只解释它是什么", ["qa-search"], None, 0),
+        ("请调用 MCP 搜索员工手册", ["qa-search"], "mcpctx-test", 1),
+        ("显式不选择 MCP 工具", [], None, 1),
     ],
-    ids=["negative-veto", "affirmative"],
+    ids=["negative-veto", "affirmative", "explicit-empty-selection"],
 )
 @pytest.mark.asyncio
 async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
-    monkeypatch, roles, message, selected_tools, expected_authorizations
+    monkeypatch, roles, message, selected_tools, context_id, expected_authorizations
 ):
     calls = {"authorization": 0}
+    preflight_calls = []
 
     async def authorize_run(*_args, **_kwargs):
         return {
@@ -511,8 +513,20 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
 
+    async def preflight_stub(**kwargs):
+        preflight_calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("app.routes.chat.preflight_mcp_admission", preflight_stub)
+
+    request_kwargs = {"message": message}
+    if selected_tools is not None:
+        request_kwargs["selected_mcp_tool_ids"] = selected_tools
+    if context_id is not None:
+        request_kwargs["mcp_context_id"] = context_id
+
     response = await chat_stream(
-        ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
+        ChatStreamRequest(**request_kwargs),
         principal=principal(roles=roles),
     )
 
@@ -521,6 +535,11 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     expected_tools = selected_tools if expected_authorizations else None
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+    assert "mcp_tool_names" not in calls["run_input"]
+    assert "mcp_tool_names" not in calls["queue_input"]
+    assert len(preflight_calls) == 1
+    assert preflight_calls[0]["mcp_required"] is bool(expected_tools)
+    assert preflight_calls[0]["context_id"] == context_id
 
 
 @pytest.mark.parametrize(

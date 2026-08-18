@@ -94,6 +94,8 @@ import {
 } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { ApiRequestError } from "../services/api/fetch";
+import { prepareMcpRuntimeContext } from "../services/api/mcpRuntime";
+import { clearMcpGatewayJwt } from "../utils/mcpGatewayAuth";
 import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
@@ -123,6 +125,19 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     error.status >= 400 &&
     error.status < 500 &&
     error.submissionDisposition === "rejected_before_persist"
+  );
+}
+
+function isMcpCredentialRejection(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status === 401 &&
+    typeof error.code === "string" &&
+    (error.code === "mcp_server_unauthorized" ||
+      error.code === "mcp_jwt_missing" ||
+      error.code === "mcp_jwt_invalid" ||
+      error.code === "mcp_jwt_expired_or_missing" ||
+      error.code === "mcp_context_expired")
   );
 }
 
@@ -2048,6 +2063,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
 
+        const mcpContextId = await prepareMcpRuntimeContext({
+          selectedMcpToolIds,
+          profileSelected: selectedAgentProfileForRequest !== null,
+        });
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
           requestSessionId ?? undefined,
@@ -2060,6 +2079,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           requestAgentId,
           selectedMcpToolIds,
           selectedAgentProfileForRequest,
+          mcpContextId,
         );
 
         if (!isCurrentRequestSession()) {
@@ -2311,6 +2331,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           });
         return { status: "accepted" };
       } catch (err) {
+        if (isMcpCredentialRejection(err)) clearMcpGatewayJwt();
         if (!isCurrentRequestSession()) {
           handoffActivePreAdmissionSubmission({
             expectedToken: submissionToken,

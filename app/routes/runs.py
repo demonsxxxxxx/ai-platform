@@ -47,6 +47,11 @@ from app.queue import (
     remove_queued_run,
 )
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.mcp.runtime import (
+    McpRuntimeContextError,
+    get_mcp_runtime_context_manager,
+    preflight_mcp_admission,
+)
 from app.run_projection import (
     artifact_card,
     executor_result_schema_version,
@@ -100,6 +105,11 @@ _MULTI_AGENT_DISPATCH_NOT_AVAILABLE = "multi_agent_dispatch_not_available"
 def _raise_if_capability_revoked(exc: Exception) -> None:
     if str(exc) in _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS:
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+
+
+def _raise_if_mcp_retry_requires_fresh_context(exc: Exception) -> None:
+    if str(exc) == "mcp_context_required_for_retry":
+        raise HTTPException(status_code=409, detail="mcp_context_required_for_retry") from exc
 
 
 def _raise_multi_agent_dispatch_not_available() -> None:
@@ -770,11 +780,12 @@ async def create_run(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
+            authorization_input = run_input
             authorization_kwargs = {
                 "tenant_id": tenant_id,
                 "agent_id": resolved_agent_id,
                 "skill_id": resolved_skill_id,
-                "normalized_input": run_input,
+                "normalized_input": authorization_input,
                 "principal_department_id": principal.department_id,
                 "principal_roles": principal.roles,
                 "is_admin": is_ai_admin(principal),
@@ -832,6 +843,8 @@ async def create_run(
             )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
+            mcp_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, run_input)
+            effective_mcp_context_id = request.mcp_context_id if mcp_tool_ids else None
             base_queue_payload = {
                 "tenant_id": tenant_id,
                 "workspace_id": request.workspace_id,
@@ -846,8 +859,17 @@ async def create_run(
                 "skill_version": skill_version,
                 "release_decision": release_decision_payload,
                 "skill_manifests": skill_manifests,
+                "mcp_context_id": effective_mcp_context_id,
             }
             queue_payload = _validate_queue_payload_for_enqueue(base_queue_payload)
+            await preflight_mcp_admission(
+                context_id=effective_mcp_context_id,
+                principal=principal,
+                run_id=run_id,
+                selected_tool_names=tuple(mcp_tool_ids),
+                mcp_required=bool(mcp_tool_ids),
+                context_manager=get_mcp_runtime_context_manager(),
+            )
             await repositories.ensure_workspace_belongs_to_tenant(
                 conn,
                 tenant_id=tenant_id,
@@ -892,11 +914,13 @@ async def create_run(
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                     "skill_manifests": queue_payload["skill_manifests"],
+                    "mcp_context_id": effective_mcp_context_id,
                 },
                 principal_roles=principal.roles,
                 principal_department_id=principal.department_id,
                 auth_source=principal.source,
                 run_id=run_id,
+                mcp_context_id=effective_mcp_context_id,
             )
             await repositories.insert_run_skill_snapshots_at_creation(
                 conn,
@@ -969,6 +993,8 @@ async def create_run(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except McpRuntimeContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
@@ -1018,6 +1044,7 @@ async def copy_run(
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        _raise_if_mcp_retry_requires_fresh_context(exc)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
@@ -1039,6 +1066,7 @@ async def copy_run(
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        _raise_if_mcp_retry_requires_fresh_context(exc)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException:
@@ -1228,6 +1256,7 @@ async def _mutate_run_control_child(
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        _raise_if_mcp_retry_requires_fresh_context(exc)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if retired_control_rejected:

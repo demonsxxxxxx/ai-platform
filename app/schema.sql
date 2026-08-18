@@ -298,12 +298,16 @@ create table if not exists mcp_server_credentials (
   server_name text not null,
   credential_fingerprint text not null default '',
   metadata_json jsonb not null default '{}'::jsonb,
+  credential_envelope text not null default '',
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (tenant_id, server_name),
   foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)
 );
+
+alter table mcp_server_credentials
+  add column if not exists credential_envelope text not null default '';
 
 create table if not exists mcp_tools (
   id text primary key,
@@ -499,6 +503,7 @@ create table if not exists runs (
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
+  mcp_context_id text,
   session_generation bigint,
   result_json jsonb not null default '{}'::jsonb,
   error_code text,
@@ -538,6 +543,7 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
+alter table runs add column if not exists mcp_context_id text;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
 create index if not exists idx_sessions_agent_conversation_history

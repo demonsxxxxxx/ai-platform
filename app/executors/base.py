@@ -193,6 +193,9 @@ class RunPayload:
     model_id: str = ""
     model_value: str = ""
     agent_profile: dict[str, Any] = field(default_factory=dict)
+    # These are process-local Broker inputs. They are deliberately absent from
+    # QueueRunPayload and all durable run projections.
+    mcp_broker_capability: str = field(default="", repr=False)
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     def __post_init__(self) -> None:

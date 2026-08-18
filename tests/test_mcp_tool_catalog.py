@@ -84,6 +84,7 @@ async def test_streamable_http_discovery_consumes_every_cursor_page(monkeypatch)
     seen_methods: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["X-API-Key"] == "catalog-static-secret"
         payload = json.loads(request.content)
         method = payload["method"]
         seen_methods.append(method)
@@ -145,7 +146,10 @@ async def test_streamable_http_discovery_consumes_every_cursor_page(monkeypatch)
     monkeypatch.setattr(catalog.httpx, "AsyncClient", client_factory)
     monkeypatch.setattr(catalog, "_resolve_discovery_addresses", public_dns)
 
-    tools = await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
+    tools = await StreamableHttpMcpToolDiscoveryAdapter().discover(
+        "https://mcp.example/tools",
+        static_headers={"X-API-Key": "catalog-static-secret"},
+    )
 
     assert [tool.remote_name for tool in tools] == ["search_docs", "get_doc"]
     assert all(tool.read_only for tool in tools)
@@ -237,7 +241,7 @@ def _install_synchronizer_fakes(*, discovery, publish_result=None):
 @pytest.mark.asyncio
 async def test_synchronizer_publishes_only_the_complete_multi_tool_manifest(monkeypatch):
     class CompleteDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             assert endpoint == "https://mcp.example/tools"
             return (_tool("search_docs"), _tool("get_doc"), _tool("write_doc", read_only=False))
 
@@ -256,7 +260,7 @@ async def test_synchronizer_publishes_only_the_complete_multi_tool_manifest(monk
 @pytest.mark.asyncio
 async def test_synchronizer_publishes_a_truthful_zero_tool_result(monkeypatch):
     class EmptyDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             return ()
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(
@@ -282,7 +286,7 @@ async def test_synchronizer_publishes_a_truthful_zero_tool_result(monkeypatch):
 @pytest.mark.asyncio
 async def test_transport_failure_never_attempts_partial_publication(monkeypatch):
     class FailingDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             raise McpToolDiscoveryError("transport_failure")
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=FailingDiscovery())
@@ -299,7 +303,7 @@ async def test_transport_failure_never_attempts_partial_publication(monkeypatch)
 @pytest.mark.asyncio
 async def test_stale_generation_result_cannot_report_publication(monkeypatch):
     class CompleteDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             return (_tool("search_docs"),)
 
     synchronizer, _, publications, _, _ = _install_synchronizer_fakes(
@@ -324,7 +328,7 @@ async def test_stale_generation_result_cannot_report_publication(monkeypatch):
 @pytest.mark.asyncio
 async def test_concurrent_sync_claim_fails_closed_before_remote_discovery(monkeypatch):
     class UnexpectedDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             raise AssertionError("an already claimed generation must not rediscover")
 
     synchronizer, outcomes, publications, _, store = _install_synchronizer_fakes(discovery=UnexpectedDiscovery())
@@ -352,7 +356,7 @@ async def test_concurrent_sync_claim_fails_closed_before_remote_discovery(monkey
 @pytest.mark.asyncio
 async def test_credentialed_or_invalid_requests_stay_unavailable_without_discovery(monkeypatch):
     class UnexpectedDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             raise AssertionError("discovery must not run")
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=UnexpectedDiscovery())
@@ -439,7 +443,7 @@ async def test_discovery_does_not_follow_redirects_after_target_validation(monke
 @pytest.mark.asyncio
 async def test_cancelled_discovery_records_retryable_outcome_before_lease_expiry():
     class CancelledDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None):
             raise asyncio.CancelledError()
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=CancelledDiscovery())

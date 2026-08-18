@@ -111,6 +111,16 @@ class Settings(BaseSettings):
     auth_context_lease_seconds: int = Field(default=90)
     artifact_default_retention_days: int = Field(default=90)
 
+    # The user JWT remains short-lived; the same rotating keyring also seals
+    # write-only static MCP connection headers stored by the registry.
+    mcp_context_encryption_keys_json: str = Field(default="")
+    mcp_context_encryption_key: str = Field(default="")
+    mcp_context_current_key_id: str = Field(default="current")
+    mcp_context_ttl_seconds: int = Field(default=300, ge=1, le=300)
+    mcp_context_lease_seconds: int = Field(default=1800, ge=1, le=1800)
+    mcp_relay_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    mcp_relay_max_response_bytes: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024)
+
     llm_gateway_provider: str = Field(default="openai_compatible")
     model_gateway_request_concurrency_limit: int = Field(default=0)
     openai_base_url: str = Field(default="")

@@ -6322,7 +6322,7 @@ async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tena
 
 
 @pytest.mark.asyncio
-async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
+async def test_record_mcp_server_credential_keeps_only_hash_metadata_and_sealed_envelope():
     class CredentialConnection:
         def __init__(self):
             self.calls = []
@@ -6340,6 +6340,7 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
         credential_fingerprint="credential-sha",
         metadata={"header_names": ["Authorization"]},
         updated_by="admin-a",
+        credential_envelope="sealed-envelope",
     )
 
     sql, params = conn.calls[0]
@@ -6350,6 +6351,7 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
         "qa-mcp",
         "credential-sha",
         json.dumps({"header_names": ["Authorization"]}, ensure_ascii=False),
+        "sealed-envelope",
         "admin-a",
     )
     assert "raw-secret" not in str(params)
@@ -10146,6 +10148,7 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
         "skill_manifests": [{"skill_id": "general-chat", "content_hash": "hash-a"}],
         "context_snapshot_id": "ctx-a",
         "context_snapshot": {"context_snapshot_id": "ctx-a"},
+        "mcp_context_id": None,
         "model_id": "model-catalog-a",
         "model_value": "provider-model-a",
         "schema_version": "ai-platform.run-payload.v1",

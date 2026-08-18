@@ -287,6 +287,11 @@ def install_mcp_route_fakes(
         return "aud-test"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(
+        mcp,
+        "seal_mcp_server_credentials",
+        lambda **_kwargs: "sealed-mcp-credential-envelope",
+    )
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
     monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list)
     monkeypatch.setattr(
@@ -741,6 +746,44 @@ def test_authorized_mcp_registration_entries_require_active_parent_server():
         registry_entries=[entry],
         distributions_by_server={"qa-server": distribution},
     ) == []
+
+
+@pytest.mark.parametrize(
+    "header_name",
+    ["JWT-Authorization", "jwt-authorization", " Jwt-Authorization "],
+)
+def test_mcp_lifecycle_rejects_dynamic_jwt_header_in_static_configuration(
+    monkeypatch, header_name
+):
+    install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/mcp/",
+        json={
+            "name": "conflicting",
+            "transport": "streamable_http",
+            "url": "https://mcp.example/tools",
+            "headers": {header_name: "static-value"},
+        },
+        headers=headers(roles="admin"),
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mcp_header_conflict"
+
+
+def test_mcp_lifecycle_rejects_case_insensitive_duplicate_static_headers(monkeypatch):
+    install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/mcp/",
+        json={
+            "name": "duplicate",
+            "transport": "streamable_http",
+            "url": "https://mcp.example/tools",
+            "headers": {"X-Api-Key": "one", "x-api-key": "two"},
+        },
+        headers=headers(roles="admin"),
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mcp_header_duplicate"
 
 
 def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
