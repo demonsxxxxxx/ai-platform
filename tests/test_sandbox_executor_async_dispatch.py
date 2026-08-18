@@ -6,6 +6,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.executor_app import (
     _CallbackRetryPolicy,
     create_executor_app as _create_executor_app,
@@ -152,6 +153,91 @@ def test_v2_delivery_exhaustion_still_delivers_failed_terminal_callback(tmp_path
 
     assert len(assistant_attempts) == 2
     assert assistant_attempts[0] == assistant_attempts[1]
+
+
+def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path, caplog):
+    callbacks: list[dict[str, object]] = []
+    assistant_attempts: list[dict[str, object]] = []
+    post_cancel_results: list[bool] = []
+    retry_started = threading.Event()
+    caplog.set_level("INFO", logger=executor_app.__name__)
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        try:
+            await emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+        except asyncio.CancelledError:
+            post_cancel_results.append(
+                await emit_event(
+                    AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"})
+                )
+            )
+            raise
+        await emit_event(AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, _token):
+        callbacks.append(payload)
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts.append(payload)
+            raise httpx.ConnectError(
+                "callback unavailable",
+                request=httpx.Request("POST", url),
+            )
+        return callback_ack(payload)
+
+    async def wait_for_cancellation(_delay):
+        retry_started.set()
+        await asyncio.Event().wait()
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        nonterminal_callback_retry_policy=_CallbackRetryPolicy(
+            max_attempts=3,
+            attempt_timeout_seconds=0.05,
+            initial_backoff_seconds=0,
+            max_backoff_seconds=0,
+            jitter_ratio=0,
+        ),
+        callback_retry_sleep=wait_for_cancellation,
+    )
+    with TestClient(app) as client:
+        response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert response.status_code == 202
+        assert retry_started.wait(timeout=2)
+
+        cancelled = client.post(
+            "/v2/tasks/run-a/qat-attempt-a/cancel",
+            headers=auth_headers(),
+        )
+        assert cancelled.status_code == 202
+        assert _wait_for_status(client, "cancelled")["terminal_result"]["status"] == "cancelled"
+        assert len(_wait_for_terminal_callback(callbacks, "cancelled")) == 1
+
+    cancelled_terminal_callbacks = [
+        payload for payload in callbacks if payload.get("status") == "cancelled"
+    ]
+    assert len(cancelled_terminal_callbacks) == 1
+    assert len(assistant_attempts) == 1
+    assert assistant_attempts[0]["events"][0]["payload"]["delta"] == "first"
+    assert post_cancel_results == [False]
+    cancelled_records = [
+        record for record in caplog.records if record.message == "sandbox_callback_batch_cancelled"
+    ]
+    assert len(cancelled_records) == 1
+    assert cancelled_records[0].callback_batch_id == assistant_attempts[0]["batch_id"]
+    assert cancelled_records[0].callback_batch_digest
+    assert cancelled_records[0].callback_attempt == 1
+    assert cancelled_records[0].callback_batch_state == "cancelled"
+    assert "first" not in caplog.text
+    assert "second" not in caplog.text
+    assert "secret" not in caplog.text
 
 
 def test_v2_dispatch_is_idempotent_while_original_task_is_running(tmp_path):

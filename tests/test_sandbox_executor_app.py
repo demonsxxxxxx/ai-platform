@@ -35,6 +35,9 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.runtime.sandbox.executor_app import (
+    _CallbackBatchContent,
+    _CallbackBatchDelivery,
+    _CallbackBatchIdFactory,
     _CallbackRetryPolicy,
     _default_callback_sender,
     _default_executor_runner,
@@ -3708,6 +3711,68 @@ def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch)
     assert callbacks == [("running", "accepted"), ("running", "executor_finished")]
 
 
+def test_callback_batch_freezes_content_and_tracks_lifecycle():
+    payload = {
+        "batch_id": "callback-test-1",
+        "events": [
+            {"type": "assistant_delta", "payload": {"delta": "first"}},
+            {"type": "assistant_delta", "payload": {"delta": "second"}},
+        ],
+    }
+
+    content = _CallbackBatchContent.freeze(payload)
+    delivery = _CallbackBatchDelivery(content=content)
+
+    assert content.batch_id == "callback-test-1"
+    assert content.item_indexes == (0, 1)
+    assert content.payload_digest == hashlib.sha256(
+        content.serialized_payload.encode("utf-8")
+    ).hexdigest()
+    assert content.payload() == payload
+    assert delivery.state == "created"
+
+    delivery.begin_attempt()
+    delivery.begin_attempt()
+    assert delivery.state == "sending"
+    assert delivery.attempts == 2
+
+    delivery.accept()
+    assert delivery.state == "accepted"
+    assert delivery.error_code is None
+
+    with pytest.raises(RuntimeError):
+        delivery.begin_attempt()
+    with pytest.raises(RuntimeError):
+        delivery.accept()
+    with pytest.raises(RuntimeError):
+        delivery.exhaust("stream_delivery_rejected")
+
+
+def test_callback_batch_cancel_is_terminal_and_idempotent():
+    content = _CallbackBatchContent.freeze({"batch_id": "callback-test-2"})
+    delivery = _CallbackBatchDelivery(content=content)
+
+    delivery.begin_attempt()
+    delivery.cancel()
+    assert delivery.state == "cancelled"
+    assert delivery.error_code == "executor_cancelled"
+
+    delivery.cancel()
+    assert delivery.state == "cancelled"
+    assert delivery.error_code == "executor_cancelled"
+
+
+def test_callback_batch_factory_allocates_distinct_adjacent_identities():
+    factory = _CallbackBatchIdFactory(namespace="run-attempt")
+
+    first = factory.next_id()
+    second = factory.next_id()
+
+    assert first == "callback-run-attempt-1"
+    assert second == "callback-run-attempt-2"
+    assert first != second
+
+
 def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog):
     assistant_attempts: list[dict[str, object]] = []
     caplog.set_level("WARNING", logger=executor_app.__name__)
@@ -3719,11 +3784,89 @@ def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog)
     async def callback_sender(url, payload, token):
         if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
             assistant_attempts.append(payload)
-            if len(assistant_attempts) == 1:
+            if len(assistant_attempts) < 3:
                 raise httpx.ConnectError(
                     "callback unavailable",
                     request=httpx.Request("POST", url),
                 )
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=3),
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert len(assistant_attempts) == 3
+    assert assistant_attempts[0] == assistant_attempts[1] == assistant_attempts[2]
+    assert len({attempt["batch_id"] for attempt in assistant_attempts}) == 1
+    assert len(
+        {
+            hashlib.sha256(
+                json.dumps(
+                    attempt,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            for attempt in assistant_attempts
+        }
+    ) == 1
+    retry_records = [record for record in caplog.records if record.message == "sandbox_callback_delivery_retry"]
+    assert len(retry_records) == 2
+    assert [record.callback_attempt for record in retry_records] == [1, 2]
+    assert all(record.callback_reason == "transport_error" for record in retry_records)
+    assert all(record.callback_batch_digest for record in retry_records)
+    assert "partial" not in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
+    assistant_attempts: list[tuple[str, str]] = []
+    first_attempt_started = asyncio.Event()
+    release_first_attempt = asyncio.Event()
+    in_flight = 0
+    max_in_flight = 0
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        first = asyncio.create_task(
+            emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+        )
+        await first_attempt_started.wait()
+        second = asyncio.create_task(
+            emit_event(AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"}))
+        )
+        release_first_attempt.set()
+        await asyncio.gather(first, second)
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        nonlocal in_flight, max_in_flight
+        assistant_events = [
+            event for event in payload.get("events", []) if event.get("type") == "assistant_delta"
+        ]
+        if assistant_events:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            try:
+                delta = assistant_events[0]["payload"]["delta"]
+                assistant_attempts.append((payload["batch_id"], delta))
+                if delta == "first" and len(assistant_attempts) == 1:
+                    first_attempt_started.set()
+                    await release_first_attempt.wait()
+                    raise httpx.ConnectError(
+                        "callback unavailable",
+                        request=httpx.Request("POST", url),
+                    )
+                await asyncio.sleep(0)
+            finally:
+                in_flight -= 1
         return callback_ack(payload)
 
     client = create_test_client(
@@ -3737,15 +3880,15 @@ def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog)
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    assert len(assistant_attempts) == 2
-    assert assistant_attempts[0] == assistant_attempts[1]
-    assert assistant_attempts[0]["batch_id"] == assistant_attempts[1]["batch_id"]
-    retry_records = [record for record in caplog.records if record.message == "sandbox_callback_delivery_retry"]
-    assert len(retry_records) == 1
-    assert retry_records[0].callback_attempt == 1
-    assert retry_records[0].callback_reason == "transport_error"
-    assert "partial" not in caplog.text
-    assert "secret" not in caplog.text
+    first_batch_id = assistant_attempts[0][0]
+    second_batch_id = assistant_attempts[2][0]
+    assert assistant_attempts == [
+        (first_batch_id, "first"),
+        (first_batch_id, "first"),
+        (second_batch_id, "second"),
+    ]
+    assert first_batch_id != second_batch_id
+    assert max_in_flight == 1
 
 
 @pytest.mark.parametrize("status_code", [408, 429, 500, 503])
