@@ -122,16 +122,53 @@ async def test_run_queries_preserve_scope_projection_and_for_update():
 
     assert run["id"] == "run-a"
     assert identity["workspace_id"] == "workspace-a"
-    assert conn.calls[0] == (
-        "select * from runs where tenant_id = %s and id = %s for update",
-        ("tenant-a", "run-a"),
-    )
+    run_sql, run_params = conn.calls[0]
+    assert "select runs.*" in run_sql
+    assert "left join sessions" in run_sql
+    assert "sessions.tenant_id = runs.tenant_id" in run_sql
+    assert "sessions.id = runs.session_id" in run_sql
+    assert "sessions.user_id is not distinct from runs.user_id" in run_sql
+    assert run_sql.endswith("for update of runs")
+    assert run_params == ("tenant-a", "run-a")
     identity_sql, identity_params = conn.calls[1]
     assert identity_sql == (
         "select id, tenant_id, workspace_id, user_id, session_id, agent_id, "
         "status, context_snapshot_id from runs where id = %s for update"
     )
     assert identity_params == ("run-a",)
+
+
+@pytest.mark.asyncio
+async def test_shared_run_projection_includes_session_agent_profile_pins():
+    expected = {
+        "id": "run-a",
+        "session_admitted_agent_profile_revision": 7,
+        "session_admitted_agent_profile_hash": "a" * 64,
+    }
+    conn = RecordingConnection([expected])
+
+    run = await run_persistence.get_run(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    )
+
+    assert run == expected
+    sql, params = conn.calls[0]
+    assert "select runs.*" in sql
+    assert (
+        "sessions.admitted_agent_profile_revision as "
+        "session_admitted_agent_profile_revision"
+    ) in sql
+    assert (
+        "sessions.admitted_agent_profile_hash as session_admitted_agent_profile_hash"
+    ) in sql
+    assert "sessions.tenant_id = runs.tenant_id" in sql
+    assert "sessions.id = runs.session_id" in sql
+    assert "sessions.workspace_id = runs.workspace_id" in sql
+    assert "sessions.user_id is not distinct from runs.user_id" in sql
+    assert "sessions.agent_id = runs.agent_id" in sql
+    assert params == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
