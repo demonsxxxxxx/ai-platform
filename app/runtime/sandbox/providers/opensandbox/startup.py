@@ -449,11 +449,27 @@ def _opensandbox_executor_url(raw_url: str, settings: Any) -> str:
     return url
 
 
-def is_authoritative_not_found_error(exc: BaseException) -> bool:
-    """Recognize only the OpenSandbox SDK's explicit HTTP 404 response."""
+def is_authoritative_sandbox_absent_error_code(exc: BaseException) -> bool:
+    """Recognize the SDK's provider-specific sandbox absence code."""
 
     try:
         from opensandbox.exceptions import SandboxApiException
     except ImportError:
         return False
-    return isinstance(exc, SandboxApiException) and getattr(exc, "status_code", None) == 404
+    if not isinstance(exc, SandboxApiException):
+        return False
+    error = getattr(exc, "error", None)
+    return getattr(error, "code", None) == "DOCKER::SANDBOX_NOT_FOUND"
+
+
+def is_authoritative_not_found_error(exc: BaseException) -> bool:
+    """Recognize only an OpenSandbox SDK response proving absence."""
+
+    try:
+        from opensandbox.exceptions import SandboxApiException
+    except ImportError:
+        return False
+    return (
+        isinstance(exc, SandboxApiException)
+        and getattr(exc, "status_code", None) == 404
+    ) or is_authoritative_sandbox_absent_error_code(exc)

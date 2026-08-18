@@ -23,6 +23,9 @@ from app.runtime.sandbox.executor_signals import (
     publish_executor_terminal_signal,
     wait_for_executor_reconciliation_signal,
 )
+from app.runtime.sandbox.providers.opensandbox.startup import (
+    is_authoritative_not_found_error,
+)
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.worker import reconcile_executor_terminal_result
 
@@ -238,7 +241,7 @@ async def probe_suspect_executor_tasks_once(
             raise
         except Exception as exc:  # noqa: BLE001 - persisted retry before eventual terminalization.
             attempts = int(lease_row.get("executor_reconciliation_attempt_count") or 0)
-            if attempts >= _EXECUTOR_PROBE_FAILURE_LIMIT:
+            if is_authoritative_not_found_error(exc) or attempts >= _EXECUTOR_PROBE_FAILURE_LIMIT:
                 await _persist_probe_terminal(
                     lease_row,
                     executor_status="failed",
