@@ -220,6 +220,10 @@ def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path,
         assert _wait_for_status(client, "cancelled")["terminal_result"]["status"] == "cancelled"
         assert len(_wait_for_terminal_callback(callbacks, "cancelled")) == 1
 
+    cancelled_terminal_callbacks = [
+        payload for payload in callbacks if payload.get("status") == "cancelled"
+    ]
+    assert len(cancelled_terminal_callbacks) == 1
     assert len(assistant_attempts) == 1
     assert assistant_attempts[0]["events"][0]["payload"]["delta"] == "first"
     assert post_cancel_results == [False]
