@@ -623,6 +623,26 @@ paths, owner, reason, and removal condition. The gate itself MUST be introduced
 in a later PR so the candidate that defines it cannot certify its own
 correctness.
 
+The immutable authority rule has one fail-closed recovery case. If the exact
+base policy cannot validate only because `approved_root_modules` no longer
+matches the exact base Git tree, a candidate MAY restore that inventory without
+an administrator bypass. The trusted base checker accepts the candidate policy
+only when all of the following hold:
+
+- the authority commit equals the base commit;
+- the candidate changes only `architecture-policy.json` and optionally deletes
+  the stale `.architecture-governance-exception.json`;
+- every policy field except `approved_root_modules` is semantically unchanged;
+- the approved inventory exactly equals the unchanged base and candidate
+  `app/*.py` root-module inventory;
+- no candidate architecture exception remains; and
+- the candidate policy still validates against the authority schema and all
+  normal policy contracts.
+
+This recovery path cannot change source, workflows, schemas, architecture
+rules, exception scope, or any other policy value. Every broader repair remains
+blocked and requires the normal trusted governance process.
+
 ## 13. Review checklist for every backend PR
 
 Before approving a change under `app/`, reviewers answer:

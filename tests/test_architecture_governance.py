@@ -725,6 +725,99 @@ def test_candidate_policy_self_relaxation_does_not_change_authority(
     assert evaluation.policy["owner"] == "platform-architecture"
 
 
+def _root_inventory_repair_policy(*, added_path: str) -> dict[str, Any]:
+    policy = _fixture_policy()
+    policy["approved_root_modules"] = sorted(
+        [*policy["approved_root_modules"], added_path]
+    )
+    return policy
+
+
+def _broken_root_inventory_authority(repo: Path, *, stale_exception: bool = False) -> str:
+    _write(repo, "app/new_root_service.py", "VALUE = True\n")
+    if stale_exception:
+        _write(repo, ".architecture-governance-exception.json", "{}\n")
+    return _commit(repo, "introduce unregistered root module")
+
+
+def test_invalid_authority_root_inventory_can_be_repaired_exactly(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    broken_authority = _broken_root_inventory_authority(repo)
+    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
+    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
+    head = _commit(repo, "repair exact root inventory")
+
+    evaluation = _evaluate(repo, broken_authority, broken_authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+def test_root_inventory_repair_may_delete_stale_exception(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    broken_authority = _broken_root_inventory_authority(repo, stale_exception=True)
+    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
+    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
+    (repo / ".architecture-governance-exception.json").unlink()
+    head = _commit(repo, "repair inventory and remove stale exception")
+
+    assert _evaluate(repo, broken_authority, broken_authority, head).status == "pass"
+
+
+@pytest.mark.parametrize(
+    ("extra_path", "mutate_policy", "keep_exception"),
+    [
+        ("README.md", False, False),
+        (None, True, False),
+        (None, False, True),
+    ],
+)
+def test_root_inventory_repair_rejects_broader_candidate_changes(
+    governance_repo: tuple[Path, str],
+    extra_path: str | None,
+    mutate_policy: bool,
+    keep_exception: bool,
+) -> None:
+    repo, _authority = governance_repo
+    broken_authority = _broken_root_inventory_authority(
+        repo,
+        stale_exception=keep_exception,
+    )
+    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
+    if mutate_policy:
+        repaired["owner"] = "candidate-owner"
+    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
+    if extra_path is not None:
+        _write(repo, extra_path, "candidate change\n")
+    head = _commit(repo, "attempt broad inventory repair")
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, broken_authority, broken_authority, head)
+
+    assert caught.value.code == "invalid_policy_repair"
+
+
+def test_root_inventory_repair_rejects_nonexistent_approved_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = governance_repo
+    broken_authority = _broken_root_inventory_authority(repo)
+    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
+    repaired["approved_root_modules"].append("app/not_in_git.py")
+    repaired["approved_root_modules"].sort()
+    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
+    head = _commit(repo, "attempt over-approved inventory repair")
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, broken_authority, broken_authority, head)
+
+    assert caught.value.code == "invalid_policy_repair"
+
+
 def test_new_cross_domain_internal_import_is_non_exemptible(
     governance_repo: tuple[Path, str],
 ) -> None:
