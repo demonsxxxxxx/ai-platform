@@ -33,7 +33,10 @@ from app.required_tool_contract import (
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
-from app.runtime.sandbox.contracts import ExecutorTaskRequest
+from app.runtime.sandbox.contracts import (
+    ExecutorTaskRequest,
+    executor_callback_receipt_event_count,
+)
 from app.runtime.sandbox.executor_app import (
     _CallbackBatchContent,
     _CallbackBatchDelivery,
@@ -125,7 +128,13 @@ def callback_ack(payload: dict[str, object]) -> dict[str, object]:
     """Mirror the runtime callback receipt: envelope plus bridged events."""
 
     events = payload.get("events")
-    return {"accepted": True, "event_count": 1 + len(events) if isinstance(events, list) else 1}
+    return {
+        "accepted": True,
+        "batch_id": payload.get("batch_id"),
+        "event_count": executor_callback_receipt_event_count(
+            input_event_count=len(events) if isinstance(events, list) else 0
+        ),
+    }
 
 
 def mapped_execution_fact(invocation_id: str, lifecycle: str, *, fact_kind: str = "tool_invocation"):
@@ -1399,7 +1408,7 @@ async def test_executor_rejects_unpersistable_local_tool_invocation_id(
 
 @pytest.mark.parametrize(
     "receipt_mode",
-    "rejected missing malformed nonliteral_true wrong_count exception stale_run mismatched_attempt".split(),
+    "rejected missing malformed nonliteral_true wrong_count over_count wrong_batch exception stale_run mismatched_attempt".split(),
 )
 def test_executor_capability_rejection_seals_public_events_without_local_claim(
     tmp_path,
@@ -1468,7 +1477,23 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
             if receipt_mode == "nonliteral_true":
                 return {"accepted": 1, "event_count": 1 + len(payload["events"])}
             if receipt_mode == "wrong_count":
-                return {"accepted": True, "event_count": len(payload["events"])}
+                return {
+                    "accepted": True,
+                    "batch_id": payload["batch_id"],
+                    "event_count": len(payload["events"]),
+                }
+            if receipt_mode == "over_count":
+                return {
+                    "accepted": True,
+                    "batch_id": payload["batch_id"],
+                    "event_count": 2 + len(payload["events"]),
+                }
+            if receipt_mode == "wrong_batch":
+                return {
+                    "accepted": True,
+                    "batch_id": "callback-wrong-batch",
+                    "event_count": 1 + len(payload["events"]),
+                }
             if receipt_mode == "stale_run":
                 return {
                     "accepted": payload["run_id"] == "run-current",
@@ -3989,6 +4014,7 @@ def test_executor_accepts_deduplicated_receipt_after_response_loss(tmp_path):
             return {
                 "accepted": False,
                 "deduplicated": True,
+                "batch_id": payload.get("batch_id"),
                 "event_count": 1 + len(payload.get("events", [])),
             }
         return callback_ack(payload)
