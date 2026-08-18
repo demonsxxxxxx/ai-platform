@@ -66,6 +66,24 @@ roadmap or Controller Current rather than this durable entry file.
   evidence under `docs/release-evidence/`; they never establish current runtime
   state without fresh verification.
 
+## CodeGraph Navigation
+
+- This repository's existing `.codegraph/codegraph.db` is a local navigation
+  index, not implementation or runtime authority.
+- In Pi, prefer the CodeGraph MCP server's `codegraph_explore` tool for concept,
+  symbol, flow, caller/callee, and impact discovery. Phrase the requested graph
+  relationship explicitly and keep `maxFiles <= 4`.
+- The MCP server runs with its project path fixed to this repository and keeps a
+  debounced file watcher active. Treat any pending-file warning as stale data and
+  read the current source directly before continuing.
+- Always read the current source before editing. Use the native `codegraph` Pi
+  tool only for a specific graph action or when MCP is unavailable; run its
+  `sync` action before relying on CLI query results.
+- Never run `init`, full `index`, or `uninit` automatically. Fall back to
+  repository-scoped `fffind`/`ffgrep` for exact text, unsupported files, or empty
+  graph results. Never search Pi sessions or protected credential paths, and
+  never treat graph output as runtime evidence.
+
 ## Change Control
 
 - Before non-mechanical edits, record the Change Contract required by
