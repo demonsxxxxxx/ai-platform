@@ -12,6 +12,7 @@ from app.worker import WorkerOutcome
 from app.worker_main import run_once
 
 
+_ORIGINAL_SANDBOX_CLEANUP = worker_main.cleanup_expired_sandbox_leases
 _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER = worker_main.cleanup_expired_memory_records_for_worker
 _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = worker_main.progress_pending_tool_permission_terminalizations_for_worker
 _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE = worker_main.reconcile_stale_runs_for_worker
@@ -2418,12 +2419,24 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_once_does_not_reclaim_queue_when_sandbox_cleanup_fails(monkeypatch):
+async def test_run_once_reclaims_queue_when_sandbox_runtime_cleanup_fails(monkeypatch, caplog):
     calls = []
 
-    async def cleanup_expired_sandbox_leases():
-        calls.append(("sandbox_cleanup",))
-        raise RuntimeError("sandbox cleanup failed")
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def cleanup_expired_sandbox_runtime_leases(_conn, **_kwargs):
+        calls.append(("sandbox_runtime_cleanup",))
+        raise worker_main.SandboxRuntimeCleanupError(
+            [{"lease_id": "lease-a", "error": "provider_failed"}]
+        )
+
+    async def cleanup_expired_sandbox_leases(_conn):
+        calls.append(("sandbox_lease_cleanup",))
 
     async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
@@ -2432,11 +2445,28 @@ async def test_run_once_does_not_reclaim_queue_when_sandbox_cleanup_fails(monkey
         calls.append(("lease", worker_id))
         return None
 
-    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.cleanup_expired_sandbox_leases", _ORIGINAL_SANDBOX_CLEANUP
+    )
+    monkeypatch.setattr(
+        "app.worker_main.cleanup_expired_sandbox_runtime_leases",
+        cleanup_expired_sandbox_runtime_leases,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.repositories.cleanup_expired_sandbox_leases",
+        cleanup_expired_sandbox_leases,
+    )
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
-    with pytest.raises(RuntimeError, match="sandbox cleanup failed"):
-        await run_once(timeout_seconds=1, worker_id="worker-a")
+    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
 
-    assert calls == [("sandbox_cleanup",)]
+    assert outcome.status == "idle"
+    assert calls == [
+        ("sandbox_runtime_cleanup",),
+        ("sandbox_lease_cleanup",),
+        ("queue_reclaim",),
+        ("lease", "worker-a"),
+    ]
+    assert "Sandbox runtime cleanup maintenance failed" in caplog.text
