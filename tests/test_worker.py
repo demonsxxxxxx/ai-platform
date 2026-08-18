@@ -1500,6 +1500,96 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
             )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_id", "agent_profile", "expected_profile"),
+    [
+        ("general-agent", {}, None),
+        (
+            "agt_support",
+            {
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
+            },
+            {
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "skill_set": [
+                    {"skill_id": "general-chat", "expected_version": "version-a"}
+                ],
+            },
+        ),
+    ],
+)
+async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_profile(
+    monkeypatch,
+    agent_id,
+    agent_profile,
+    expected_profile,
+):
+    captured = []
+
+    async def capture_payload(raw, registry, *, worker_id, reconciliation):
+        del registry, reconciliation
+        assert worker_id == "worker-a"
+        assert raw["_queue_attempt_id"] == "attempt-a"
+        queue_payload = QueueRunPayload.model_validate(
+            {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
+        )
+        captured.append(queue_payload)
+        return WorkerOutcome("succeeded", "run-a")
+
+    monkeypatch.setattr(worker_module, "process_run_payload", capture_payload)
+    lease_row = {
+        "executor_reconciliation_context_json": {
+            "adapter_name": "claude-agent-worker",
+            "adapter_context": {},
+            "run_payload": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "attempt_id": "attempt-a",
+                "agent_id": agent_id,
+                "skill_id": None,
+                "file_ids": [],
+                "input": {},
+                "execution_kind": "harness_chat",
+                "trace_id": "trace-a",
+                "agent_profile": agent_profile,
+                "schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+            },
+        }
+    }
+    result = ExecutorResult(
+        status="succeeded",
+        adapter_version="opensandbox/1",
+        executor_type="claude_agent_sdk",
+        executor_version="1",
+        capabilities={},
+        result={"message": "done"},
+        executor_payload={},
+    )
+
+    outcome = await worker_module.reconcile_executor_terminal_result(
+        lease_row=lease_row,
+        result=result,
+        worker_id="worker-a",
+        claim_token="claim-a",
+    )
+
+    assert outcome == WorkerOutcome("succeeded", "run-a")
+    assert captured[0].agent_profile == expected_profile
+
+
 def test_run_payload_accepts_only_complete_pinned_harness_profile():
     profile = {
         "agent_id": "agt_support",
