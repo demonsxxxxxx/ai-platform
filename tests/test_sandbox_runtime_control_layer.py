@@ -9,6 +9,8 @@ from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     stop_sandbox_leases,
 )
+from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, StopResult
 from app.runtime.sandbox.executor_app import _CallbackBatchIdFactory
 
@@ -40,6 +42,19 @@ def _callback() -> ExecutorCallbackEvent:
         progress=20,
         new_message={"type": "assistant", "delta": "hello"},
         state_patch={"current_step": "thinking"},
+        events=[
+            AgentEvent(
+                type="assistant_delta",
+                message="hello",
+                payload={"delta": "hello"},
+            ),
+            AgentEvent(
+                type="execution_progress",
+                message="private progress",
+                payload={"progress": 20},
+                admin_only=True,
+            ),
+        ],
     )
 
 
@@ -316,8 +331,12 @@ async def test_admin_orphan_cleanup_surfaces_audit_outage(monkeypatch):
     assert exc_info.value.detail == "sandbox_cleanup_audit_unavailable"
 
 
+@pytest.mark.parametrize("duplicate", [False, True])
 @pytest.mark.asyncio
-async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(monkeypatch):
+async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
+    monkeypatch,
+    duplicate,
+):
     batches = []
 
     async def get_run_identity(conn, *, run_id, for_update=False):
@@ -339,7 +358,7 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(mo
         batches.append(kwargs)
         return {
             "accepted": True,
-            "duplicate": False,
+            "duplicate": duplicate,
             "callback_received_at": "2026-08-17T00:00:00Z",
         }
 
@@ -376,7 +395,34 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(mo
 
     response = await runtime_callbacks.record_executor_callback(_callback())
 
-    assert response == {"accepted": True, "event_count": 2}
+    expected_response = {
+        "accepted": True,
+        "batch_id": "callback-batch-a",
+        "event_count": 3,
+    }
+    if duplicate:
+        expected_response["deduplicated"] = True
+    assert response == expected_response
+    assert executor_app._callback_acknowledges_exact_batch(
+        response,
+        batch_id="callback-batch-a",
+        event_count=2,
+    )
+    assert not executor_app._callback_acknowledges_exact_batch(
+        {**response, "event_count": 2},
+        batch_id="callback-batch-a",
+        event_count=2,
+    )
+    assert not executor_app._callback_acknowledges_exact_batch(
+        {**response, "event_count": 4},
+        batch_id="callback-batch-a",
+        event_count=2,
+    )
+    assert not executor_app._callback_acknowledges_exact_batch(
+        response,
+        batch_id="callback-batch-other",
+        event_count=2,
+    )
     assert len(batches) == 1
     assert {
         key: batches[0][key]
@@ -390,6 +436,7 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(mo
     assert [event["event_type"] for event in batches[0]["events"]] == [
         "executor_callback",
         "tool_call_delta",
+        "executor_private_event",
     ]
 
 

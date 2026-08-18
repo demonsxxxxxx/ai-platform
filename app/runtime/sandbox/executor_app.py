@@ -70,6 +70,7 @@ from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorTaskRequest,
     build_trusted_callback_target,
+    executor_callback_receipt_event_count,
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import PLATFORM_CONTROLLED
@@ -295,14 +296,25 @@ _PUBLIC_TOOL_LIFECYCLE_NAMES = frozenset(
 )
 
 
-def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> bool:
-    """Accept only the runtime-callback receipt for one envelope plus its events."""
+def _callback_acknowledges_exact_batch(
+    result: object,
+    *,
+    batch_id: str,
+    event_count: int,
+) -> bool:
+    """Accept only the runtime-callback receipt for this immutable input batch."""
 
     acknowledged_count = result.get("event_count") if isinstance(result, dict) else None
     acknowledged = isinstance(result, dict) and (
         result.get("accepted") is True or result.get("deduplicated") is True
     )
-    return acknowledged and type(acknowledged_count) is int and acknowledged_count == 1 + event_count
+    return (
+        acknowledged
+        and result.get("batch_id") == batch_id
+        and type(acknowledged_count) is int
+        and acknowledged_count
+        == executor_callback_receipt_event_count(input_event_count=event_count)
+    )
 
 
 def _private_capability_fact(
@@ -557,7 +569,11 @@ async def _deliver_nonterminal_callback(
                 _logger.warning("sandbox_callback_delivery_retry", extra=log_context)
                 await retry_sleep(retry_policy.delay_after_attempt(attempt))
                 continue
-            if not _callback_acknowledges_exact_batch(result, event_count=event_count):
+            if not _callback_acknowledges_exact_batch(
+            result,
+            batch_id=batch.content.batch_id,
+            event_count=event_count,
+        ):
                 batch.exhaust("stream_delivery_rejected")
                 _logger.warning(
                     "sandbox_callback_delivery_rejected",

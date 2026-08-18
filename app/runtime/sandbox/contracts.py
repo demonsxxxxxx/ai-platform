@@ -33,6 +33,14 @@ _TRUSTED_CALLBACK_SUFFIXES = (".test", ".localhost", ".invalid", ".internal")
 _TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020, 18443}
 
 
+def executor_callback_receipt_event_count(*, input_event_count: int) -> int:
+    """Count one callback envelope plus the sender's immutable input events."""
+
+    if type(input_event_count) is not int or input_event_count < 0:
+        raise ValueError("executor callback input event count must be non-negative")
+    return 1 + input_event_count
+
+
 class CallbackTargetValidationError(ValueError):
     """Raised when a callback base URL violates the sandbox trusted-target policy."""
 
