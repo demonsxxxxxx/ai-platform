@@ -1292,6 +1292,8 @@ class _WindowsDirectoryRemovalRetry:
         )
         self.attempts += 1
         time.sleep(delay)
+        if time.monotonic() >= self.deadline:
+            return False
         return True
 
 
