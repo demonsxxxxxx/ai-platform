@@ -166,6 +166,20 @@ class CapabilityExecutionPlan:
             available.add(("skill", required_skill_identity))
         return cls(available=frozenset(available), required=required)
 
+    @classmethod
+    def mcp_requires_sandbox(
+        cls,
+        value: object,
+        *,
+        broker_capability: object = None,
+    ) -> bool:
+        """Require brokered execution for issued or policy-authorized MCP access."""
+
+        plan = cls.from_tool_policy_subjects(value)
+        return bool(broker_capability) or any(
+            kind == "mcp" for kind, _identity in plan.available
+        )
+
 
 def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, Any]]:
     """Build exact broker subjects for explicitly selected scoped context tools."""
@@ -263,6 +277,26 @@ def _authorized_parameter_keys(
     return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
 
 
+def _delegates_external_mcp_parameters(
+    subject: dict[str, Any],
+    tool_name: str,
+) -> bool:
+    identity = subject.get("identity")
+    server_id = subject.get("mcp_server")
+    mcp_tool = subject.get("mcp_tool")
+    return (
+        subject.get("parameter_delegation") == "external_mcp"
+        and isinstance(identity, str)
+        and isinstance(server_id, str)
+        and bool(server_id)
+        and server_id != "ai-platform-context"
+        and isinstance(mcp_tool, str)
+        and bool(mcp_tool)
+        and identity == f"mcp__{server_id}__{mcp_tool}"
+        and tool_name == identity
+    )
+
+
 def _parameters_match_subject(
     subject: dict[str, Any],
     tool_name: str,
@@ -272,6 +306,10 @@ def _parameters_match_subject(
         return False
     schema = subject.get("mcp_tool_schema")
     schema_authoritative = isinstance(schema, dict)
+    delegates_external_mcp = _delegates_external_mcp_parameters(
+        subject,
+        tool_name,
+    )
     schema_properties = schema.get("properties") if isinstance(schema, dict) else None
     if isinstance(schema_properties, dict):
         if schema.get("additionalProperties") is False:
@@ -286,11 +324,17 @@ def _parameters_match_subject(
         # The registered MCP remains the schema authority when JSON Schema
         # does not enumerate properties; relay scope still fixes the identity.
         allowed_keys = set(tool_input)
+    elif delegates_external_mcp:
+        # The capability subject fixes identity; the relay's live MCP schema
+        # remains authoritative for the external tool's parameter object.
+        allowed_keys = set(tool_input)
     else:
         allowed_keys = _authorized_parameter_keys(subject, tool_name)
-    if (not allowed_keys and not schema_authoritative) or not set(
-        tool_input
-    ).issubset(allowed_keys):
+    if (
+        not allowed_keys
+        and not schema_authoritative
+        and not delegates_external_mcp
+    ) or not set(tool_input).issubset(allowed_keys):
         return False
     required = subject.get("required_parameter_keys")
     if required is None and isinstance(schema, dict):

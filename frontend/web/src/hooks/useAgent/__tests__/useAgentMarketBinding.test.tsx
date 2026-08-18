@@ -583,13 +583,19 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     await settle(harness.act);
     assert.equal(submissions.length, 3);
   } finally {
-    await harness.cleanup();
-    mcpRuntime.restore();
-    sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.get = originalGet;
-    sessionApi.getAuthoritative = originalGetAuthoritative;
-    sessionApi.getEvents = originalGetEvents;
+    try {
+      try {
+        await harness.cleanup();
+      } finally {
+        mcpRuntime.restore();
+      }
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      sessionApi.markRead = originalMarkRead;
+      sessionApi.get = originalGet;
+      sessionApi.getAuthoritative = originalGetAuthoritative;
+      sessionApi.getEvents = originalGetEvents;
+    }
   }
 });
 

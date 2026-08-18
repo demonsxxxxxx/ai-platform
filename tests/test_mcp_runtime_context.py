@@ -16,6 +16,7 @@ from fastapi import HTTPException, Request, Response
 
 from app.auth import AuthPrincipal
 from app.mcp.domain.targets import mcp_targets_from_policy_subjects
+from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.runtime import (
     MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT,
     MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
@@ -276,6 +277,56 @@ def test_static_headers_reject_dynamic_name_and_round_trip_only_in_envelope(monk
     )
     assert endpoint == "https://inventory.example/mcp"
     assert headers == {"X-API-Key": "static-secret", "Authorization": "Basic service"}
+
+
+def test_open_server_credentials_maps_aad_mismatch_to_safe_503(monkeypatch):
+    _settings(monkeypatch)
+    secret = "static-secret"
+    envelope = seal_mcp_server_credentials(
+        tenant_id="tenant-a",
+        server_id="inventory-mcp",
+        endpoint="https://inventory.example/mcp",
+        static_headers={"X-API-Key": secret},
+    )
+
+    with pytest.raises(McpRelayError) as exc_info:
+        open_mcp_server_credentials(
+            tenant_id="tenant-a",
+            server_id="wrong-server",
+            envelope=envelope,
+        )
+
+    assert exc_info.value.code == "mcp_server_credentials_invalid"
+    assert exc_info.value.status_code == 503
+    assert str(exc_info.value) == "mcp_server_credentials_invalid"
+    assert secret not in repr(exc_info.value)
+
+
+def test_open_server_credentials_preserves_header_conflict_409(monkeypatch):
+    _settings(monkeypatch)
+    normalizer = mcp_runtime.normalize_static_mcp_headers
+    monkeypatch.setattr(
+        mcp_runtime,
+        "normalize_static_mcp_headers",
+        lambda headers: dict(headers or {}),
+    )
+    envelope = seal_mcp_server_credentials(
+        tenant_id="tenant-a",
+        server_id="inventory-mcp",
+        endpoint="https://inventory.example/mcp",
+        static_headers={"JWT-Authorization": "static-secret"},
+    )
+    monkeypatch.setattr(mcp_runtime, "normalize_static_mcp_headers", normalizer)
+
+    with pytest.raises(McpRelayError) as exc_info:
+        open_mcp_server_credentials(
+            tenant_id="tenant-a",
+            server_id="inventory-mcp",
+            envelope=envelope,
+        )
+
+    assert exc_info.value.code == "mcp_header_conflict"
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio

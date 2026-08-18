@@ -319,11 +319,9 @@ def _execution_boundary_decision(payload: RunPayload) -> ExecutionBoundaryDecisi
         executor_type=CLAUDE_WORKER_EXECUTOR,
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_execution_tier(payload),
-        mcp_requires_sandbox=bool(payload.mcp_broker_capability) or any(
-            kind == "mcp"
-            for kind, _identity in CapabilityExecutionPlan.from_tool_policy_subjects(
-                payload.input.get("_runtime_tool_policy_subjects")
-            ).available
+        mcp_requires_sandbox=CapabilityExecutionPlan.mcp_requires_sandbox(
+            payload.input.get("_runtime_tool_policy_subjects"),
+            broker_capability=payload.mcp_broker_capability,
         ),
     )
 
@@ -1540,6 +1538,7 @@ class ClaudeAgentWorkerAdapter:
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None
         if event_sink is not None:
+
             async def runtime_event_sink(agent_event):
                 await event_sink(**agent_event_to_executor_event(agent_event))
 

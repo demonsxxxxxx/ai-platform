@@ -42,6 +42,61 @@ def test_mcp_schema_additional_properties_controls_parameter_key_fence():
     )
 
 
+def test_external_mcp_parameter_delegation_allows_only_exact_selected_identity():
+    subject = {
+        "identity": "mcp__inventory__read_file",
+        "mcp_server": "inventory",
+        "mcp_tool": "read_file",
+        "parameter_delegation": "external_mcp",
+    }
+
+    assert _parameters_match_subject(
+        subject,
+        "mcp__inventory__read_file",
+        {"path": "/reports/current.csv", "limit": 25},
+    )
+    assert not _parameters_match_subject(
+        subject,
+        "mcp__inventory__unselected_tool",
+        {"path": "/reports/current.csv", "limit": 25},
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject", "tool_name", "tool_input"),
+    [
+        (
+            {
+                "identity": "mcp__ai-platform-context__search_memory",
+                "mcp_server": "ai-platform-context",
+                "mcp_tool": "search_memory",
+                "parameter_delegation": "external_mcp",
+                "allowed_parameter_keys": ["query", "limit", "max_tokens"],
+                "required_parameter_keys": [],
+            },
+            "search_memory",
+            {"path": "/private"},
+        ),
+        (
+            {
+                "identity": "Read",
+                "parameter_delegation": "external_mcp",
+                "allowed_parameter_keys": ["file_path"],
+                "required_parameter_keys": [],
+            },
+            "Read",
+            {"path": "/private"},
+        ),
+    ],
+)
+def test_external_mcp_parameter_delegation_cannot_bypass_closed_parameter_fences(
+    subject,
+    tool_name,
+    tool_input,
+):
+    assert not _parameters_match_subject(subject, tool_name, tool_input)
+
+
 def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
     assert (
         _sdk_run_timeout_seconds(

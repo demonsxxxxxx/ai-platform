@@ -37,6 +37,25 @@ def _legacy_public_endpoint(raw_url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
+def _legacy_endpoint_is_runtime_supported(raw_url: str) -> bool:
+    try:
+        parsed = urlsplit(raw_url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc
+        and hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and (port is None or 1 <= port <= 65535)
+    )
+
+
 def _legacy_endpoint_for_server(
     *,
     server_endpoint: str,
@@ -69,7 +88,10 @@ def _legacy_endpoint_for_server(
         candidates = tool_endpoints
     if len(candidates) > 1:
         raise McpLegacyCredentialMigrationError("mcp_legacy_endpoint_conflict")
-    return next(iter(candidates), "")
+    endpoint = next(iter(candidates), "")
+    if endpoint and not _legacy_endpoint_is_runtime_supported(endpoint):
+        raise McpLegacyCredentialMigrationError("mcp_legacy_endpoint_invalid")
+    return endpoint
 
 
 async def migrate_legacy_mcp_credentials(
@@ -132,20 +154,24 @@ async def migrate_legacy_mcp_credentials(
             key = (str(server["tenant_id"]), str(server["name"]))
             tools_by_server[key].append(tool)
 
+    legacy_endpoints: dict[tuple[str, str], str] = {}
+    for server in servers:
+        key = (str(server["tenant_id"]), str(server["name"]))
+        credential = credentials.get(key)
+        if str((credential or {}).get("credential_envelope") or ""):
+            continue
+        legacy_endpoints[key] = _legacy_endpoint_for_server(
+            server_endpoint=str(server.get("endpoint_redacted") or ""),
+            tool_rows=tools_by_server.get(key, []),
+        )
+
     sealed_count = 0
     scrubbed_count = 0
     for server in servers:
         key = (str(server["tenant_id"]), str(server["name"]))
         credential = credentials.get(key)
         envelope = str((credential or {}).get("credential_envelope") or "")
-        endpoint = (
-            ""
-            if envelope
-            else _legacy_endpoint_for_server(
-                server_endpoint=str(server.get("endpoint_redacted") or ""),
-                tool_rows=tools_by_server.get(key, []),
-            )
-        )
+        endpoint = legacy_endpoints.get(key, "")
         if endpoint and not envelope:
             envelope = seal_credentials(
                 tenant_id=key[0],
@@ -283,11 +309,7 @@ async def get_mcp_relay_target(
         """
         select credentials.credential_envelope, credentials.metadata_json,
           coalesce(
-            array_agg(distinct (mcp_tools.allowed_tools ->> 0)) filter (
-              where mcp_tools.status = 'active'
-                and tool_policies.status = 'active'
-                and mcp_tools.allowed_tools ->> 0 is not null
-            ),
+            array_agg(distinct catalog_entry.remote_tool_name),
             array[]::text[]
           ) as active_tool_names
         from mcp_servers
@@ -299,14 +321,23 @@ async def get_mcp_relay_target(
          and distributions.capability_kind = 'mcp_server'
          and distributions.capability_id = mcp_servers.name
          and distributions.status = 'active'
-        left join mcp_tools
-          on mcp_tools.server_id = mcp_servers.name
-        left join tool_policies
+        join mcp_tool_catalog_entries catalog_entry
+          on catalog_entry.tenant_id = mcp_servers.tenant_id
+         and catalog_entry.server_name = mcp_servers.name
+         and catalog_entry.catalog_generation = mcp_servers.catalog_generation
+         and catalog_entry.status = 'active'
+        join mcp_tools
+          on catalog_entry.tool_id = mcp_tools.id
+         and mcp_tools.server_id = mcp_servers.name
+         and mcp_tools.status = 'active'
+        join tool_policies
           on tool_policies.tenant_id = mcp_servers.tenant_id
          and tool_policies.tool_id = mcp_tools.id
+         and tool_policies.status = 'active'
         where mcp_servers.tenant_id = %s
           and mcp_servers.name = %s
           and mcp_servers.status = 'active'
+          and mcp_servers.catalog_status = 'available'
         group by credentials.credential_envelope, credentials.metadata_json
         """,
         (tenant_id, server_name),

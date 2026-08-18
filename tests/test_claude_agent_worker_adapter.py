@@ -2657,6 +2657,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
             skill_id="general-chat",
             file_ids=[],
             input={"message": "run a shell command in sandbox", "sandbox_mode": "ephemeral"},
+            mcp_broker_capability="mcpbrk:mcpctx-runtime:attempt-token",
             context_snapshot={
                 "schema_version": "ai-platform.context-snapshot.v1",
                 "context_snapshot_id": "ctx-heavy",
@@ -2695,6 +2696,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     assert runtime_calls[0].skill_ids == ["general-chat"]
     assert runtime_calls[0].callback_token_id == "cbt:run_1:qat-test-attempt"
     assert runtime_calls[0].sandbox_mode == "ephemeral"
+    assert runtime_calls[0].mcp_broker_capability == "mcpbrk:mcpctx-runtime:attempt-token"
     assert result.executor_payload["sandbox_provider"] == "docker"
 
 
@@ -2746,7 +2748,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
     ) is True
 
 
-def test_mcp_broker_capability_forces_inner_sandbox_brokered_execution():
+def test_mcp_broker_capability_without_policy_subjects_forces_brokered_sandbox():
     decision = _execution_boundary_decision(
         payload(
             agent_id="general-agent",

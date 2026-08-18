@@ -1916,6 +1916,10 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         }
     ]
     assert "mcp_server_config" not in subject
+    assert subject["parameter_delegation"] == "external_mcp"
+    assert "allowed_parameter_keys" not in subject
+    assert "required_parameter_keys" not in subject
+    assert "mcp_tool_schema" not in subject
     assert "https://mcp.example.test/v1" not in json.dumps(subject)
     assert subject["public_tool_label"] == "Corporate Search"
     assert subject["public_tool_category"] == "mcp"

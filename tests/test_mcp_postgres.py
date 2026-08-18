@@ -12,6 +12,9 @@ class _Cursor:
     async def fetchall(self):
         return list(self._rows)
 
+    async def fetchone(self):
+        return self._rows[0] if self._rows else None
+
 
 class _MigrationConnection:
     def __init__(self, *, servers, tools=(), credentials=(), events=None):
@@ -38,6 +41,18 @@ class _MigrationConnection:
         raise AssertionError(normalized)
 
 
+class _RelayConnection:
+    def __init__(self, row):
+        self.row = row
+        self.sql = ""
+        self.params = None
+
+    async def execute(self, statement, params=None):
+        self.sql = " ".join(str(statement).split()).lower()
+        self.params = params
+        return _Cursor([self.row] if self.row is not None else [])
+
+
 def _server(**overrides):
     return {
         "tenant_id": "tenant-a",
@@ -62,7 +77,7 @@ async def test_legacy_mcp_migration_seals_before_clearing_and_scrubs_header_name
             {
                 "id": "tool-a",
                 "server_id": "gateway",
-                "endpoint": "https://mcp.example/mcp?token=legacy-secret",
+                "endpoint": "https://mcp.example/mcp",
                 "status": "active",
             }
         ],
@@ -100,7 +115,7 @@ async def test_legacy_mcp_migration_seals_before_clearing_and_scrubs_header_name
     assert seal_event[1] == {
         "tenant_id": "tenant-a",
         "server_id": "gateway",
-        "endpoint": "https://mcp.example/mcp?token=legacy-secret",
+        "endpoint": "https://mcp.example/mcp",
         "static_headers": {},
     }
     server_update = next(event for event in events if event[0].startswith("update mcp_servers"))
@@ -114,6 +129,83 @@ async def test_legacy_mcp_migration_seals_before_clearing_and_scrubs_header_name
     assert events.index(seal_event) < events.index(server_update) < events.index(tool_update)
     assert events[-2][0].startswith("alter table mcp_servers validate constraint")
     assert events[-1][0].startswith("alter table mcp_tools validate constraint")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("server_endpoint", "tool_endpoint"),
+    [
+        (
+            "https://mcp.example/mcp",
+            "https://legacy-user@mcp.example/mcp",
+        ),
+        (
+            "https://mcp.example/mcp",
+            "https://mcp.example/mcp?token=legacy-secret",
+        ),
+        (
+            "https://mcp.example/mcp",
+            "https://mcp.example/mcp#legacy-fragment",
+        ),
+        ("ftp://mcp.example/mcp", "ftp://mcp.example/mcp"),
+        ("mcp.example/mcp", "mcp.example/mcp"),
+        ("https:///mcp", "https:///mcp"),
+        (
+            "https://mcp.example:invalid/mcp",
+            "https://mcp.example:invalid/mcp",
+        ),
+    ],
+    ids=[
+        "userinfo",
+        "query",
+        "fragment",
+        "scheme",
+        "no-scheme",
+        "no-netloc",
+        "invalid-port",
+    ],
+)
+async def test_legacy_mcp_migration_rejects_runtime_invalid_endpoint_before_writes(
+    server_endpoint,
+    tool_endpoint,
+):
+    events = []
+    seal_calls = []
+    conn = _MigrationConnection(
+        servers=[
+            _server(name="alpha", endpoint_redacted="https://alpha.example/mcp"),
+            _server(endpoint_redacted=server_endpoint),
+        ],
+        tools=[
+            {
+                "id": "tool-a",
+                "server_id": "gateway",
+                "endpoint": tool_endpoint,
+                "status": "active",
+            }
+        ],
+        credentials=[],
+        events=events,
+    )
+
+    def seal(**kwargs):
+        seal_calls.append(kwargs)
+        return "unreachable"
+
+    with pytest.raises(
+        mcp_postgres.McpLegacyCredentialMigrationError,
+        match="mcp_legacy_endpoint_invalid",
+    ):
+        await mcp_postgres.migrate_legacy_mcp_credentials(
+            conn,
+            seal_credentials=seal,
+        )
+
+    assert seal_calls == []
+    assert not any(
+        statement.startswith(("update ", "insert ", "alter table "))
+        for statement, _ in events
+    )
 
 
 @pytest.mark.asyncio
@@ -212,3 +304,36 @@ async def test_legacy_mcp_migration_rejects_ambiguous_cross_tenant_tool_owner():
         statement.startswith(("update ", "insert ", "alter table "))
         for statement, _ in events
     )
+
+
+@pytest.mark.asyncio
+async def test_mcp_relay_target_uses_current_available_catalog_entries():
+    conn = _RelayConnection(
+        {
+            "credential_envelope": "sealed-envelope",
+            "metadata_json": {},
+            "active_tool_names": ["remote-search"],
+        }
+    )
+
+    target = await mcp_postgres.get_mcp_relay_target(
+        conn,
+        tenant_id="tenant-a",
+        server_name="gateway",
+    )
+
+    assert target == {
+        "credential_envelope": "sealed-envelope",
+        "metadata_json": {},
+        "active_tool_names": ["remote-search"],
+    }
+    assert "array_agg(distinct catalog_entry.remote_tool_name)" in conn.sql
+    assert "join mcp_tool_catalog_entries catalog_entry" in conn.sql
+    assert "catalog_entry.tool_id = mcp_tools.id" in conn.sql
+    assert "catalog_entry.catalog_generation = mcp_servers.catalog_generation" in conn.sql
+    assert "mcp_servers.catalog_status = 'available'" in conn.sql
+    assert "catalog_entry.status = 'active'" in conn.sql
+    assert "mcp_tools.status = 'active'" in conn.sql
+    assert "tool_policies.status = 'active'" in conn.sql
+    assert "mcp_tools.allowed_tools" not in conn.sql
+    assert conn.params == ("tenant-a", "gateway")

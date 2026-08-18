@@ -1331,8 +1331,7 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "parameters_authorized": True,
         "risk_level": str(tool.get("risk_level") or "low"),
         "write_capable": bool(tool.get("write_capable")),
-        "allowed_parameter_keys": ["query"],
-        "required_parameter_keys": ["query"],
+        "parameter_delegation": "external_mcp",
     }
     subject.update(capability_id=tool_id)
     return subject

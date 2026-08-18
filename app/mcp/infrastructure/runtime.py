@@ -586,7 +586,14 @@ def open_mcp_server_credentials(
         if exc.code == "mcp_header_conflict":
             raise McpRelayError("mcp_header_conflict", status_code=409) from exc
         raise McpRelayError("mcp_server_credentials_invalid", status_code=503) from exc
-    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+    except (
+        InvalidTag,
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        json.JSONDecodeError,
+    ) as exc:
         raise McpRelayError("mcp_server_credentials_invalid", status_code=503) from exc
 
 
