@@ -168,6 +168,15 @@ def native_tool_subjects() -> list[dict[str, Any]]:
     ]
 
 
+def native_tool_name(
+    run_id: str = "run-a",
+    attempt_id: str = "qat-test-attempt",
+) -> str:
+    from app.runtime.sandbox.container_provider import _native_tool_container_name
+
+    return _native_tool_container_name(run_id, attempt_id)
+
+
 def trusted_skill_mount_stub(selected_workspace: WorkspaceLease) -> SimpleNamespace:
     return SimpleNamespace(
         host_path=Path(selected_workspace.workspace_host_path) / ".claude",
@@ -902,6 +911,7 @@ class FakeOpenSandbox:
         self.killed = False
         self.kill_calls = 0
         self.closed = False
+        self.info_calls = 0
         self.kill_error: Exception | None = None
         self.close_error: Exception | None = None
 
@@ -934,6 +944,7 @@ class FakeOpenSandbox:
         return FakeOpenSandboxEndpoint(self.endpoint, headers=self.endpoint_headers)
 
     def get_info(self) -> object:
+        self.info_calls += 1
         return {
             "id": self.id,
             "metadata": dict(self.metadata),
@@ -994,11 +1005,8 @@ class OpenSandboxSettings:
     opensandbox_domain = "opensandbox.local:8080"
     opensandbox_protocol = "http"
     opensandbox_api_key = "opensandbox-secret"
-    opensandbox_use_server_proxy = False
+    opensandbox_use_server_proxy = True
     opensandbox_request_timeout_seconds = 30
-    opensandbox_attestation_path = "/v1/sandboxes/{sandbox_id}/attestation"
-    opensandbox_attestation_contract_version = "ai-platform.opensandbox.topology-attestation.v1"
-    opensandbox_attestation_timeout_seconds = 2.0
     opensandbox_timeout_seconds = 1800
     opensandbox_executor_image = ""
     opensandbox_executor_entrypoint = "/app/docker-entrypoint.sh uvicorn"
@@ -1013,6 +1021,7 @@ class OpenSandboxSettings:
     opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
     opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
     opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+    opensandbox_expected_network_mode = "none"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
     opensandbox_external_egress_profile_max_ttl_seconds = 300
     opensandbox_external_egress_profile_max_issued_age_seconds = 120
@@ -1022,6 +1031,20 @@ class OpenSandboxSettings:
 
 class ExternalEgressCapabilitySettings(OpenSandboxSettings):
     """Source-test settings for the required OpenSandbox runsc gateway profile."""
+
+
+class InternalTestOpenSandboxSettings(OpenSandboxSettings):
+    deployment_environment = "test"
+    sandbox_security_profile = "internal-test"
+    sandbox_egress_proof_signing_key = ""
+    opensandbox_expected_network_mode = "bridge"
+    opensandbox_external_egress_capability_url = ""
+    opensandbox_external_egress_capability_token = ""
+    sandbox_callback_base_url = "http://host.docker.internal:8020"
+    openai_base_url = "http://host.docker.internal:18043/openai/v1"
+    openai_api_key = "test-newapi-token"
+    anthropic_base_url = "http://host.docker.internal:18043/anthropic"
+    anthropic_auth_token = "test-anthropic-token"
 
 
 
@@ -1044,6 +1067,7 @@ def external_egress_capability_profile(
         "provider": "opensandbox",
         "opensandbox_endpoint": "http://opensandbox.local:8080",
         "runtime_identity": "runsc",
+        "network_mode": "none",
         "ai_platform_runtime_subject": "runtime-subject-a",
         "gateway_policy_subject": "gateway-policy-subject-a",
         "callback_boundary_subject": "callback-boundary-subject-a",
@@ -1066,6 +1090,78 @@ def external_egress_capability_profile(
             hashlib.sha256,
         ).hexdigest()
     return profile
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_rejects_direct_mode_without_credential_broker(
+    monkeypatch,
+) -> None:
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class DirectSettings(InternalTestOpenSandboxSettings):
+        opensandbox_use_server_proxy = False
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: DirectSettings())
+
+    with pytest.raises(
+        container_provider.OpenSandboxCapabilityAdmissionError,
+        match="server proxy is required",
+    ):
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_admits_signed_internal_test_bridge_profile(monkeypatch) -> None:
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class BridgeSettings(ExternalEgressCapabilitySettings):
+        opensandbox_expected_network_mode = "bridge"
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: BridgeSettings())
+    lease = await opensandbox_provider(
+        capability_profile_fetcher=lambda *_args: external_egress_capability_profile(
+            profile_id="s72-internal-test-runsc-bridge-v1",
+            network_mode="bridge",
+        )
+    ).create_or_reuse(request(), workspace())
+
+    assert lease.labels["ai-platform.external_egress.network_mode"] == "bridge"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_id", "network_mode", "message"),
+    (
+        ("s72-internal-test-runsc-bridge-v1", "none", "network mode drift"),
+        ("profile-a", "bridge", "internal-test profile"),
+    ),
+)
+async def test_opensandbox_provider_rejects_bridge_profile_drift(
+    monkeypatch,
+    profile_id: str,
+    network_mode: str,
+    message: str,
+) -> None:
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class BridgeSettings(ExternalEgressCapabilitySettings):
+        opensandbox_expected_network_mode = "bridge"
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: BridgeSettings())
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match=message):
+        await opensandbox_provider(
+            capability_profile_fetcher=lambda *_args: external_egress_capability_profile(
+                profile_id=profile_id,
+                network_mode=network_mode,
+            )
+        ).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
 
 
 def opensandbox_provider(
@@ -1092,13 +1188,6 @@ def opensandbox_provider(
         identity_probe=identity_probe
         or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
         capability_profile_fetcher=capability_profile_fetcher or (lambda *_args: external_egress_capability_profile()),
-        authoritative_attestation_probe=lambda _capability, runtime_request, sandbox_id, info: (
-            isinstance(info, dict)
-            and info.get("id") == sandbox_id
-            and info.get("metadata", {}).get("ai-platform.tenant_id") == runtime_request.tenant_id
-            and info.get("metadata", {}).get("ai-platform.run_id") == runtime_request.run_id
-            and info.get("metadata", {}).get("ai-platform.attempt_id") == runtime_request.attempt_id
-        ),
         utcnow=utcnow or (lambda: TEST_CAPABILITY_NOW),
     )
 
@@ -1615,18 +1704,319 @@ def test_opensandbox_workspace_file_read_rejects_ancestor_directory_drift(monkey
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_governed_egress_fails_closed_without_authoritative_topology_attestation(monkeypatch):
+async def test_opensandbox_real_create_path_does_not_require_custom_attestation(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    health_calls = []
+    provider = container_provider.OpenSandboxContainerProvider(
+        sandbox_class=FakeOpenSandbox,
+        sandbox_manager_class=FakeOpenSandboxManager,
+        connection_config_class=FakeConnectionConfig,
+        file_class=FakeOpenSandboxFile,
+        directory_entry_class=FakeOpenSandboxDirectoryListEntry,
+        host_class=FakeOpenSandboxHost,
+        volume_class=FakeOpenSandboxVolume,
+        network_policy_class=FakeOpenSandboxNetworkPolicy,
+        network_rule_class=FakeOpenSandboxNetworkRule,
+        health_probe=lambda *args: health_calls.append(args) or True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+        capability_profile_fetcher=lambda *_args: external_egress_capability_profile(),
+        utcnow=lambda: TEST_CAPABILITY_NOW,
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.provider == "opensandbox"
+    assert lease.container_id == "osb-run-a"
+    assert FakeOpenSandbox.created
+    assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
+    assert health_calls
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_direct_create_readback_health_identity_and_stop(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    settings = InternalTestOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    health_calls: list[tuple[Any, ...]] = []
+    identity_calls: list[tuple[Any, ...]] = []
+
+    def forbidden_capability_fetch(*_args: Any) -> dict[str, Any]:
+        raise AssertionError("internal-test direct mode must not fetch a gateway capability")
+
+    provider = opensandbox_provider(
+        health_probe=lambda *args: health_calls.append(args) or True,
+        identity_probe=lambda *args: identity_calls.append(args) or {"uid": 10001, "gid": 10001},
+        capability_profile_fetcher=forbidden_capability_fetch,
+    )
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.provider == "opensandbox"
+    assert lease.container_id == "osb-run-a"
+    assert lease.labels["ai-platform.security_profile"] == "internal-test"
+    assert lease.labels["ai-platform.internal_test.profile"] == "official-opensandbox-direct-v1"
+    assert lease.labels["ai-platform.internal_test.network_mode"] == "bridge"
+    assert lease.labels["ai-platform.executor.requested_image_digest"] == settings.opensandbox_executor_image_digest
+    assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
+    assert health_calls and identity_calls
+    assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["env"]
+    assert "MODEL_CATALOG_JSON" not in FakeOpenSandbox.created[0]["env"]
+
+    await provider.validate_for_dispatch(lease, request(), workspace())
+
+    assert FakeOpenSandbox.instances[lease.container_id].info_calls == 2
+    assert len(health_calls) == len(identity_calls) == 2
+
+    stopped = await provider.stop(lease, reason="internal_test_acceptance")
+
+    assert stopped.status == "stopped"
+    assert FakeOpenSandbox.instances[lease.container_id].killed is True
+    assert lease.container_id not in provider._sandboxes
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_accepts_exact_local_executor_image_id(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    local_image_id = "sha256:" + "c" * 64
+
+    class LocalImageSettings(InternalTestOpenSandboxSettings):
+        opensandbox_executor_image = local_image_id
+        opensandbox_executor_image_digest = local_image_id
+
+    settings = LocalImageSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     provider = opensandbox_provider()
-    provider._authoritative_attestation_probe = None
 
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="unsupported"):
-        await provider.create_or_reuse(request(), workspace())
+    lease = await provider.create_or_reuse(request(), workspace())
 
-    assert FakeOpenSandbox.instances == {}
+    assert FakeOpenSandbox.created[0]["image"] == local_image_id
+    assert lease.labels["ai-platform.executor.requested_image"] == local_image_id
+    assert lease.labels["ai-platform.executor.requested_image_digest"] == local_image_id
+
+    await provider.stop(lease, reason="internal_test_acceptance")
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    (
+        ("deployment_environment", "production"),
+        ("sandbox_container_provider", "docker"),
+        ("sandbox_security_profile", "governed"),
+        ("opensandbox_expected_network_mode", "none"),
+    ),
+)
+def test_opensandbox_rejects_local_executor_image_id_outside_exact_internal_test_contour(
+    attribute,
+    value,
+):
+    from app.runtime.sandbox.opensandbox_policy import (
+        OpenSandboxProfileConfigurationError,
+        requested_opensandbox_image,
+    )
+
+    local_image_id = "sha256:" + "d" * 64
+    settings = InternalTestOpenSandboxSettings()
+    settings.opensandbox_executor_image = local_image_id
+    settings.opensandbox_executor_image_digest = local_image_id
+    setattr(settings, attribute, value)
+
+    with pytest.raises(OpenSandboxProfileConfigurationError, match="immutable sha256 reference"):
+        requested_opensandbox_image(settings)
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_explicitly_forwards_model_credentials(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class CredentialForwardingSettings(InternalTestOpenSandboxSettings):
+        opensandbox_internal_test_forward_model_credentials = True
+        model_catalog_json = '[{"id":"deepseek-v4-flash","api_key":"catalog-secret"}]'
+
+    settings = CredentialForwardingSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    environment = FakeOpenSandbox.created[0]["env"]
+    assert environment["OPENAI_API_KEY"] == settings.openai_api_key
+    assert environment["ANTHROPIC_AUTH_TOKEN"] == settings.anthropic_auth_token
+    assert "ANTHROPIC_API_KEY" not in environment
+    assert "MODEL_CATALOG_JSON" not in environment
+    assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["metadata"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["metadata"]
+
+    await provider.stop(lease, reason="internal_test_acceptance")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("openai_base_url", "http://user:secret@host.docker.internal:18043/openai/v1"),
+        ("anthropic_base_url", "http://host.docker.internal:18043/anthropic?token=secret"),
+    ],
+)
+async def test_opensandbox_internal_test_rejects_model_base_embedded_credentials(
+    monkeypatch,
+    attribute,
+    value,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = InternalTestOpenSandboxSettings()
+    setattr(settings, attribute, value)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    with pytest.raises(
+        container_provider.OpenSandboxCapabilityAdmissionError,
+        match="internal-test model base is invalid",
+    ):
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("openai_base_url", "http://broker.internal/openai/v1/test-newapi-token"),
+        ("anthropic_base_url", "http://test-anthropic-token.broker.internal/anthropic"),
+    ],
+)
+async def test_opensandbox_internal_test_rejects_raw_model_credential_in_model_base(
+    monkeypatch,
+    attribute,
+    value,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = InternalTestOpenSandboxSettings()
+    setattr(settings, attribute, value)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    with pytest.raises(
+        container_provider.OpenSandboxCapabilityAdmissionError,
+        match="environment contains a raw model credential",
+    ):
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_dispatch_digest_drift_fails_closed_and_retains_tracking(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = InternalTestOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    lease.labels["ai-platform.executor.requested_image_digest"] = "sha256:" + "b" * 64
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError):
+        await provider.validate_for_dispatch(lease, request(), workspace())
+
+    assert FakeOpenSandbox.instances[lease.container_id].killed is False
+    assert provider._sandboxes[lease.container_id] is FakeOpenSandbox.instances[lease.container_id]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_orphan_cleanup_requires_exact_direct_runtime_evidence(monkeypatch):
+    from opensandbox.models.sandboxes import PaginationInfo
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
+    from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
+
+    settings = InternalTestOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    labels = normalize_opensandbox_metadata(
+        internal_test_opensandbox_lease_labels(
+            request(attempt_id="attempt-a"),
+            settings,
+            executor_identity_labels={},
+            skill_mount_labels={},
+        )
+    )
+    exact = FakeOpenSandbox(sandbox_id="osb-exact", metadata=labels, state="FAILED")
+    drifted = FakeOpenSandbox(
+        sandbox_id="osb-drifted",
+        metadata={**labels, "ai-platform.runtime_subject": "foreign-runtime"},
+        state="FAILED",
+    )
+
+    class Manager:
+        killed: list[str] = []
+
+        @classmethod
+        def create(cls, **_kwargs):
+            return cls()
+
+        async def close(self):
+            return None
+
+        async def list_sandbox_infos(self, filter):
+            values = [
+                sandbox
+                for sandbox in (exact, drifted)
+                if all(sandbox.metadata.get(key) == value for key, value in (filter.metadata or {}).items())
+            ]
+            return SimpleNamespace(
+                sandbox_infos=values,
+                pagination=PaginationInfo(
+                    page=filter.page,
+                    page_size=filter.page_size,
+                    total_items=len(values),
+                    total_pages=1,
+                    has_next_page=False,
+                ),
+            )
+
+        async def kill_sandbox(self, sandbox_id):
+            type(self).killed.append(sandbox_id)
+
+    provider = _paged_opensandbox_provider(Manager)
+    cleanup_filters = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral",
+        "security_profile": "internal-test",
+    }
+
+    results = await provider.cleanup_orphan_containers(cleanup_filters, reason="orphan_reconciliation")
+
+    assert [result.container_id for result in results] == ["osb-exact"]
+    assert Manager.killed == ["osb-exact"]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_direct_health_failure_cleans_real_sandbox(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = InternalTestOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    with pytest.raises(container_provider.ExecutorHealthTimeoutError):
+        await opensandbox_provider(
+            health_probe=lambda *_args: False,
+            capability_profile_fetcher=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("capability fetch must not run")
+            ),
+        ).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.instances["osb-run-a"].killed is True
 
 
 @pytest.mark.asyncio
@@ -2854,7 +3244,7 @@ def test_create_container_provider_rejects_retired_profile_before_backend_select
         )(),
     )
 
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="not governed"):
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="selection is invalid"):
         container_provider.create_container_provider()
 
 
@@ -2868,7 +3258,6 @@ def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown
     provider = container_provider.create_container_provider()
 
     assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
-    assert provider._authoritative_attestation_probe is not None
     assert container_provider.create_container_provider("opensandbox") is provider
     with pytest.raises(ValueError, match="Unknown sandbox container provider"):
         container_provider.create_container_provider("opensandbox://token@internal")
@@ -2876,32 +3265,9 @@ def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown
     container_provider.reset_container_provider_cache()
 
 
-@pytest.mark.asyncio
-async def test_create_container_provider_opensandbox_fails_closed_without_factory_attestor(monkeypatch):
+def test_create_container_provider_selects_docker():
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     container_provider.reset_container_provider_cache()
-    settings = OpenSandboxSettings()
-    settings.opensandbox_api_key = ""
-    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-
-    provider = container_provider.create_container_provider()
-
-    assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
-    assert provider._authoritative_attestation_probe is None
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="unsupported"):
-        await provider.create_or_reuse(request(), workspace())
-
-    container_provider.reset_container_provider_cache()
-
-
-def test_create_container_provider_docker_does_not_construct_opensandbox_attestor(monkeypatch):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    container_provider.reset_container_provider_cache()
-    monkeypatch.setattr(
-        container_provider,
-        "build_opensandbox_attestation_probe",
-        lambda _settings: pytest.fail("Docker factory must not construct an OpenSandbox attestor"),
-    )
 
     provider = container_provider.create_container_provider("docker")
 
@@ -3469,7 +3835,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
 
     assert native_subjects[0]["execution_strategy"] == "sdk_restricted"
     assert native_subjects[0]["allowed_skill_names"] == ["native-review"]
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
+    assert [created["name"] for created in fake.created] == [native_tool_name(), "executor-exec-run-a"]
     sidecar, executor = fake.created
     assert sidecar["network_mode"] == "none"
     assert "network_disabled" not in sidecar
@@ -3519,7 +3885,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     }
     assert all("AUTH" not in key and "CALLBACK" not in key for key in sidecar["environment"])
 
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[native_tool_name()]
     primary = fake.containers_by_name[lease.container_name]
     assert fake.api.exec_create_calls == [
         (
@@ -3542,7 +3908,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert native.removed is True
     assert primary.removed is True
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
+    assert [created["name"] for created in fake.created] == [native_tool_name(), "executor-exec-run-a"]
 
 
 @pytest.mark.asyncio
@@ -3586,8 +3952,8 @@ async def test_docker_provider_sanitizes_native_sidecar_admission_failure_withou
     assert str(workspace_path) not in "".join(
         traceback.format_exception(exc_info.value)
     )
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
-    assert fake.containers_by_name["native-tool-run-a"].removed is True
+    assert [created["name"] for created in fake.created] == [native_tool_name()]
+    assert fake.containers_by_name[native_tool_name()].removed is True
     assert provider._leases == {}
 
 
@@ -3615,9 +3981,15 @@ async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_r
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
-    socket_parent = provider._native_tool_socket_host_path(leased_workspace).parent
+    socket_parent = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    ).parent
     occupied_path = socket_parent / "native-tool.sock"
-    assert occupied_path == provider._native_tool_socket_host_path(leased_workspace)
+    assert occupied_path == provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    )
     socket_parent.mkdir(parents=True)
     occupied_path.write_text("owned by another subject", encoding="utf-8")
     native_subjects = native_tool_subjects()
@@ -3659,7 +4031,10 @@ async def test_docker_provider_rejects_preexisting_socket_directory_with_wrong_o
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
-    socket_dir = provider._native_tool_socket_host_path(leased_workspace).parent
+    socket_dir = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    ).parent
     socket_dir.mkdir(parents=True)
     expected_stat = type(
         "ExpectedRuntimeWorkspaceStat",
@@ -3744,9 +4119,9 @@ async def test_docker_provider_native_probe_timeout_is_admission_failure_without
     assert exc_info.value.error_code == "native_tool_admission_failed"
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert len(probe_calls) == 1
-    assert probe_calls[0] is fake.containers_by_name["native-tool-run-a"]
-    assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
-    assert fake.containers_by_name["native-tool-run-a"].removed is True
+    assert probe_calls[0] is fake.containers_by_name[native_tool_name()]
+    assert [created["name"] for created in fake.created] == [native_tool_name()]
+    assert fake.containers_by_name[native_tool_name()].removed is True
     assert provider._leases == {}
 
 
@@ -3785,7 +4160,7 @@ async def test_docker_provider_bounds_stuck_native_exec_await_and_cleans_sidecar
 
         assert probe_started.is_set()
         assert probe_finished.is_set() is False
-        assert fake.containers_by_name["native-tool-run-a"].removed is True
+        assert fake.containers_by_name[native_tool_name()].removed is True
         assert provider._leases == {}
     finally:
         release_probe.set()
@@ -3838,7 +4213,7 @@ async def test_docker_provider_reuse_cancellation_cleans_runtime_pair_while_exec
         health_probe=lambda executor_url, timeout_seconds: True,
     )
     lease = await provider.create_or_reuse(selected_request, leased_workspace)
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[native_tool_name()]
     primary = fake.containers_by_name[lease.container_name]
     provider._native_tool_probe = stuck_probe
     task = asyncio.create_task(
@@ -3886,12 +4261,18 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     )
     workspace_path = _workspace_path_for_native_socket_bytes(workspace_socket_path_bytes)
     leased_workspace = workspace(workspace_host_path=workspace_path)
-    host_socket_path = provider._native_tool_socket_host_path(leased_workspace)
+    host_socket_path = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    )
     host_socket_path_bytes = len(os.fsencode(str(host_socket_path)))
     monkeypatch.setattr(
         provider,
         "_prepare_native_tool_socket",
-        lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+        lambda selected_workspace, *, attempt_id: provider._native_tool_socket_host_path(
+            selected_workspace,
+            attempt_id=attempt_id,
+        ),
     )
     monkeypatch.setattr(
         "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
@@ -3904,7 +4285,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         leased_workspace,
     )
 
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[native_tool_name()]
     executor = fake.containers_by_name[lease.container_name]
     token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
     serialized_exec = repr(fake.api.exec_create_calls)
@@ -3963,8 +4344,14 @@ def test_docker_provider_native_socket_paths_are_scope_unique_and_bounded(monkey
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     provider = DockerContainerProvider(docker_client_factory=FakeDockerClient)
 
-    first = provider._native_tool_socket_host_path(workspace(run_id="run-a"))
-    second = provider._native_tool_socket_host_path(workspace(run_id="run-b"))
+    first = provider._native_tool_socket_host_path(
+        workspace(run_id="run-a"),
+        attempt_id="attempt-a",
+    )
+    second = provider._native_tool_socket_host_path(
+        workspace(run_id="run-a"),
+        attempt_id="attempt-b",
+    )
 
     assert first != second
     assert first.name == second.name == "native-tool.sock"
@@ -4046,7 +4433,7 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
         request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
         leased_workspace,
     )
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[native_tool_name()]
     socket_dir = Path(next(
         host_path
         for host_path, mount in native.volumes.items()
@@ -4055,9 +4442,15 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
     actual_socket_path = socket_dir / Path(
         native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]
     ).name
-    assert actual_socket_path == provider._native_tool_socket_host_path(leased_workspace)
+    assert actual_socket_path == provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    )
     assert socket_dir.is_dir()
     actual_socket_path.write_text("test socket leaf", encoding="utf-8")
+    (socket_dir / "untrusted-residue").write_text("remove me", encoding="utf-8")
+    (socket_dir / "nested").mkdir()
+    (socket_dir / "nested" / "payload").write_text("remove me too", encoding="utf-8")
     unrelated_scope = socket_dir.parent / "unrelated-scope"
     unrelated_scope.mkdir(exist_ok=True)
     monkeypatch.setattr(container_provider.stat, "S_ISSOCK", lambda _mode: True)
@@ -4068,6 +4461,296 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
     assert actual_socket_path.exists() is False
     assert socket_dir.exists() is False
     assert unrelated_scope.is_dir()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["lookup-error", "label-mismatch"])
+async def test_docker_provider_stop_preserves_native_lease_when_sidecar_absence_is_unconfirmed(
+    monkeypatch,
+    tmp_path,
+    failure,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    short_socket_root = Path(".pytest-tmp") / (
+        "sidecar-readback-" + hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]
+    )
+    settings = container_provider.get_settings().model_copy(
+        update={
+            "sandbox_workspace_root": str(short_socket_root),
+            "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
+            "sandbox_egress_policy_enabled": True,
+            "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
+            "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+            "ai_platform_runtime_commit": "a" * 40,
+        }
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fake = FakeDockerClient()
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        native_tool_probe=lambda _container: True,
+    )
+    lease = await provider.create_or_reuse(
+        request(skill_ids=["native-review"], tool_policy_subjects=native_tool_subjects()),
+        leased_workspace,
+    )
+    native_name = container_provider._native_tool_container_name(
+        lease.run_id,
+        str(lease.labels["ai-platform.attempt_id"]),
+    )
+    native = fake.containers_by_name[native_name]
+    original_labels = dict(native.labels)
+    original_get = fake.containers.get
+    socket_dir = provider._native_tool_socket_host_path(lease).parent
+    assert socket_dir.is_dir()
+    if failure == "label-mismatch":
+        native.labels["ai-platform.attempt_id"] = "foreign-attempt"
+        native.attrs["Config"]["Labels"] = native.labels
+    else:
+        def fail_native_lookup(name):
+            if name == native_name:
+                raise RuntimeError("temporary Docker lookup failure")
+            return original_get(name)
+
+        monkeypatch.setattr(fake.containers, "get", fail_native_lookup)
+
+    result = await provider.stop(lease, reason="test-complete")
+
+    assert result.status == "failed"
+    assert provider._leases[lease.container_id] is lease
+    assert socket_dir.is_dir()
+    assert native.removed is False
+
+    monkeypatch.setattr(fake.containers, "get", original_get)
+    native.labels.clear()
+    native.labels.update(original_labels)
+    native.attrs["Config"]["Labels"] = native.labels
+    cleanup = await provider.stop(lease, reason="test-cleanup")
+    assert cleanup.status == "stopped"
+    assert socket_dir.exists() is False
+
+
+def test_native_tool_absence_requires_authoritative_container_lookup():
+    import app.runtime.sandbox.container_provider as container_provider
+
+    assert not container_provider._is_authoritative_container_not_found_error(
+        RuntimeError("container not found")
+    )
+
+
+def test_native_tool_socket_removal_fails_closed_without_attempt_identity():
+    import app.runtime.sandbox.container_provider as container_provider
+
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=FakeDockerClient
+    )
+
+    assert provider._remove_native_tool_socket(workspace()) is False
+    assert container_provider._is_authoritative_container_not_found_error(
+        RuntimeError(
+            "404 Client Error for http://docker/containers/native-tool-run/json: Not Found"
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_committed_native_sidecar_after_create_response_loss(
+    monkeypatch,
+    tmp_path,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    socket_root = Path(".pytest-tmp") / (
+        "i1066-native-response-" + hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]
+    )
+    settings = container_provider.get_settings().model_copy(
+        update=vars(
+            governed_docker_settings(
+                sandbox_workspace_root=str(socket_root)
+            )
+        )
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    leased_workspace = workspace(workspace_host_path=str(tmp_path / "workspace"))
+    monkeypatch.setattr(
+        container_provider,
+        "_prepare_trusted_skill_mount",
+        lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
+    )
+    fake = FakeDockerClient()
+    original_create = fake.containers.create
+
+    def create_then_lose_response(**kwargs):
+        created = original_create(**kwargs)
+        if kwargs["name"] == native_tool_name():
+            raise RuntimeError("native create response lost")
+        return created
+
+    monkeypatch.setattr(fake.containers, "create", create_then_lose_response)
+    provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(container_provider.NativeToolAdmissionError):
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_tool_subjects()),
+            leased_workspace,
+        )
+
+    native = fake.containers_by_name[native_tool_name()]
+    socket_dir = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    ).parent
+    assert native.removed is True
+    assert socket_dir.exists() is False
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_preserves_native_socket_when_create_response_lookup_is_uncertain(
+    monkeypatch,
+    tmp_path,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    socket_root = Path(".pytest-tmp") / (
+        "i1066-native-uncertain-" + hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]
+    )
+    settings = container_provider.get_settings().model_copy(
+        update=vars(
+            governed_docker_settings(
+                sandbox_workspace_root=str(socket_root)
+            )
+        )
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    leased_workspace = workspace(workspace_host_path=str(tmp_path / "workspace"))
+    monkeypatch.setattr(
+        container_provider,
+        "_prepare_trusted_skill_mount",
+        lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
+    )
+    fake = FakeDockerClient()
+    original_create = fake.containers.create
+    original_get = fake.containers.get
+    response_lost = False
+
+    def create_then_lose_response(**kwargs):
+        nonlocal response_lost
+        created = original_create(**kwargs)
+        if kwargs["name"] == native_tool_name():
+            response_lost = True
+            raise RuntimeError("native create response lost")
+        return created
+
+    def uncertain_lookup(name):
+        if response_lost and name == native_tool_name():
+            raise RuntimeError("temporary Docker lookup failure")
+        return original_get(name)
+
+    monkeypatch.setattr(fake.containers, "create", create_then_lose_response)
+    monkeypatch.setattr(fake.containers, "get", uncertain_lookup)
+    provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError):
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_tool_subjects()),
+            leased_workspace,
+        )
+
+    native = fake.containers_by_name[native_tool_name()]
+    socket_dir = provider._native_tool_socket_host_path(
+        leased_workspace,
+        attempt_id="qat-test-attempt",
+    ).parent
+    assert native.removed is False
+    assert socket_dir.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_stale_attempt_stop_preserves_current_attempt_resources(
+    monkeypatch,
+    tmp_path,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    settings = container_provider.get_settings().model_copy(
+        update={"sandbox_workspace_root": str(tmp_path / "runtime")}
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    leased_workspace = workspace(
+        workspace_host_path=str(tmp_path / "workspace"),
+        prepare_staged_skills=False,
+    )
+    stale_request = request(attempt_id="attempt-a")
+    current_request = request(attempt_id="attempt-b")
+    stale_lease = container_provider._lease_from_request(
+        "docker",
+        stale_request,
+        leased_workspace,
+        executor_url="http://127.0.0.1:18000",
+    )
+    current_lease = container_provider._lease_from_request(
+        "docker",
+        current_request,
+        leased_workspace,
+        executor_url="http://127.0.0.1:18000",
+    )
+    stale_lease.labels["ai-platform.native_tool_required"] = "true"
+    current_lease.labels["ai-platform.native_tool_required"] = "true"
+
+    fake = FakeDockerClient()
+    provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
+    current_sidecar_name = container_provider._native_tool_container_name(
+        current_request.run_id,
+        current_request.attempt_id,
+    )
+    current_sidecar = FakeDockerContainer(
+        image="ai-platform-executor:dev",
+        name=current_sidecar_name,
+        detach=True,
+        labels=container_provider._native_tool_labels(
+            current_request,
+            leased_workspace,
+            None,
+        ),
+        volumes={},
+        environment={},
+    )
+    current_primary = FakeDockerContainer(
+        image="ai-platform-executor:dev",
+        name=current_lease.container_name,
+        detach=True,
+        labels=current_lease.platform_labels(),
+        volumes={},
+        environment={},
+    )
+    fake.containers_by_name[current_sidecar.name] = current_sidecar
+    fake.containers_by_name[current_primary.name] = current_primary
+
+    current_network_name = container_provider._governed_docker_network_name(current_lease)
+    stale_network_name = container_provider._governed_docker_network_name(stale_lease)
+    assert stale_network_name != current_network_name
+    fake.networks.create(
+        current_network_name,
+        labels=container_provider._governed_docker_network_labels(current_lease),
+    )
+    current_socket = provider._native_tool_socket_host_path(current_lease)
+    stale_socket = provider._native_tool_socket_host_path(stale_lease)
+    assert stale_socket != current_socket
+    current_socket.parent.mkdir(parents=True)
+    current_socket.write_text("current attempt socket", encoding="utf-8")
+
+    await provider.stop(stale_lease, reason="stale-attempt-cleanup")
+
+    assert current_primary.removed is False
+    assert current_sidecar.removed is False
+    assert current_socket.read_text(encoding="utf-8") == "current attempt socket"
+    assert current_network_name in fake.networks_by_name
 
 
 @pytest.mark.asyncio
@@ -4090,7 +4773,10 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
     monkeypatch.setattr(
         provider,
         "_prepare_native_tool_socket",
-        lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+        lambda selected_workspace, *, attempt_id: provider._native_tool_socket_host_path(
+            selected_workspace,
+            attempt_id=attempt_id,
+        ),
     )
     monkeypatch.setattr(
         "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
@@ -4129,7 +4815,7 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
             leased_workspace,
         )
 
-    native = fake.containers_by_name["native-tool-run-a"]
+    native = fake.containers_by_name[native_tool_name()]
     token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
     diagnostic = str(exc_info.value)
     rendered_exception = "".join(traceback.format_exception(exc_info.value))
@@ -4145,14 +4831,17 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure(tmp_path):
+async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure(
+    monkeypatch,
+    tmp_path,
+):
     from app.runtime.sandbox.container_provider import ContainerCleanupFailedError, DockerContainerProvider
 
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     old_sidecar = FakeDockerContainer(
         image="ai-platform-executor:dev",
-        name="native-tool-run-a",
+        name=native_tool_name(),
         detach=True,
         labels={
             "ai-platform.owner": "sandbox-native-tool",
@@ -4161,6 +4850,7 @@ async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure
             "ai-platform.user_id": "user-a",
             "ai-platform.session_id": "session-a",
             "ai-platform.run_id": "run-a",
+            "ai-platform.attempt_id": "qat-test-attempt",
         },
         volumes={},
         environment={},
@@ -4170,6 +4860,18 @@ async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure
     fake = FakeDockerClient()
     fake.containers_by_name[old_sidecar.name] = old_sidecar
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    existing_socket = tmp_path / "existing-native-tool.sock"
+    existing_socket.write_text("existing listener", encoding="utf-8")
+    socket_prepare_called = False
+
+    def destructive_socket_prepare(_workspace, *, attempt_id):
+        nonlocal socket_prepare_called
+        assert attempt_id == "qat-test-attempt"
+        socket_prepare_called = True
+        existing_socket.unlink()
+        return existing_socket
+
+    monkeypatch.setattr(provider, "_prepare_native_tool_socket", destructive_socket_prepare)
     native_subjects = [
         {
             "identity": "Skill",
@@ -4200,6 +4902,8 @@ async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure
     assert exc_info.value.error_code == "container_cleanup_failed"
     assert str(exc_info.value) == "native tool container cleanup could not be confirmed"
     assert old_sidecar.removed is False
+    assert socket_prepare_called is False
+    assert existing_socket.read_text(encoding="utf-8") == "existing listener"
     assert fake.created == []
 
 
@@ -4326,6 +5030,7 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
     assert environment["ANTHROPIC_AUTH_TOKEN"] == "test-anthropic-token"
     assert environment["OPENAI_API_KEY"] == "test-newapi-token"
     assert environment["CLAUDE_AGENT_PERMISSION_MODE"] == "bypassPermissions"
+    assert environment["CLAUDE_AGENT_SDK_TIMEOUT_SECONDS"] == "120"
     assert environment["CLAUDE_AGENT_ALLOWED_TOOLS"] == "Read,Glob,LS,Bash"
     assert environment["CLAUDE_AGENT_WORKSPACE_ROOT"] == "/workspace"
     assert environment["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer"
@@ -4796,7 +5501,6 @@ def _paged_opensandbox_provider(manager_class):
         health_probe=lambda *_args: True,
         identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
         capability_profile_fetcher=lambda *_args: external_egress_capability_profile(),
-        authoritative_attestation_probe=lambda *_args: True,
         utcnow=lambda: TEST_CAPABILITY_NOW,
     )
 
@@ -5264,28 +5968,6 @@ async def test_opensandbox_provider_errors_do_not_leak_secret_or_host_path(monke
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_attestation_failure_redacts_private_transport_payload(monkeypatch):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    private_detail = f"opensandbox-secret {workspace().workspace_host_path} private-attestation-payload"
-
-    def leaking_probe(*_args):
-        raise RuntimeError(private_detail)
-
-    provider = opensandbox_provider()
-    provider._authoritative_attestation_probe = leaking_probe
-
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError) as exc_info:
-        await provider.create_or_reuse(request(), workspace())
-
-    assert str(exc_info.value) == "OpenSandbox governed egress authoritative attestation failed"
-    assert "opensandbox-secret" not in str(exc_info.value)
-    assert workspace().workspace_host_path not in str(exc_info.value)
-    assert "private-attestation-payload" not in str(exc_info.value)
-
-
-@pytest.mark.asyncio
 async def test_opensandbox_provider_keeps_endpoint_headers_private_and_uses_them_for_health_probe(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -5440,6 +6122,7 @@ async def test_docker_provider_cached_lease_revalidates_container_scope_labels()
 
 @pytest.mark.asyncio
 async def test_docker_provider_rejects_cached_reuse_for_same_run_under_different_current_scope():
+    from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()
@@ -5448,6 +6131,8 @@ async def test_docker_provider_rejects_cached_reuse_for_same_run_under_different
         health_probe=lambda executor_url, timeout_seconds: True,
     )
     first = await provider.create_or_reuse(request(), workspace())
+    first_network = container_provider._governed_docker_network_name(first)
+    assert len(fake.network_create_calls) == 1
 
     with pytest.raises(ContainerStartFailedError, match="cached lease scope mismatch"):
         await provider.create_or_reuse(
@@ -5467,6 +6152,56 @@ async def test_docker_provider_rejects_cached_reuse_for_same_run_under_different
     container = fake.containers_by_name[first.container_name]
     assert container.stopped is True
     assert container.removed is True
+    assert first_network not in fake.networks_by_name
+    assert len(fake.network_create_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_concurrent_attempt_preserves_untracked_current_container_and_cleans_own_network():
+    from app.runtime.sandbox import container_provider
+
+    leased_workspace = workspace()
+    current_request = request(attempt_id="attempt-a")
+    competing_request = request(attempt_id="attempt-b")
+    current_lease = container_provider._lease_from_request(
+        "docker",
+        current_request,
+        leased_workspace,
+        executor_url="http://127.0.0.1:18000",
+    )
+    competing_lease = container_provider._lease_from_request(
+        "docker",
+        competing_request,
+        leased_workspace,
+        executor_url="http://127.0.0.1:18000",
+    )
+    current_primary = FakeDockerContainer(
+        image="ai-platform-executor:dev",
+        name=current_lease.container_name,
+        detach=True,
+        labels=current_lease.platform_labels(),
+        volumes={},
+        environment={},
+    )
+    current_primary.status = "running"
+    fake = FakeDockerClient()
+    fake.containers_by_name[current_primary.name] = current_primary
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+    )
+    competing_network = container_provider._governed_docker_network_name(competing_lease)
+
+    with pytest.raises(
+        container_provider.ContainerStartFailedError,
+        match="deterministic Docker container is occupied",
+    ):
+        await provider.create_or_reuse(competing_request, leased_workspace)
+
+    assert current_primary.removed is False
+    assert current_primary.stopped is False
+    assert competing_network not in fake.networks_by_name
+    assert provider._leases == {}
 
 
 @pytest.mark.asyncio
@@ -6021,9 +6756,15 @@ async def test_docker_post_create_proof_binds_authoritative_container_id(monkeyp
 async def test_docker_production_factory_uses_authoritative_governed_egress_admission(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     fake = FakeDockerClient()
+    docker_client_options = {}
+
+    def docker_from_env(**kwargs):
+        docker_client_options.update(kwargs)
+        return fake
+
     container_provider.reset_container_provider_cache()
     monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
-    monkeypatch.setattr(container_provider, "docker", SimpleNamespace(from_env=lambda: fake))
+    monkeypatch.setattr(container_provider, "docker", SimpleNamespace(from_env=docker_from_env))
     try:
         provider = container_provider.create_container_provider("docker")
         assert isinstance(provider, container_provider.DockerContainerProvider)
@@ -6033,6 +6774,7 @@ async def test_docker_production_factory_uses_authoritative_governed_egress_admi
         lease = await provider.create_or_reuse(request(), workspace())
 
         assert lease.container_id == fake.containers_by_name[lease.container_name].id
+        assert docker_client_options["timeout"] >= 1.0
         assert fake.created[0]["network"].startswith("ai-platform-sandbox-egress-v2-")
     finally:
         container_provider.reset_container_provider_cache()
@@ -6841,6 +7583,80 @@ async def test_docker_provider_stop_calls_container_stop_and_removes_lease():
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_stop_runs_blocking_sdk_cleanup_off_event_loop(monkeypatch):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+    from app.runtime.sandbox.contracts import StopResult
+
+    provider = DockerContainerProvider(docker_client_factory=FakeDockerClient)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_stop(lease, reason):
+        started.set()
+        release.wait(timeout=1)
+        return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    monkeypatch.setattr(provider, "_stop_sync", blocking_stop)
+    lease = type("Lease", (), {"container_id": "container-a"})()
+    stop_task = asyncio.create_task(provider.stop(lease, reason="cancelled"))
+
+    assert await asyncio.to_thread(started.wait, 1) is True
+    event_loop_progressed = False
+
+    async def mark_progress():
+        nonlocal event_loop_progressed
+        await asyncio.sleep(0)
+        event_loop_progressed = True
+
+    await mark_progress()
+    assert event_loop_progressed is True
+    release.set()
+    assert (await stop_task).status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_stale_cleanup_does_not_forget_new_attempt_lease():
+    from app.runtime.sandbox.container_provider import (
+        DockerContainerProvider,
+        _lease_from_request,
+    )
+
+    provider = DockerContainerProvider(docker_client_factory=FakeDockerClient)
+    stale = _lease_from_request(
+        "docker",
+        request(),
+        workspace(),
+        executor_url="http://executor.test",
+    )
+    replacement = stale.model_copy(
+        update={
+            "run_id": "run-new",
+            "labels": {
+                **stale.labels,
+                "ai-platform.run_id": "run-new",
+                "ai-platform.attempt_id": "attempt-new",
+            },
+        }
+    )
+    provider._remember_lease(stale)
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+
+    def finish_stale_cleanup() -> None:
+        cleanup_started.set()
+        cleanup_release.wait(timeout=1)
+        provider._forget_lease(stale)
+
+    cleanup_task = asyncio.create_task(asyncio.to_thread(finish_stale_cleanup))
+    assert await asyncio.to_thread(cleanup_started.wait, 1) is True
+    provider._remember_lease(replacement)
+    cleanup_release.set()
+    await cleanup_task
+
+    assert provider._cached_lease_for_run("run-new") is replacement
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_maps_create_failure_to_start_failed():
     from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
@@ -6851,6 +7667,71 @@ async def test_docker_provider_maps_create_failure_to_start_failed():
         await provider.create_or_reuse(request(), workspace())
 
     assert exc_info.value.error_code == "container_start_failed"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_committed_primary_after_create_response_loss(monkeypatch):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    fake = FakeDockerClient()
+    original_create = fake.containers.create
+
+    def create_then_lose_response(**kwargs):
+        created = original_create(**kwargs)
+        if kwargs.get("labels", {}).get("ai-platform.owner") == "sandbox-runtime":
+            raise RuntimeError("primary create response lost")
+        return created
+
+    monkeypatch.setattr(fake.containers, "create", create_then_lose_response)
+    provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(container_provider.ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    primary = next(
+        container
+        for container in fake.containers_by_name.values()
+        if container.labels.get("ai-platform.owner") == "sandbox-runtime"
+    )
+    assert primary.removed is True
+    assert provider._leases == {}
+    assert set(fake.networks_by_name) == {"ai-platform-sandbox-egress-internal-v1"}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_tracks_primary_when_create_response_lookup_is_uncertain(monkeypatch):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    fake = FakeDockerClient()
+    original_create = fake.containers.create
+    original_get = fake.containers.get
+    submitted_name = ""
+
+    def create_then_lose_response(**kwargs):
+        nonlocal submitted_name
+        created = original_create(**kwargs)
+        if kwargs.get("labels", {}).get("ai-platform.owner") == "sandbox-runtime":
+            submitted_name = kwargs["name"]
+            raise RuntimeError("primary create response lost")
+        return created
+
+    def uncertain_lookup(name):
+        if submitted_name and name == submitted_name:
+            raise RuntimeError("temporary Docker lookup failure")
+        return original_get(name)
+
+    monkeypatch.setattr(fake.containers, "create", create_then_lose_response)
+    monkeypatch.setattr(fake.containers, "get", uncertain_lookup)
+    provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    primary = fake.containers_by_name[submitted_name]
+    assert primary.removed is False
+    assert len(provider._leases) == 1
+    assert next(iter(provider._leases.values())).run_id == "run-a"
+    assert len(fake.networks_by_name) == 2
 
 
 @pytest.mark.asyncio
@@ -7597,7 +8478,7 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
 
-    def container(*, name, owner, run_id, tenant_id="tenant-a"):
+    def container(*, name, owner, run_id, attempt_id, tenant_id="tenant-a"):
         labels = {
             "ai-platform.owner": owner,
             "ai-platform.tenant_id": tenant_id,
@@ -7605,6 +8486,7 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
             "ai-platform.user_id": "user-a",
             "ai-platform.session_id": "session-a",
             "ai-platform.run_id": run_id,
+            "ai-platform.attempt_id": attempt_id,
             "ai-platform.sandbox_mode": "ephemeral",
             "ai-platform.browser_enabled": "false",
         }
@@ -7626,21 +8508,25 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
         name="executor-paired",
         owner="sandbox-runtime",
         run_id="run-paired",
+        attempt_id="attempt-paired",
     )
     paired_native = container(
-        name="native-tool-run-paired",
+        name=native_tool_name("run-paired", "attempt-paired"),
         owner="sandbox-native-tool",
         run_id="run-paired",
+        attempt_id="attempt-paired",
     )
     orphan_native = container(
-        name="native-tool-run-orphan",
+        name=native_tool_name("run-orphan", "attempt-orphan"),
         owner="sandbox-native-tool",
         run_id="run-orphan",
+        attempt_id="attempt-orphan",
     )
     foreign_native = container(
-        name="native-tool-run-foreign",
+        name=native_tool_name("run-foreign", "attempt-foreign"),
         owner="sandbox-native-tool",
         run_id="run-foreign",
+        attempt_id="attempt-foreign",
         tenant_id="tenant-b",
     )
     fake.containers_by_name = {
@@ -7651,8 +8537,8 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
     statuses = await provider.list_runtime_containers({"tenant_id": "tenant-a"})
     assert {status.container_id for status in statuses} == {
         "exec-run-paired",
-        "native-tool-run-paired",
-        "native-tool-run-orphan",
+        native_tool_name("run-paired", "attempt-paired"),
+        native_tool_name("run-orphan", "attempt-orphan"),
     }
 
     results = await provider.cleanup_orphan_containers(
@@ -7660,7 +8546,9 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
         reason="admin_runtime",
     )
 
-    assert [result.container_id for result in results] == ["native-tool-run-orphan"]
+    assert [result.container_id for result in results] == [
+        native_tool_name("run-orphan", "attempt-orphan")
+    ]
     assert orphan_native.removed is True
     assert paired_native.removed is False
     assert foreign_native.removed is False

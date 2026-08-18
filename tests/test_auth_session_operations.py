@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app import auth_sessions
-from app.auth import AuthPrincipal
+from app.auth import AuthPrincipal, authority_checked_at_now
 from app.main import create_app
 
 
@@ -850,6 +850,7 @@ def auth_settings(**overrides):
         "ai_session_max_age_seconds": 3600,
         "ai_session_cookie_name": "ai_platform_session",
         "ai_session_cookie_secure": False,
+        "company_authority_freshness_seconds": 900,
         "auth_context_cookie_name": "ai_platform_auth_context",
         "auth_context_cookie_secure": False,
         "auth_context_lease_seconds": 30,
@@ -882,6 +883,25 @@ def install_auth_context_dependencies(monkeypatch, redis: FakeAuthRedis, setting
     return settings
 
 
+def test_browser_principal_snapshot_strictly_preserves_authority_metadata():
+    principal = AuthPrincipal(
+        "user-a",
+        "User A",
+        "default",
+        source="company-login",
+        authz_policy_version=1,
+        authority_source="company-user-info",
+        authority_checked_at=authority_checked_at_now(),
+    )
+    snapshot = auth_sessions.principal_snapshot(principal)
+
+    assert auth_sessions._valid_snapshot(snapshot) == snapshot
+    for field in ("authz_policy_version", "authority_source", "authority_checked_at"):
+        incomplete = dict(snapshot)
+        incomplete.pop(field)
+        assert auth_sessions._valid_snapshot(incomplete) is None
+
+
 def bootstrap(client: TestClient, nonce: str = "A" * 43) -> str:
     response = client.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
     assert response.status_code == 200, response.text
@@ -901,8 +921,10 @@ def install_company_login(monkeypatch, *, gate_a: threading.Event | None = None,
             "cnName": username.title(),
         }
 
-    async def fake_user_info(_work_id: str):
-        return {"roles": ["user"]}
+    async def fake_user_info(work_id: str):
+        # Match the production authority contract: role data is accepted only
+        # when the current user-info response binds itself to the login work ID.
+        return {"workId": work_id, "roles": ["user"]}
 
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
@@ -1567,7 +1589,7 @@ def test_v1_bootstrap_cannot_downgrade_a_signed_v2_cookie(monkeypatch):
 
 def test_v1_matching_context_migrates_without_extending_and_nonmatching_authenticated_v1_fails_closed(monkeypatch):
     redis = FakeAuthRedis()
-    settings = install_auth_context_dependencies(monkeypatch, redis)
+    install_auth_context_dependencies(monkeypatch, redis)
     install_company_login(monkeypatch)
     client = TestClient(create_app())
     legacy_cookie = bootstrap(client, "M" * 43)
@@ -2167,7 +2189,14 @@ async def test_oauth_callback_inversion_only_commits_newest_context_operation(mo
         await auth_sessions.commit_auth_operation(
             operation_b,
             auth_sessions.principal_snapshot(
-                AuthPrincipal("oauth-b", "OAuth B", "tenant-b", source="company-login")
+                AuthPrincipal(
+                    "oauth-b",
+                    "OAuth B",
+                    "tenant-b",
+                    source="company-login",
+                    authority_source="company-user-info",
+                    authority_checked_at=authority_checked_at_now(),
+                )
             ),
         )
     ) == "committed"
@@ -2177,7 +2206,14 @@ async def test_oauth_callback_inversion_only_commits_newest_context_operation(mo
         await auth_sessions.commit_auth_operation(
             callback_a,
             auth_sessions.principal_snapshot(
-                AuthPrincipal("oauth-a", "OAuth A", "tenant-a", source="company-login")
+                AuthPrincipal(
+                    "oauth-a",
+                    "OAuth A",
+                    "tenant-a",
+                    source="company-login",
+                    authority_source="company-user-info",
+                    authority_checked_at=authority_checked_at_now(),
+                )
             ),
         )
     ) == "superseded"
@@ -2392,7 +2428,14 @@ def test_old_principal_cookie_forces_relogin_while_trusted_headers_and_bearer_st
     settings = install_auth_context_dependencies(monkeypatch, redis)
     client = TestClient(create_app())
     legacy_token = sign_principal_session(
-        AuthPrincipal("legacy-user", "Legacy User", "default", source="company-login")
+        AuthPrincipal(
+            "legacy-user",
+            "Legacy User",
+            "default",
+            source="company-login",
+            authority_source="company-user-info",
+            authority_checked_at=authority_checked_at_now(),
+        )
     )
 
     client.cookies.set(settings.ai_session_cookie_name, legacy_token)

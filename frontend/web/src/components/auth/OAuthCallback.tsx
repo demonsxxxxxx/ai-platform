@@ -63,7 +63,7 @@ export function OAuthCallback() {
         }
 
         // 获取重定向路径
-        const redirectPath = getRedirectPath() || "/chat";
+        const redirectPath = getRedirectPath() || "/agent-market";
         clearRedirectPath();
 
         // 导航到目标页面

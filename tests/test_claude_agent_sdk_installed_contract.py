@@ -1,19 +1,21 @@
 from importlib.metadata import version
 from inspect import signature
 
-import pytest
-
 
 def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     installed_version = version("claude-agent-sdk")
-    if installed_version != "0.2.130":
-        pytest.skip(f"isolated target SDK smoke required; installed={installed_version}")
+    assert installed_version == "0.2.130"
 
     import claude_agent_sdk as sdk
+    from claude_agent_sdk.types import (
+        PreToolUseHookSpecificOutput,
+        SyncHookJSONOutput,
+    )
 
-    assert installed_version == "0.2.130"
     assert {"prompt", "options", "transport"}.issubset(signature(sdk.query).parameters)
     assert {"matcher", "hooks", "timeout"}.issubset(signature(sdk.HookMatcher).parameters)
+    assert "hookSpecificOutput" in SyncHookJSONOutput.__annotations__
+    assert "updatedInput" in PreToolUseHookSpecificOutput.__annotations__
 
     async def hook(_input, _tool_use_id, _context):
         return {}

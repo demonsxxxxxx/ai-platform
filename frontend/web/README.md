@@ -3,8 +3,7 @@
 Status: source ownership migration for GitHub issue #17.
 
 This directory contains the React/Vite frontend source used as the current
-ai-platform authenticated workbench. The 211 entry remains
-`http://10.56.0.211:18001/`, served through
+ai-platform authenticated workbench. The operator-configured frontend entry is served through
 the repository static frontend service with same-origin `/api/*` proxying to the
 ai-platform API. Keeping this source in the repository does not create a new
 public frontend entry and does not close the full Agent Frontend V1 rollout
@@ -57,7 +56,7 @@ same-commit evidence only when provenance records a known commit, clean dirty
 state, and matching frontend source hashes. Local Windows development does not
 build Docker images. GitHub Actions performs a non-push packaged-image
 build/provenance check for relevant frontend changes, but release acceptance
-still requires image smoke on 211 or another Docker-capable host.
+still requires image smoke on the exact controlled Docker-capable host.
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the
@@ -100,7 +99,7 @@ This import is intentionally source-first:
 
 - Backend scheduling, sandbox, auth/session, DB schema, and compose behavior
   are unchanged by the frontend import.
-- The current 211 static frontend deployment remains the active runtime entry
+- The current configured frontend deployment remains the active runtime entry
   until a frontend image is explicitly added and verified.
 - Historical admin/model/MCP/persona/sandbox source remains under ai-platform
   projection and policy audit before ordinary-user rollout.

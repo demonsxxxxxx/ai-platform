@@ -39,6 +39,34 @@ test("projects the controlled native Skill sandbox admission failure stage", () 
   );
 });
 
+test("projects an actionable bounded file-size terminal without backend detail", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-file-too-large",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "context_file_too_large",
+      message: "private storage path and token",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-file-too-large",
+  );
+
+  assert.equal(result.content, "文件超过 32 MB 处理上限，请选择更小的文件后重试。");
+  const terminal = result.parts[0];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "context_file_too_large");
+  assert.equal(terminal.stage, "file_preprocessing");
+  assert.doesNotMatch(JSON.stringify(result), /private|storage path|token/);
+});
+
 test("keeps safe partial output and adds an actionable terminal failure", () => {
   const parts: MessagePart[] = [
     { type: "text", content: "已完成公开部分；" },
@@ -145,6 +173,76 @@ test("marks a cancelled terminal while retaining safe partial output", () => {
   assert.equal(terminal.event_type, "run_cancelled");
   assert.equal(terminal.severity, "warning");
   assert.doesNotMatch(JSON.stringify(result), /untrusted|\/home\/private/);
+});
+
+test("projects a result-unavailable terminal as a warning status without fabricating an answer", () => {
+  const terminal = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-no-answer",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "result_unavailable",
+      detail_code: "result_unavailable",
+      message: "本次执行未能生成可展示的回复内容。",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-no-answer",
+  );
+
+  assert.equal(terminal.cancelled, false);
+  const statusParts = getVisibleMessageParts(terminal.parts);
+  assert.deepEqual(
+    statusParts.map((part) => part.type),
+    ["run_status"],
+  );
+  const status = statusParts.at(-1);
+  assert.equal(status?.type, "run_status");
+  if (status?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(status.event_type, "result_unavailable");
+  assert.equal(status.severity, "warning");
+  assert.ok(status.message && status.message.trim().length > 0);
+  assert.equal(terminal.content, status.message);
+  assert.doesNotMatch(JSON.stringify(terminal), /任务完成/);
+});
+
+test("keeps safe partial live output while surfacing a result-unavailable terminal", () => {
+  const terminal = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-no-answer-partial",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "result_unavailable",
+      detail_code: "result_unavailable",
+      message: "本次执行未能生成可展示的回复内容。",
+    },
+    [{ type: "text", content: "已生成的公开片段" }],
+    "已生成的公开片段",
+    [],
+    0,
+    [],
+    false,
+    "run-no-answer-partial",
+  );
+
+  assert.equal(terminal.cancelled, false);
+  assert.equal(terminal.content, "已生成的公开片段");
+  const visibleParts = getVisibleMessageParts(terminal.parts);
+  assert.deepEqual(
+    visibleParts.map((part) => part.type),
+    ["text", "run_status"],
+  );
+  const status = visibleParts.at(-1);
+  assert.equal(status?.type, "run_status");
+  if (status?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(status.event_type, "result_unavailable");
+  assert.equal(status.severity, "warning");
+  assert.ok(status.message && status.message.trim().length > 0);
+  assert.doesNotMatch(JSON.stringify(terminal), /任务完成/);
 });
 
 test("fails closed for unknown or mismatched terminal detail", () => {

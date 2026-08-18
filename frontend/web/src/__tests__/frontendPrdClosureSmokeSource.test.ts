@@ -21,6 +21,18 @@ test("PRD closure browser smoke helper is committed without credentials", () => 
   assert.doesNotMatch(source, /credentials\.(?:username|password)\.value[^;]*writeFileSync/);
 });
 
+test("PRD closure smoke resolves base URL from CLI, process env, then env file", () => {
+  const source = readFileSync(smokeScript, "utf8");
+  const main = source.slice(source.indexOf("async function main()"));
+
+  assert.ok(main.indexOf("loadEnvValues(args.envFile)") < main.indexOf("resolvedBaseUrl"));
+  assert.match(
+    main,
+    /args\.baseUrl \|\| process\.env\.AI_PLATFORM_FRONTEND_URL \|\| envFileValues\.AI_PLATFORM_FRONTEND_URL/,
+  );
+  assert.ok(main.indexOf("resolvedBaseUrl") < main.indexOf("base_url_required"));
+});
+
 test("PRD closure browser smoke helper covers required frontend evidence", () => {
   const source = readFileSync(smokeScript, "utf8");
 

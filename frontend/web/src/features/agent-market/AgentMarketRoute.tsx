@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, Bot, FileText, Headphones, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  BadgeCheck,
+  MessageCircle,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+} from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
@@ -9,13 +17,18 @@ import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
 import { authApi } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfilePublicProjection } from "../../types";
-import type { AgentProfileAvatarRef, AgentProfileCategory } from "../../types/agentProfile";
+import {
+  AGENT_PROFILE_CATEGORIES,
+  AGENT_PROFILE_CATEGORY_LABELS,
+  type AgentProfileCategory,
+} from "../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
   filterPublishedMarketProfiles,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
+import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -31,24 +44,14 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
   return { key, phase, value, error };
 }
 
-const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的智能体，请稍后重新加载。";
-const CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
-  general: "通用助理", support: "支持服务", writing: "内容写作",
-  research: "研究分析", operations: "运营效率",
-};
+const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
 const MARKET_CATEGORIES: ReadonlyArray<{ value: AgentProfileCategory | "all"; label: string }> = [
   { value: "all", label: "全部" },
-  ...Object.entries(CATEGORY_LABELS).map(([value, label]) => ({
-    value: value as AgentProfileCategory,
-    label,
+  ...AGENT_PROFILE_CATEGORIES.map((value) => ({
+    value,
+    label: AGENT_PROFILE_CATEGORY_LABELS[value],
   })),
 ];
-const FALLBACK_IDENTITY_STYLES = [
-  "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300",
-  "bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300",
-  "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300",
-  "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300",
-] as const;
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -65,15 +68,15 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
   }, []);
   const handleSelectSession = useCallback(
-    (sessionId: string) => {
+    (_sessionId: string) => {
       setMobileSidebarOpen(false);
-      navigate(`/chat/${encodeURIComponent(sessionId)}`);
+      navigate("/agent-market");
     },
     [navigate],
   );
   const handleNewSession = useCallback(() => {
     setMobileSidebarOpen(false);
-    navigate("/chat");
+    navigate("/agent-market");
   }, [navigate]);
 
   return (
@@ -81,6 +84,7 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
       activeTab="chat"
       setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSession}
+      allowNewSessionAction={false}
       sidebar={
         <SessionSidebar
           currentSessionId={null}
@@ -91,47 +95,12 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
           onMobileClose={() => setMobileSidebarOpen(false)}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={handleSetSidebarCollapsed}
+          navigationOnly
         />
       }
     >
       {children}
     </AppShell>
-  );
-}
-
-function getFallbackIdentityStyle(agentId: string): string {
-  let hash = 0;
-  for (const character of agentId) {
-    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  }
-  return FALLBACK_IDENTITY_STYLES[hash % FALLBACK_IDENTITY_STYLES.length];
-}
-
-function AgentAvatarIcon({ avatarRef, size }: { avatarRef: AgentProfileAvatarRef; size: number }) {
-  if (avatarRef === "builtin:document") return <FileText size={size} aria-hidden="true" />;
-  if (avatarRef === "builtin:assistant") return <Headphones size={size} aria-hidden="true" />;
-  if (avatarRef === "builtin:research") return <Search size={size} aria-hidden="true" />;
-  return <Bot size={size} aria-hidden="true" />;
-}
-
-function AgentIdentityAvatar({
-  profile,
-  large = false,
-}: {
-  profile: AgentProfilePublicProjection;
-  large?: boolean;
-}) {
-  return (
-    <span
-      aria-label={`${profile.name} 头像`}
-      data-agent-avatar-ref={profile.avatar_ref}
-      className={`inline-flex shrink-0 items-center justify-center rounded-lg ${
-        large ? "h-16 w-16" : "h-11 w-11"
-      } ${getFallbackIdentityStyle(profile.agent_id)}`}
-      role="img"
-    >
-      <AgentAvatarIcon avatarRef={profile.avatar_ref} size={large ? 30 : 22} />
-    </span>
   );
 }
 
@@ -229,7 +198,7 @@ function CatalogError({ error, refresh }: { error: string; refresh: () => void }
   );
 }
 
-function AgentMarketCard({
+function ExpertMarketCard({
   profile,
   onOpenWorkspace,
   onOpenDetail,
@@ -241,37 +210,69 @@ function AgentMarketCard({
   return (
     <article
       data-agent-market-card
-      className="flex min-h-40 min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] transition-colors hover:border-[var(--theme-primary)]"
+      className="group flex min-h-72 min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_3px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow] hover:border-[var(--theme-primary)] hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)]"
     >
-      <button
-        data-agent-market-open-workspace
-        aria-label={`进入 ${profile.name} 专属工作区`}
-        className="group flex w-full flex-1 gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
-        onClick={() => onOpenWorkspace(profile)}
-        type="button"
-      >
-        <AgentIdentityAvatar profile={profile} />
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="flex flex-wrap items-start justify-between gap-2">
-            <span className="text-base font-semibold text-[var(--theme-text)]">{profile.name}</span>
-            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-xs text-[var(--theme-text-secondary)]">
-              {CATEGORY_LABELS[profile.category]}
-            </span>
-          </span>
-          <span className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            {profile.description || "该智能体已通过平台发布。"}
-          </span>
-          <span className="mt-auto inline-flex items-center gap-1.5 pt-4 text-sm font-medium text-[var(--theme-primary)]">
-            打开智能体工作区
-            <span aria-hidden="true">→</span>
-          </span>
-        </span>
-      </button>
-      <div className="flex justify-end border-t border-[var(--theme-border)] px-5 py-3">
+      <div className="flex flex-1 flex-col p-5">
+        <div className="flex items-start gap-3">
+          <AgentIdentityAvatar
+            agentId={profile.agent_id}
+            avatarRef={profile.avatar_ref}
+            avatarSeed={profile.avatar_seed}
+            name={profile.name}
+            size="lg"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <h2 className="line-clamp-2 text-base font-semibold leading-6 text-[var(--theme-text)]">
+                {profile.name}
+              </h2>
+              <BadgeCheck
+                aria-label="企业已发布"
+                className="mt-0.5 shrink-0 text-[var(--theme-success)]"
+                size={17}
+              />
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
+              <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>
+              <span aria-hidden="true">·</span>
+              <span className="tabular-nums">版本 {profile.expected_revision}</span>
+            </div>
+          </div>
+        </div>
+
+        <p className="mt-4 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+          {profile.capability_summary || profile.description || "已由管理员发布，可直接开始企业任务。"}
+        </p>
+
+        {profile.recommended_tasks.length > 0 ? (
+          <div className="mt-4 flex flex-wrap gap-1.5" aria-label="推荐任务">
+            {profile.recommended_tasks.slice(0, 3).map((task) => (
+              <span
+                className="max-w-full truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
+                key={task}
+                title={task}
+              >
+                {task}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-[1fr_auto] border-t border-[var(--theme-border)]">
+        <button
+          data-agent-market-open-workspace
+          aria-label={`使用 ${profile.name} 开始任务`}
+          className="inline-flex min-h-12 items-center gap-2 px-5 text-left text-sm font-semibold text-[var(--theme-primary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
+          onClick={() => onOpenWorkspace(profile)}
+          type="button"
+        >
+          开始任务
+          <ArrowRight aria-hidden="true" size={15} />
+        </button>
         <button
           data-agent-market-open-detail
           aria-label={`查看 ${profile.name} 详情`}
-          className="text-sm font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] focus-visible:ring-offset-2"
+          className="min-h-12 border-l border-[var(--theme-border)] px-5 text-sm font-medium text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
           onClick={() => onOpenDetail(profile)}
           type="button"
         >
@@ -294,6 +295,8 @@ function AgentMarketCatalog({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
+  const hasActiveFilter =
+    searchQuery.trim().length > 0 || activeCategory !== "all";
   const visibleProfiles = useMemo(
     () =>
       filterPublishedMarketProfiles(catalog.value, searchQuery).filter(
@@ -333,23 +336,26 @@ function AgentMarketCatalog({
   const handleRefresh = useCallback(() => {
     refresh();
   }, [refresh]);
+  const handleClearFilters = useCallback(() => {
+    setSearchParams(new URLSearchParams(), { replace: true });
+  }, [setSearchParams]);
 
   return (
-    <main data-agent-market className="min-h-0 flex-1 overflow-y-auto text-[var(--theme-text)]">
-      <div className="mx-auto flex w-full max-w-6xl flex-col px-4 py-7 sm:px-6 sm:py-9">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--theme-border)] pb-6">
+    <main data-agent-market className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
+      <div className="mx-auto flex w-full max-w-[86rem] flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
               <ShieldCheck size={16} aria-hidden="true" />
-              当前发布目录
+              企业专家目录
             </div>
-            <h1 className="mt-2 text-2xl font-semibold">智能体市场</h1>
+            <h1 className="mt-2 text-2xl font-semibold">专家市场</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--theme-text-secondary)]">
-              浏览当前已发布的智能体，查看公开名称与用途。
+              选择一位企业专家，直接描述要完成的任务。能力、模型与工具由管理员统一治理。
             </p>
           </div>
           <button
-            aria-label="刷新智能体目录"
+            aria-label="刷新专家目录"
             className="btn-secondary inline-flex items-center gap-2"
             disabled={catalog.phase === "loading"}
             onClick={handleRefresh}
@@ -364,10 +370,10 @@ function AgentMarketCatalog({
           </button>
         </header>
 
-        <div className="sticky top-0 z-10 -mx-1 bg-[var(--theme-workbench-canvas)] px-1 py-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <label className="relative block w-full sm:max-w-md">
-              <span className="sr-only">搜索智能体</span>
+        <div className="sticky top-0 z-10 mt-6 border-y border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] py-4">
+          <div className="grid gap-3 lg:grid-cols-[minmax(18rem,34rem)_minmax(0,1fr)] lg:items-center">
+            <label className="relative block w-full">
+              <span className="sr-only">搜索专家</span>
               <Search
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
                 size={17}
@@ -375,27 +381,28 @@ function AgentMarketCatalog({
               />
               <input
                 data-agent-market-search
-                aria-label="搜索智能体"
-                className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
+                aria-label="搜索专家"
+                className="h-11 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
+                maxLength={160}
                 onChange={(event) => handleSearch(event.target.value)}
-                placeholder="搜索名称或用途"
+                placeholder="搜索专家名称、能力或任务"
                 type="search"
                 value={searchQuery}
               />
             </label>
             <div
               data-agent-market-filter
-              aria-label="智能体分类"
-              className="flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-1 text-sm"
+              aria-label="专家分类"
+              className="flex max-w-full flex-wrap items-center gap-1 lg:justify-end"
               role="group"
             >
               {MARKET_CATEGORIES.map((category) => (
                 <button
                   aria-pressed={activeCategory === category.value}
-                  className={`min-h-8 rounded-md px-2.5 text-xs transition-colors ${
+                  className={`min-h-9 rounded-md border px-3 text-xs transition-colors ${
                     activeCategory === category.value
-                      ? "bg-[var(--theme-primary)] text-white"
-                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+                      ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
+                      : "border-transparent text-[var(--theme-text-secondary)] hover:border-[var(--theme-border)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
                   }`}
                   key={category.value}
                   onClick={() => handleCategory(category.value)}
@@ -412,35 +419,49 @@ function AgentMarketCatalog({
           <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={handleRefresh} />
         ) : catalog.phase === "loading" ? (
           <p aria-live="polite" className="py-8 text-sm text-[var(--theme-text-secondary)]">
-            正在加载已发布的智能体…
+            正在加载已发布的专家…
           </p>
-        ) : catalog.value.length === 0 ? (
-          <section className="border-t border-[var(--theme-border)] py-10 text-sm text-[var(--theme-text-secondary)]">
-            当前没有已发布的智能体，请稍后再试。
+        ) : catalog.value.length === 0 && !hasActiveFilter ? (
+          <section className="border-t border-[var(--theme-border)] py-10">
+            <h2 className="text-base font-semibold">当前没有可用的专家</h2>
+            <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">
+              发布目录可能正在更新，你可以重新加载查看最新状态。
+            </p>
+            <button className="btn-secondary mt-4" onClick={handleRefresh} type="button">
+              重新加载目录
+            </button>
           </section>
         ) : visibleProfiles.length === 0 ? (
           <section aria-live="polite" className="border-t border-[var(--theme-border)] py-10">
-            <h2 className="text-base font-semibold">没有匹配的智能体</h2>
+            <h2 className="text-base font-semibold">没有匹配的专家</h2>
             <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">请尝试其他名称或用途关键词。</p>
+            <button className="btn-secondary mt-4" onClick={handleClearFilters} type="button">
+              清除筛选
+            </button>
           </section>
         ) : (
           <>
             <p className="mb-4 text-sm text-[var(--theme-text-secondary)]" aria-live="polite">
-              找到 {visibleProfiles.length} 个智能体
+              找到 {visibleProfiles.length} 位专家
             </p>
             <section
-              aria-label="已发布智能体"
-              className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
+              aria-label="已发布专家"
+              className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-4"
             >
               {visibleProfiles.map((profile) => (
-                <AgentMarketCard
+                <ExpertMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
                   onOpenWorkspace={(selectedProfile) => {
                     void handleOpenWorkspace(selectedProfile);
                   }}
                   onOpenDetail={(selectedProfile) => {
-                    navigate(buildAgentMarketDetailPath(selectedProfile));
+                    const returnSearch = searchParams.toString();
+                    navigate(
+                      `${buildAgentMarketDetailPath(selectedProfile)}${
+                        returnSearch ? `?${returnSearch}` : ""
+                      }`,
+                    );
                   }}
                 />
               ))}
@@ -454,13 +475,19 @@ function AgentMarketCatalog({
 
 function AgentMarketDetail({
   profile,
+  returnSearch,
 }: {
   profile: AgentProfilePublicProjection;
+  returnSearch: string;
 }) {
   const navigate = useNavigate();
   const handleReturnToCatalog = useCallback(() => {
-    navigate(APP_ROUTE_PATHS.agentMarket);
-  }, [navigate]);
+    navigate(
+      returnSearch
+        ? `${APP_ROUTE_PATHS.agentMarket}?${returnSearch}`
+        : APP_ROUTE_PATHS.agentMarket,
+    );
+  }, [navigate, returnSearch]);
 
   return (
     <main
@@ -469,7 +496,7 @@ function AgentMarketDetail({
     >
       <div className="mx-auto w-full max-w-4xl px-4 py-7 sm:px-6 sm:py-10">
         <button
-          aria-label="返回智能体市场"
+          aria-label="返回专家市场"
           className="btn-secondary inline-flex items-center gap-2"
           onClick={handleReturnToCatalog}
           type="button"
@@ -480,10 +507,16 @@ function AgentMarketDetail({
 
         <section className="mt-7 border-y border-[var(--theme-border)] py-8 sm:py-10">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
-            <AgentIdentityAvatar profile={profile} large />
+            <AgentIdentityAvatar
+              agentId={profile.agent_id}
+              avatarRef={profile.avatar_ref}
+              avatarSeed={profile.avatar_seed}
+              name={profile.name}
+              size="lg"
+            />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
-                <span>{CATEGORY_LABELS[profile.category]}</span>
+                <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
                   企业已发布
                 </span>
@@ -493,23 +526,63 @@ function AgentMarketDetail({
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
-                {profile.description || "该智能体已通过平台发布。"}
+                {profile.capability_summary || profile.description}
+              </p>
+              {profile.description && profile.description !== profile.capability_summary ? (
+                <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                  {profile.description}
+                </p>
+              ) : null}
+              {profile.published_at ? (
+                <p className="mt-4 text-xs text-[var(--theme-text-secondary)]">
+                  企业发布时间 {profile.published_at.slice(0, 10)}
+                </p>
+              ) : null}
+              <p className="mt-4 rounded-lg bg-[var(--theme-primary-light)] px-3 py-2 text-sm leading-6 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                进入后直接描述任务；专家会根据上下文在已发布的 Skill Set 中自主选择能力。
               </p>
             </div>
           </div>
         </section>
 
-        <section className="grid gap-4 border-b border-[var(--theme-border)] py-7 sm:grid-cols-2">
-          <div className="rounded-lg border border-[var(--theme-border)] p-5">
-            <h2 className="text-sm font-semibold">适合处理</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              {profile.description || "使用企业已发布的受控能力完成相关工作。"}
-            </p>
+        <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
+          {profile.recommended_tasks.length ? (
+            <div className="pb-6 sm:pb-7">
+              <h2 className="text-sm font-semibold">适合处理</h2>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                {profile.recommended_tasks.map((task) => (
+                  <li className="border-l-2 border-emerald-500 pl-3" key={task}>
+                    {task}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {profile.starter_prompts.length ? (
+            <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
+              <h2 className="text-sm font-semibold">可以直接开始的任务</h2>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                {profile.starter_prompts.map((prompt) => (
+                  <li key={prompt}>{prompt}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <div className="border-t border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">输入与输出</h2>
+            <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
+              <dt className="text-[var(--theme-text-secondary)]">输入</dt>
+              <dd>文本，可按任务附加文件</dd>
+              <dt className="text-[var(--theme-text-secondary)]">文件</dt>
+              <dd>附件可选，不由专家限定格式</dd>
+              <dt className="text-[var(--theme-text-secondary)]">输出</dt>
+              <dd>{profile.expected_outputs.join("、") || "对话答复"}</dd>
+            </dl>
           </div>
-          <div className="rounded-lg border border-[var(--theme-border)] p-5">
-            <h2 className="text-sm font-semibold">使用方式</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              进入专属工作区后再创建会话。模型、Skills 与工具由平台统一配置。
+          <div className="border-t border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">权限与数据访问</h2>
+            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.permissions_and_data_access_notice || "遵循企业当前授权策略。"}
             </p>
           </div>
         </section>
@@ -517,13 +590,13 @@ function AgentMarketDetail({
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
           <button
             data-agent-market-start-chat
-            aria-label={`进入 ${profile.name} 专属工作区`}
+            aria-label={`使用 ${profile.name} 开始任务`}
             className="btn-primary inline-flex min-h-10 shrink-0 items-center justify-center gap-2 px-4"
             onClick={() => navigate(buildAgentMarketWorkspacePath(profile))}
             type="button"
           >
             <MessageCircle size={17} aria-hidden="true" />
-            进入专属工作区
+            开始任务
           </button>
         </div>
       </div>
@@ -531,7 +604,7 @@ function AgentMarketDetail({
   );
 }
 
-/** Published Agent catalog and exact revision detail route. */
+/** Published Expert catalog and exact revision detail route. */
 export function AgentMarketRoute() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -560,11 +633,15 @@ export function AgentMarketRoute() {
     revision,
     isDetailRoute,
   );
+  const returnSearch = searchParams.toString();
+  const catalogReturnPath = returnSearch
+    ? `${APP_ROUTE_PATHS.agentMarket}?${returnSearch}`
+    : APP_ROUTE_PATHS.agentMarket;
   useEffect(() => {
     if (isDetailRoute && detail.phase === "unavailable") {
-      navigate(APP_ROUTE_PATHS.agentMarket, { replace: true });
+      navigate(catalogReturnPath, { replace: true });
     }
-  }, [detail.phase, isDetailRoute, navigate]);
+  }, [catalogReturnPath, detail.phase, isDetailRoute, navigate]);
 
   if (!isDetailRoute) {
     return (
@@ -587,9 +664,10 @@ export function AgentMarketRoute() {
           </div>
         </main>
       ) : detail.phase === "ready" && detail.value ? (
-        <AgentMarketDetail
-          profile={detail.value}
-        />
+            <AgentMarketDetail
+              profile={detail.value}
+              returnSearch={returnSearch}
+            />
       ) : (
         <main
           aria-live="polite"

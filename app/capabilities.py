@@ -11,7 +11,7 @@ class CapabilityDefinition:
     label: str
     description: str
     agent_id: str
-    skill_id: str
+    skill_id: str | None
     input_modes: list[str]
     output_modes: list[str]
     required_artifact_types: list[str]
@@ -24,7 +24,7 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         label="通用聊天",
         description="回答普通问题，支持连续对话。",
         agent_id="general-agent",
-        skill_id="general-chat",
+        skill_id=None,
         input_modes=["chat"],
         output_modes=["answer"],
         required_artifact_types=[],
@@ -66,7 +66,7 @@ def get_capability(capability_id: str) -> CapabilityDefinition | None:
     return CAPABILITIES.get(capability_id)
 
 
-def required_artifact_types_for_skill(skill_id: str) -> tuple[str, ...]:
+def required_artifact_types_for_skill(skill_id: str | None) -> tuple[str, ...]:
     """Return the declared artifact contract for a selected platform Skill."""
     for capability in CAPABILITIES.values():
         if capability.skill_id == skill_id:

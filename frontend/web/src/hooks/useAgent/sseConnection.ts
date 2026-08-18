@@ -4,7 +4,6 @@
  */
 
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { uuid } from "../../utils/uuid";
 import { sessionApi } from "../../services/api";
 import {
   getValidAccessToken,
@@ -14,10 +13,10 @@ import { getRefreshToken } from "../../services/api/token";
 import {
   isSequencedPublicChatEvent,
   type EventData,
-  type EventType,
   type StreamEvent,
 } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
+import { adaptPublicRunStreamEventV3 } from "./publicRunStreamV3";
 import { clearAllLoadingStates } from "./messageParts";
 import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
@@ -166,6 +165,7 @@ export async function queryAuthoritativeRunStatus({
   runId,
   isCurrent,
   statusRetryCountRef,
+  allowIdle = false,
   getStatus = sessionApi.getStatus,
   attemptTimeoutMs = AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS,
 }: {
@@ -173,6 +173,7 @@ export async function queryAuthoritativeRunStatus({
   runId: string;
   isCurrent: () => boolean;
   statusRetryCountRef: React.MutableRefObject<number>;
+  allowIdle?: boolean;
   getStatus?: typeof sessionApi.getStatus;
   attemptTimeoutMs?: number;
 }): Promise<AuthoritativeStatusQueryResult> {
@@ -197,7 +198,12 @@ export async function queryAuthoritativeRunStatus({
         return { kind: "stale" };
       }
       const status = authoritativeRunStatus(data);
-      if (status && (isActiveRunStatus(status) || terminalRunStatus(status))) {
+      if (
+        status &&
+        ((allowIdle && status === "idle") ||
+          isActiveRunStatus(status) ||
+          terminalRunStatus(status))
+      ) {
         statusRetryCountRef.current = 0;
         return { kind: "resolved", data, status };
       }
@@ -255,31 +261,19 @@ export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
   );
 }
 
-function explicitRunId(data: Record<string, unknown>): string | null {
-  return typeof data.run_id === "string" && data.run_id.trim()
-    ? data.run_id
-    : null;
-}
-
 /**
- * A persisted public event sequence is the only signal authoritative enough
- * to restore a reconnect budget. Synthetic and final snapshot frames may be
- * replayed without proving new backend progress.
+ * An accepted assistant delta or sequenced public semantic event proves new
+ * persisted backend progress. Synthetic metadata and terminal snapshots do not.
  */
 function isAcceptedRunProgress(
   eventType: string,
   data: Record<string, unknown>,
   terminal: boolean,
 ): boolean {
-  return !terminal && isSequencedPublicChatEvent(eventType, data as EventData);
-}
-
-/** A transport heartbeat confirms liveness only; it cannot create chat text. */
-function isRunHeartbeat(eventType: string, data: Record<string, unknown>): boolean {
   return (
-    eventType === "heartbeat" &&
-    typeof data.status === "string" &&
-    data.status.trim().length > 0
+    !terminal &&
+    (eventType === "message:chunk" ||
+      isSequencedPublicChatEvent(eventType, data as EventData))
   );
 }
 
@@ -355,6 +349,16 @@ export async function connectToSSE(
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+  const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+  const acceptedCursorOwnsRun =
+    acceptedCursor?.sessionId === targetSessionId &&
+    acceptedCursor.runId === targetRunId;
+  let acceptedStreamIncarnation = acceptedCursorOwnsRun
+    ? (acceptedCursor.streamIncarnation ?? null)
+    : null;
+  if (acceptedCursorOwnsRun && acceptedCursor.eventId) {
+    headers["Last-Event-ID"] = acceptedCursor.eventId;
+  }
 
   console.log(
     `[SSE] Connecting: session=${targetSessionId}, run_id=${targetRunId}`,
@@ -417,96 +421,82 @@ export async function connectToSSE(
             return;
           }
           if (event.event === "ping") return;
-          let parsedData: Record<string, unknown>;
+          let parsed: unknown;
           try {
-            const parsed = JSON.parse(event.data);
-            if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-              return;
-            }
-            parsedData = parsed as Record<string, unknown>;
+            parsed = JSON.parse(event.data);
           } catch {
-            // Ignore parse errors
-            return;
-          }
-          const eventId =
-            event.id ||
-            (typeof parsedData.event_id === "string" && parsedData.event_id.trim()
-              ? parsedData.event_id
-              : uuid());
-          const sourceRunId = explicitRunId(parsedData);
-          // An old explicit frame cannot end this connection or suppress its
-          // reconnect. It is not safe to rebind an explicit foreign run.
-          if (sourceRunId && sourceRunId !== targetRunId) {
-            return;
-          }
-
-          // The status-stream heartbeat is intentionally not an assistant
-          // message event. It confirms liveness for this attached stream, but
-          // cannot erase this generation's cumulative reconnect budget: a
-          // heartbeat-then-close loop is not stable transport progress.
-          if (isRunHeartbeat(event.event, parsedData)) {
-            return;
-          }
-
-          const terminalStatus = terminalRunStatusFromEvent(
-            event.event,
-            parsedData,
-          );
-          // An SSE `error` frame can report a stream interruption while the
-          // backend run is still active. Abort immediately and hand exactly
-          // one generation-bound reconciliation to the caller; do not wait
-          // for a server close or let fetch-event-source retry internally.
-          if (event.event === "error" && !terminalStatus) {
             receivedNonTerminalApplicationError = true;
-            setConnectionStatus("reconnecting");
-            isConnectingRef.current = false;
-            // Throw while this stream is still current. fetch-event-source
-            // then runs its error path, disposes its internal request, and
-            // rejects this connection rather than scheduling a retry. Calling
-            // our signal's abort() first would resolve fetch-event-source and
-            // silently skip the authoritative reconciliation below.
-            throw new Error("SSE application interruption before terminal event");
+            throw new Error("sse_event_json_invalid");
           }
-          // A `done` frame without an authoritative terminal status (for
-          // example, `{ status: "timeout" }`) likewise cannot complete the
-          // run locally.
-          if (
-            (event.event === "done" || event.event === "complete") &&
-            !terminalStatus
-          ) {
-            return;
+          if (event.event === "gap") {
+            // Preserve the run owner so the caller can reconcile against
+            // durable status/history. A replay gap is not a terminal fact.
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_replay_gap");
           }
-          const normalizedData =
-            terminalStatus && !sourceRunId
-              ? { ...parsedData, run_id: targetRunId }
-              : parsedData;
-          const timestamp = normalizedData._timestamp as string | undefined;
+          const eventId = event.id;
+          if (!eventId) {
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_event_id_missing");
+          }
+          const adapted = adaptPublicRunStreamEventV3({
+            eventHeader: event.event,
+            transportCursor: eventId,
+            value: parsed,
+            targetRunId,
+            targetStreamIncarnation: acceptedStreamIncarnation,
+          });
+          if (!adapted) {
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_event_contract_invalid");
+          }
+          acceptedStreamIncarnation ??= adapted.streamIncarnation;
+          const terminalStatus = terminalRunStatusFromEvent(
+            adapted.event,
+            adapted.data as unknown as Record<string, unknown>,
+          );
           const streamEvent: StreamEvent = {
-            event: event.event as EventType,
-            data: JSON.stringify(normalizedData),
+            event: adapted.event,
+            data: JSON.stringify(adapted.data),
+          };
+          const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+            if (!isCurrentStream()) return;
+            if (ctx.acceptedStreamCursorRef) {
+              ctx.acceptedStreamCursorRef.current = {
+                sessionId: targetSessionId,
+                runId: targetRunId,
+                eventId,
+                streamIncarnation: adapted.streamIncarnation,
+              };
+            }
+            if (
+              semanticApplied &&
+              isAcceptedRunProgress(
+                adapted.event,
+                adapted.data as unknown as Record<string, unknown>,
+                Boolean(terminalStatus),
+              )
+            ) {
+              retryCountRef.current = 0;
+            }
           };
           const accepted = handleStreamEvent(
             streamEvent,
             messageId,
             eventId,
-            timestamp,
+            adapted.emittedAt,
             ctx,
             {
               sessionId: targetSessionId,
               runId: targetRunId,
               streamVersion,
             },
+            commitAcceptedStreamEvent,
           );
           // A foreign, replayed, stale, or otherwise rejected terminal frame
           // must not suppress close reconciliation for the current run.
           if (terminalStatus && accepted) {
             receivedTerminalEvent = true;
-          }
-          if (
-            accepted &&
-            isAcceptedRunProgress(event.event, normalizedData, Boolean(terminalStatus))
-          ) {
-            retryCountRef.current = 0;
           }
         },
         onerror: (err) => {
@@ -698,15 +688,12 @@ export async function reconnectSSE(
     return;
   }
   if (statusResult.kind === "unavailable") {
-    // The run's backend state remains unknown. Converge locally without
-    // inventing a failed backend result; reloading the session is recovery.
     convergeUnavailable();
     return;
   }
 
   const terminalStatus = terminalRunStatus(statusResult.status);
   if (terminalStatus) {
-    console.log("[SSE] Task already completed");
     if (ctx.hydrateTerminalRun) {
       await ctx.hydrateTerminalRun(
         currentSessId,

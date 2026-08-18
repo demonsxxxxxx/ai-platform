@@ -3,7 +3,14 @@ from dataclasses import dataclass, field
 import inspect
 from typing import Any, Awaitable, Callable, Coroutine, Protocol, TypeVar
 
-from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
+from app.control_plane_contracts import (
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
+    RUN_PAYLOAD_SCHEMA_VERSION,
+    RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
+)
+from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.skills.release_policy import validate_release_decision_lock
 from app.validation import assert_safe_id
 
@@ -180,9 +187,10 @@ class RunPayload:
     run_id: str
     attempt_id: str
     agent_id: str
-    skill_id: str
+    skill_id: str | None
     file_ids: list[str]
     input: dict[str, Any]
+    execution_kind: str = RUN_EXECUTION_KIND_SKILL
     trace_id: str = ""
     skill_version: str = ""
     release_decision: dict[str, Any] = field(default_factory=dict)
@@ -200,14 +208,48 @@ class RunPayload:
 
     def __post_init__(self) -> None:
         assert_safe_id(self.attempt_id, "attempt_id")
-        if self.schema_version != RUN_PAYLOAD_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS:
             raise ValueError("run_payload_schema_version_invalid")
+        if self.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+            if self.schema_version != RUN_PAYLOAD_SCHEMA_VERSION_V2:
+                raise ValueError("harness_chat_payload_schema_version_invalid")
+            if self.skill_id is not None:
+                raise ValueError("harness_chat_skill_id_forbidden")
+            if self.skill_version or self.release_decision or self.skill_manifests:
+                raise ValueError("harness_chat_skill_authority_forbidden")
+            if self.agent_profile:
+                object.__setattr__(
+                    self,
+                    "agent_profile",
+                    validate_agent_profile_execution_input(
+                        self.agent_profile,
+                        agent_id=self.agent_id,
+                        execution_kind=self.execution_kind,
+                        skill_id=self.skill_id,
+                        skill_version=self.skill_version,
+                    ),
+                )
+            return
+        if self.execution_kind != RUN_EXECUTION_KIND_SKILL or self.skill_id is None:
+            raise ValueError("skill_execution_identity_invalid")
         validate_release_decision_lock(
             release_decision=self.release_decision,
             skill_version=self.skill_version,
             skill_id=self.skill_id,
             skill_manifests=self.skill_manifests,
         )
+        if self.agent_profile:
+            object.__setattr__(
+                self,
+                "agent_profile",
+                validate_agent_profile_execution_input(
+                    self.agent_profile,
+                    agent_id=self.agent_id,
+                    execution_kind=self.execution_kind,
+                    skill_id=self.skill_id,
+                    skill_version=self.skill_version,
+                ),
+            )
 
 
 class ExecutorAdapter(Protocol):

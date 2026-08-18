@@ -6,6 +6,23 @@ import {
   buildAgentProfileCatalogUrl,
   buildAgentProfileDetailUrl,
 } from "../agentProfile.ts";
+import {
+  projectAgentConversationIdentity,
+  projectAgentProfilePublicProjection,
+  validateAgentProfileAdminProjection,
+} from "../../../types/agentProfile.ts";
+
+const defaultEnterpriseProjection = {
+  welcome_message: "",
+  starter_prompts: [] as string[],
+  capability_summary: "",
+  recommended_tasks: [] as string[],
+  supported_input_types: ["text", "file"] as ["text", "file"],
+  expected_outputs: [] as string[],
+  permissions_and_data_access_notice: "",
+  avatar_seed: "agt_support",
+  published_at: null,
+};
 
 test("builds server-authoritative catalog and detail URLs", () => {
   assert.equal(
@@ -21,6 +38,7 @@ test("builds server-authoritative catalog and detail URLs", () => {
 test("loads only the safe public Agent Profile projection", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const unicodeAvatarSeed = "\u{1F680}".repeat(128);
   globalThis.fetch = (async (input) => {
     calls.push(String(input));
     return new Response(
@@ -31,7 +49,9 @@ test("loads only the safe public Agent Profile projection", async () => {
             expected_revision: 7,
             name: "支持助手",
             description: "处理已授权的支持请求。",
+            supported_input_types: ["text", "file"],
             avatar_ref: "builtin:assistant",
+            avatar_seed: unicodeAvatarSeed,
             category: "support",
             instructions: "PRIVATE_PROMPT",
             model_id: "private-model",
@@ -50,11 +70,13 @@ test("loads only the safe public Agent Profile projection", async () => {
     assert.deepEqual(result, {
       agent_profiles: [
         {
+          ...defaultEnterpriseProjection,
           agent_id: "agt_support",
           expected_revision: 7,
           name: "支持助手",
           description: "处理已授权的支持请求。",
           avatar_ref: "builtin:assistant",
+          avatar_seed: unicodeAvatarSeed,
           category: "support",
         },
       ],
@@ -91,6 +113,7 @@ test("published authorization reads bypass cache and preserve transport failures
       expected_revision: 7,
       name: "支持助手",
       description: "处理已授权的支持请求。",
+      supported_input_types: ["text", "file"],
       avatar_ref: "builtin:assistant",
       category: "support",
     };
@@ -148,6 +171,7 @@ test("lists only server-authorized conversations with their immutable safe ident
               revision: 7,
               name: "支持助手",
               description: "处理已授权的支持请求。",
+              supported_input_types: ["text", "file"],
               avatar_ref: "builtin:assistant",
               category: "support",
               model_id: "private-model",
@@ -178,7 +202,9 @@ test("lists only server-authorized conversations with their immutable safe ident
           workspace_id: "default",
           agent_id: "agt_support",
           title: "支持助手",
+          purpose: "conversation",
           agent_conversation: {
+            ...defaultEnterpriseProjection,
             agent_id: "agt_support",
             revision: 7,
             name: "支持助手",
@@ -207,7 +233,7 @@ test("lists only server-authorized conversations with their immutable safe ident
   }
 });
 
-test("creates a durable Agent Conversation with only the exact published selector", async () => {
+test("creates a durable Agent Conversation with one caller-owned operation identity", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; method?: string; body?: string | null }> = [];
   globalThis.fetch = (async (input, init) => {
@@ -227,6 +253,7 @@ test("creates a durable Agent Conversation with only the exact published selecto
           revision: 7,
           name: "支持助手",
           description: "处理已授权的支持请求。",
+          supported_input_types: ["text", "file"],
           avatar_ref: "builtin:assistant",
           category: "support",
           model_id: "private-model",
@@ -243,7 +270,7 @@ test("creates a durable Agent Conversation with only the exact published selecto
     const response = await agentProfileApi.createConversation({
       agent_id: "agt_support",
       expected_revision: 7,
-    });
+    }, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls, [
       {
         url: "/api/ai/agent-conversations",
@@ -253,10 +280,12 @@ test("creates a durable Agent Conversation with only the exact published selecto
             agent_id: "agt_support",
             expected_revision: 7,
           },
+          operation_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         }),
       },
     ]);
     assert.deepEqual(response.agent_conversation, {
+      ...defaultEnterpriseProjection,
       agent_id: "agt_support",
       revision: 7,
       name: "支持助手",
@@ -271,6 +300,155 @@ test("creates a durable Agent Conversation with only the exact published selecto
   }
 });
 
+test("uses the current admin profile contract without retired file-type transport fields", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method?: string; schema: string | null }> = [];
+  const draftWriteBodies: Array<Record<string, unknown>> = [];
+  const draft = {
+    name: "Support assistant",
+    description: "Approved support helper.",
+    welcome_message: "",
+    starter_prompts: [],
+    capability_summary: "Approved support requests.",
+    recommended_tasks: ["Review a request"],
+    supported_input_types: ["text", "file"] as Array<"text" | "file">,
+    expected_outputs: [],
+    permissions_and_data_access_notice: "",
+    instructions: "Keep answers concise.",
+    model_id: "model-a",
+    selected_skill: { skill_id: "general-chat", expected_version: "version-a" },
+    skill_set: [{ skill_id: "general-chat", expected_version: "version-a" }],
+    mcp_tool_ids: [],
+    avatar_ref: "builtin:agent" as const,
+    avatar_seed: "support-assistant",
+    avatar_asset_id: null,
+    category: "support" as const,
+    visibility: "tenant" as const,
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
+    expected_draft_revision: 0,
+  };
+  const adminProfile = {
+    ...draft,
+    agent_id: "agt_support",
+    revision: 7,
+    published_revision: null,
+    status: "draft" as const,
+    content_hash: "hash-a",
+    created_at: null,
+    published_at: null,
+  };
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method,
+      schema: new Headers(init?.headers).get("x-ai-agent-profile-schema"),
+    });
+    if (typeof init?.body === "string") {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (typeof body.name === "string") draftWriteBodies.push(body);
+    }
+    const isList = !init?.method || init.method === "GET";
+    return new Response(
+      JSON.stringify(
+        isList
+          ? { agent_profiles: [adminProfile] }
+          : { agent_profile: adminProfile, audit_id: "audit-a" },
+      ),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  try {
+    await agentProfileApi.listAdmin();
+    await agentProfileApi.listHistory("agt_support");
+    await agentProfileApi.saveDraft(draft);
+    await agentProfileApi.saveDraft({ ...draft, expected_draft_revision: 7 }, "agt_support");
+    await agentProfileApi.publish("agt_support", 7);
+    await agentProfileApi.unpublish("agt_support", 7);
+
+    assert.deepEqual(calls, [
+      {
+        url: "/api/ai/admin/agent-profiles",
+        method: undefined,
+        schema: null,
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support/history",
+        method: undefined,
+        schema: null,
+      },
+      {
+        url: "/api/ai/admin/agent-profiles",
+        method: "POST",
+        schema: null,
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support",
+        method: "PUT",
+        schema: null,
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support/publish",
+        method: "POST",
+        schema: null,
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support/unpublish",
+        method: "POST",
+        schema: null,
+      },
+    ]);
+    assert.equal("supported_file_types" in draft, false);
+    assert.equal(
+      draftWriteBodies.some((body) => "supported_file_types" in body),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects non-universal supported input projections instead of repairing them", () => {
+  const publicProfile = {
+    agent_id: "agt_support",
+    expected_revision: 7,
+    name: "支持助手",
+    description: "处理已授权的支持请求。",
+    supported_input_types: ["text", "file"],
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  };
+  const conversationIdentity = {
+    ...publicProfile,
+    revision: publicProfile.expected_revision,
+  };
+  delete (conversationIdentity as { expected_revision?: number }).expected_revision;
+  const adminProfile = {
+    ...publicProfile,
+    revision: 7,
+    status: "draft",
+    content_hash: "hash-a",
+  };
+
+  for (const invalid of [["text"], ["file", "text"], ["text", "file", "file"]]) {
+    assert.throws(() =>
+      projectAgentProfilePublicProjection({ ...publicProfile, supported_input_types: invalid }),
+    );
+    assert.throws(() =>
+      projectAgentConversationIdentity({
+        ...conversationIdentity,
+        supported_input_types: invalid,
+      }),
+    );
+    assert.throws(() =>
+      validateAgentProfileAdminProjection({ ...adminProfile, supported_input_types: invalid }),
+    );
+  }
+});
+
+
 test("preserves typed 403 and stale revision failures from conversation admission", async () => {
   const originalFetch = globalThis.fetch;
   let status = 403;
@@ -284,7 +462,10 @@ test("preserves typed 403 and stale revision failures from conversation admissio
 
   try {
     await assert.rejects(
-      agentProfileApi.createConversation({ agent_id: "agt_support", expected_revision: 7 }),
+      agentProfileApi.createConversation(
+        { agent_id: "agt_support", expected_revision: 7 },
+        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      ),
       (error: unknown) =>
         typeof error === "object" &&
         error !== null &&
@@ -292,7 +473,10 @@ test("preserves typed 403 and stale revision failures from conversation admissio
     );
     status = 409;
     await assert.rejects(
-      agentProfileApi.createConversation({ agent_id: "agt_support", expected_revision: 7 }),
+      agentProfileApi.createConversation(
+        { agent_id: "agt_support", expected_revision: 7 },
+        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      ),
       (error: unknown) =>
         typeof error === "object" &&
         error !== null &&

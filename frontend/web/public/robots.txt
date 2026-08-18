@@ -1,4 +1,2 @@
 User-agent: *
 Allow: /
-
-Sitemap: http://10.56.0.211:18001/sitemap.xml

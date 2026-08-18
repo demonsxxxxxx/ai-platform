@@ -38,6 +38,33 @@ class CleanupProofSettings:
     sandbox_egress_proof_previous_keys_json = ""
 
 
+class InternalTestCleanupSettings:
+    deployment_environment = "test"
+    sandbox_container_provider = "opensandbox"
+    sandbox_security_profile = "internal-test"
+    opensandbox_expected_network_mode = "bridge"
+    opensandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
+    opensandbox_executor_image_digest = "sha256:" + "a" * 64
+    sandbox_executor_image = opensandbox_executor_image
+    sandbox_runtime_subject = "runtime-subject-a"
+
+
+def internal_test_cleanup_labels() -> dict[str, str]:
+    from app.runtime.sandbox.opensandbox_policy import internal_test_orphan_cleanup_expected_labels
+
+    filters = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral",
+        "security_profile": "internal-test",
+    }
+    return internal_test_orphan_cleanup_expected_labels(filters, InternalTestCleanupSettings()) or {}
+
+
 def opensandbox_cleanup_proof():
     return build_governed_egress_proof(
         signing_key=TEST_PROOF_KEY,
@@ -379,6 +406,105 @@ async def test_trusted_internal_cleanup_rejects_cross_scope_persisted_payload(mo
         )
 
     assert releases == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("drift_key", "drift_value"),
+    (
+        (None, None),
+        ("ai-platform.tenant_id", "tenant-b"),
+        ("ai-platform.executor.requested_image_digest", "sha256:" + "b" * 64),
+        ("ai-platform.internal_test.runtime_identity", "runc"),
+    ),
+)
+async def test_internal_test_cleanup_rebuilds_only_exact_direct_runtime_evidence(
+    monkeypatch,
+    drift_key,
+    drift_value,
+):
+    from app.routes.sandbox_runtime_cleanup import _container_lease_from_row
+
+    settings = InternalTestCleanupSettings()
+    labels = internal_test_cleanup_labels()
+    if drift_key is not None:
+        labels[drift_key] = drift_value
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a-attempt-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        runtime_workspace_container_path="/sandbox-workspace",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "security_profile": "internal-test",
+            "requested_image": settings.opensandbox_executor_image,
+            "requested_image_digest": settings.opensandbox_executor_image_digest,
+            "labels": labels,
+        },
+    )
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+
+    lease = _container_lease_from_row(row)
+
+    if drift_key is None:
+        assert lease is not None
+        assert lease.labels == labels
+    else:
+        assert lease is None
+
+
+@pytest.mark.asyncio
+async def test_internal_test_expired_lease_cleanup_stops_before_db_release(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
+
+    settings = InternalTestCleanupSettings()
+    labels = internal_test_cleanup_labels()
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a-attempt-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        runtime_workspace_container_path="/sandbox-workspace",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "security_profile": "internal-test",
+            "requested_image": settings.opensandbox_executor_image,
+            "requested_image_digest": settings.opensandbox_executor_image_digest,
+            "labels": labels,
+        },
+    )
+    calls = []
+
+    class Provider:
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", lease.container_id, lease.labels, reason))
+            return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    async def list_expired(*_args, **_kwargs):
+        return [row]
+
+    async def release_stopped(_conn, **kwargs):
+        calls.append(("release", kwargs["lease_ids"], kwargs["reason"]))
+        return [row]
+
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases", list_expired
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases", release_stopped
+    )
+
+    cleaned = await cleanup_expired_sandbox_runtime_leases(
+        object(), tenant_id="tenant-a", provider_factory=lambda _provider: Provider()
+    )
+
+    assert cleaned == [row]
+    assert calls == [
+        ("stop", "osb-run-a", labels, "expired"),
+        ("release", ["lease-a"], "expired"),
+    ]
 
 
 @pytest.mark.asyncio

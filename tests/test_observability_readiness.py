@@ -15,7 +15,7 @@ from app.observability_readiness import (
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import (
     build_release_evidence_readiness,
-    load_latest_reviewed_runtime_acceptance,
+    load_reviewed_runtime_acceptance_for_subject,
 )
 from app.trace_audit_export_readiness import build_trace_audit_export_readiness
 
@@ -179,10 +179,10 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "error_taxonomy_dashboard_acceptance" not in domains["error_taxonomy"]["gaps"]
     assert "error_taxonomy_dashboard_runtime_acceptance" in domains["error_taxonomy"]["gaps"]
     assert "error_taxonomy_dashboard_visual_acceptance" in domains["error_taxonomy"]["gaps"]
-    assert "error_taxonomy_dashboard_211_acceptance" in domains["error_taxonomy"]["gaps"]
+    assert "error_taxonomy_dashboard_controlled_host_acceptance" in domains["error_taxonomy"]["gaps"]
     assert "quality_golden_set_readiness_contract" in domains["quality_evaluation"]["implemented"]
-    assert "golden_set_eval_runtime_and_211_acceptance" in domains["quality_evaluation"]["gaps"]
-    assert "alert_rules_runtime_dashboard_and_211_acceptance" in domains["alerts_and_exports"]["gaps"]
+    assert "golden_set_eval_controlled_host_acceptance" in domains["quality_evaluation"]["gaps"]
+    assert "alert_rules_runtime_dashboard_and_controlled_host_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "alert_delivery_channel_policy_contract" in domains["alerts_and_exports"]["implemented"]
     assert "alert_delivery_channel_policy" not in domains["alerts_and_exports"]["gaps"]
     assert "alert_delivery_channel_runtime_acceptance" in domains["alerts_and_exports"]["gaps"]
@@ -192,7 +192,7 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "trace_audit_export_contract" not in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_runtime_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_dashboard_acceptance" in domains["alerts_and_exports"]["gaps"]
-    assert "trace_audit_export_211_acceptance" in domains["alerts_and_exports"]["gaps"]
+    assert "trace_audit_export_controlled_host_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "release_evidence_export_location" not in domains["alerts_and_exports"]["gaps"]
     assert "release_evidence_export_location_contract" in domains["alerts_and_exports"]["implemented"]
     assert "release_evidence_export_acceptance_preflight" in domains["alerts_and_exports"]["implemented"]
@@ -270,7 +270,7 @@ def test_error_taxonomy_dashboard_readiness_contract_defines_safe_admin_dashboar
     assert readiness["open_gaps"] == [
         "error_taxonomy_dashboard_runtime_acceptance",
         "error_taxonomy_dashboard_visual_acceptance",
-        "error_taxonomy_dashboard_211_acceptance",
+        "error_taxonomy_dashboard_controlled_host_acceptance",
     ]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -329,7 +329,7 @@ def test_observability_readiness_includes_alert_slo_rule_template_evidence_witho
             "Redis URL",
         ],
         "requires_runtime_dashboard_acceptance": True,
-        "requires_211_smoke": True,
+        "requires_controlled_host_smoke": True,
         "does_not_enable_alert_delivery": True,
         "does_not_close_g9": True,
     }
@@ -355,7 +355,7 @@ def test_observability_readiness_includes_alert_slo_rule_template_evidence_witho
         "capacity_load_evidence_missing",
     ]
     assert evidence["open_gaps"] == [
-        "alert_rules_runtime_dashboard_and_211_acceptance",
+        "alert_rules_runtime_dashboard_and_controlled_host_acceptance",
         "alert_delivery_channel_runtime_acceptance",
         "slo_threshold_runtime_calibration",
     ]
@@ -399,10 +399,17 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "verified subject commit for the runtime, capacity, frontend, or governance artifact under review"
     )
     assert readiness["evidence_contract"]["field_semantics"]["runtime_subject_commit_sha"] == (
-        "runtime source revision proven by 211 source marker and API/worker image labels for runtime-bound smoke artifacts"
+        "runtime source revision proven by the runtime subject's source marker and API/worker image labels "
+        "for runtime-bound smoke artifacts"
     )
     assert "cannot contain its own final hash" in readiness["evidence_contract"]["field_semantics"]["record_commit_sha"]
     assert readiness["evidence_contract"]["conditional_fields"] == {
+        "controlled_host_runtime_smoke": [
+            "runtime_subject_commit_sha",
+        ],
+        "controlled_host_memory_enabled_document_workflow_smoke": [
+            "runtime_subject_commit_sha",
+        ],
         "211_runtime_smoke": [
             "runtime_subject_commit_sha",
         ],
@@ -410,6 +417,9 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
             "runtime_subject_commit_sha",
         ],
         "211_sandbox_runtime_smoke": [
+            "runtime_subject_commit_sha",
+        ],
+        "controlled_host_sandbox_runtime_smoke": [
             "runtime_subject_commit_sha",
         ],
         "211_runtime_identity_label_repair": [
@@ -420,6 +430,8 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         ],
     }
     assert readiness["evidence_contract"]["accepted_artifact_kinds"] == [
+        "controlled_host_runtime_smoke",
+        "controlled_host_memory_enabled_document_workflow_smoke",
         "211_runtime_smoke",
         "capacity_gate_readiness",
         "frontend_packaged_runtime_smoke",
@@ -429,6 +441,7 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "alert_trace_export_runtime_acceptance",
         "211_memory_enabled_document_workflow_smoke",
         "211_sandbox_runtime_smoke",
+        "controlled_host_sandbox_runtime_smoke",
         "211_runtime_identity_label_repair",
         "211_g7_operator_status_review",
         "211_deployment_image_cleanup",
@@ -504,10 +517,13 @@ def test_release_evidence_readiness_accepts_runtime_acceptance_without_closing_g
     assert "api_key" not in runtime_serialized
 
 
-def test_load_latest_reviewed_runtime_acceptance_returns_safe_summary(tmp_path):
+def test_load_reviewed_runtime_acceptance_for_subject_returns_safe_summary(tmp_path):
     _write_runtime_acceptance_entry(tmp_path)
 
-    acceptance = load_latest_reviewed_runtime_acceptance(tmp_path)
+    acceptance = load_reviewed_runtime_acceptance_for_subject(
+        "948179c73734aa61ed764fb3485f5415fca8f193",
+        tmp_path,
+    )
 
     assert acceptance["schema_version"] == "ai-platform.release-evidence-runtime-acceptance.v1"
     assert acceptance["status"] == "accepted_for_operator_review"
@@ -523,7 +539,9 @@ def test_load_latest_reviewed_runtime_acceptance_returns_safe_summary(tmp_path):
     assert "api_key" not in serialized
 
 
-def test_load_latest_reviewed_runtime_acceptance_rejects_unreviewed_or_failed_entries(tmp_path):
+def test_load_reviewed_runtime_acceptance_for_subject_rejects_unreviewed_or_failed_entries(
+    tmp_path,
+):
     _write_runtime_acceptance_entry(
         tmp_path,
         evidence_id="draft-entry",
@@ -539,7 +557,25 @@ def test_load_latest_reviewed_runtime_acceptance_rejects_unreviewed_or_failed_en
         acceptance=failed_acceptance,
     )
 
-    assert load_latest_reviewed_runtime_acceptance(tmp_path) is None
+    assert (
+        load_reviewed_runtime_acceptance_for_subject(
+            "948179c73734aa61ed764fb3485f5415fca8f193",
+            tmp_path,
+        )
+        is None
+    )
+
+
+def test_load_reviewed_runtime_acceptance_for_subject_rejects_other_runtime_subject(tmp_path):
+    _write_runtime_acceptance_entry(tmp_path)
+
+    assert (
+        load_reviewed_runtime_acceptance_for_subject(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            tmp_path,
+        )
+        is None
+    )
 
 
 def test_release_evidence_readiness_rejects_invalid_runtime_acceptance_without_leaking_payload():
@@ -610,7 +646,7 @@ def test_trace_audit_export_readiness_contract_defines_safe_public_export_withou
     assert readiness["open_gaps"] == [
         "trace_audit_export_runtime_acceptance",
         "trace_audit_export_dashboard_acceptance",
-        "trace_audit_export_211_acceptance",
+        "trace_audit_export_controlled_host_acceptance",
     ]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -675,7 +711,7 @@ def test_observability_readiness_accepts_release_evidence_runtime_acceptance_wit
     assert "release_evidence_retention_runtime_acceptance" not in readiness["open_gaps"]
     assert readiness["status"] == "partial_blocked"
     assert readiness["evidence_policy"] == (
-        "admin_runtime_projection_plus_tests_docs_and_211_smoke_required_before_gate_closure"
+        "admin_runtime_projection_plus_tests_docs_and_controlled_host_smoke_required_before_gate_closure"
     )
 
     serialized = json.dumps(evidence["runtime_acceptance"], ensure_ascii=False).lower()
@@ -692,7 +728,7 @@ def test_observability_readiness_includes_trace_audit_export_contract_without_cl
     assert "trace_audit_export_contract" not in alerts["gaps"]
     assert "trace_audit_export_runtime_acceptance" in alerts["gaps"]
     assert "trace_audit_export_dashboard_acceptance" in alerts["gaps"]
-    assert "trace_audit_export_211_acceptance" in alerts["gaps"]
+    assert "trace_audit_export_controlled_host_acceptance" in alerts["gaps"]
 
     evidence = alerts["evidence"]["trace_audit_export"]
     assert evidence["schema_version"] == "ai-platform.trace-audit-export-readiness.v1"
@@ -702,7 +738,7 @@ def test_observability_readiness_includes_trace_audit_export_contract_without_cl
     assert evidence["export_contract"]["does_not_close_g9"] is True
     assert "trace_audit_export_runtime_acceptance" in readiness["open_gaps"]
     assert "trace_audit_export_dashboard_acceptance" in readiness["open_gaps"]
-    assert "trace_audit_export_211_acceptance" in readiness["open_gaps"]
+    assert "trace_audit_export_controlled_host_acceptance" in readiness["open_gaps"]
 
 
 def test_quality_golden_set_readiness_contract_is_source_level_and_fail_closed():
@@ -761,7 +797,7 @@ def test_quality_golden_set_readiness_contract_is_source_level_and_fail_closed()
         "review_status",
         "reviewed_at",
     ]
-    assert "golden_set_eval_runtime_and_211_acceptance" in readiness["open_gaps"]
+    assert "golden_set_eval_controlled_host_acceptance" in readiness["open_gaps"]
     assert "office_workflow_acceptance_dataset" in readiness["open_gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -816,7 +852,7 @@ def test_observability_readiness_includes_quality_golden_set_contract_without_cl
     assert "quality_score_schema_contract" in quality["implemented"]
     assert "golden_set_eval_run_contract" not in quality["gaps"]
     assert "quality_score_schema" not in quality["gaps"]
-    assert "golden_set_eval_runtime_and_211_acceptance" in quality["gaps"]
+    assert "golden_set_eval_controlled_host_acceptance" in quality["gaps"]
     assert "quality_threshold_calibration" in quality["gaps"]
 
     evidence = quality["evidence"]["quality_golden_set"]
@@ -825,7 +861,7 @@ def test_observability_readiness_includes_quality_golden_set_contract_without_cl
     assert evidence["status"] == "partial_blocked"
     assert evidence["active_eval_policy"] == "contract_only_not_enabled"
     assert evidence["evidence_contract"]["does_not_close_g9"] is True
-    assert "golden_set_eval_runtime_and_211_acceptance" in readiness["open_gaps"]
+    assert "golden_set_eval_controlled_host_acceptance" in readiness["open_gaps"]
 
 
 def test_render_observability_readiness_markdown_is_operator_readable_and_gap_first():
@@ -842,7 +878,7 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "ai-platform.error-taxonomy-dashboard-contract.v1" in markdown
     assert "error_taxonomy_dashboard_runtime_acceptance" in markdown
     assert "error_taxonomy_dashboard_visual_acceptance" in markdown
-    assert "error_taxonomy_dashboard_211_acceptance" in markdown
+    assert "error_taxonomy_dashboard_controlled_host_acceptance" in markdown
     assert "error_taxonomy_dashboard_acceptance" not in markdown
     assert "latency_percentiles_p50_p95_p99_admin_projection" in markdown
     assert "model_gateway_backpressure_policy_contract" in markdown
@@ -852,9 +888,9 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "quality_golden_set_readiness_contract" in markdown
     assert "ai-platform.quality-golden-set-readiness.v1" in markdown
     assert "ai-platform.golden-set-eval-evidence-contract.v1" in markdown
-    assert "golden_set_eval_runtime_and_211_acceptance" in markdown
+    assert "golden_set_eval_controlled_host_acceptance" in markdown
     assert "alert_slo_rule_template_evidence" in markdown
-    assert "alert_rules_runtime_dashboard_and_211_acceptance" in markdown
+    assert "alert_rules_runtime_dashboard_and_controlled_host_acceptance" in markdown
     assert "alert_delivery_channel_policy_contract" in markdown
     assert "ai-platform.alert-delivery-channel-policy.v1" in markdown
     assert "alert_delivery_channel_runtime_acceptance" in markdown
@@ -865,7 +901,7 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "audit.trace_exports.<export_id>" in markdown
     assert "trace_audit_export_runtime_acceptance" in markdown
     assert "trace_audit_export_dashboard_acceptance" in markdown
-    assert "trace_audit_export_211_acceptance" in markdown
+    assert "trace_audit_export_controlled_host_acceptance" in markdown
     assert "release_evidence_export_location_contract" in markdown
     assert "release_evidence_export_acceptance_preflight" in markdown
     assert "ai-platform.release-evidence-export-acceptance.v1" in markdown
@@ -903,9 +939,39 @@ def test_observability_readiness_cli_outputs_json_without_secret_markers():
     assert "callback-secret" not in result.stdout
 
 
-def test_observability_readiness_cli_uses_reviewed_release_evidence_runtime_acceptance():
+def test_observability_readiness_cli_does_not_treat_historical_evidence_as_current_runtime():
     result = subprocess.run(
         [sys.executable, "tools/observability_readiness.py", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    release_evidence = payload["domains"]["alerts_and_exports"]["evidence"]["release_evidence"]
+
+    assert "runtime_acceptance" not in release_evidence
+    assert "release_evidence_runtime_acceptance" not in payload["domains"]["alerts_and_exports"]["implemented"]
+    assert "release_evidence_runtime_export_acceptance" in payload["open_gaps"]
+    assert "release_evidence_retention_runtime_acceptance" in payload["open_gaps"]
+    assert payload["status"] == "partial_blocked"
+
+
+def test_observability_readiness_cli_loads_only_explicit_runtime_subject(tmp_path):
+    _write_runtime_acceptance_entry(tmp_path)
+    runtime_subject_sha = "948179c73734aa61ed764fb3485f5415fca8f193"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/observability_readiness.py",
+            "--format",
+            "json",
+            "--runtime-subject-sha",
+            runtime_subject_sha,
+            "--evidence-root",
+            str(tmp_path),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -918,9 +984,44 @@ def test_observability_readiness_cli_uses_reviewed_release_evidence_runtime_acce
     assert "release_evidence_runtime_acceptance" in payload["domains"]["alerts_and_exports"]["implemented"]
     assert "release_evidence_runtime_export_acceptance" not in payload["open_gaps"]
     assert "release_evidence_retention_runtime_acceptance" not in payload["open_gaps"]
-    assert payload["status"] == "partial_blocked"
-    assert "source_ref" not in json.dumps(release_evidence["runtime_acceptance"], ensure_ascii=False).lower()
-    assert "evidence_ref" not in json.dumps(release_evidence["runtime_acceptance"], ensure_ascii=False).lower()
+
+
+def test_observability_readiness_cli_rejects_unbound_evidence_root(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/observability_readiness.py",
+            "--format",
+            "json",
+            "--evidence-root",
+            str(tmp_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--evidence-root requires --runtime-subject-sha" in result.stderr
+
+
+def test_observability_readiness_cli_rejects_noncanonical_runtime_subject_sha():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/observability_readiness.py",
+            "--format",
+            "json",
+            "--runtime-subject-sha",
+            "not-a-full-sha",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "must be a full lowercase 40-character commit SHA" in result.stderr
 
 
 def test_error_taxonomy_dashboard_readiness_cli_outputs_json_without_secret_markers():

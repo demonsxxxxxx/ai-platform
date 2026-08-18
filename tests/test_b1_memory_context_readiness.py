@@ -111,8 +111,8 @@ def _structured_runtime_evidence() -> dict:
     return {
         "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
         "ok": True,
-        "target": "211_api_memory_context_workflow",
-        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "target": "controlled_host_api_memory_context_workflow",
+        "acceptance_gap": "controlled_host_memory_enabled_document_workflow_smoke",
         "redaction_scan_status": "passed",
         "memory_record_count": 1,
         "workflow": {
@@ -238,11 +238,11 @@ def test_b1_readiness_stays_local_partial_until_structured_runtime_smoke_exists(
 
     assert readiness["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
     assert readiness["backend_stage"] == "B1 memory/context usable"
-    assert readiness["status"] == "local_controls_ready_runtime_smoke_required"
+    assert readiness["status"] == "blocked_missing_context_pack_evidence"
     assert readiness["status_label"] == "local partial"
     assert readiness["admin_runtime_projection"] == "/api/ai/admin/runtime/overview"
     assert readiness["ordinary_user_policy"] == "session_scoped_memory_with_public_provenance"
-    assert readiness["runtime_acceptance"]["status"] == "missing_211_memory_enabled_document_workflow_smoke"
+    assert readiness["runtime_acceptance"]["status"] == "missing_memory_enabled_document_workflow_smoke"
     assert "status_label_after_smoke" not in readiness["runtime_acceptance"]
     assert readiness["runtime_acceptance"]["selected_workflow"] == {
         "workflow": "internal_document_review",
@@ -251,7 +251,7 @@ def test_b1_readiness_stays_local_partial_until_structured_runtime_smoke_exists(
         "memory_scope": "session_workspace",
     }
     assert readiness["open_gaps"] == [
-        "211_memory_enabled_document_workflow_smoke",
+        "controlled_host_memory_enabled_document_workflow_smoke",
         "b1_runtime_evidence_review_against_merged_source",
     ]
     assert readiness["runtime_acceptance_evidence"] == {}
@@ -282,14 +282,14 @@ def test_b1_readiness_markdown_is_gap_first_and_does_not_overclaim_runtime():
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
     open_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[0]
-    assert "- 211_memory_enabled_document_workflow_smoke" in open_gap_section
+    assert "- controlled_host_memory_enabled_document_workflow_smoke" in open_gap_section
     assert "- b1_runtime_evidence_review_against_merged_source" in open_gap_section
     assert "- b1_memory_export_boundary" not in open_gap_section
     assert "- b1_rollback_boundary" not in open_gap_section
     assert "document-review" in markdown
     assert "document_review" in markdown
     assert "tools/verify_b1_memory_context_workflow.py" in markdown
-    assert "missing_211_memory_enabled_document_workflow_smoke" in markdown
+    assert "missing_memory_enabled_document_workflow_smoke" in markdown
     assert "211 verified" not in markdown.lower()
     assert "gate closable" not in markdown.lower()
     assert "does not enable long-term cross-session memory by default" in markdown
@@ -307,13 +307,13 @@ def test_b1_readiness_cli_outputs_conservative_json_without_private_markers():
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
-    assert payload["status"] == "local_controls_ready_runtime_smoke_required"
+    assert payload["status"] == "blocked_missing_context_pack_evidence"
     assert payload["status_label"] == "local partial"
-    assert payload["runtime_acceptance"]["status"] == "missing_211_memory_enabled_document_workflow_smoke"
+    assert payload["runtime_acceptance"]["status"] == "missing_memory_enabled_document_workflow_smoke"
     assert payload["runtime_acceptance"]["selected_workflow"]["agent_id"] == "document-review"
     assert payload["runtime_acceptance"]["selected_workflow"]["capability_id"] == "document_review"
     assert payload["open_gaps"] == [
-        "211_memory_enabled_document_workflow_smoke",
+        "controlled_host_memory_enabled_document_workflow_smoke",
         "b1_runtime_evidence_review_against_merged_source",
     ]
     assert "b1_runtime_evidence_review_against_merged_source" not in payload[
@@ -374,7 +374,7 @@ def test_runtime_acceptance_evidence_accepts_structured_document_workflow_artifa
             {
                 "schema_version": "ai-platform.release-evidence-entry.v1",
                 "gate": "B1 memory/context usable",
-                "artifact_kind": "211_memory_enabled_document_workflow_smoke",
+                "artifact_kind": "controlled_host_memory_enabled_document_workflow_smoke",
                 "captured_at": "2026-07-05T00:00:00+00:00",
                 "evidence_id": "structured-b1-document-workflow-smoke",
                 "review_status": "reviewed",
@@ -396,7 +396,7 @@ def test_runtime_acceptance_evidence_accepts_structured_document_workflow_artifa
                     "verifier": "tools/verify_b1_memory_context_workflow.py",
                     "result": "ok:true",
                     "runtime_checks": {
-                        "211_memory_enabled_document_workflow_smoke": _structured_runtime_evidence()
+                        "controlled_host_memory_enabled_document_workflow_smoke": _structured_runtime_evidence()
                     },
                 },
             },
@@ -410,10 +410,10 @@ def test_runtime_acceptance_evidence_accepts_structured_document_workflow_artifa
         return_value="source-sha",
     ):
         selected = _runtime_acceptance_evidence(tmp_path)[
-            "211_memory_enabled_document_workflow_smoke"
+            "controlled_host_memory_enabled_document_workflow_smoke"
         ]
 
-    assert selected["status"] == "verified_211_runtime_acceptance"
+    assert selected["status"] == "verified_runtime_acceptance"
     assert selected["evidence_id"] == "structured-b1-document-workflow-smoke"
     assert selected["workflow"]["agent_id"] == "document-review"
     assert selected["workflow"]["capability_id"] == "document_review"
@@ -462,7 +462,7 @@ def test_runtime_acceptance_evidence_accepts_verifier_style_check_objects(tmp_pa
             {
                 "schema_version": "ai-platform.release-evidence-entry.v1",
                 "gate": "B1 memory/context usable",
-                "artifact_kind": "211_memory_enabled_document_workflow_smoke",
+                "artifact_kind": "controlled_host_memory_enabled_document_workflow_smoke",
                 "captured_at": "2026-07-05T00:00:00+00:00",
                 "evidence_id": "structured-b1-document-workflow-verifier-output",
                 "review_status": "reviewed",
@@ -484,7 +484,7 @@ def test_runtime_acceptance_evidence_accepts_verifier_style_check_objects(tmp_pa
                     "verifier": "tools/verify_b1_memory_context_workflow.py",
                     "result": "ok:true",
                     "runtime_checks": {
-                        "211_memory_enabled_document_workflow_smoke": (
+                        "controlled_host_memory_enabled_document_workflow_smoke": (
                             _structured_runtime_evidence_with_verifier_style_checks()
                         )
                     },
@@ -500,7 +500,7 @@ def test_runtime_acceptance_evidence_accepts_verifier_style_check_objects(tmp_pa
         return_value="source-sha",
     ):
         selected = _runtime_acceptance_evidence(tmp_path)[
-            "211_memory_enabled_document_workflow_smoke"
+            "controlled_host_memory_enabled_document_workflow_smoke"
         ]
 
     assert selected["evidence_id"] == "structured-b1-document-workflow-verifier-output"
@@ -1064,7 +1064,7 @@ def test_b1_memory_context_readiness_status_degrades_for_missing_local_evidence(
     assert (
         _status_for_local_controls(
             {"missing_evidence_markers": []},
-            {"open_gaps": ["executor_context_pack_211_acceptance"]},
+            {"open_gaps": ["executor_context_pack_runtime_source_probe"]},
         )
         == "blocked_missing_context_pack_evidence"
     )

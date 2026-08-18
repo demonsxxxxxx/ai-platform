@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from app.office_context_readiness import (
+    _current_source_commit,
     build_office_context_readiness,
     render_office_context_readiness_markdown,
 )
@@ -11,19 +12,19 @@ from app.office_context_readiness import (
 
 def _valid_executor_context_pack_evidence() -> dict:
     return {
-        "schema_version": "ai-platform.executor-context-pack-211.v1",
+        "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
         "source_schema_version": "ai-platform.executor-context-pack.v1",
         "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
         "runtime_mode": "worker",
-        "evidence_strength": "live_worker_run_payload",
-        "does_not_close_211_acceptance": False,
-        "runtime_acceptance_requires_real_run_payload": False,
-        "runtime_run_payload_verified": True,
+        "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+        "does_not_close_runtime_acceptance": False,
+        "runtime_run_payload_verified": False,
+        "observed_worker_dispatch": True,
         "source_functions": [
             "app.repositories.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
-            "app.executors.claude_agent_worker.build_skill_prompt_context_pack_injection",
+            "app.executors.claude.prompts.build_skill_prompt",
             "app.worker._context_snapshot_ref_from_row",
         ],
         "prompt_checks": {
@@ -40,8 +41,8 @@ def _valid_executor_context_pack_evidence() -> dict:
             "workspace_id_scoped": True,
             "user_id_scoped": True,
             "session_id_scoped": True,
-            "source_run_artifact_count_positive": True,
-            "source_run_artifact_scope_verified": True,
+            "source_run_material_count_positive": True,
+            "source_run_material_scope_verified": True,
         },
         "non_expansion_invariants": {
             "ordinary_user_multi_agent_allowed": False,
@@ -57,8 +58,14 @@ def _valid_executor_context_pack_evidence() -> dict:
             "worker_context_ref_rebuilt_from_db_snapshot": True,
             "context_pack_schema_present": True,
         },
+        "worker_dispatch_checks": {
+            "run_status_succeeded": True,
+            "worker_started_event_present": True,
+            "run_succeeded_event_present": True,
+            "worker_events_ordered": True,
+        },
         "runtime_evidence": {
-            "live_worker_run_payload": True,
+            "observed_worker_dispatch": True,
             "run_row_loaded": True,
             "context_snapshot_id_present": True,
             "scoped_context_snapshot_loaded": True,
@@ -70,8 +77,8 @@ def _valid_executor_context_pack_evidence() -> dict:
             "sandbox_runtime_paths_absent": True,
             "executor_private_content_absent": True,
             "long_term_memory_read_false": True,
-            "source_run_artifact_scope_tenant_workspace_user_session": True,
-            "source_run_artifact_count_positive": True,
+            "source_run_material_scope_tenant_workspace_user_session": True,
+            "source_run_material_count_positive": True,
             "fresh_generated_at": True,
             "source_functions_bound_to_current_runtime": True,
         },
@@ -93,7 +100,7 @@ def _valid_executor_context_pack_evidence() -> dict:
 def _valid_sandbox_runtime_evidence() -> dict:
     run_id = "sandbox-pr44-mcp-final-20260616083439"
     return {
-        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "schema_version": "ai-platform.sandbox-runtime.v2",
         "run_id": run_id,
         "executor_url": "http://127.0.0.1:18000",
         "runtime_mode": "platform",
@@ -197,6 +204,7 @@ def _write_office_runtime_entry(
     image: str = "ai-platform:pr44-s2-verifier-20260616083334",
     source_tree_dirty: bool = True,
     source_snapshot: dict | None = None,
+    captured_at: str = "2026-06-16T08:36:40+08:00",
 ) -> None:
     evidence_dir = repo_root / "docs" / "release-evidence" / "office-context-runtime" / evidence_dir_name
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +217,7 @@ def _write_office_runtime_entry(
         "issue_refs": ["#22"],
         "pr_refs": pr_refs if pr_refs is not None else ["#44"],
         "artifact_kind": artifact_kind,
-        "captured_at": "2026-06-16T08:36:40+08:00",
+        "captured_at": captured_at,
         "source_ref": {
             "branch": source_branch,
             "runtime_source_marker": runtime_source_marker,
@@ -243,25 +251,42 @@ def _write_office_runtime_entry(
     (evidence_dir / f"{evidence_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> None:
+def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> str:
+    runtime_subject_sha = "1234567890abcdef1234567890abcdef12345678"
     _write_office_runtime_entry(
         repo_root,
-        evidence_id="2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance",
-        artifact_kind="executor_context_pack_211_acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        runtime_key="executor_context_pack_211_acceptance",
+        evidence_id="executor-live",
+        artifact_kind="executor_context_pack_runtime_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        runtime_key="executor_context_pack_runtime_acceptance",
         runtime_payload=_valid_executor_context_pack_evidence(),
         verifier_checks=[
             "check_executor_context_pack_evidence",
             "check_no_secret_leakage",
         ],
+        evidence_dir_name="current",
+        commit_sha=runtime_subject_sha,
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image=f"ai-platform:{runtime_subject_sha}",
+        source_tree_dirty=False,
+        source_snapshot={
+            "schema_version": "ai-platform.source-snapshot.v1",
+            "source_tree_commit_sha": runtime_subject_sha,
+            "source_tree_dirty": False,
+            "runtime_subject_commit_sha": runtime_subject_sha,
+            "runtime_affecting_changes_since_runtime_subject": [],
+            "runtime_affecting_dirty_paths": [],
+        },
     )
     _write_office_runtime_entry(
         repo_root,
-        evidence_id="2026-06-16-211-office-context-pr44-sandbox-latency-split-runtime-acceptance",
-        artifact_kind="sandbox_cold_start_latency_split_211_acceptance",
-        verifier="scripts/verify_sandbox_runtime_211.py",
-        runtime_key="sandbox_cold_start_latency_split_211_acceptance",
+        evidence_id="sandbox-live",
+        artifact_kind="sandbox_cold_start_latency_split_runtime_acceptance",
+        verifier="scripts/verify_sandbox_runtime.py",
+        runtime_key="sandbox_cold_start_latency_split_runtime_acceptance",
         runtime_payload=_valid_sandbox_runtime_evidence(),
         verifier_checks=[
             "check_docker_socket",
@@ -273,7 +298,24 @@ def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> None:
             "check_platform_hardening_evidence",
             "check_no_secret_leakage",
         ],
+        evidence_dir_name="current-sandbox",
+        commit_sha=runtime_subject_sha,
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image=f"ai-platform:{runtime_subject_sha}",
+        source_tree_dirty=False,
+        source_snapshot={
+            "schema_version": "ai-platform.source-snapshot.v1",
+            "source_tree_commit_sha": runtime_subject_sha,
+            "source_tree_dirty": False,
+            "runtime_subject_commit_sha": runtime_subject_sha,
+            "runtime_affecting_changes_since_runtime_subject": [],
+            "runtime_affecting_dirty_paths": [],
+        },
     )
+    return runtime_subject_sha
 
 
 def test_office_context_readiness_defines_safe_context_pack_contract_without_enabling_runtime(tmp_path):
@@ -305,8 +347,8 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
     ]
     assert "persistence/versioning" in readiness["evidence_policy"]
     assert "versioned persistence" not in readiness["evidence_policy"]
-    assert "211 executor context-pack" in readiness["evidence_policy"]
-    assert "does not close `executor_context_pack_211_acceptance`" in readiness["evidence_policy"]
+    assert "superseded historical executor context-pack evidence" in readiness["evidence_policy"]
+    assert "does not close `executor_context_pack_runtime_acceptance`" in readiness["evidence_policy"]
     assert "packaged frontend acceptance" in readiness["evidence_policy"]
     assert "document-centric follow-up state" in readiness["evidence_policy"]
     assert "sandbox latency split runtime evidence" in readiness["evidence_policy"]
@@ -367,14 +409,14 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "sandbox_total_latency_ms",
         ],
         "must_not_hide_cold_start_in_executor_latency": True,
-        "runtime_acceptance_required": "211_sandbox_latency_split_smoke",
+        "runtime_acceptance_required": "controlled_host_sandbox_latency_split_smoke",
     }
     smoke_contract = readiness["sandbox_runtime_smoke_contract"]
     assert smoke_contract == {
         "schema_version": "ai-platform.sandbox-runtime-smoke-contract.v1",
-        "target": "211_docker_capable_host",
-        "generator_script": "scripts/generate_sandbox_runtime_evidence_211.py",
-        "verifier_script": "scripts/verify_sandbox_runtime_211.py",
+        "target": "controlled_docker_host",
+        "generator_script": "scripts/generate_sandbox_runtime_evidence.py",
+        "verifier_script": "scripts/verify_sandbox_runtime.py",
         "runtime_mode": "platform",
         "sandbox_provider": "docker",
         "docker_cmd": "sudo -n docker",
@@ -402,21 +444,24 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "docker_sandbox_production_hardening_claimed": False,
             "ordinary_user_multi_agent_allowed": False,
         },
-        "acceptance_gap": "sandbox_cold_start_latency_split_211_acceptance",
+        "acceptance_gap": "sandbox_cold_start_latency_split_runtime_acceptance",
     }
     executor_contract = readiness["executor_context_pack_runtime_acceptance_contract"]
     assert executor_contract == {
         "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v1",
-        "target": "211_api_worker_runtime",
-        "generator_script": "scripts/generate_executor_context_pack_evidence_211.py",
-        "verifier_script": "scripts/verify_executor_context_pack_211.py",
+        "target": "controlled_worker_runtime",
+        "generator_script": "scripts/generate_executor_context_pack_evidence.py",
+        "verifier_script": "scripts/verify_executor_context_pack.py",
+        "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v2",
+        "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
         "source_schema_version": "ai-platform.executor-context-pack.v1",
         "source_probe_evidence_strength": "source_probe_on_target_runtime",
-        "required_live_evidence_strength": "live_worker_run_payload",
-        "does_not_close_211_acceptance": True,
-        "runtime_acceptance_requires_real_run_payload": True,
+        "required_runtime_evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+        "does_not_close_runtime_acceptance": True,
+        "runtime_acceptance_requires_observed_worker_dispatch": True,
         "required_live_evidence_sections": [
             "live_run_checks",
+            "worker_dispatch_checks",
             "runtime_evidence",
             "prompt_checks",
             "scope_checks",
@@ -426,11 +471,11 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "app.repositories.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
-            "app.executors.claude_agent_worker.build_skill_prompt_context_pack_injection",
+            "app.executors.claude.prompts.build_skill_prompt",
             "app.worker._context_snapshot_ref_from_row",
         ],
         "required_runtime_evidence": [
-            "live_worker_run_payload",
+            "observed_worker_dispatch",
             "run_row_loaded",
             "context_snapshot_id_present",
             "scoped_context_snapshot_loaded",
@@ -442,8 +487,8 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "sandbox_runtime_paths_absent",
             "executor_private_content_absent",
             "long_term_memory_read_false",
-            "source_run_artifact_scope_tenant_workspace_user_session",
-            "source_run_artifact_count_positive",
+            "source_run_material_scope_tenant_workspace_user_session",
+            "source_run_material_count_positive",
             "fresh_generated_at",
             "source_functions_bound_to_current_runtime",
         ],
@@ -454,13 +499,13 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "long_term_cross_session_memory_enabled": False,
             "public_projection_only_for_ordinary_users": True,
         },
-        "acceptance_gap": "executor_context_pack_211_acceptance",
+        "acceptance_gap": "executor_context_pack_runtime_acceptance",
         "does_not_close_g6_g9": True,
     }
 
     assert readiness["open_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
     ]
     assert readiness["non_goals"] == [
         "do_not_start_docker_sandbox_for_lightweight_writing_by_default",
@@ -478,41 +523,43 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
     assert "callback-token" not in serialized
 
 
-def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_reviewed_211_evidence(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_reviewed_evidence(tmp_path):
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["open_gaps"] == []
     assert readiness["closed_runtime_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
     ]
     assert readiness["does_not_close_g6_g9"] is True
-    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]
+    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_runtime_acceptance"]
     assert executor_evidence == {
-        "status": "verified_211_runtime_acceptance",
-        "artifact_kind": "executor_context_pack_211_acceptance",
-        "evidence_id": "2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance",
+        "status": "verified_runtime_acceptance",
+        "artifact_kind": "executor_context_pack_runtime_acceptance",
+        "evidence_id": "executor-live",
         "path": (
-            "docs/release-evidence/office-context-runtime/pr44/"
-            "2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance.json"
+            "docs/release-evidence/office-context-runtime/current/executor-live.json"
         ),
-        "verifier": "scripts/verify_executor_context_pack_211.py",
-        "runtime_subject": "pr44-s2-verifier-20260616083334",
+        "verifier": "scripts/verify_executor_context_pack.py",
+        "runtime_subject": "1234567890abcdef1234567890abcdef12345678",
         "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
         "runtime_mode": "worker",
-        "evidence_strength": "live_worker_run_payload",
-        "runtime_run_payload_verified": True,
+        "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+        "runtime_run_payload_verified": False,
         "does_not_close_g6_g9": True,
     }
     sandbox_evidence = readiness["runtime_acceptance_evidence"][
-        "sandbox_cold_start_latency_split_211_acceptance"
+        "sandbox_cold_start_latency_split_runtime_acceptance"
     ]
-    assert sandbox_evidence["status"] == "verified_211_runtime_acceptance"
-    assert sandbox_evidence["artifact_kind"] == "sandbox_cold_start_latency_split_211_acceptance"
-    assert sandbox_evidence["runtime_subject"] == "pr44-s2-verifier-20260616083334"
+    assert sandbox_evidence["status"] == "verified_runtime_acceptance"
+    assert sandbox_evidence["artifact_kind"] == "sandbox_cold_start_latency_split_runtime_acceptance"
+    assert sandbox_evidence["runtime_subject"] == "1234567890abcdef1234567890abcdef12345678"
     assert sandbox_evidence["run_id"] == "sandbox-pr44-mcp-final-20260616083439"
     assert sandbox_evidence["runtime_mode"] == "platform"
     assert sandbox_evidence["sandbox_provider"] == "docker"
@@ -538,14 +585,133 @@ def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_revie
     assert readiness["policy"]["does_not_expand_multi_agent_beta"] is True
 
 
+def test_office_context_readiness_does_not_close_gaps_for_another_runtime_subject(tmp_path):
+    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    current_subject = "abcdef1234567890abcdef1234567890abcdef12"
+
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=current_subject,
+    )
+
+    assert readiness["evaluated_runtime_subject"] == current_subject
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
+    ]
+    assert readiness["closed_runtime_gaps"] == []
+    assert readiness["runtime_acceptance_evidence"] == {}
+
+
+def test_office_context_readiness_default_subject_requires_a_clean_git_tree(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "office-readiness@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Office Readiness Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    marker = tmp_path / "marker.txt"
+    marker.write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert _current_source_commit(tmp_path) == expected_commit
+
+    marker.write_text("dirty\n", encoding="utf-8")
+
+    assert _current_source_commit(tmp_path) == ""
+
+
+def test_office_context_readiness_default_subject_fails_closed_when_git_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    def git_unavailable(*_args, **kwargs):
+        assert kwargs["timeout"] == 5
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("app.office_context_readiness.subprocess.run", git_unavailable)
+
+    assert _current_source_commit(tmp_path) == ""
+
+
+def test_office_context_readiness_selects_latest_capture_for_exact_subject(tmp_path):
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    source_snapshot = {
+        "schema_version": "ai-platform.source-snapshot.v1",
+        "source_tree_commit_sha": runtime_subject_sha,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": runtime_subject_sha,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+    }
+    for evidence_id, evidence_dir_name, captured_at, run_id in [
+        ("executor-new", "a-new", "2026-06-18T08:36:40+08:00", "run-new"),
+        ("executor-old", "z-old", "2026-06-17T08:36:40+08:00", "run-old"),
+    ]:
+        _write_office_runtime_entry(
+            tmp_path,
+            evidence_id=evidence_id,
+            artifact_kind="executor_context_pack_runtime_acceptance",
+            verifier="scripts/verify_executor_context_pack.py",
+            runtime_key="executor_context_pack_runtime_acceptance",
+            runtime_payload={
+                **_valid_executor_context_pack_evidence(),
+                "run_id": run_id,
+            },
+            verifier_checks=[
+                "check_executor_context_pack_evidence",
+                "check_no_secret_leakage",
+            ],
+            evidence_dir_name=evidence_dir_name,
+            commit_sha=runtime_subject_sha,
+            runtime_subject_commit_sha=runtime_subject_sha,
+            pr_refs=[],
+            source_branch="main",
+            runtime_source_marker=runtime_subject_sha,
+            image=f"ai-platform:{runtime_subject_sha}",
+            source_tree_dirty=False,
+            source_snapshot=source_snapshot,
+            captured_at=captured_at,
+        )
+
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
+
+    executor_evidence = readiness["runtime_acceptance_evidence"][
+        "executor_context_pack_runtime_acceptance"
+    ]
+    assert executor_evidence["evidence_id"] == "executor-new"
+    assert executor_evidence["run_id"] == "run-new"
+
+
 def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack_evidence(tmp_path):
     runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
     _write_office_runtime_entry(
         tmp_path,
-        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
-        artifact_kind="executor_context_pack_211_acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        runtime_key="executor_context_pack_211_acceptance",
+        evidence_id="executor-8e",
+        artifact_kind="executor_context_pack_runtime_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        runtime_key="executor_context_pack_runtime_acceptance",
         runtime_payload={
             **_valid_executor_context_pack_evidence(),
             "run_id": "run_a618c52ee5c148a185254b68e1c81b9e",
@@ -560,7 +726,7 @@ def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack
         pr_refs=[],
         source_branch="main",
         runtime_source_marker=runtime_subject_sha,
-        image="ai-platform:8e0389e-main-runtime-rebase",
+        image=f"ai-platform:{runtime_subject_sha}",
         source_tree_dirty=False,
         source_snapshot={
             "schema_version": "ai-platform.source-snapshot.v1",
@@ -572,28 +738,31 @@ def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "partial_blocked"
-    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_211_acceptance"]
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_runtime_acceptance"]
     assert readiness["does_not_close_g6_g9"] is True
     assert readiness["policy"]["does_not_expand_multi_agent_beta"] is True
-    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]
+    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_runtime_acceptance"]
     assert executor_evidence == {
-        "status": "verified_211_runtime_acceptance",
-        "artifact_kind": "executor_context_pack_211_acceptance",
-        "evidence_id": "2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+        "status": "verified_runtime_acceptance",
+        "artifact_kind": "executor_context_pack_runtime_acceptance",
+        "evidence_id": "executor-8e",
         "path": (
             "docs/release-evidence/office-context-runtime/8e0389e-main-runtime-rebase/"
-            "2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance.json"
+            "executor-8e.json"
         ),
-        "verifier": "scripts/verify_executor_context_pack_211.py",
-        "runtime_subject": "8e0389e-main-runtime-rebase",
+        "verifier": "scripts/verify_executor_context_pack.py",
+        "runtime_subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
         "run_id": "run_a618c52ee5c148a185254b68e1c81b9e",
         "runtime_mode": "worker",
-        "evidence_strength": "live_worker_run_payload",
-        "runtime_run_payload_verified": True,
+        "evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
+        "runtime_run_payload_verified": False,
         "does_not_close_g6_g9": True,
     }
 
@@ -602,10 +771,10 @@ def test_office_context_readiness_accepts_future_main_executor_context_pack_evid
     runtime_subject_sha = "1234567890abcdef1234567890abcdef12345678"
     _write_office_runtime_entry(
         tmp_path,
-        evidence_id="2026-06-18-211-office-context-main-executor-context-pack-runtime-acceptance",
-        artifact_kind="executor_context_pack_211_acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        runtime_key="executor_context_pack_211_acceptance",
+        evidence_id="executor-future",
+        artifact_kind="executor_context_pack_runtime_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        runtime_key="executor_context_pack_runtime_acceptance",
         runtime_payload={
             **_valid_executor_context_pack_evidence(),
             "run_id": "run_future_main",
@@ -620,7 +789,7 @@ def test_office_context_readiness_accepts_future_main_executor_context_pack_evid
         pr_refs=[],
         source_branch="main",
         runtime_source_marker=runtime_subject_sha,
-        image="ai-platform:future-main-runtime-rebase",
+        image=f"ai-platform:{runtime_subject_sha}",
         source_tree_dirty=False,
         source_snapshot={
             "schema_version": "ai-platform.source-snapshot.v1",
@@ -632,11 +801,14 @@ def test_office_context_readiness_accepts_future_main_executor_context_pack_evid
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
-    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
-    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]
-    assert executor_evidence["runtime_subject"] == "future-main-runtime-rebase"
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_runtime_acceptance"]
+    assert executor_evidence["runtime_subject"] == runtime_subject_sha
     assert executor_evidence["run_id"] == "run_future_main"
 
 
@@ -644,10 +816,10 @@ def test_office_context_readiness_rejects_executor_context_evidence_without_sour
     runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
     _write_office_runtime_entry(
         tmp_path,
-        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
-        artifact_kind="executor_context_pack_211_acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        runtime_key="executor_context_pack_211_acceptance",
+        evidence_id="executor-no-snapshot",
+        artifact_kind="executor_context_pack_runtime_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        runtime_key="executor_context_pack_runtime_acceptance",
         runtime_payload=_valid_executor_context_pack_evidence(),
         verifier_checks=[
             "check_executor_context_pack_evidence",
@@ -659,27 +831,30 @@ def test_office_context_readiness_rejects_executor_context_evidence_without_sour
         pr_refs=[],
         source_branch="main",
         runtime_source_marker=runtime_subject_sha,
-        image="ai-platform:8e0389e-main-runtime-rebase",
+        image=f"ai-platform:{runtime_subject_sha}",
         source_tree_dirty=False,
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
     ]
-    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
+    assert "executor_context_pack_runtime_acceptance" not in readiness["runtime_acceptance_evidence"]
 
 
 def test_office_context_readiness_rejects_executor_context_evidence_with_runtime_affecting_delta(tmp_path):
     runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
     _write_office_runtime_entry(
         tmp_path,
-        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
-        artifact_kind="executor_context_pack_211_acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        runtime_key="executor_context_pack_211_acceptance",
+        evidence_id="executor-delta",
+        artifact_kind="executor_context_pack_runtime_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        runtime_key="executor_context_pack_runtime_acceptance",
         runtime_payload=_valid_executor_context_pack_evidence(),
         verifier_checks=[
             "check_executor_context_pack_evidence",
@@ -691,7 +866,7 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
         pr_refs=[],
         source_branch="main",
         runtime_source_marker=runtime_subject_sha,
-        image="ai-platform:8e0389e-main-runtime-rebase",
+        image=f"ai-platform:{runtime_subject_sha}",
         source_tree_dirty=False,
         source_snapshot={
             "schema_version": "ai-platform.source-snapshot.v1",
@@ -703,23 +878,26 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
     ]
-    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
+    assert "executor_context_pack_runtime_acceptance" not in readiness["runtime_acceptance_evidence"]
 
 
 def test_office_context_readiness_rejects_executor_context_evidence_with_runtime_affecting_dirty_paths(tmp_path):
     runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
     _write_office_runtime_entry(
         tmp_path,
-        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
-        artifact_kind="executor_context_pack_211_acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        runtime_key="executor_context_pack_211_acceptance",
+        evidence_id="executor-dirty",
+        artifact_kind="executor_context_pack_runtime_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        runtime_key="executor_context_pack_runtime_acceptance",
         runtime_payload=_valid_executor_context_pack_evidence(),
         verifier_checks=[
             "check_executor_context_pack_evidence",
@@ -731,7 +909,7 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
         pr_refs=[],
         source_branch="main",
         runtime_source_marker=runtime_subject_sha,
-        image="ai-platform:8e0389e-main-runtime-rebase",
+        image=f"ai-platform:{runtime_subject_sha}",
         source_tree_dirty=False,
         source_snapshot={
             "schema_version": "ai-platform.source-snapshot.v1",
@@ -743,44 +921,46 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
         },
     )
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["open_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
     ]
-    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
+    assert "executor_context_pack_runtime_acceptance" not in readiness["runtime_acceptance_evidence"]
 
 
 def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
-    evidence_path = next(
-        (
-            tmp_path
-            / "docs/release-evidence/office-context-runtime/pr44"
-        ).glob("*executor-context-pack*.json")
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/office-context-runtime/current/executor-live.json"
     )
     payload = json.loads(evidence_path.read_text(encoding="utf-8"))
     payload["review_status"] = "draft"
     evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
-    assert readiness["open_gaps"] == ["executor_context_pack_211_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
+    assert readiness["open_gaps"] == ["executor_context_pack_runtime_acceptance"]
+    assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
 
 
 def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input_keys(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
-    evidence_path = next(
-        (
-            tmp_path
-            / "docs/release-evidence/office-context-runtime/pr44"
-        ).glob("*executor-context-pack*.json")
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/office-context-runtime/current/executor-live.json"
     )
     payload = json.loads(evidence_path.read_text(encoding="utf-8"))
     runtime_checks = payload["evidence_ref"]["runtime_checks"]
-    executor_payload = runtime_checks["executor_context_pack_211_acceptance"]
+    executor_payload = runtime_checks["executor_context_pack_runtime_acceptance"]
     executor_payload["public_context_summary"]["input_keys"] = [
         "attachments",
         "copied_from_run_id",
@@ -788,50 +968,59 @@ def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input
     ]
     evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "partial_blocked"
-    assert readiness["open_gaps"] == ["executor_context_pack_211_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
+    assert readiness["open_gaps"] == ["executor_context_pack_runtime_acceptance"]
+    assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
 
 
-def test_office_context_readiness_requires_pr44_runtime_evidence_binding(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
-    evidence_root = tmp_path / "docs/release-evidence/office-context-runtime/pr44"
-    for evidence_path in evidence_root.glob("*.json"):
+def test_office_context_readiness_requires_current_runtime_evidence_binding(tmp_path):
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    evidence_root = tmp_path / "docs/release-evidence/office-context-runtime"
+    for evidence_path in evidence_root.rglob("*.json"):
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
-        payload["pr_refs"] = ["#43"]
+        payload["source_ref"]["branch"] = "feature"
         evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
     assert readiness["status"] == "partial_blocked"
     assert readiness["open_gaps"] == [
-        "executor_context_pack_211_acceptance",
-        "sandbox_cold_start_latency_split_211_acceptance",
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
     ]
     assert readiness["closed_runtime_gaps"] == []
     assert readiness["runtime_acceptance_evidence"] == {}
 
 
 def test_office_context_readiness_rejects_incomplete_sandbox_hardening_evidence(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_path = next(
         (
             tmp_path
-            / "docs/release-evidence/office-context-runtime/pr44"
-        ).glob("*sandbox-latency-split*.json")
+            / "docs/release-evidence/office-context-runtime/current-sandbox"
+        ).glob("*.json")
     )
     payload = json.loads(evidence_path.read_text(encoding="utf-8"))
     runtime_checks = payload["evidence_ref"]["runtime_checks"]
-    sandbox_payload = runtime_checks["sandbox_cold_start_latency_split_211_acceptance"]
+    sandbox_payload = runtime_checks["sandbox_cold_start_latency_split_runtime_acceptance"]
     sandbox_payload["hardening"].pop("cached_lease_revalidation")
     evidence_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    readiness = build_office_context_readiness(repo_root=tmp_path)
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path,
+        runtime_subject_sha=runtime_subject_sha,
+    )
 
-    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_211_acceptance"]
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_runtime_acceptance"]
 
 
 def test_office_context_readiness_markdown_is_gap_first_and_operator_readable(tmp_path):
@@ -852,15 +1041,15 @@ def test_office_context_readiness_markdown_is_gap_first_and_operator_readable(tm
     assert "sandbox_runtime_hardening_source_verifier_contract" in markdown
     assert "sandbox_cached_lease_scope_revalidation_source_tests" in markdown
     assert "sandbox_runtime_smoke_contract" in markdown
-    assert "scripts/generate_sandbox_runtime_evidence_211.py" in markdown
-    assert "scripts/verify_sandbox_runtime_211.py" in markdown
+    assert "scripts/generate_sandbox_runtime_evidence.py" in markdown
+    assert "scripts/verify_sandbox_runtime.py" in markdown
     assert "ordinary_user_high_risk_sandbox_allowed" in markdown
     assert "executor_context_pack_runtime_acceptance_contract" in markdown
     assert "ai-platform.executor-context-pack-runtime-acceptance.v1" in markdown
     assert "app.repositories.get_context_snapshot_for_worker" in markdown
     assert "app.context_builder.executor_context_pack_from_snapshot" in markdown
     assert "prompt_includes_bounded_summary" in markdown
-    assert "source_run_artifact_scope_tenant_workspace_user_session" in markdown
+    assert "source_run_material_scope_tenant_workspace_user_session" in markdown
     assert "fresh_generated_at" in markdown
     assert "source_functions_bound_to_current_runtime" in markdown
     assert "- office_execution_tier_router\n" not in open_gaps_section
@@ -885,7 +1074,11 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
-    assert payload["status"] == "runtime_acceptance_recorded"
+    assert payload["status"] == "partial_blocked"
+    assert payload["open_gaps"] == [
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
+    ]
     assert payload["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert "executor_context_pack_prompt_injection_source_tests" in payload["implemented_controls"]
     assert "source_level_context_pack_persistence_and_versioning" in payload["implemented_controls"]
@@ -904,7 +1097,13 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert payload["sandbox_runtime_smoke_contract"]["non_expansion_invariants"][
         "ordinary_user_high_risk_sandbox_allowed"
     ] is False
-    assert payload["executor_context_pack_runtime_acceptance_contract"]["target"] == "211_api_worker_runtime"
+    assert payload["executor_context_pack_runtime_acceptance_contract"]["target"] == "controlled_worker_runtime"
+    assert payload["executor_context_pack_runtime_acceptance_contract"]["source_probe_schema_version"] == (
+        "ai-platform.executor-context-pack-probe.v2"
+    )
+    assert payload["executor_context_pack_runtime_acceptance_contract"][
+        "runtime_acceptance_schema_version"
+    ] == "ai-platform.executor-context-pack-runtime-acceptance.v2"
     assert payload["executor_context_pack_runtime_acceptance_contract"]["source_schema_version"] == (
         "ai-platform.executor-context-pack.v1"
     )
@@ -913,13 +1112,13 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
         == "source_probe_on_target_runtime"
     )
     assert (
-        payload["executor_context_pack_runtime_acceptance_contract"]["required_live_evidence_strength"]
-        == "live_worker_run_payload"
+        payload["executor_context_pack_runtime_acceptance_contract"]["required_runtime_evidence_strength"]
+        == "observed_worker_dispatch_with_scoped_context_reconstruction"
     )
     assert "accepted_evidence_strength" not in payload["executor_context_pack_runtime_acceptance_contract"]
-    assert payload["executor_context_pack_runtime_acceptance_contract"]["does_not_close_211_acceptance"] is True
+    assert payload["executor_context_pack_runtime_acceptance_contract"]["does_not_close_runtime_acceptance"] is True
     assert (
-        payload["executor_context_pack_runtime_acceptance_contract"]["runtime_acceptance_requires_real_run_payload"]
+        payload["executor_context_pack_runtime_acceptance_contract"]["runtime_acceptance_requires_observed_worker_dispatch"]
         is True
     )
     assert "runtime_evidence" in payload[
@@ -929,15 +1128,15 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
         "executor_context_pack_runtime_acceptance_contract"
     ]["source_functions"]
     assert payload["executor_context_pack_runtime_acceptance_contract"]["generator_script"] == (
-        "scripts/generate_executor_context_pack_evidence_211.py"
+        "scripts/generate_executor_context_pack_evidence.py"
     )
     assert payload["executor_context_pack_runtime_acceptance_contract"]["verifier_script"] == (
-        "scripts/verify_executor_context_pack_211.py"
+        "scripts/verify_executor_context_pack.py"
     )
     assert "prompt_includes_bounded_summary" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
-    assert "live_worker_run_payload" in payload[
+    assert "observed_worker_dispatch" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
     assert "scoped_context_snapshot_loaded" in payload[
@@ -949,7 +1148,7 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert "source_functions_bound_to_current_runtime" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
-    assert "source_run_artifact_count_positive" in payload[
+    assert "source_run_material_count_positive" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
     assert payload["executor_context_pack_runtime_acceptance_contract"]["non_expansion_invariants"][
@@ -959,17 +1158,12 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert "user_visible_context_provenance_projection" not in payload["open_gaps"]
     assert "frontend_context_provenance_acceptance" not in payload["open_gaps"]
     assert "document_centric_followup_state" not in payload["open_gaps"]
-    assert "executor_context_pack_211_acceptance" not in payload["open_gaps"]
-    assert "executor_context_pack_211_acceptance" in payload["closed_runtime_gaps"]
+    assert "executor_context_pack_runtime_acceptance" in payload["open_gaps"]
+    assert "executor_context_pack_runtime_acceptance" not in payload["closed_runtime_gaps"]
     assert "office_execution_tier_router" not in payload["open_gaps"]
     assert "sandbox_cold_start_latency_split" not in payload["open_gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" not in payload["open_gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" in payload["closed_runtime_gaps"]
-    assert payload["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]["run_id"] == (
-        "run_a618c52ee5c148a185254b68e1c81b9e"
-    )
-    assert payload["runtime_acceptance_evidence"]["sandbox_cold_start_latency_split_211_acceptance"][
-        "timings"
-    ]["sandbox_container_cold_start_latency_ms"] > 0
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" in payload["open_gaps"]
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" not in payload["closed_runtime_gaps"]
+    assert payload["runtime_acceptance_evidence"] == {}
     assert "sk-secret" not in result.stdout
     assert "callback-token" not in result.stdout

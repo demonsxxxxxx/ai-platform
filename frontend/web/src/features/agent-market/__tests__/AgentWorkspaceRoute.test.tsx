@@ -16,11 +16,20 @@ test("AgentWorkspaceRoute restores current or immutable historical Agent revisio
   assert.match(source, /sessionApi\.getAuthoritative\(routeSessionId\)/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /profile: historicalProfile\(identity\)/);
+  assert.match(source, /phase === "ready"/);
   assert.match(source, /loadedWorkspace !== null/);
   assert.match(source, /loadedWorkspace\.agentId === agentId/);
   assert.match(source, /loadedWorkspace\.revision === revision/);
   assert.match(source, /agentWorkspaceSessionSource=\{conversationList\}/);
-  assert.match(source, /agentWorkspaceStartProfile=\{resolvedWorkspace\.startProfile\}/);
+  assert.match(
+    source,
+    /agentWorkspaceStartProfile=\{resolvedWorkspace\.startProfile \?\? undefined\}/,
+  );
+  assert.match(source, /agentWorkspaceReadOnly=\{resolvedWorkspace\.readOnly\}/);
+  assert.match(
+    source,
+    /readOnly:[\s\S]*currentProfile === null \|\|[\s\S]*currentProfile\.expected_revision !== validRevision/,
+  );
   assert.match(source, /<ChatAppContent[\s\S]*agentWorkspace=\{resolvedWorkspace\.profile\}/);
   assert.match(source, /<AppShell/);
   assert.match(source, /navigate\("\/agent-market", \{ replace: true \}\)/);

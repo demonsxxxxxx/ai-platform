@@ -55,5 +55,5 @@ unchanged.
 
 This decision does not merge the executor lease token, OpenSandbox lifecycle API
 key, callback token, route receipt, and provider credential into one capability.
-It does not change local Docker execution, deploy s72 or 211, or claim runtime
+It does not change local Docker execution, deploy to s72 or another host, or claim runtime
 acceptance from source and test evidence.

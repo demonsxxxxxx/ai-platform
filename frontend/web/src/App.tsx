@@ -25,6 +25,7 @@ import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
 import { APP_ROUTE_PATHS } from "./appRouteManifest";
 import { installMcpAuthHandoff } from "./utils/mcpGatewayAuth";
+import { ChatRouteBoundary } from "./components/common/ChatRouteBoundary";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -163,10 +164,10 @@ function ChatPageSEO() {
 // Chat Page Component
 function ChatPage() {
   return (
-    <>
+    <ChatRouteBoundary>
       <ChatPageSEO />
       <AppContent key="chat" activeTab="chat" />
-    </>
+    </ChatRouteBoundary>
   );
 }
 
@@ -178,7 +179,7 @@ function RootRedirect() {
   }
 
   return isAuthenticated ? (
-    <Navigate to="/chat" replace />
+    <Navigate to={APP_ROUTE_PATHS.agentMarket} replace />
   ) : (
     <Navigate to="/auth/login" replace />
   );
@@ -302,7 +303,7 @@ function WorkbenchForbiddenPage({
   );
 }
 
-// Auth page wrapper - redirects to the chat-first workbench after successful login/register
+// Auth page wrapper - opens the Agent-first service catalog after login/register.
 function AuthPageWrapper({
   initialMode,
 }: {
@@ -318,7 +319,7 @@ function AuthPageWrapper({
     <AuthPage
       initialMode={initialMode}
       onSuccess={(redirectPath) =>
-        navigate(redirectPath ?? "/chat", { replace: true })
+        navigate(redirectPath ?? APP_ROUTE_PATHS.agentMarket, { replace: true })
       }
     />
   );
@@ -445,7 +446,7 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.users}
               element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <UsersPage />
                 </ProtectedRoute>
               }
@@ -453,7 +454,7 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.roles}
               element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <RolesPage />
                 </ProtectedRoute>
               }
@@ -461,7 +462,7 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.settings}
               element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <SettingsPage />
                 </ProtectedRoute>
               }
@@ -469,7 +470,7 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.feedback}
               element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <FeedbackPage />
                 </ProtectedRoute>
               }
@@ -477,7 +478,7 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.models}
               element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <ModelsPage />
                 </ProtectedRoute>
               }

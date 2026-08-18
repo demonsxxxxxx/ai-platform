@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("market stays in the production shell and resolves durable detail URLs", () => {
+test("market keeps one, two, and three cards responsive while resolving durable detail URLs", () => {
   const source = readFileSync(
     join(process.cwd(), "src/features/agent-market/AgentMarketRoute.tsx"),
     "utf8",
@@ -13,6 +13,7 @@ test("market stays in the production shell and resolves durable detail URLs", ()
   assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
   assert.doesNotMatch(source, /agentProfileApi\s*\.\s*createConversation\(/);
   assert.match(source, /navigate\(buildAgentMarketWorkspacePath\(profile\)\)/);
+  assert.match(source, /navigate\(catalogReturnPath, \{ replace: true \}\)/);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /mobileSidebarOpen/);
@@ -23,10 +24,14 @@ test("market stays in the production shell and resolves durable detail URLs", ()
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /企业已发布/);
-  assert.match(source, /使用方式/);
+  assert.match(source, /输入与输出/);
+  assert.match(source, /权限与数据访问/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
+  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,22rem\),1fr\)\)\]/);
+  assert.doesNotMatch(source, /xl:grid-cols-3/);
+  assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
   assert.doesNotMatch(source, /<textarea/);
   assert.doesNotMatch(
@@ -35,4 +40,23 @@ test("market stays in the production shell and resolves durable detail URLs", ()
   );
   assert.doesNotMatch(source, /model_id|instructions|mcp_tool_ids|selected_skill/);
   assert.doesNotMatch(source, /CANONICAL_CHAT_PATH/);
+  assert.match(source, /AgentIdentityAvatar/);
+  assert.match(source, /Skill Set/);
+  assert.match(source, /附件可选，不由专家限定格式/);
+});
+
+test("Agent product surfaces do not expose attachment type configuration", () => {
+  const marketSource = readFileSync(
+    join(process.cwd(), "src/features/agent-market/AgentMarketRoute.tsx"),
+    "utf8",
+  );
+  const builderSource = readFileSync(
+    join(process.cwd(), "src/features/agent-builder/AgentBuilderEnterpriseFields.tsx"),
+    "utf8",
+  );
+
+  assert.match(marketSource, /附件可选，不由专家限定格式/);
+  assert.doesNotMatch(marketSource, /supported_file_types/);
+  assert.doesNotMatch(builderSource, /data-agent-builder-input-settings/);
+  assert.doesNotMatch(builderSource, /常见附件类型提示/);
 });

@@ -62,6 +62,7 @@ interface SessionListContentProps {
     description: string;
   };
   hideSessionDiscovery?: boolean;
+  navigationOnly?: boolean;
 }
 
 export function SessionListContent({
@@ -83,6 +84,7 @@ export function SessionListContent({
   onToggleChatsCollapsed,
   agentWorkspace,
   hideSessionDiscovery = false,
+  navigationOnly = false,
 }: SessionListContentProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -115,7 +117,7 @@ export function SessionListContent({
     {
       key: "agentMarket",
       icon: Bot,
-      label: "智能体市场",
+      label: "专家市场",
       onClick: () => navigate("/agent-market"),
     },
     ...(isAiAdmin
@@ -123,7 +125,7 @@ export function SessionListContent({
           {
             key: "agentBuilder" as const,
             icon: Bot,
-            label: "智能体管理",
+            label: "专家管理",
             onClick: () => navigate("/agent-builder"),
           },
         ]
@@ -201,7 +203,7 @@ export function SessionListContent({
           className="mx-2 border-b border-[var(--theme-border)]/70 px-2 pb-3 pt-1"
         >
           <p className="text-xs font-medium text-[var(--theme-primary)]">
-            智能体工作区
+            专家工作区
           </p>
           <h2 className="mt-1 truncate text-sm font-semibold text-[var(--theme-text)]">
             {agentWorkspace.name}
@@ -219,13 +221,15 @@ export function SessionListContent({
         data-workbench-primary-nav
         className="flex flex-col gap-2 px-2 pb-2 pt-2"
       >
-        <div className="space-y-1">
+        {!navigationOnly ? <div className="space-y-1">
           <button
             onClick={onNewSession}
             className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm font-medium transition-colors focus:outline-none"
           >
             <MessageSquarePlus size={19} />
-            <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
+            <span className="flex-1 text-left">
+              {agentWorkspace ? "开始新任务" : t("sidebar.newChat")}
+            </span>
             <kbd className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex">
               {t("sidebar.newChatShortcut")}
             </kbd>
@@ -248,9 +252,11 @@ export function SessionListContent({
               </kbd>
             </button>
           ) : null}
-        </div>
+        </div> : null}
 
-        <div className="h-px bg-[var(--theme-border)]/70" />
+        {!navigationOnly ? (
+          <div className="h-px bg-[var(--theme-border)]/70" />
+        ) : null}
 
         <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
           {taskNavItems.map(({ key, icon: Icon, label, onClick }) => {
@@ -297,7 +303,7 @@ export function SessionListContent({
       </div>
 
       {/* Session list */}
-      <div
+      {!navigationOnly ? <div
         ref={onSetScrollEl}
         data-workbench-session-region
         data-sidebar-scroll
@@ -312,7 +318,7 @@ export function SessionListContent({
               >
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)] transition-colors group-hover/section:text-[var(--theme-text-secondary)]">
-                    {t("sidebar.chats")}
+                    {agentWorkspace ? "任务历史" : t("sidebar.chats")}
                   </span>
                   {chatsUnreadCount > 0 && (
                     <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
@@ -395,7 +401,7 @@ export function SessionListContent({
             </>
           ) : null}
         </div>
-      </div>
+      </div> : <div className="flex-1" data-workbench-navigation-spacer />}
 
     </div>
   );

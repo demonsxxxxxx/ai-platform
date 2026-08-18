@@ -139,6 +139,30 @@ def test_resolve_run_selector_uses_selected_skill_without_opening_raw_selector()
     assert resolve_run_selector(request, principal()) == ("general-agent", "department-review")
 
 
+def test_resolve_run_selector_maps_general_chat_to_skillless_harness():
+    request = CreateRunRequest(
+        workspace_id="workspace-a",
+        agent_id="general-agent",
+        capability_id="general_chat",
+    )
+
+    assert resolve_run_selector(request, principal()) == ("general-agent", None)
+
+
+def test_resolve_run_selector_rejects_legacy_general_chat_skill_even_for_admin():
+    request = CreateRunRequest(
+        workspace_id="workspace-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_selector(request, principal(roles=["admin"]))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "general_chat_is_not_a_skill"
+
+
 def capability_denial_error() -> repository_module.RepositoryAuthorizationError:
     return repository_module.RepositoryAuthorizationError(
         "capability_not_authorized",
@@ -237,6 +261,12 @@ def replay_manifest(skill_id: str, version: str, *, source_kind: str = "builtin"
     manifest["content_hash"] = version
     manifest["mcp_tool_ids"] = []
     return manifest
+
+
+def replay_manifest_refs(skill_id: str, version: str, *, source_kind: str = "builtin") -> list[dict]:
+    return repository_module.skill_manifest_refs(
+        [replay_manifest(skill_id, version, source_kind=source_kind)]
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -372,6 +402,34 @@ class PolicyBuiltinRegistry:
             type("SkillRef", (), {"name": "qa-file-reviewer"})(),
             type("SkillRef", (), {"name": "minimax-docx"})(),
         ]
+
+
+@pytest.fixture(autouse=True)
+def default_route_skill_materialization(monkeypatch):
+    monkeypatch.setattr(runs_module, "BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr(
+        runs_module,
+        "_skill_manifest_pins",
+        lambda skill_id, input_payload: [snapshot_manifest(skill_id)],
+    )
+
+    async def materialize_run_skill_manifests(
+        conn,
+        *,
+        tenant_id,
+        run_id,
+        skill_manifest_refs,
+    ):
+        return [
+            replay_manifest(ref["skill_id"], ref["version"])
+            for ref in skill_manifest_refs
+        ]
+
+    monkeypatch.setattr(
+        repository_module,
+        "materialize_run_skill_manifests",
+        materialize_run_skill_manifests,
+    )
 
 
 @pytest.mark.asyncio
@@ -720,6 +778,49 @@ def test_run_playback_summary_projects_public_agent_id_for_ordinary_user():
     assert "opaque-4711" not in str(summary)
 
 
+def test_run_playback_summary_preserves_skillless_harness_identity_for_admin():
+    summary = run_playback_summary(
+        {
+            "id": "run-harness",
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "status": "running",
+            "error_code": None,
+            "error_message": None,
+        },
+        principal=principal(roles=["admin"]),
+    )
+
+    assert summary["execution_kind"] == "harness_chat"
+    assert summary["skill_id"] is None
+    assert summary["capability_id"] == "general_chat"
+
+
+def test_run_playback_summary_projects_legacy_general_chat_as_harness_for_user():
+    run = {
+        "id": "run-legacy",
+        "session_id": "ses-a",
+        **RUN_SCHEMA_FIELDS,
+        "agent_id": "general-agent",
+        "execution_kind": "skill",
+        "skill_id": "general-chat",
+        "status": "running",
+        "error_code": None,
+        "error_message": None,
+    }
+
+    ordinary_summary = run_playback_summary(run, principal=principal())
+    admin_summary = run_playback_summary(run, principal=principal(roles=["admin"]))
+
+    assert ordinary_summary["execution_kind"] == "harness_chat"
+    assert ordinary_summary["skill_id"] is None
+    assert admin_summary["execution_kind"] == "skill"
+    assert admin_summary["skill_id"] == "general-chat"
+
+
 @pytest.mark.asyncio
 async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -800,10 +901,10 @@ async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     assert response["context_ref"] == {
         "context_window": {
             "status": "degraded",
-            "selection_version": "session-context-v1",
+            "selection_version": "conversation-turns-v1",
             "history_candidate_count": 0,
-            "history_inline_count": 0,
-            "history_trimmed_count": 0,
+            "history_authorized_count": 0,
+            "history_omitted_count": 0,
             "legacy_history_excluded": False,
             "selected_file_names": [],
         }
@@ -1521,9 +1622,19 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
         session_id=None,
         principal=principal(permissions=["file:upload", "file:upload:document"]),
     )
-    payload = response.model_dump()
+    payload = {
+        "file_id": response.file_id,
+        "name": response.name,
+        "sha256": response.sha256,
+        "size_bytes": response.size_bytes,
+    }
 
-    assert payload == {"file_id": "file_uploaded", "sha256": "sha-a", "size_bytes": 10}
+    assert payload == {
+        "file_id": "file_uploaded",
+        "name": "demo.txt",
+        "sha256": "sha-a",
+        "size_bytes": 10,
+    }
     assert "storage_key" not in payload
 
 
@@ -1544,7 +1655,7 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
             {
                 "id": "file-xlsx",
                 "run_id": "run-source",
-                "original_name": "source.xlsx",
+                "original_name": "参考文件1-IP248A项目基本信息收集表.xlsx",
                 "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "size_bytes": 123,
                 "created_at": "2026-07-18T00:00:00Z",
@@ -1580,6 +1691,7 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
         "file-bin",
         "file-xlsm",
     ]
+    assert payload["files"][0]["name"] == "参考文件1-IP248A项目基本信息收集表.xlsx"
     assert payload["files"][0]["preview_url"] == (
         "/api/ai/files/file-xlsx/preview?session_id=session-a&run_id=run-source"
     )
@@ -1904,7 +2016,7 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
     async def fake_authorized_input_file(**kwargs):
         return {
             "id": kwargs["file_id"],
-            "original_name": "source.xlsx",
+            "original_name": "参考文件1-IP248A项目基本信息收集表.xlsx",
             "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "storage_key": "private/source.xlsx",
         }
@@ -1925,6 +2037,12 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
 
     assert response.body == b"xlsx-original-bytes"
     assert response.headers["content-disposition"].startswith("attachment;")
+    assert (
+        "filename*=UTF-8''%E5%8F%82%E8%80%83%E6%96%87%E4%BB%B61-"
+        "IP248A%E9%A1%B9%E7%9B%AE%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF"
+        "%E6%94%B6%E9%9B%86%E8%A1%A8.xlsx"
+        in response.headers["content-disposition"]
+    )
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
 
@@ -2104,6 +2222,50 @@ async def test_get_run_includes_artifacts_events_and_progress(monkeypatch):
     assert response.events[0]["stage"] == "status"
 
 
+@pytest.mark.asyncio
+async def test_get_run_preserves_skillless_harness_identity_for_admin(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "status": "running",
+            "input_json": {"input": {"message": "hello"}},
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def no_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_run_artifacts",
+        no_rows,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_run_events",
+        no_rows,
+    )
+
+    response = await get_run(
+        "run-harness",
+        principal=principal(roles=["admin"]),
+    )
+
+    assert response.execution_kind == "harness_chat"
+    assert response.skill_id is None
+    assert response.capability_id == "general_chat"
+
+
 def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -2155,6 +2317,7 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["execution_kind"] == "harness_chat"
     assert payload["skill_id"] is None
     assert "executor_schema_version" not in payload or payload["executor_schema_version"] is None
     assert payload["capability_id"] == "general_chat"
@@ -2207,7 +2370,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
             "status": "running",
             "input_json": {
                 "skill_id": "qa-file-reviewer",
-                "executor_type": "embedded-poco-kernel",
+                "executor_type": "retired-executor-fixture",
                 "skill_version": "internal-version",
                 "release_decision": {
                     "schema_version": "ai-platform.skill-release-decision.v1",
@@ -3313,7 +3476,10 @@ async def test_deleted_session_run_context_and_lease_deny_before_reads_or_writes
         deleted_session_run_is_not_authorized,
     )
     monkeypatch.setattr(repository_module, "list_context_snapshots", forbidden_child_operation)
-    monkeypatch.setattr(repository_module, "create_sandbox_lease", forbidden_child_operation)
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease",
+        forbidden_child_operation,
+    )
     monkeypatch.setattr(repository_module, "append_event", forbidden_child_operation)
 
     with pytest.raises(HTTPException) as context_exc:
@@ -3733,8 +3899,80 @@ async def test_create_run_selected_skill_maps_stale_lock_to_stable_409_before_wr
 
 
 @pytest.mark.asyncio
+async def test_create_run_queues_skillless_harness_without_skill_authority(monkeypatch):
+    calls = {"events": []}
+
+    async def active_harness_agent(conn, *, tenant_id, agent_id):
+        calls["agent"] = (tenant_id, agent_id)
+        return {"agent_type": "chat"}
+
+    async def authorize_mcp(conn, **kwargs):
+        calls["mcp"] = kwargs["tool_ids"]
+        return []
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return kwargs["session_id"]
+
+    async def fake_create_run(conn, **kwargs):
+        calls["create_run"] = kwargs
+        return kwargs["run_id"]
+
+    async def record_event(conn, **kwargs):
+        calls["events"].append(kwargs["event_type"])
+
+    async def fake_enqueue(payload):
+        calls["queue"] = payload
+        return 1
+
+    async def fail_skill_path(*args, **kwargs):
+        raise AssertionError("Harness chat must not resolve, snapshot, or stage a Skill")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
+    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", fail_skill_path)
+    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", fail_skill_path)
+    monkeypatch.setattr(repository_module, "insert_run_skill_snapshots_at_creation", fail_skill_path)
+    monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_skill_path)
+    monkeypatch.setattr(repository_module, "ensure_user", noop)
+    monkeypatch.setattr(repository_module, "create_session", fake_create_session)
+    monkeypatch.setattr(repository_module, "create_run", fake_create_run)
+    monkeypatch.setattr(repository_module, "bind_files_to_run", noop)
+    monkeypatch.setattr(repository_module, "append_event", record_event)
+    monkeypatch.setattr(runs_module, "enqueue_run", fake_enqueue)
+
+    response = await create_run(
+        CreateRunRequest(
+            workspace_id="default",
+            agent_id="general-agent",
+            capability_id="general_chat",
+            input={"message": "hello"},
+        ),
+        principal=principal(),
+    )
+
+    assert response.status == "queued"
+    assert calls["agent"] == ("tenant-a", "general-agent")
+    assert calls["mcp"] == []
+    assert calls["create_run"]["execution_kind"] == "harness_chat"
+    assert calls["create_run"]["skill_id"] is None
+    assert calls["create_run"]["input_json"]["skill_manifests"] == []
+    assert calls["queue"]["schema_version"] == "ai-platform.run-payload.v2"
+    assert calls["queue"]["execution_kind"] == "harness_chat"
+    assert calls["queue"]["skill_id"] is None
+    assert calls["queue"]["skill_manifests"] == []
+    assert calls["events"] == ["queued"]
+
+
+@pytest.mark.asyncio
 async def test_create_run_file_admission_denial_precedes_identity_and_run_writes(monkeypatch):
     writes = []
+
+    async def active_harness_agent(*args, **kwargs):
+        return {"agent_type": "chat"}
 
     async def deny_files(*args, **kwargs):
         raise RepositoryConflictError("file_scope_mismatch")
@@ -3744,6 +3982,7 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
         raise AssertionError("file admission must precede writes")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
     monkeypatch.setattr(repository_module, "authorize_files_for_run", deny_files, raising=False)
     monkeypatch.setattr(repository_module, "ensure_user", record_write)
     monkeypatch.setattr(repository_module, "create_session", record_write)
@@ -4005,6 +4244,90 @@ async def test_prepare_copied_direct_ragflow_without_explicit_selector_uses_unif
 
 
 @pytest.mark.asyncio
+async def test_prepare_copied_agent_profile_reauthorizes_complete_skill_set(monkeypatch):
+    calls = []
+    replay_principal = principal(department_id="qa", roles=["user"])
+    primary_version = "hash-primary"
+    secondary_version = "hash-secondary"
+    manifests = [
+        replay_manifest("primary-review", primary_version),
+        replay_manifest("reference-search", secondary_version),
+    ]
+
+    async def materialize(*_args, **_kwargs):
+        return manifests
+
+    async def reauthorize(*_args, **kwargs):
+        calls.append(kwargs)
+
+    async def forbid_single_skill_authorizer(*_args, **_kwargs):
+        raise AssertionError("Agent Profile replay must authorize its complete skill_set")
+
+    async def no_write(*_args, **_kwargs):
+        return None
+
+    async def record_context(*_args, **_kwargs):
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-copy",
+            "source": "copy_run",
+            "message_count": 0,
+            "file_count": 0,
+            "memory_record_count": 0,
+        }
+
+    monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", forbid_single_skill_authorizer)
+    monkeypatch.setattr(repository_module, "update_run_auth_snapshot", no_write)
+    monkeypatch.setattr(repository_module, "append_event", no_write)
+    monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", no_write)
+    monkeypatch.setattr(runs_module, "reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
+
+    queue_payload = await runs_module.prepare_copied_run_for_queue(
+        object(),
+        copied={
+            "run_id": "run-agent-copy",
+            "session_id": "ses-agent-copy",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "agent_id": "quality-agent",
+            "skill_id": "primary-review",
+            "file_ids": [],
+            "input": {"message": "continue review"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": primary_version,
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": primary_version,
+                "selected_track": "manifest_pin",
+            },
+            "skill_manifests": repository_module.skill_manifest_refs(manifests),
+            "agent_profile": {
+                "agent_id": "quality-agent",
+                "revision": 2,
+                "content_hash": "a" * 64,
+                "instructions": "Review the supplied material.",
+                "skill_set": [
+                    {"skill_id": "primary-review", "expected_version": primary_version},
+                    {"skill_id": "reference-search", "expected_version": secondary_version},
+                ],
+            },
+        },
+        principal=replay_principal,
+        source="copy_run",
+        authorized_source_run_id="run-agent-source",
+    )
+
+    assert calls == [{"principal": replay_principal, "run_id": "run-agent-copy"}]
+    assert [item["skill_id"] for item in queue_payload["skill_manifests"]] == [
+        "primary-review",
+        "reference-search",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("route", "repository_method"),
     [
@@ -4159,8 +4482,8 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         "workspace_id": "default",
         "session_id": "ses-original",
         "user_id": "user-a",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
         "status": "failed",
         "input_json": {
             "input": {"message": "retry"},
@@ -4172,7 +4495,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
                 "selected_version": "hash-v1",
                 "selected_track": "manifest_pin",
             },
-            "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
+            "skill_manifests": replay_manifest_refs("qa-file-reviewer", "hash-v1"),
         },
         "principal_roles": ["user"],
         "principal_department_id": "qa",
@@ -4262,7 +4585,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         ),
         ("reauthorization", resolver_error),
     ]
-    assert audits == [(route.__name__, "general-chat", "capability_not_authorized")]
+    assert audits == [(route.__name__, "qa-file-reviewer", "capability_not_authorized")]
 
 
 
@@ -4291,15 +4614,15 @@ async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypa
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="general-agent",
-                capability_id="general_chat",
+                agent_id="qa-word-review",
+                capability_id="document_review",
             ),
             principal=principal(user_id="user-skill-status", tenant_id="default"),
         )
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "skill_version_not_released"
-    assert calls == [("resolve", "default", "general-agent", "general-chat")]
+    assert calls == [("resolve", "default", "qa-word-review", "qa-file-reviewer")]
 
 
 @pytest.mark.asyncio
@@ -4323,7 +4646,7 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
         "skill_status": "active",
         "skill_version_status": "active",
         "executor_type": "claude-agent-worker",
-        "default_skill_id": "general-chat",
+        "default_skill_id": "qa-file-reviewer",
     }
     row[row_field] = row_value
     execute_params = []
@@ -4369,8 +4692,8 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="general-agent",
-                capability_id="general_chat",
+                agent_id="qa-word-review",
+                capability_id="document_review",
             ),
             principal=principal(
                 user_id="user-skill-status",
@@ -4382,8 +4705,8 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
-    assert execute_params == [("general-chat", "default", "general-agent")]
-    assert audits == [("create_run", "general-chat", "capability_not_authorized")]
+    assert execute_params == [("qa-file-reviewer", "default", "qa-word-review")]
+    assert audits == [("create_run", "qa-file-reviewer", "capability_not_authorized")]
 
 
 
@@ -4411,12 +4734,98 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_run_reuses_snapshot_authorized_session_file_without_rebinding(monkeypatch):
+    calls = {}
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return skill(input_modes=["docx"])
+
+    async def fake_list_files(conn, **kwargs):
+        calls["list_files"] = kwargs
+        return [
+            {
+                "id": "file-prior",
+                "run_id": "run-prior",
+                "original_name": "source.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "created_at": "2026-08-01T00:00:00Z",
+            }
+        ]
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        assert kwargs["session_id"] == "ses-existing"
+        return "ses-existing"
+
+    async def fake_create_run(conn, **kwargs):
+        calls["run_file_ids"] = kwargs["input_json"]["file_ids"]
+        return kwargs["run_id"]
+
+    async def fake_bind_files(conn, **kwargs):
+        calls["bound_file_ids"] = kwargs["file_ids"]
+
+    async def fake_context(conn, **kwargs):
+        calls["context"] = kwargs
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-continuation",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": len(kwargs["file_ids"]),
+            "memory_record_count": 0,
+        }
+
+    async def fake_enqueue(payload):
+        calls["queue_file_ids"] = payload["file_ids"]
+        return 1
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_authorized_session_input_files",
+        fake_list_files,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.runs.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", fake_bind_files)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_context)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue)
+
+    response = await create_run(
+        CreateRunRequest(
+            workspace_id="default",
+            session_id="ses-existing",
+            agent_id="baoyu-translate",
+            capability_id="document_translation",
+        ),
+        principal=principal(),
+    )
+
+    assert response.session_id == "ses-existing"
+    assert calls["list_files"] == {
+        "tenant_id": "tenant-a",
+        "workspace_id": "default",
+        "user_id": "user-a",
+        "session_id": "ses-existing",
+    }
+    assert calls["run_file_ids"] == ["file-prior"]
+    assert calls["queue_file_ids"] == ["file-prior"]
+    assert calls["bound_file_ids"] == []
+    assert calls["context"]["file_ids"] == ["file-prior"]
+    assert calls["context"]["include_session_history"] is True
+
+
+@pytest.mark.asyncio
 async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     calls = []
 
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append("resolve")
-        return skill()
+    async def fake_get_agent(conn, *, tenant_id, agent_id):
+        calls.append("get_agent")
+        return {"agent_type": "chat"}
 
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         calls.append(("admit", tenant_id, user_id, limit))
@@ -4431,7 +4840,7 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
 
     monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.runs.repositories.get_agent", fake_get_agent)
     monkeypatch.setattr(
         "app.routes.runs.repositories.enforce_user_active_run_admission",
         fake_enforce_user_active_run_admission,
@@ -4447,7 +4856,7 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
+    assert calls == ["get_agent", ("admit", "tenant-a", "user-limit", 3)]
 
 
 @pytest.mark.asyncio
@@ -4501,7 +4910,9 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
                 "version": "hash-pin",
                 "content_hash": "hash-pin",
                 "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
-                "files": [],
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
                 "dependency_ids": [],
                 "allowed": True,
                 "staged": False,
@@ -4536,17 +4947,11 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["release_decision"]["selected_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
-    governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
-    assert governance["snapshot_source"] == "platform_release_lock"
-    assert governance["release_lock"]["mode"] == "manifest_pin"
-    assert governance["does_not_close_b4_or_211"] is True
-    serialized_governance = json.dumps(governance, ensure_ascii=False)
-    assert "release_decision" not in serialized_governance
-    assert "content_base64" not in serialized_governance
-    assert "hash-pin" not in serialized_governance
-    assert "track" not in serialized_governance
-    assert "rollout" not in serialized_governance
+    ref = calls["queue"]["skill_manifests"][0]
+    assert ref["schema_version"] == "ai-platform.skill-materialization-ref.v1"
+    assert len(ref["materialization_sha256"]) == 64
+    assert "files" not in ref
+    assert "content_base64" not in json.dumps(ref, ensure_ascii=False)
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
 
 
@@ -4587,7 +4992,9 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
                 "version": "hash-new",
                 "content_hash": "hash-new",
                 "source": {"kind": "builtin", "asset_dir": skill_id},
-                "files": [],
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
                 "dependency_ids": [],
                 "allowed": True,
                 "staged": False,
@@ -4631,13 +5038,9 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
     assert calls["queue"]["skill_version"] == "hash-old"
     assert calls["queue"]["release_decision"]["selected_track"] == "previous"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-old"
-    governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
-    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
-    assert governance["release_lock"]["mode"] == "release_policy"
-    serialized_governance = json.dumps(governance, ensure_ascii=False)
-    assert "hash-old" not in serialized_governance
-    assert "track" not in serialized_governance
-    assert "rollout" not in serialized_governance
+    ref = calls["queue"]["skill_manifests"][0]
+    assert ref["schema_version"] == "ai-platform.skill-materialization-ref.v1"
+    assert "files" not in ref
     assert any(event["payload"]["skill_version"] == "hash-old" for event in calls["events"])
     assert any(
         event["event_type"] == "skill_release_decision"
@@ -4840,10 +5243,12 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
     assert calls["queue"]["skill_version"] == "hash-uploaded"
     assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["schema_version"] == (
+        "ai-platform.skill-materialization-ref.v1"
+    )
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == pinned_dependency_manifest["content_hash"]
-    assert calls["queue"]["skill_manifests"][1]["files"][0]["relative_path"] == "SKILL.md"
+    assert "files" not in calls["queue"]["skill_manifests"][1]
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
     persisted_non_identity_snapshot = {
         **calls["create_run"]["input_json"],
@@ -4889,7 +5294,9 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
                 "version": "hash-new",
                 "content_hash": "hash-new",
                 "source": {"kind": "builtin", "asset_dir": skill_id, "version": "hash-new"},
-                "files": [],
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
                 "dependency_ids": [],
                 "allowed": True,
                 "staged": False,
@@ -4951,8 +5358,10 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
     assert calls["create_run"]["input_json"]["skill_version"] == "hash-old-builtin"
     assert calls["queue"]["skill_version"] == "hash-old-builtin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-old-builtin"
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "builtin"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["schema_version"] == (
+        "ai-platform.skill-materialization-ref.v1"
+    )
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert any(event["payload"]["skill_version"] == "hash-old-builtin" for event in calls["events"])
 
 
@@ -4962,7 +5371,18 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
         return skill(executor_type="claude-agent-worker", skill_version="hash-primary")
 
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
-        return [{"skill_id": skill_id, "content_hash": "hash-primary"}]
+        return [
+            {
+                "skill_id": skill_id,
+                "version": "hash-primary",
+                "content_hash": "hash-primary",
+                "source": {"kind": "builtin"},
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
+                "dependency_ids": [],
+            }
+        ]
 
     async def noop(*args, **kwargs):
         return None
@@ -5010,6 +5430,7 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
     assert getattr(exc_info.value, "status_code", None) == 500
     assert getattr(exc_info.value, "detail", None) == {
         "code": "queue_payload_invalid",
+        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["release_decision"],
@@ -5206,7 +5627,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
         "executor_type": "claude-agent-worker",
         "skill_version": "db-version",
         "release_decision": dict(source_release_decision),
-        "skill_manifests": list(source_skill_manifests),
+        "skill_manifests": repository_module.skill_manifest_refs(source_skill_manifests),
         "model_id": "model-catalog-copy",
         "model_value": "provider-model-copy",
     }
@@ -5223,7 +5644,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
             "release_decision": dict(source_release_decision),
-            "skill_manifests": list(source_skill_manifests),
+            "skill_manifests": repository_module.skill_manifest_refs(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
         }
@@ -5289,7 +5710,9 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert response.run_id == "run_copy"
     assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
     assert calls["update"]["execution_snapshot"]["release_decision"] == source_release_decision
-    assert calls["update"]["execution_snapshot"]["skill_manifests"] == source_skill_manifests
+    assert calls["update"]["execution_snapshot"]["skill_manifests"] == repository_module.skill_manifest_refs(
+        source_skill_manifests
+    )
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
@@ -5306,6 +5729,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"
     assert calls["queue"]["skill_version"] == "db-version"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "db-version"
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert calls["queue"]["model_id"] == "model-catalog-copy"
     assert calls["queue"]["model_value"] == "provider-model-copy"
     assert any(event["payload"]["skill_version"] == "db-version" for event in calls["events"])
@@ -5354,7 +5778,7 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
                 "selected_version": "db-version",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+                "skill_manifests": replay_manifest_refs("qa-file-reviewer", "db-version"),
             }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5428,7 +5852,7 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
                 "selected_version": "db-version",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+                "skill_manifests": replay_manifest_refs("qa-file-reviewer", "db-version"),
             }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5501,7 +5925,7 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
                 "selected_version": "db-version",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+                "skill_manifests": replay_manifest_refs("qa-file-reviewer", "db-version"),
             }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5618,6 +6042,7 @@ async def test_copy_run_validates_queue_payload_before_snapshot_update(monkeypat
     assert getattr(exc_info.value, "status_code", None) == 500
     assert getattr(exc_info.value, "detail", None) == {
         "code": "queue_payload_invalid",
+        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["skill_manifests", 0],
@@ -5673,9 +6098,11 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
                 "selected_version": "hash-uploaded",
                     "selected_track": "manifest_pin",
                 },
-                "skill_manifests": [
-                    replay_manifest("qa-file-reviewer", "hash-uploaded", source_kind="uploaded")
-                ],
+                "skill_manifests": replay_manifest_refs(
+                    "qa-file-reviewer",
+                    "hash-uploaded",
+                    source_kind="uploaded",
+                ),
             }
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
@@ -5715,13 +6142,22 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight_for_status)
 
+    async def materialize_uploaded_manifest(conn, **kwargs):
+        return [replay_manifest("qa-file-reviewer", "hash-uploaded", source_kind="uploaded")]
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.materialize_run_skill_manifests",
+        materialize_uploaded_manifest,
+    )
+
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
     assert calls["update"]["skill_version"] == "hash-uploaded"
     assert calls["queue"]["skill_version"] == "hash-uploaded"
-    assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
-    assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert calls["queue"]["skill_manifests"][0]["version"] == "hash-uploaded"
+    assert "source" not in calls["queue"]["skill_manifests"][0]
+    assert "files" not in calls["queue"]["skill_manifests"][0]
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
 
 

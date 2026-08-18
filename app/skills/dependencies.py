@@ -1,19 +1,14 @@
 from app.validation import assert_safe_id
+from app.skills.api import INTERNAL_DEPENDENCY_SKILL_IDS
 
 
 INVALID_DEPENDENCY_ID = "[invalid-skill-id]"
 
 PUBLIC_WORKBENCH_SKILL_IDS = {
-    "general-chat",
     "qa-file-reviewer",
     "baoyu-translate",
     "ragflow-knowledge-search",
     "ctd-32s73-stability-template-fill",
-}
-
-INTERNAL_DEPENDENCY_SKILL_IDS = {
-    "minimax-docx",
-    "reference-fact-extraction",
 }
 
 SKILL_DEPENDENCIES = {

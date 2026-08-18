@@ -8,6 +8,16 @@ export const AGENT_PROFILE_CATEGORIES = ["general", "support", "writing", "resea
 
 export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
 
+export type UniversalAgentInputTypes = ["text", "file"];
+
+export const AGENT_PROFILE_CATEGORY_LABELS = {
+  general: "通用专家",
+  support: "支持服务",
+  writing: "内容写作",
+  research: "研究分析",
+  operations: "运营效率",
+} as const satisfies Record<AgentProfileCategory, string>;
+
 /** Optimistic client lock for one published Agent Profile revision. */
 export interface SelectedAgentProfileRequest {
   agent_id: string;
@@ -18,8 +28,17 @@ export interface SelectedAgentProfileRequest {
 export interface AgentProfilePublicProjection extends SelectedAgentProfileRequest {
   name: string;
   description: string;
+  welcome_message: string;
+  starter_prompts: string[];
+  capability_summary: string;
+  recommended_tasks: string[];
+  supported_input_types: UniversalAgentInputTypes;
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
+  avatar_seed?: string;
   category: AgentProfileCategory;
+  published_at: string | null;
 }
 
 /** Safe immutable identity recovered from a server-owned Agent Conversation. */
@@ -28,8 +47,17 @@ export interface AgentConversationIdentity {
   revision: number;
   name: string;
   description: string;
+  welcome_message: string;
+  starter_prompts: string[];
+  capability_summary: string;
+  recommended_tasks: string[];
+  supported_input_types: UniversalAgentInputTypes;
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
+  avatar_seed?: string;
   category: AgentProfileCategory;
+  published_at: string | null;
 }
 
 /** Canonical server projection for either an Agent-bound or ordinary Session. */
@@ -38,6 +66,7 @@ export interface AgentConversationSessionProjection {
   workspace_id: string;
   agent_id: string;
   title: string;
+  purpose: "conversation" | "builder_test";
   agent_conversation: AgentConversationIdentity | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -53,9 +82,81 @@ function requireString(value: unknown, code: string, allowEmpty = false): string
   return value;
 }
 
+function projectAvatarSeed(record: Record<string, unknown>, code: string): string {
+  const fallback = requireString(record.agent_id, code);
+  if (typeof record.avatar_seed !== "string") return fallback;
+  if ([...record.avatar_seed].some((character) => (character.codePointAt(0) ?? 0) < 32)) {
+    return fallback;
+  }
+  const seed = record.avatar_seed.trim();
+  if (!seed || [...seed].length > 128) {
+    return fallback;
+  }
+  return seed;
+}
+
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
   return value as number;
+}
+
+function requireStringList(value: unknown, code: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(code);
+  }
+  return [...value];
+}
+
+function requireUniversalAgentInputTypes(value: unknown, code: string): UniversalAgentInputTypes {
+  const values = requireStringList(value, code);
+  if (values.length !== 2 || values[0] !== "text" || values[1] !== "file") {
+    throw new Error(code);
+  }
+  return ["text", "file"];
+}
+
+function projectEnterpriseFields(
+  record: Record<string, unknown>,
+  code: string,
+): Pick<
+  AgentProfilePublicProjection,
+  | "welcome_message"
+  | "starter_prompts"
+  | "capability_summary"
+  | "recommended_tasks"
+  | "supported_input_types"
+  | "expected_outputs"
+  | "permissions_and_data_access_notice"
+  | "published_at"
+> {
+  return {
+    welcome_message:
+      record.welcome_message === undefined
+        ? ""
+        : requireString(record.welcome_message, code, true),
+    starter_prompts:
+      record.starter_prompts === undefined
+        ? []
+        : requireStringList(record.starter_prompts, code),
+    capability_summary:
+      record.capability_summary === undefined
+        ? ""
+        : requireString(record.capability_summary, code, true),
+    recommended_tasks:
+      record.recommended_tasks === undefined
+        ? []
+        : requireStringList(record.recommended_tasks, code),
+    supported_input_types: requireUniversalAgentInputTypes(record.supported_input_types, code),
+    expected_outputs:
+      record.expected_outputs === undefined
+        ? []
+        : requireStringList(record.expected_outputs, code),
+    permissions_and_data_access_notice:
+      record.permissions_and_data_access_notice === undefined
+        ? ""
+        : requireString(record.permissions_and_data_access_notice, code, true),
+    published_at: typeof record.published_at === "string" ? record.published_at : null,
+  };
 }
 
 function requireOneOf<const T extends readonly string[]>(
@@ -79,7 +180,9 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     expected_revision: requirePositiveRevision(record.expected_revision, PROFILE_ERROR),
     name: requireString(record.name, PROFILE_ERROR),
     description: requireString(record.description, PROFILE_ERROR, true),
+    ...projectEnterpriseFields(record, PROFILE_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
+    avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
   };
 }
@@ -93,7 +196,9 @@ export function projectAgentConversationIdentity(value: unknown): AgentConversat
     revision: requirePositiveRevision(record.revision, IDENTITY_ERROR),
     name: requireString(record.name, IDENTITY_ERROR),
     description: requireString(record.description, IDENTITY_ERROR, true),
+    ...projectEnterpriseFields(record, IDENTITY_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, IDENTITY_ERROR),
+    avatar_seed: projectAvatarSeed(record, IDENTITY_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, IDENTITY_ERROR),
   };
 }
@@ -106,6 +211,8 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
     workspace_id: requireString(record.workspace_id, SESSION_ERROR),
     agent_id: requireString(record.agent_id, SESSION_ERROR),
     title: requireString(record.title, SESSION_ERROR, true),
+    purpose:
+      record.purpose === "builder_test" ? "builder_test" : "conversation",
     agent_conversation: projectAgentConversationIdentity(record.agent_conversation),
     created_at: typeof record.created_at === "string" ? record.created_at : null,
     updated_at: typeof record.updated_at === "string" ? record.updated_at : null,
@@ -115,19 +222,55 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
 export interface AgentProfileDraftRequest {
   name: string;
   description: string;
+  welcome_message: string;
+  starter_prompts: string[];
+  capability_summary: string;
+  recommended_tasks: string[];
+  supported_input_types: Array<"text" | "file">;
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   instructions: string;
   model_id: string;
   selected_skill: SelectedSkillRequest;
+  skill_set: SelectedSkillRequest[];
   mcp_tool_ids: string[];
+  avatar_ref: AgentProfileAvatarRef;
+  avatar_seed: string;
+  avatar_asset_id: string | null;
+  category: AgentProfileCategory;
+  visibility: "tenant" | "restricted";
+  allowed_department_ids: string[];
+  allowed_roles: string[];
+  allowed_user_ids: string[];
   /** 0 creates a profile; later saves must name the current immutable revision. */
   expected_draft_revision: number;
 }
 
-export interface AgentProfileAdminProjection extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
+export interface AgentProfileAdminProjection extends Omit<
+  AgentProfileDraftRequest,
+  "avatar_seed" | "expected_draft_revision" | "skill_set"
+> {
+  supported_input_types: UniversalAgentInputTypes;
+  avatar_seed?: string;
+  skill_set?: SelectedSkillRequest[];
   agent_id: string;
   revision: number;
-  status: "draft" | "published";
+  /** Current aggregate publication; absent only while talking to a rolling old API. */
+  published_revision?: number | null;
+  status: "draft" | "published" | "withdrawn";
   content_hash: string;
+  created_at?: string | null;
+  published_at?: string | null;
+}
+
+/** Validate the universal input contract before trusting an admin-only profile response. */
+export function validateAgentProfileAdminProjection(value: unknown): AgentProfileAdminProjection {
+  const record = requireRecord(value, "invalid_agent_profile_admin_projection");
+  requireUniversalAgentInputTypes(
+    record.supported_input_types,
+    "invalid_agent_profile_admin_projection",
+  );
+  return value as AgentProfileAdminProjection;
 }
 
 export interface AgentProfileMutationResponse {

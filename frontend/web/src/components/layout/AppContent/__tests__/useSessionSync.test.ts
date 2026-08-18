@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import {
   getInitialUrlSyncCompletionAction,
   getSessionRouteSyncAction,
+  shouldClearConversationOnRouteIdentityChange,
   shouldLoadSessionFromUrlChange,
 } from "../useSessionSync.ts";
 
@@ -51,6 +52,88 @@ test("updates the chat url when a new session is created from /chat", () => {
       type: "replace-url",
       path: "/chat/session-123",
     },
+  );
+});
+
+test("preserves an accepted generic session when its URL is canonicalized", () => {
+  const liveState = {
+    sessionId: "session-123",
+    authoritySessionId: "session-123",
+    messages: ["first user turn", "first assistant turn"],
+  };
+  const action = getSessionRouteSyncAction({
+    activeTab: "chat",
+    pathname: "/chat",
+    sessionId: liveState.sessionId,
+    urlSessionId: undefined,
+    externalNavigate: false,
+  });
+
+  assert.deepEqual(action, {
+    type: "replace-url",
+    path: "/chat/session-123",
+  });
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: false,
+      routeSessionId: "session-123",
+      sessionId: liveState.sessionId,
+    }),
+    false,
+  );
+  assert.equal(liveState.authoritySessionId, liveState.sessionId);
+  assert.deepEqual(liveState.messages, [
+    "first user turn",
+    "first assistant turn",
+  ]);
+});
+
+test("clears and reloads when external navigation selects another session", () => {
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: false,
+      routeSessionId: "session-b",
+      sessionId: "session-a",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldLoadSessionFromUrlChange({
+      activeTab: "chat",
+      sessionId: null,
+      urlSessionId: "session-b",
+      isLoading: false,
+      isNewSession: false,
+      isInternalNavigation: false,
+    }),
+    true,
+  );
+});
+
+test("Agent first-send canonicalization retains the already bound Session", () => {
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
+      routeSessionId: undefined,
+      sessionId: "session-agent",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
+      routeSessionId: "session-agent",
+      sessionId: "session-agent",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearConversationOnRouteIdentityChange({
+      hasAgentWorkspace: true,
+      routeSessionId: "session-other",
+      sessionId: "session-agent",
+    }),
+    true,
   );
 });
 

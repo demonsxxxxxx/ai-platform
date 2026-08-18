@@ -74,7 +74,7 @@ def _open_gaps(summary: dict[str, object], *, ordinary_status: int, ordinary_det
         or summary.get("alert_rule_count") != 7
         or summary.get("implemented_alert_template") is not True
     ):
-        gaps.append("alert_rules_runtime_dashboard_and_211_acceptance")
+        gaps.append("alert_rules_runtime_dashboard_and_controlled_host_acceptance")
     if (
         summary.get("alert_delivery_policy_status") != "contract_only_not_enabled"
         or summary.get("alert_delivery_not_enabled") is not True
@@ -91,7 +91,7 @@ def _open_gaps(summary: dict[str, object], *, ordinary_status: int, ordinary_det
         or summary.get("trace_export_sources_public_only") is not True
         or summary.get("implemented_trace_export_contract") is not True
     ):
-        gaps.append("trace_audit_export_211_acceptance")
+        gaps.append("trace_audit_export_controlled_host_acceptance")
     if summary.get("forbidden_projection_terms_present") is True:
         gaps.append("alert_trace_export_projection_redaction")
     return list(dict.fromkeys(gaps))

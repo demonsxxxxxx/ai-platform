@@ -5,8 +5,32 @@ import types
 import pytest
 
 from app.executors.claude_agent_sdk_runner import (
+    _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
 )
+from app.required_tool_contract import (
+    parse_required_tool_declaration,
+    with_sandbox_local_tool_capability_subjects,
+)
+
+
+def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
+    assert (
+        _sdk_run_timeout_seconds(
+            types.SimpleNamespace(),
+            sandbox_brokered=True,
+            full_access=False,
+        )
+        == 1200.0
+    )
+    assert (
+        _sdk_run_timeout_seconds(
+            types.SimpleNamespace(claude_agent_sdk_timeout_seconds=45),
+            sandbox_brokered=True,
+            full_access=False,
+        )
+        == 45.0
+    )
 
 
 def _settings():
@@ -38,7 +62,6 @@ def _subject(
     *,
     server_id="tenant-server",
     tool_name="search",
-    endpoint="https://private.example/mcp",
     public_tool_label="Tenant Search",
 ):
     return {
@@ -57,11 +80,11 @@ def _subject(
         "risk_level": "low",
         "write_capable": False,
         "public_tool_label": public_tool_label,
-        "mcp_server_config": {
-            "type": "http",
-            "url": endpoint,
-        },
     }
+
+
+def _relay_endpoint(server_id="tenant-server"):
+    return f"{_MCP_RUNTIME_KWARGS['mcp_relay_url']}/{server_id}"
 
 
 def _skill_subject(skill_name="qa-review"):
@@ -125,9 +148,16 @@ def _fake_sdk(captured, *, hook_invocations):
                 matcher = matchers[0]
             else:
                 tool_name = str(hook_input.get("tool_name") or "")
-                matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
+                matcher_name = (
+                    "Skill"
+                    if tool_name.lower() == "skill"
+                    else "mcp__*"
+                    if tool_name.startswith("mcp__")
+                    else None
+                )
                 matcher = next(item for item in matchers if item.matcher == matcher_name)
-            await matcher.hooks[0](hook_input, tool_call_id, {})
+            hook_result = await matcher.hooks[0](hook_input, tool_call_id, {})
+            captured.setdefault("hook_results", []).append((hook_name, hook_result))
         yield ResultMessage()
 
     return types.SimpleNamespace(
@@ -185,7 +215,13 @@ def _scripted_sdk(captured, steps, *, result_text="done"):
                 matcher = matchers[0]
             else:
                 tool_name = str(hook_input.get("tool_name") or "")
-                matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
+                matcher_name = (
+                    "Skill"
+                    if tool_name.lower() == "skill"
+                    else "mcp__*"
+                    if tool_name.startswith("mcp__")
+                    else None
+                )
                 matcher = next(item for item in matchers if item.matcher == matcher_name)
             await matcher.hooks[0](hook_input, tool_call_id, {})
 
@@ -243,6 +279,877 @@ async def _acknowledge_capability_evidence(_evidence):
 
 
 @pytest.mark.asyncio
+async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    captured, lifecycle_facts = {}, []
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "python --version"},
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[
+                ("PreToolUse", hook_input, hook_input["tool_use_id"]),
+                ("PostToolUse", hook_input, hook_input["tool_use_id"]),
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    async def acknowledge(fact):
+        lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
+        return True
+
+    result = await run_claude_agent_sdk(
+        prompt="inspect the sandbox",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert result.error is None
+    assert result.message == "done"
+    assert captured["allowed_tools"] == [
+        "Read",
+        "Glob",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ]
+    assert pretool_output["permissionDecision"] == "allow"
+    assert lifecycle_facts == [
+        ("bash-call-1", "started"),
+        ("bash-call-1", "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_outcome", ["missing", "false", "exception"])
+async def test_autonomous_sandbox_bash_pretool_denies_unacknowledged_lifecycle(
+    monkeypatch,
+    tmp_path,
+    callback_outcome,
+):
+    captured = {}
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "python --version"},
+    }
+
+    async def acknowledge(_fact):
+        if callback_outcome == "exception":
+            raise RuntimeError("private callback failure")
+        return False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="inspect the sandbox",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=None if callback_outcome == "missing" else acknowledge,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "deny"
+    assert (
+        pretool_output["permissionDecisionReason"]
+        == "required_tool_completion_evidence_mismatch"
+    )
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+async def test_autonomous_sandbox_bash_keeps_answer_sealed_without_terminal_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas = {}, []
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "python --version"},
+    }
+    steps = [
+        *_stream_steps("must remain private before call ", index=0),
+        ("hook", ("PreToolUse", hook_input, "bash-call-1")),
+        *_stream_steps("must remain private after call", index=1),
+        ("assistant", "must remain private"),
+    ]
+
+    async def acknowledge(_fact):
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="must remain private"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="inspect the sandbox",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert deltas == []
+    assert result.error == "required_tool_completion_evidence_missing"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name",
+    ["Read", "Glob", "LS", "Write", "Edit", "NotebookEdit"],
+)
+async def test_sandbox_local_tool_keeps_answer_sealed_without_terminal_lifecycle(
+    monkeypatch,
+    tmp_path,
+    tool_name,
+):
+    captured, deltas, lifecycle_facts = {}, [], []
+    file_path = str(tmp_path / "output" / "output.txt")
+    tool_input = {
+        "Read": {"file_path": file_path},
+        "Glob": {"pattern": "output/*.txt", "path": str(tmp_path)},
+        "LS": {"path": str(tmp_path)},
+        "Write": {"file_path": file_path, "content": "done"},
+        "Edit": {
+            "file_path": file_path,
+            "old_string": "before",
+            "new_string": "after",
+        },
+        "NotebookEdit": {
+            "notebook_path": str(tmp_path / "output" / "output.ipynb"),
+            "new_source": "print('done')",
+        },
+    }[tool_name]
+    hook_input = {
+        "tool_name": tool_name,
+        "tool_use_id": "local-call-1",
+        "tool_input": tool_input,
+    }
+    steps = [
+        ("hook", ("PreToolUse", hook_input, "local-call-1")),
+        *_stream_steps("must remain private"),
+        ("assistant", "must remain private"),
+    ]
+
+    async def acknowledge(fact):
+        lifecycle_facts.append(dict(fact))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="must remain private"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="use one sandbox-local tool",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert lifecycle_facts == [
+        {
+            "fact_kind": "tool_invocation",
+            "tool_name": tool_name,
+            "invocation_id": "local-call-1",
+            "lifecycle": "started",
+        }
+    ]
+    assert deltas == []
+    assert result.error == "required_tool_completion_evidence_missing"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hook_call_id", "callback_call_id"),
+    [
+        (None, None),
+        ("local-call-a", "local-call-b"),
+        ("   ", "   "),
+        (" local-call ", " local-call "),
+        ("x" * 513, "x" * 513),
+        ("local\ncall", "local\ncall"),
+        ("local\x7fcall", "local\x7fcall"),
+        ("local\x85call", "local\x85call"),
+        ("local\u202ecall", "local\u202ecall"),
+        ("local-\u8c03\u7528", "local-\u8c03\u7528"),
+    ],
+)
+async def test_sandbox_local_tool_denies_missing_or_conflicting_call_id(
+    monkeypatch,
+    tmp_path,
+    hook_call_id,
+    callback_call_id,
+):
+    captured = {}
+    hook_input = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(tmp_path / "output" / "output.txt"),
+            "content": "done",
+        },
+    }
+    if hook_call_id is not None:
+        hook_input["tool_use_id"] = hook_call_id
+
+    async def acknowledge(_fact):
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, callback_call_id)],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="write one file",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+    )
+
+    assert captured["hook_results"][0][1]["hookSpecificOutput"][
+        "permissionDecision"
+    ] == "deny"
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+async def test_sandbox_local_tool_call_id_is_redacted_from_terminal_answer(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas, lifecycle_facts = {}, [], []
+    call_id = "private-write-call-1"
+    hook_input = {
+        "tool_name": "Write",
+        "tool_use_id": call_id,
+        "tool_input": {
+            "file_path": str(tmp_path / "output" / "output.txt"),
+            "content": "done",
+        },
+    }
+
+    async def acknowledge(fact):
+        lifecycle_facts.append(dict(fact))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                ("hook", ("PreToolUse", hook_input, call_id)),
+                ("hook", ("PostToolUse", hook_input, call_id)),
+            ],
+            result_text=f"Completed {call_id}.",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="write one file",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert [fact["lifecycle"] for fact in lifecycle_facts] == [
+        "started",
+        "completed",
+    ]
+    assert result.error is None
+    assert result.message == "Completed tool invocation."
+    assert "".join(deltas) == result.message
+    assert call_id not in result.message
+
+
+@pytest.mark.asyncio
+async def test_sandbox_bash_availability_releases_terminal_answer_when_not_invoked(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas = {}, []
+    direct_answer = "No tool was needed. " + ("A" * 5_000)
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps(direct_answer),
+            result_text=direct_answer,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer directly when no tool is needed",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == direct_answer
+    assert "".join(deltas) == direct_answer
+
+
+@pytest.mark.asyncio
+async def test_prior_mcp_completion_does_not_publish_before_bash_failure_terminal(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas = {}, []
+    mcp_subject = _subject()
+    bash_subject = next(
+        subject
+        for subject in with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        )
+        if subject["identity"] == "Bash"
+    )
+    bash_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "false"},
+    }
+    steps = [
+        *_mcp_hook_steps(mcp_subject),
+        *_stream_steps("must remain private after MCP "),
+        ("hook", ("PreToolUse", bash_input, "bash-call-1")),
+        ("hook", ("PostToolUseFailure", bash_input, "bash-call-1")),
+    ]
+
+    async def acknowledge_tool_lifecycle(_fact):
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text="must remain private after MCP",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="use the configured capabilities",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[mcp_subject, bash_subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_tool_lifecycle=acknowledge_tool_lifecycle,
+        on_text=deltas.append,
+        **_MCP_RUNTIME_KWARGS,
+    )
+
+    assert result.error is None
+    assert result.message == "must remain private after MCP"
+    assert deltas == ["must remain private after MCP"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_bash_fails_closed_without_sdk_hook_matcher(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    del sdk.HookMatcher
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="inspect the sandbox",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="docker"
+        ),
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.message == ""
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_outcome", ["missing", "false", "exception"])
+async def test_required_sandbox_bash_pretool_denies_unacknowledged_lifecycle(
+    monkeypatch,
+    tmp_path,
+    callback_outcome,
+):
+    captured = {}
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "pwd"},
+    }
+
+    async def acknowledge(_fact):
+        if callback_outcome == "exception":
+            raise RuntimeError("private callback failure")
+        return False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="run the required command",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [],
+            sandbox_provider="opensandbox",
+            required_declaration=declaration,
+        ),
+        on_tool_lifecycle=None if callback_outcome == "missing" else acknowledge,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "deny"
+    assert (
+        pretool_output["permissionDecisionReason"]
+        == "required_tool_completion_evidence_mismatch"
+    )
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+async def test_required_sandbox_bash_keeps_answer_sealed_without_terminal_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas = {}, []
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "pwd"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", hook_input, "bash-call-1")),
+        *_stream_steps("must remain private"),
+        ("assistant", "must remain private"),
+    ]
+
+    async def acknowledge(_fact):
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="must remain private"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="run the required command",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [],
+            sandbox_provider="opensandbox",
+            required_declaration=declaration,
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert deltas == []
+    assert result.error == "required_tool_completion_evidence_missing"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+async def test_required_sandbox_bash_forwards_duplicate_started_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    captured, lifecycle_facts = {}, []
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "pwd"},
+    }
+
+    async def acknowledge(fact):
+        lifecycle_facts.append(dict(fact))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[
+                ("PreToolUse", hook_input, "bash-call-1"),
+                ("PreToolUse", hook_input, "bash-call-1"),
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="run the required command",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [],
+            sandbox_provider="opensandbox",
+            required_declaration=declaration,
+        ),
+        on_tool_lifecycle=acknowledge,
+    )
+
+    assert len(lifecycle_facts) == 2
+    assert captured["hook_results"][0][1]["hookSpecificOutput"][
+        "permissionDecision"
+    ] == "allow"
+    assert captured["hook_results"][1][1]["hookSpecificOutput"][
+        "permissionDecision"
+    ] == "deny"
+    assert result.error == "required_tool_completion_evidence_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_required_sandbox_bash_releases_only_after_acknowledged_completion(
+    monkeypatch,
+    tmp_path,
+):
+    captured, lifecycle_facts, deltas = {}, [], []
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "pwd"},
+    }
+
+    async def acknowledge(fact):
+        lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                ("hook", ("PreToolUse", hook_input, "bash-call-1")),
+                ("hook", ("PostToolUse", hook_input, "bash-call-1")),
+            ],
+            result_text="command completed",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="run the required command",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [],
+            sandbox_provider="opensandbox",
+            required_declaration=declaration,
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert lifecycle_facts == [
+        ("bash-call-1", "started"),
+        ("bash-call-1", "completed"),
+    ]
+    assert result.error is None
+    assert result.message == "command completed"
+    assert deltas == ["command completed"]
+
+
+@pytest.mark.asyncio
+async def test_required_sandbox_bash_failure_after_success_discards_answer(
+    monkeypatch,
+    tmp_path,
+):
+    captured, lifecycle_facts, deltas = {}, [], []
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    first_call = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "pwd"},
+    }
+    second_call = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-2",
+        "tool_input": {"command": "false"},
+    }
+
+    async def acknowledge(fact):
+        lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                ("hook", ("PreToolUse", first_call, "bash-call-1")),
+                ("hook", ("PostToolUse", first_call, "bash-call-1")),
+                ("hook", ("PreToolUse", second_call, "bash-call-2")),
+                ("hook", ("PostToolUseFailure", second_call, "bash-call-2")),
+                ("assistant", "must not be published"),
+            ],
+            result_text="must not be published",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="run the required command",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [],
+            sandbox_provider="opensandbox",
+            required_declaration=declaration,
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert lifecycle_facts == [
+        ("bash-call-1", "started"),
+        ("bash-call-1", "completed"),
+        ("bash-call-2", "started"),
+        ("bash-call-2", "failed"),
+    ]
+    assert deltas == []
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+async def test_local_sdk_bash_remains_unavailable(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="inspect without sandbox execution",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="worker_local_legacy",
+    )
+    denied = await captured["can_use_tool"]("Bash", {"command": "pwd"})
+
+    assert result.error is None
+    assert "Bash" not in captured["tools"]
+    assert "Bash" not in captured["allowed_tools"]
+    assert denied.behavior == "deny"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability_kind", ["skill", "mcp"])
+@pytest.mark.parametrize("callback_outcome", ["missing", "false", "exception"])
+async def test_sdk_pretool_denies_when_invocation_evidence_is_not_acknowledged(
+    monkeypatch,
+    tmp_path,
+    capability_kind,
+    callback_outcome,
+):
+    captured = {}
+    if capability_kind == "skill":
+        hook_input = {
+            "tool_name": "Skill",
+            "tool_use_id": "skill-call-1",
+            "tool_input": {"skill": "qa-review"},
+        }
+        subjects = [_skill_subject()]
+        skill_id = "qa-review"
+        skills = ["qa-review"]
+    else:
+        hook_input = {
+            "tool_name": "mcp__tenant-server__search",
+            "tool_use_id": "mcp-call-1",
+            "tool_input": {},
+        }
+        subjects = [_subject()]
+        skill_id = "general-chat"
+        skills = None
+
+    async def acknowledge(_evidence):
+        if callback_outcome == "exception":
+            raise RuntimeError("private callback failure")
+        return callback_outcome != "false"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="use the configured capability",
+        cwd=tmp_path,
+        skill_id=skill_id,
+        skills=skills,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=subjects,
+        on_capability_evidence=None if callback_outcome == "missing" else acknowledge,
+        **(_MCP_RUNTIME_KWARGS if capability_kind == "mcp" else {}),
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "deny"
+    assert (
+        pretool_output["permissionDecisionReason"]
+        == "required_tool_completion_evidence_mismatch"
+    )
+    assert result.error == "required_tool_completion_evidence_mismatch"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("execution_policy", ["worker_local_legacy", "sandbox_brokered"])
 async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering_user_stream(
     monkeypatch,
@@ -295,6 +1202,48 @@ def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
 
 
 @pytest.mark.asyncio
+async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    reported = []
+
+    async def on_skill_use(skill_name, metadata):
+        reported.append((skill_name, metadata))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, _stream_steps("done"), result_text="done"),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        skills=[],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[],
+        on_skill_use=on_skill_use,
+    )
+
+    assert result.error is None
+    assert result.used_skills == []
+    assert reported == []
+    assert captured["skills"] == []
+    assert "Skill" not in captured["tools"]
+    assert "Skill" not in captured["allowed_tools"]
+    assert all(
+        matcher.matcher != "Skill"
+        for matcher in captured["hooks"]["PostToolUse"]
+    )
+    denied = await captured["can_use_tool"]("Skill", {"skill": "untrusted-skill"})
+    assert denied.behavior == "deny"
+
+
+@pytest.mark.asyncio
 async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks(
     monkeypatch,
     tmp_path,
@@ -302,7 +1251,7 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
     captured, deltas = {}, []
     subjects = [
         _subject(server_id="tenant__server", tool_name="search"),
-        _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp"),
+        _subject(server_id="other-server", tool_name="fetch"),
     ]
     current_settings = _settings()
     monkeypatch.setitem(
@@ -466,8 +1415,8 @@ def _actual_mcp_steps(outcome, subjects, text, probe):
 async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
     captured, acknowledged, deltas, sealed_probe = {}, [], [], []
     first = _subject()
-    subjects = [first, _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp")]
-    private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {first['mcp_server_config']['url']}."
+    subjects = [first, _subject(server_id="other-server", tool_name="fetch")]
+    private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {_relay_endpoint()}."
     text = "x" * 4_097 if outcome == "overflow" else private_text if outcome == "success" else "must stay sealed"
     steps = _actual_mcp_steps(outcome, subjects, text, lambda: sealed_probe.extend(deltas))
 
@@ -496,7 +1445,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             assert result.capability_evidence == acknowledged
             assert [item["lifecycle_phase"] for item in acknowledged] == ["invocation_requested", "completed"]
             assert not {"tool_input", "tool_response", "arguments", "error"} & set().union(*(item.keys() for item in acknowledged))
-            for private_value in (first["identity"], "mcp-call-1", first["mcp_server_config"]["url"]):
+            for private_value in (first["identity"], "mcp-call-1", _relay_endpoint()):
                 assert private_value not in result.message
     else:
         expected = "claude_agent_sdk_tool_admission_failed" if outcome == "overflow" else "required_tool_completion_evidence_mismatch"
@@ -549,7 +1498,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
-        subject["mcp_server_config"]["url"],
+        _relay_endpoint(),
         call_id,
         "safe-synthetic-value",
     ):
@@ -650,6 +1599,91 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
     assert _subject()["identity"] in captured["allowed_tools"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_agent_skill_set_can_answer_without_invoking_a_skill(monkeypatch, tmp_path):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, _stream_steps("Direct answer."), result_text="Direct answer."),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer from your current context",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review", "reference-search"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            {**_skill_subject("qa-review"), "allowed_skill_names": ["qa-review", "reference-search"]},
+        ],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+        require_selected_skill_invocation=False,
+    )
+
+    assert result.error is None
+    assert result.used_skills == []
+    assert result.capability_evidence == []
+    assert "".join(deltas) == "Direct answer."
+    assert "Authoritative platform Skill requirement" not in _captured_sdk_prompt(captured)
+    assert {"Skill(qa-review)", "Skill(reference-search)"}.issubset(
+        captured["allowed_tools"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(monkeypatch, tmp_path):
+    captured, acknowledged = {}, []
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-reference",
+        "tool_input": {"skill": "reference-search"},
+    }
+
+    async def acknowledge(evidence):
+        acknowledged.append(dict(evidence))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                ("hook", ("PreToolUse", skill_input, "skill-call-reference")),
+                ("hook", ("PostToolUse", skill_input, "skill-call-reference")),
+            ],
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review", "reference-search"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            {**_skill_subject("qa-review"), "allowed_skill_names": ["qa-review", "reference-search"]},
+        ],
+        on_capability_evidence=acknowledge,
+        require_selected_skill_invocation=False,
+    )
+
+    assert result.error is None
+    assert result.used_skills == ["reference-search"]
+    assert [item["canonical_identity"] for item in acknowledged] == [
+        "reference-search",
+        "reference-search",
+    ]
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1069,65 +2103,6 @@ async def test_sdk_assistant_text_blocks_never_publish_answer_or_delta(monkeypat
     assert deltas == ["Trusted structured result"]
     assert result.message == "Trusted structured result"
     assert "secret-token" not in result.message
-
-
-@pytest.mark.asyncio
-async def test_sdk_discards_over_cap_diagnostic_text_and_publishes_terminal_result_once(monkeypatch, tmp_path):
-    captured = {}
-
-    class AssistantMessage:
-        def __init__(self):
-            self.content = [TextBlock("x" * 512)]
-
-    class TextBlock:
-        def __init__(self, text):
-            self.text = text
-
-    class ResultMessage:
-        session_id = "sdk-session"
-        usage = None
-        model_usage = None
-        result = "x" * (512 * 33)
-        is_error = False
-        errors = None
-        stop_reason = "end_turn"
-        num_turns = 1
-        permission_denials = None
-
-    class ClaudeAgentOptions:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    async def query(*, prompt, options):
-        del prompt, options
-        for _ in range(33):
-            yield AssistantMessage()
-        yield ResultMessage()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "claude_agent_sdk",
-        types.SimpleNamespace(
-            AssistantMessage=AssistantMessage,
-            ClaudeAgentOptions=ClaudeAgentOptions,
-            ResultMessage=ResultMessage,
-            StreamEvent=type("StreamEvent", (), {}),
-            TextBlock=TextBlock,
-            query=query,
-        ),
-    )
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
-    deltas = []
-
-    result = await run_claude_agent_sdk(
-        prompt="answer",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        on_text=deltas.append,
-    )
-
-    assert deltas == [ResultMessage.result]
-    assert result.message == ResultMessage.result
 
 
 def _streaming_sdk(captured, events, *, on_before_result=None, result_text="terminal final"):

@@ -3,7 +3,6 @@ import hashlib
 import json
 import re
 import time as _time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
@@ -12,6 +11,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import repositories
+from app.agent_apps.capability_state import (
+    bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
+)
+from app.agent_profiles import reauthorize_bound_profile_for_worker_dispatch
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
@@ -25,19 +28,25 @@ from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
 )
+from app.context.api import materialize_worker_context_snapshot
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     sanitize_context_manifest_payload,
 )
 from app.control_plane_contracts import (
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
     artifact_lineage_contract,
     artifact_manifest_contract,
     sanitize_public_text,
     standard_trace_id,
 )
 from app.db import transaction
-from app.execution_boundary import decide_execution_boundary
+from app.execution_boundary import (
+    decide_worker_execution_boundary as _worker_execution_boundary_decision,
+    ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox,
+)
 from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
@@ -48,18 +57,33 @@ from app.mcp.runtime import (
 )
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
-    PrincipalAuthorityDenied,
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
+from app.runs.api import RunTerminalizationProgress
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,
     required_tool_authorization_for_run,
     required_tool_completion_for_run,
+    with_boundary_sandbox_local_tool_subjects,
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.runtime.sandbox.executor_client import (
+    SandboxExecutorHttpError,
+    canonical_executor_reported_failure_code,
+    executor_reported_failure_message,
+    normalize_executor_reported_failure,
+)
 from app.settings import get_settings
+from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
+from app.streaming.worker_projection import (
+    finalize_parent_and_publish,
+    persist_and_publish_worker_event,
+    persist_worker_failure_event,
+    publish_pending_run_terminal,
+)
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -74,7 +98,13 @@ from app.tool_permission_lifecycle import (
     reconcile_terminalized_permission_run,
 )
 from app.tool_policy import evaluate_tool_policy
-from app.validation import assert_safe_id
+from app.validation import assert_canonical_sha256, assert_safe_id
+from app.worker_principal_authority import (
+    _identity_mismatch_fields,
+    _locked_run_identity,
+    _payload_identity,
+    _resolve_current_principal_before_dispatch,
+)
 
 
 class _WorkerClock:
@@ -245,10 +275,11 @@ _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
     r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b",
     re.IGNORECASE,
 )
-
-
 def _public_executor_failure_message(result: ExecutorResult) -> str:
     generic_message = "Executor reported failure"
+    if result.executor_payload.get("sandbox_runtime_used") is True:
+        safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
+        return executor_reported_failure_message(safe_code)
     for candidate in (
         result.result.get("message"),
         result.result.get("sdk_error"),
@@ -265,13 +296,37 @@ def _public_executor_failure_message(result: ExecutorResult) -> str:
 
 
 def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
-    """Keep native admission distinguishable while sanitizing every other exception."""
+    """Keep typed executor failures distinguishable without projecting private exceptions."""
 
     if isinstance(exc, NativeToolAdmissionError):
         return exc.error_code, "Native tool sandbox admission failed"
     if isinstance(exc.__cause__, McpRuntimeContextError):
         return exc.__cause__.code, "MCP runtime context is unavailable"
-    return "executor_failure", str(exc)
+    if isinstance(exc, SandboxExecutorHttpError):
+        return exc.error_code, exc.public_message
+    return "executor_failure", "Executor failed"
+
+
+def _normalize_sandbox_reported_failure(result: ExecutorResult) -> ExecutorResult:
+    if (
+        result.status != "failed"
+        or result.executor_payload.get("sandbox_runtime_used") is not True
+    ):
+        return result
+    safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
+    safe_result = normalize_executor_reported_failure(
+        {**result.result, "status": "failed", "error_code": safe_code}
+    )
+    safe_result.pop("status", None)
+    safe_result.pop("error_message", None)
+    safe_executor_payload = dict(result.executor_payload)
+    if "sdk_error" in safe_executor_payload:
+        safe_executor_payload["sdk_error"] = safe_code
+    return replace(
+        result,
+        result=safe_result,
+        executor_payload=safe_executor_payload,
+    )
 
 
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
@@ -314,16 +369,15 @@ async def _reconcile_multi_agent_child_terminal_state(
     error_code: str | None = None,
     error_message: str | None = None,
     is_multi_agent_child: bool | None = None,
-) -> repositories.ToolPermissionTerminalizationProgress | None:
+) -> RunTerminalizationProgress | None:
     """Carry one committed child transition to the shared post-commit lifecycle seam."""
-
     del conn, result_json, error_code, error_message
     child_dispatch = isinstance(payload.input.get("multi_agent_dispatch"), dict)
     if child_status not in {"succeeded", "failed", "cancelled"} or not (
         child_dispatch if is_multi_agent_child is None else is_multi_agent_child
     ):
         return None
-    return repositories.ToolPermissionTerminalizationProgress(
+    return RunTerminalizationProgress(
         completed=True,
         status=child_status,
         did_transition=True,
@@ -337,7 +391,7 @@ async def _finalize_multi_agent_parent_after_child_commit(
 ) -> Any | None:
     """Use the shared post-commit owner for worker child reconciliation and parent rollup."""
 
-    if not isinstance(reconciled, repositories.ToolPermissionTerminalizationProgress):
+    if not isinstance(reconciled, RunTerminalizationProgress):
         return None
     return await reconcile_terminalized_permission_run(
         tenant_id=payload.tenant_id,
@@ -419,7 +473,7 @@ def _mcp_tool_call_id(
             payload.tenant_id,
             payload.user_id,
             payload.run_id,
-            tool_id or payload.skill_id,
+            tool_id or payload.skill_id or "",
             request_payload.get("input_sha256", ""),
         ]
     )
@@ -452,9 +506,6 @@ FORBIDDEN_ARTIFACT_KEYS = {
     "executable_path",
     "cwd",
 }
-NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native", "platform_controlled_runner"}
-
-
 AGENT_STEP_EVENT_STATUS = {
     "agent_step_started": "running",
     "agent_step_reused": "succeeded",
@@ -462,33 +513,6 @@ AGENT_STEP_EVENT_STATUS = {
     "agent_step_blocked": "failed",
     "agent_step_failed": "failed",
 }
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
-
-
-def _canonical_assistant_delta_event(
-    *,
-    stage: str,
-    payload: dict[str, Any] | None,
-) -> tuple[str, str, dict[str, Any]] | None:
-    """Return the sole persisted answer-delta shape accepted from executors."""
-    if stage not in _ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, dict):
-        return None
-    delta = payload.get("delta")
-    if not isinstance(delta, str) or not delta:
-        return None
-    return (
-        "answer",
-        "",
-        {
-            "delta": delta,
-            "source": CHAT_ASSISTANT_DELTA_SOURCE,
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    )
-
 
 def _sanitize_artifact_manifest(value: Any) -> Any:
     if isinstance(value, dict):
@@ -888,18 +912,23 @@ def _skill_snapshot_from_result(result: ExecutorResult) -> dict[str, list[str]]:
 
 
 def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
-    source = str(result.executor_payload.get("used_skills_source") or "").strip()
-    if source not in NATIVE_USED_SKILL_SOURCES:
-        return []
-    raw = result.executor_payload.get("used_skills")
+    semantic_evidence = {**result.result, **result.executor_payload}
+    exact_used = exact_invoked_skills(semantic_evidence)
+    raw = semantic_evidence.get("used_skills")
     if not isinstance(raw, list):
         return []
     used: list[str] = []
     for item in raw:
         skill_name = str(item).strip()
-        if skill_name and skill_name not in used:
+        if skill_name in exact_used and skill_name not in used:
             used.append(skill_name)
     return used
+
+
+def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
+    # Agent Profiles register an authorized Skill Set. Invocation is an SDK
+    # decision; exact hook evidence is still validated for every actual call.
+    return None
 
 
 def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
@@ -1051,36 +1080,6 @@ def _dependency_ids_from_manifest(item: dict[str, Any]) -> list[str]:
     return [str(value) for value in raw]
 
 
-RUN_IDENTITY_FIELDS = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "skill_id")
-
-
-def _payload_identity(payload: QueueRunPayload) -> dict[str, str]:
-    return {
-        "tenant_id": payload.tenant_id,
-        "workspace_id": payload.workspace_id,
-        "user_id": payload.user_id,
-        "session_id": payload.session_id,
-        "run_id": payload.run_id,
-        "agent_id": payload.agent_id,
-        "skill_id": payload.skill_id,
-    }
-
-
-def _locked_run_identity(payload: QueueRunPayload, locked_run: object) -> dict[str, str]:
-    if not isinstance(locked_run, dict):
-        return _payload_identity(payload)
-    identity: dict[str, str] = {}
-    for field in RUN_IDENTITY_FIELDS:
-        value = locked_run.get("id") if field == "run_id" else locked_run.get(field)
-        identity[field] = str(value) if value else ""
-    return identity
-
-
-def _identity_mismatch_fields(payload: QueueRunPayload, identity: dict[str, str]) -> list[str]:
-    payload_identity = _payload_identity(payload)
-    return [field for field in RUN_IDENTITY_FIELDS if str(payload_identity[field]) != str(identity[field])]
-
-
 LOCKED_RUN_SNAPSHOT_FIELDS = (
     "file_ids",
     "input",
@@ -1116,10 +1115,104 @@ def _payload_from_locked_run(
         # The dedicated run column is authoritative over caller-controlled
         # input JSON, while the ID itself remains the only queue-visible value.
         candidate["mcp_context_id"] = locked_run.get("mcp_context_id")
+    if (
+        candidate.get("execution_kind") == RUN_EXECUTION_KIND_HARNESS_CHAT
+        and candidate.get("skill_id") == ""
+    ):
+        candidate["skill_id"] = None
     try:
         return QueueRunPayload.model_validate(candidate)
     except ValidationError:
         return None
+
+
+def _locked_agent_profile_identity_valid(
+    agent_profile: dict[str, Any],
+    locked_run: object,
+) -> bool:
+    if not isinstance(locked_run, dict):
+        return False
+    pin_fields = (
+        "admitted_agent_profile_revision",
+        "admitted_agent_profile_hash",
+        "session_admitted_agent_profile_revision",
+        "session_admitted_agent_profile_hash",
+    )
+    if not all(field in locked_run for field in pin_fields):
+        return False
+    pinned_revision = locked_run.get("admitted_agent_profile_revision")
+    pinned_hash = locked_run.get("admitted_agent_profile_hash")
+    session_pinned_revision = locked_run.get("session_admitted_agent_profile_revision")
+    session_pinned_hash = locked_run.get("session_admitted_agent_profile_hash")
+    if not agent_profile:
+        return all(
+            value is None
+            for value in (
+                pinned_revision,
+                pinned_hash,
+                session_pinned_revision,
+                session_pinned_hash,
+            )
+        )
+    try:
+        if (
+            not isinstance(pinned_revision, int)
+            or isinstance(pinned_revision, bool)
+            or pinned_revision < 1
+            or not isinstance(session_pinned_revision, int)
+            or isinstance(session_pinned_revision, bool)
+            or session_pinned_revision < 1
+        ):
+            return False
+        assert_canonical_sha256(pinned_hash, "agent_profile_hash_invalid")
+        assert_canonical_sha256(session_pinned_hash, "agent_profile_hash_invalid")
+    except ValueError:
+        return False
+    return (
+        agent_profile.get("agent_id") == locked_run.get("agent_id")
+        and agent_profile.get("revision") == pinned_revision
+        and agent_profile.get("content_hash") == pinned_hash
+        and pinned_revision == session_pinned_revision
+        and pinned_hash == session_pinned_hash
+    )
+
+
+def _agent_profile_snapshot_matches_authority(
+    payload: QueueRunPayload,
+    admission: object,
+) -> bool:
+    private_execution_input = getattr(admission, "private_execution_input", None)
+    authority_model = getattr(admission, "model", None)
+    authority_mcp_tool_ids = getattr(admission, "mcp_tool_ids", None)
+    if (
+        not isinstance(private_execution_input, dict)
+        or not isinstance(authority_model, dict)
+        or not isinstance(authority_mcp_tool_ids, tuple)
+        or payload.model_id != authority_model.get("id")
+        or payload.model_value != authority_model.get("value")
+    ):
+        return False
+    try:
+        queued_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(payload.input))
+    except (
+        repositories.RepositoryAuthorizationError,
+        repositories.RepositoryConflictError,
+    ):
+        return False
+    if queued_mcp_tool_ids != authority_mcp_tool_ids:
+        return False
+    expected = dict(private_execution_input)
+    if payload.execution_kind != RUN_EXECUTION_KIND_HARNESS_CHAT:
+        authority_skill = getattr(admission, "skill", None)
+        if (
+            not isinstance(authority_skill, dict)
+            or str(authority_skill.get("skill_id") or "") != str(payload.skill_id or "")
+            or str(authority_skill.get("skill_version") or "")
+            != str(payload.skill_version or "")
+            or not payload.skill_version
+        ):
+            return False
+    return payload.agent_profile == expected
 
 
 def _locked_run_trace_id(payload: QueueRunPayload, locked_run: object) -> str:
@@ -1284,6 +1377,166 @@ def _payload_with_authorized_mcp_registration(
     return payload.model_copy(update={"input": rebuilt_input})
 
 
+async def _reauthorize_mcp_capabilities(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    run_identity: dict[str, str],
+    principal: AuthPrincipal,
+    context: CapabilityAccessContext,
+    decisions: list[_WorkerCapabilityDecision],
+    requested_tool_ids: list[str],
+    tool_policy_subjects: list[dict[str, Any]],
+    required_tool_decision: RequiredCapabilityDecision,
+) -> _WorkerCapabilityAuthorization:
+    allowed_entries: list[dict[str, Any]] = []
+    tool_policy_audits: list[_WorkerToolPolicyAudit] = []
+    for tool_id in requested_tool_ids:
+        tool = await repositories.get_mcp_tool_registry_entry(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            tool_id=tool_id,
+        )
+        if tool is None or str(tool.get("tool_id") or "").strip() != tool_id:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_missing"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        server_id = str(tool.get("server_id") or "").strip()
+        if not server_id:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_inheritance_missing"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        try:
+            server_distribution = await repositories.get_capability_distribution_row(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                capability_kind="mcp_server",
+                capability_id=server_id,
+            )
+        except repositories.RepositoryConflictError:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_scope_invalid"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        distribution_decision = resolve_capability_access(
+            context,
+            CapabilityDistributionSubject(
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+                lifecycle_status=_mcp_tool_lifecycle_status(tool),
+                distribution=server_distribution,
+                inherited_distribution_source=f"mcp_server:{server_id}",
+            ),
+            intent="use",
+        )
+        tool_record = _worker_capability_record(
+            "mcp_tool", tool_id, distribution_decision
+        )
+        decisions.append(tool_record)
+        if not distribution_decision.usable:
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), tool_record
+            )
+
+        mcp_subject = _mcp_capability_subject(tool, distribution_decision)
+        if mcp_subject is None:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision(
+                    "mcp_runtime_metadata_invalid",
+                    source=distribution_decision,
+                ),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+
+        tool_gate = evaluate_tool_policy(
+            tool={
+                "requested_identity": mcp_subject["identity"],
+                "declared_identities": [mcp_subject["identity"]],
+                "registered": mcp_subject["registered"],
+                "declared": mcp_subject["declared"],
+                "active": mcp_subject["active"],
+                "distributed": mcp_subject["distributed"],
+                "identity_authorized": mcp_subject["identity_authorized"],
+                "object_authorized": mcp_subject["object_authorized"],
+                "parameters_authorized": mcp_subject["parameters_authorized"],
+                "risk_level": mcp_subject["risk_level"],
+                "write_capable": mcp_subject["write_capable"],
+            }
+        )
+        tool_policy_audits.append(
+            _WorkerToolPolicyAudit(
+                tool_id=tool_id,
+                allowed=tool_gate.allowed,
+                reason=tool_gate.reason,
+                risk_level=tool_gate.risk_level,
+                write_capable=tool_gate.write_capable,
+                decision=tool_gate.outcome,
+            )
+        )
+        if not tool_gate.allowed:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision(
+                    tool_gate.reason, source=distribution_decision
+                ),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload,
+                principal,
+                tuple(decisions),
+                denial,
+                tool_policy_audits=tuple(tool_policy_audits),
+            )
+        allowed_entries.append(tool)
+        tool_policy_subjects.append(mcp_subject)
+
+    if allowed_entries and payload.executor_type != "claude-agent-worker":
+        denial = _worker_capability_record(
+            "mcp_tool",
+            str(allowed_entries[0].get("tool_id") or "mcp_tool"),
+            _denied_capability_decision("mcp_sandbox_executor_required"),
+        )
+        return _WorkerCapabilityAuthorization(
+            payload,
+            principal,
+            tuple(decisions),
+            denial,
+            tool_policy_audits=tuple(tool_policy_audits),
+        )
+
+    authorized_payload = _payload_with_authorized_mcp_registration(
+        payload,
+        allowed_entries=allowed_entries,
+        tool_policy_subjects=tool_policy_subjects,
+    )
+    return _WorkerCapabilityAuthorization(
+        authorized_payload,
+        principal,
+        tuple(decisions),
+        tool_policy_audits=tuple(tool_policy_audits),
+        required_tool_decision=required_tool_decision,
+    )
+
+
 def _authorized_skill_catalog_binding(
     run_identity: dict[str, str],
 ) -> AuthorizedSkillCatalogBinding:
@@ -1316,16 +1569,11 @@ async def _reauthorize_worker_capabilities(
     payload: QueueRunPayload,
     run_identity: dict[str, str],
     attempt_id: str = "",
-    current_principal_resolver: Callable[..., Awaitable[AuthPrincipal]] | None = None,
+    current_principal: AuthPrincipal | None = None,
 ) -> _WorkerCapabilityAuthorization:
     decisions: list[_WorkerCapabilityDecision] = []
-    resolver = current_principal_resolver or resolve_current_principal
-    try:
-        principal = await resolver(
-            user_id=run_identity["user_id"],
-            tenant_id=run_identity["tenant_id"],
-        )
-    except PrincipalAuthorityDenied:
+    principal = current_principal
+    if principal is None:
         principal = AuthPrincipal(
             user_id=run_identity["user_id"],
             display_name=run_identity["user_id"],
@@ -1341,6 +1589,58 @@ async def _reauthorize_worker_capabilities(
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
     context = _worker_capability_context(principal)
+
+    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+        try:
+            requested_tool_ids = repositories.extract_run_mcp_tool_ids(payload.input)
+        except repositories.RepositoryAuthorizationError:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                "mcp_tool_ids",
+                _denied_capability_decision("invalid_capability_selector"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload,
+                principal,
+                tuple(decisions),
+                denial,
+            )
+        tool_policy_subjects = with_boundary_sandbox_local_tool_subjects(
+            [], decision=_worker_execution_boundary_decision(payload),
+            sandbox_provider=get_settings().sandbox_container_provider,
+        )
+        required_tool_decision = required_tool_authorization_for_run(
+            payload=payload,
+            run_identity=run_identity,
+            attempt_id=attempt_id or "missing-attempt",
+            subjects=tool_policy_subjects,
+            admin_bypass=False,
+            admin_non_bypass_authorized=False,
+        )
+        if not required_tool_decision.allowed:
+            denial = _worker_capability_record(
+                "builtin_tool",
+                required_tool_decision.identity or "required_tool",
+                _denied_capability_decision(required_tool_decision.reason),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload,
+                principal,
+                tuple(decisions),
+                denial,
+                required_tool_decision=required_tool_decision,
+            )
+        return await _reauthorize_mcp_capabilities(
+            conn,
+            payload=payload,
+            run_identity=run_identity,
+            principal=principal,
+            context=context,
+            decisions=decisions,
+            requested_tool_ids=requested_tool_ids,
+            tool_policy_subjects=tool_policy_subjects,
+            required_tool_decision=required_tool_decision,
+        )
 
     try:
         await repositories.validate_run_skill_snapshots_for_dispatch(
@@ -1358,12 +1658,18 @@ async def _reauthorize_worker_capabilities(
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
     try:
+        profile_skill_set = (
+            payload.agent_profile.get("skill_set")
+            if isinstance(payload.agent_profile, dict)
+            else None
+        )
         pinned_mcp_tool_ids = await repositories.validate_replay_skill_manifests(
             conn,
             skill_id=run_identity["skill_id"],
             pinned_version=str(payload.skill_version or ""),
             pinned_executor_type=payload.executor_type,
             skill_manifests=payload.skill_manifests,
+            skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
         )
     except (repositories.RepositoryAuthorizationError, repositories.RepositoryConflictError):
         denial = _worker_capability_record(
@@ -1430,6 +1736,7 @@ async def _reauthorize_worker_capabilities(
                 roles=principal.roles,
                 permissions=principal.permissions,
                 pinned_manifests=payload.skill_manifests,
+                skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
             )
         except (AuthorizedSkillCatalogError, repositories.RepositoryConflictError):
             denial = _worker_capability_record(
@@ -1437,9 +1744,13 @@ async def _reauthorize_worker_capabilities(
                 run_identity["skill_id"],
                 _denied_capability_decision("authorized_skill_catalog_unavailable"),
             )
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        selected_catalog_entry = authorized_skill_catalog.snapshot.entry(run_identity["skill_id"])
-        if run_identity["skill_id"] != "general-chat" and (
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        selected_catalog_entry = authorized_skill_catalog.snapshot.entry(
+            run_identity["skill_id"]
+        )
+        if run_identity["skill_id"] != LEGACY_SYNTHETIC_CHAT_SKILL_ID and (
             selected_catalog_entry is None or not selected_catalog_entry.available
         ):
             denial = _worker_capability_record(
@@ -1464,8 +1775,9 @@ async def _reauthorize_worker_capabilities(
             "mcp_tool_ids",
             _denied_capability_decision("invalid_capability_selector"),
         )
-        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-    allowed_entries: list[dict[str, Any]] = []
+        return _WorkerCapabilityAuthorization(
+            payload, principal, tuple(decisions), denial
+        )
     tool_policy_subjects = _builtin_capability_subjects(
         payload=payload,
         run_identity=run_identity,
@@ -1481,6 +1793,10 @@ async def _reauthorize_worker_capabilities(
             if authorized_skill_catalog is not None
             else [run_identity["skill_id"]]
         ),
+    )
+    tool_policy_subjects = with_boundary_sandbox_local_tool_subjects(
+        tool_policy_subjects, decision=_worker_execution_boundary_decision(payload),
+        sandbox_provider=get_settings().sandbox_container_provider,
     )
     required_tool_decision = required_tool_authorization_for_run(
         payload=payload,
@@ -1505,132 +1821,15 @@ async def _reauthorize_worker_capabilities(
             denial,
             required_tool_decision=required_tool_decision,
         )
-    tool_policy_audits: list[_WorkerToolPolicyAudit] = []
-    for tool_id in requested_tool_ids:
-        tool = await repositories.get_mcp_tool_registry_entry(
-            conn,
-            tenant_id=run_identity["tenant_id"],
-            tool_id=tool_id,
-        )
-        if tool is None or str(tool.get("tool_id") or "").strip() != tool_id:
-            denial = _worker_capability_record(
-                "mcp_tool",
-                tool_id,
-                _denied_capability_decision("distribution_missing"),
-            )
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        server_id = str(tool.get("server_id") or "").strip()
-        if not server_id:
-            denial = _worker_capability_record(
-                "mcp_tool",
-                tool_id,
-                _denied_capability_decision("distribution_inheritance_missing"),
-            )
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        try:
-            server_distribution = await repositories.get_capability_distribution_row(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                capability_kind="mcp_server",
-                capability_id=server_id,
-            )
-        except repositories.RepositoryConflictError:
-            denial = _worker_capability_record(
-                "mcp_tool",
-                tool_id,
-                _denied_capability_decision("distribution_scope_invalid"),
-            )
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        distribution_decision = resolve_capability_access(
-            context,
-            CapabilityDistributionSubject(
-                capability_kind="mcp_tool",
-                capability_id=tool_id,
-                lifecycle_status=_mcp_tool_lifecycle_status(tool),
-                distribution=server_distribution,
-                inherited_distribution_source=f"mcp_server:{server_id}",
-            ),
-            intent="use",
-        )
-        tool_record = _worker_capability_record("mcp_tool", tool_id, distribution_decision)
-        decisions.append(tool_record)
-        if not distribution_decision.usable:
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), tool_record)
-
-        mcp_subject = _mcp_capability_subject(tool, distribution_decision)
-        if mcp_subject is None:
-            denial = _worker_capability_record(
-                "mcp_tool",
-                tool_id,
-                _denied_capability_decision("mcp_runtime_metadata_invalid", source=distribution_decision),
-            )
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-
-        tool_gate = evaluate_tool_policy(
-            tool={
-                "requested_identity": mcp_subject["identity"],
-                "declared_identities": [mcp_subject["identity"]],
-                "registered": mcp_subject["registered"],
-                "declared": mcp_subject["declared"],
-                "active": mcp_subject["active"],
-                "distributed": mcp_subject["distributed"],
-                "identity_authorized": mcp_subject["identity_authorized"],
-                "object_authorized": mcp_subject["object_authorized"],
-                "parameters_authorized": mcp_subject["parameters_authorized"],
-                "risk_level": mcp_subject["risk_level"],
-                "write_capable": mcp_subject["write_capable"],
-            }
-        )
-        tool_policy_audits.append(
-            _WorkerToolPolicyAudit(
-                tool_id=tool_id,
-                allowed=tool_gate.allowed,
-                reason=tool_gate.reason,
-                risk_level=tool_gate.risk_level,
-                write_capable=tool_gate.write_capable,
-                decision=tool_gate.outcome,
-            )
-        )
-        if not tool_gate.allowed:
-            denial = _worker_capability_record(
-                "mcp_tool",
-                tool_id,
-                _denied_capability_decision(tool_gate.reason, source=distribution_decision),
-            )
-            return _WorkerCapabilityAuthorization(
-                payload,
-                principal,
-                tuple(decisions),
-                denial,
-                tool_policy_audits=tuple(tool_policy_audits),
-        )
-        allowed_entries.append(tool)
-        tool_policy_subjects.append(mcp_subject)
-
-    if allowed_entries and payload.executor_type != "claude-agent-worker":
-        denial = _worker_capability_record(
-            "mcp_tool",
-            str(allowed_entries[0].get("tool_id") or "mcp_tool"),
-            _denied_capability_decision("mcp_sandbox_executor_required"),
-        )
-        return _WorkerCapabilityAuthorization(
-            payload,
-            principal,
-            tuple(decisions),
-            denial,
-            tool_policy_audits=tuple(tool_policy_audits),
-        )
-
-    authorized_payload = _payload_with_authorized_mcp_registration(
-        payload,
-        allowed_entries=allowed_entries,
+    return await _reauthorize_mcp_capabilities(
+        conn,
+        payload=payload,
+        run_identity=run_identity,
+        principal=principal,
+        context=context,
+        decisions=decisions,
+        requested_tool_ids=requested_tool_ids,
         tool_policy_subjects=tool_policy_subjects,
-    )
-    return _WorkerCapabilityAuthorization(
-        authorized_payload,
-        principal,
-        tuple(decisions),
-        tool_policy_audits=tuple(tool_policy_audits),
         required_tool_decision=required_tool_decision,
     )
 
@@ -1831,6 +2030,7 @@ async def _fail_worker_capability_authorization(
     authorization: _WorkerCapabilityAuthorization,
     run_identity: dict[str, str],
     trace_id: str,
+    policy: str = "capability_distribution",
 ) -> _WorkerTerminalAfterTransaction:
     denial = authorization.denial
     if denial is None:
@@ -1863,7 +2063,7 @@ async def _fail_worker_capability_authorization(
         principal=authorization.principal,
         run_identity=run_identity,
         trace_id=trace_id,
-        policy="capability_distribution",
+        policy=policy,
         error_message=error_message,
     )
     return _WorkerTerminalAfterTransaction(
@@ -1878,26 +2078,6 @@ def _runtime_sandbox_workspace_payload() -> dict[str, str]:
         "workspace": "/workspace",
         "inputs": "/workspace/inputs",
     }
-
-
-def _context_execution_tier(context_snapshot: dict[str, Any]) -> str:
-    value = context_snapshot.get("execution_tier")
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _ordinary_run_uses_runtime_sandbox(
-    payload: QueueRunPayload,
-    *,
-    context_snapshot: dict[str, Any],
-) -> bool:
-    return decide_execution_boundary(
-        executor_type=payload.executor_type,
-        execution_mode=str(payload.input.get("execution_mode") or ""),
-        execution_tier=_context_execution_tier(context_snapshot),
-        mcp_requires_sandbox=bool(
-            payload.mcp_context_id or repositories.extract_run_mcp_tool_ids(payload.input)
-        ),
-    ).requires_real_sandbox
 
 
 def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:
@@ -1921,7 +2101,7 @@ async def _create_worker_runtime_sandbox_lease(
     }
     if worker_id:
         lease_payload["worker_id"] = worker_id
-    row = await repositories.create_sandbox_lease(
+    row = await sandbox_lease_repository.create_sandbox_lease(
         conn,
         tenant_id=run_identity["tenant_id"],
         workspace_id=run_identity["workspace_id"],
@@ -2041,24 +2221,14 @@ async def _ensure_worker_context_snapshot(
     run_identity: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     identity = run_identity or _payload_identity(payload)
-    # The repository joins the physical runs.context_snapshot_id to the exact
-    # scoped executor row; the locked JSON value is only a mirror check.
-    scoped_snapshot = await repositories.get_context_snapshot_for_worker(
+    return await materialize_worker_context_snapshot(
         conn,
-        tenant_id=identity["tenant_id"],
-        workspace_id=identity["workspace_id"],
-        user_id=identity["user_id"],
-        session_id=identity["session_id"],
-        run_id=identity["run_id"],
+        identity=identity,
         context_snapshot_id=str(payload.context_snapshot_id or ""),
+        snapshot_loader=repositories.get_context_snapshot_for_worker,
+        message_loader=repositories.list_scoped_context_messages,
+        context_projector=_context_snapshot_ref_from_row,
     )
-    if scoped_snapshot is None:
-        return None
-    context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
-    return {
-        "context_snapshot_id": str(context_ref["context_snapshot_id"]),
-        "context_snapshot": context_ref,
-    }
 
 
 async def process_run_payload(
@@ -2098,6 +2268,12 @@ async def process_run_payload(
     capability_authorization: _WorkerCapabilityAuthorization | None = None
     admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
+        current_principal = await _resolve_current_principal_before_dispatch(
+            payload,
+            transaction_factory=transaction,
+            run_loader=repositories.get_run,
+            principal_resolver=resolve_current_principal,
+        )
         async with transaction() as conn:
             locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if not locked:
@@ -2214,12 +2390,82 @@ async def process_run_payload(
                     trace_id=trace_id,
                 )
                 return terminal_after_transaction.outcome
+            if not _locked_agent_profile_identity_valid(
+                locked_payload.agent_profile or {},
+                locked,
+            ):
+                terminal_after_transaction = await _fail_locked_run_snapshot(
+                    conn,
+                    payload=locked_payload,
+                    locked_run=locked,
+                    run_identity=run_identity,
+                    trace_id=trace_id,
+                )
+                return terminal_after_transaction.outcome
+            if locked_payload.agent_profile and current_principal is not None:
+                pinned_revision = int(locked_payload.agent_profile["revision"])
+                pinned_hash = str(locked_payload.agent_profile["content_hash"])
+                profile_admission = await reauthorize_bound_profile_for_worker_dispatch(
+                    conn,
+                    principal=current_principal,
+                    agent_id=run_identity["agent_id"],
+                    revision=pinned_revision,
+                    content_hash=pinned_hash,
+                )
+                profile_denial_reason = None
+                if profile_admission is None:
+                    profile_denial_reason = "profile_not_authorized"
+                elif not _agent_profile_snapshot_matches_authority(
+                    locked_payload,
+                    profile_admission,
+                ):
+                    profile_denial_reason = "profile_snapshot_invalid"
+                if profile_denial_reason is not None:
+                    profile_denial = _worker_capability_record(
+                        "agent_profile",
+                        run_identity["agent_id"],
+                        _denied_capability_decision(profile_denial_reason),
+                    )
+                    terminal_after_transaction = await _fail_worker_capability_authorization(
+                        conn,
+                        payload=locked_payload,
+                        authorization=_WorkerCapabilityAuthorization(
+                            locked_payload,
+                            current_principal,
+                            (),
+                            profile_denial,
+                        ),
+                        run_identity=run_identity,
+                        trace_id=trace_id,
+                        policy="agent_profile_authority",
+                    )
+                    return terminal_after_transaction.outcome
             payload = locked_payload
+            try:
+                materialized_skill_manifests = await repositories.materialize_run_skill_manifests(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    skill_manifest_refs=payload.skill_manifests,
+                )
+            except repositories.RepositoryConflictError:
+                terminal_after_transaction = await _fail_locked_run_snapshot(
+                    conn,
+                    payload=payload,
+                    locked_run=locked,
+                    run_identity=run_identity,
+                    trace_id=trace_id,
+                )
+                return terminal_after_transaction.outcome
+            payload = payload.model_copy(
+                update={"skill_manifests": materialized_skill_manifests}
+            )
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,
                 payload=payload,
                 run_identity=run_identity,
                 attempt_id=attempt_id,
+                current_principal=current_principal,
             )
             admin_bypass_audits = _worker_admin_bypass_audits(
                 authorization=capability_authorization,
@@ -2383,6 +2629,11 @@ async def process_run_payload(
                 terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
+            await publish_pending_run_terminal(
+                transaction,
+                tenant_id=terminal_after_transaction.payload.tenant_id,
+                run_id=terminal_after_transaction.payload.run_id,
+            )
 
     run_payload = RunPayload(
         tenant_id=run_identity["tenant_id"],
@@ -2392,7 +2643,8 @@ async def process_run_payload(
         run_id=run_identity["run_id"],
         attempt_id=attempt_id,
         agent_id=run_identity["agent_id"],
-        skill_id=run_identity["skill_id"],
+        execution_kind=run_identity["execution_kind"],
+        skill_id=payload.skill_id,
         file_ids=payload.file_ids,
         input=payload.input,
         trace_id=trace_id,
@@ -2401,10 +2653,20 @@ async def process_run_payload(
         skill_manifests=payload.skill_manifests,
         context_snapshot_id=str(context_ref["context_snapshot_id"]),
         context_snapshot=context_ref["context_snapshot"],
-        context_pack=executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+        context_pack={
+            **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+            "conversation_context": context_ref["conversation_context"],
+        },
         model_id=payload.model_id or "",
         model_value=payload.model_value or "",
         agent_profile=payload.agent_profile or {},
+        schema_version=payload.schema_version,
+    )
+    stream_publisher = RunStreamPublisher(
+        run_payload.tenant_id,
+        run_payload.run_id,
+        run_payload.attempt_id,
+        get_settings().ai_session_secret,
     )
 
     async def event_sink(
@@ -2418,8 +2680,9 @@ async def process_run_payload(
         event_message = message
         event_payload = payload
         persist_event = True
+        public_delta = None
         if event_type == "assistant_delta":
-            canonical_delta = _canonical_assistant_delta_event(
+            canonical_delta = canonical_assistant_delta_event(
                 stage=stage,
                 payload=payload,
             )
@@ -2427,31 +2690,22 @@ async def process_run_payload(
                 persist_event = False
             else:
                 event_stage, event_message, event_payload = canonical_delta
-        async with transaction() as conn:
-            if persist_event:
-                await append_user_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    stage=event_stage,
-                    message=event_message,
-                    payload=event_payload,
-                )
-                await _record_run_step_from_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    message=event_message,
-                    payload=event_payload,
-                )
-            if await repositories.is_cancel_requested(
-                conn,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-            ):
-                raise WorkerRunCancelled
+                persist_event = False
+                public_delta = str(event_payload["delta"])
+        if public_delta is not None:
+            await stream_publisher.publish_assistant_delta(public_delta)
+        if await persist_and_publish_worker_event(
+            transaction,
+            stream_publisher=stream_publisher,
+            run_payload=run_payload,
+            persist_event=persist_event,
+            event_type=event_type,
+            stage=event_stage,
+            message=event_message,
+            payload=event_payload,
+            record_run_step=_record_run_step_from_event,
+        ):
+            raise WorkerRunCancelled
 
     async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
         nonlocal runtime_sandbox_lease_released
@@ -2470,6 +2724,11 @@ async def process_run_payload(
             return
 
     try:
+        async with transaction() as conn:
+            await stream_publisher.prepare(conn)
+        await stream_publisher.open()
+        async with transaction() as conn:
+            await stream_publisher.confirm(conn)
         mcp_targets = mcp_targets_from_policy_subjects(
             run_payload.input.get("_runtime_tool_policy_subjects")
         )
@@ -2510,8 +2769,11 @@ async def process_run_payload(
             event_sink=event_sink,
             cancel_requested=cancel_requested,
         )
+        await stream_publisher.aclose()
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
+        result = _normalize_sandbox_reported_failure(result)
+        result = replace(result, executor_payload=bind_validated_controlled_skill_evidence(payload, result, attempt_id, adapter))
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
         required_tool_decision = capability_authorization.required_tool_decision or RequiredCapabilityDecision(
@@ -2538,7 +2800,25 @@ async def process_run_payload(
                     "error_code": required_completion.reason,
                 },
             )
+        required_agent_skill_id = _required_agent_skill_id(payload)
+        if (
+            result.status == "succeeded"
+            and required_agent_skill_id is not None
+            and required_agent_skill_id
+            not in exact_invoked_skills({**result.result, **result.executor_payload})
+        ):
+            result = replace(
+                result,
+                status="failed",
+                artifacts=[],
+                result={
+                    **result.result,
+                    "message": "Required Agent capability execution evidence is unavailable.",
+                    "error_code": "agent_app_required_skill_not_invoked",
+                },
+            )
     except WorkerRunCancelled:
+        await stream_publisher.aclose()
         reconciled_parent = None
         async with transaction() as conn:
             cancel_result = {"message": "任务已取消"}
@@ -2562,9 +2842,10 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
+        await stream_publisher.aclose()
         reconciled_parent = None
         failure_code, failure_message = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
@@ -2626,7 +2907,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -2649,12 +2930,24 @@ async def process_run_payload(
             }
         )
     skill_snapshot = _skill_snapshot_from_result(result)
+    agent_capability_state = (
+        project_agent_capability_state(
+            required_skill_id=required_agent_skill_id or "",
+            executor_payload={**result.result, **result.executor_payload},
+            run_succeeded=result.status == "succeeded",
+            durable_artifact_count=0,
+        )
+        if required_agent_skill_id is not None
+        else None
+    )
     public_result = {
         key: value
         for key, value in result.result.items()
         if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills"}
     }
-    if "used_skills" in result.result or "used_skills" in result.executor_payload:
+    if required_agent_skill_id is None and (
+        "used_skills" in result.result or "used_skills" in result.executor_payload
+    ):
         public_result["used_skills"] = skill_snapshot["used_skills"]
     result_payload = {
         **public_result,
@@ -2679,8 +2972,10 @@ async def process_run_payload(
             "capabilities": result.capabilities,
         },
     }
-    if skill_snapshot:
+    if skill_snapshot and required_agent_skill_id is None:
         result_payload["skills"] = skill_snapshot
+    if agent_capability_state is not None:
+        result_payload["capability_state"] = agent_capability_state.public_projection()
     reconciled_parent = None
     try:
         async with transaction() as conn:
@@ -2738,6 +3033,65 @@ async def process_run_payload(
                     **result_payload,
                     "cancel_status": "cancel_requested_but_completed",
                 }
+            if agent_capability_state is not None:
+                agent_capability_state = project_agent_capability_state(
+                    required_skill_id=required_agent_skill_id or "",
+                    executor_payload={**result.result, **result.executor_payload},
+                    run_succeeded=result.status == "succeeded",
+                    durable_artifact_count=0,
+                )
+                result_payload["capability_state"] = agent_capability_state.public_projection()
+                semantic_events = (
+                    (
+                        "capability_staged",
+                        agent_capability_state.staged,
+                        "Agent capability loaded",
+                        "staged",
+                    ),
+                    (
+                        "capability_sdk_registered",
+                        agent_capability_state.sdk_registered,
+                        "Agent capability registered",
+                        "sdk_registered",
+                    ),
+                    (
+                        "capability_actually_invoked",
+                        agent_capability_state.actually_invoked,
+                        "Agent capability invoked",
+                        "actually_invoked",
+                    ),
+                    (
+                        "capability_completed",
+                        agent_capability_state.completed,
+                        "Agent capability completed",
+                        "completed",
+                    ),
+                )
+                for event_type, present, message, public_state in semantic_events:
+                    if not present:
+                        continue
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type=event_type,
+                        stage="capability",
+                        message=message,
+                        payload={"capability_state": public_state},
+                    )
+                if agent_capability_state.optional_not_invoked_count:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="capability_optional_not_invoked",
+                        stage="capability",
+                        message="Optional Agent capabilities were not invoked",
+                        payload={
+                            "capability_state": "optional_not_invoked",
+                            "count": agent_capability_state.optional_not_invoked_count,
+                        },
+                    )
             for artifact in artifact_records:
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],
@@ -2761,9 +3115,9 @@ async def process_run_payload(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    event_type="artifact_created",
+                    event_type="artifact_ready",
                     stage="artifact",
-                    message=f"Artifact created: {artifact['label']}",
+                    message="Artifact is ready",
                     payload={
                         "artifact_id": artifact["id"],
                         "artifact_type": artifact["artifact_type"],
@@ -2771,6 +3125,14 @@ async def process_run_payload(
                         "lineage": lineage,
                     },
                 )
+            if agent_capability_state is not None:
+                agent_capability_state = project_agent_capability_state(
+                    required_skill_id=required_agent_skill_id or "",
+                    executor_payload={**result.result, **result.executor_payload},
+                    run_succeeded=result.status == "succeeded",
+                    durable_artifact_count=len(artifact_records),
+                )
+                result_payload["capability_state"] = agent_capability_state.public_projection()
             for item in _skill_manifests_for_persistence(result, payload):
                 skill_id = str(item.get("skill_id") or "").strip()
                 if not skill_id:
@@ -2812,7 +3174,11 @@ async def process_run_payload(
                         "artifact_count": len(result.artifacts),
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
-                        "skills": skill_snapshot,
+                        **(
+                            {"capability_state": agent_capability_state.public_projection()}
+                            if agent_capability_state is not None
+                            else {"skills": skill_snapshot}
+                        ),
                     },
                 )
                 await append_user_event(
@@ -2822,7 +3188,14 @@ async def process_run_payload(
                     event_type="assistant_message_created",
                     stage="message",
                     message="Assistant response is ready",
-                    payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                    payload={
+                        "artifact_count": len(result.artifacts),
+                        **(
+                            {"capability_state": agent_capability_state.public_projection()}
+                            if agent_capability_state is not None
+                            else {"skills": skill_snapshot}
+                        ),
+                    },
                 )
                 if cancel_requested:
                     await append_user_event(
@@ -2856,7 +3229,14 @@ async def process_run_payload(
                         event_type="run_succeeded",
                         stage="worker",
                         message="Run succeeded",
-                        payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                        payload={
+                            "artifact_count": len(result.artifacts),
+                            **(
+                                {"capability_state": agent_capability_state.public_projection()}
+                                if agent_capability_state is not None
+                                else {"skills": skill_snapshot}
+                            ),
+                        },
                         **terminal_event_kwargs,
                     )
                     await repositories.append_event(
@@ -2922,14 +3302,14 @@ async def process_run_payload(
                             "Run already reached a terminal state",
                         )
                     else:
-                        await repositories.append_event(
+                        await persist_worker_failure_event(
                             conn,
                             tenant_id=payload.tenant_id,
                             run_id=payload.run_id,
-                            event_type="error",
-                            stage="worker",
-                            message="Run failed",
-                            payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                            result=result,
+                            attempt_id=attempt_id,
+                            trace_id=trace_id,
+                            error_code=reported_error_code,
                         )
                         await release_runtime_sandbox_lease(conn, reason="run_failed")
                         terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
@@ -3043,5 +3423,5 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome

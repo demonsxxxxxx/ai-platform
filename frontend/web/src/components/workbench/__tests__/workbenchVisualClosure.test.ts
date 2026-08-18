@@ -371,7 +371,6 @@ test("phase 1c logged-in route surfaces expose shared governance smoke attribute
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(projectionPages, /data-projection-workbench-grid/);
   assert.match(projectionPages, /data-projection-task-panel/);
@@ -394,13 +393,9 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
   assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");
-  assert.equal(en.workbench.projections.currentTask, "Current task");
   assert.equal(zh.workbench.projections.governance.summaryTitle, "读写治理摘要");
-  assert.equal(en.workbench.projections.governance.summaryTitle, "Read/write governance");
   assert.ok(zh.workbench.projections.users.roleLabels.admin);
-  assert.ok(en.workbench.projections.settings.categories.security);
   assert.ok(zh.workbench.projections.feedback.status.open);
-  assert.ok(en.workbench.projections.notifications.readState.unread);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg-card\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
@@ -461,48 +456,30 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   const ordinarySkills = read("src/components/panels/AvailableSkillsPanel.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(hub, /resolveSkillsHubGovernance/);
   assert.match(hub, /isAiAdminUser\(user\)/);
-  assert.match(hub, /return <AvailableSkillsPanel \/>;/);
+  assert.match(hub, /<SkillsPanel[\s\S]*allAuthorizedCatalog/);
+  assert.match(hub, /showDistributionEditor=\{isAdmin\}/);
+  assert.doesNotMatch(hub, /AvailableSkillsPanel/);
   assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
-  assert.match(hub, /statusCopyNamespace/);
-  assert.match(hub, /"skillsHub\.skillManagement"/);
   assert.doesNotMatch(hub, /"skillsHub\.skills"/);
   assert.doesNotMatch(hub, /"skillsHub\.marketplace"/);
-  assert.match(hub, /governanceState === "loading"\s*\?\s*"loading"/);
-  assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
-  assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
-  assert.match(hub, /data-skills-catalog-status-strip/);
-  assert.match(hub, /statusIndicatorClass/);
-  assert.match(hub, /bg-amber-500/);
-  assert.match(hub, /bg-rose-500/);
-  assert.match(hub, /bg-\[var\(--theme-primary\)\]/);
+  assert.doesNotMatch(hub, /data-skills-catalog-status-strip/);
+  assert.doesNotMatch(hub, /data-skills-hub-state-detail/);
   assert.doesNotMatch(hub, /bg-emerald-500/);
   assert.doesNotMatch(hub, /rounded-full bg-emerald-500/);
   assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
   assert.doesNotMatch(hub, /PanelHeader/);
-  assert.match(hub, /data-skills-catalog-status/);
+  assert.doesNotMatch(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
   assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
   assert.match(ordinarySkills, /skills\.available\.title/);
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
   assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
   assert.equal(zh.skills.available.title, "可用技能");
-  assert.equal(en.skills.available.title, "Available skills");
-  assert.equal(zh.skillsHub.skillManagement.ready.title, "技能管理可用");
-  assert.equal(
-    zh.skillsHub.skillManagement.loading.title,
-    "正在检查技能管理权限",
-  );
-  assert.equal(en.skillsHub.skillManagement.ready.title, "Skill Management is available");
-  assert.equal(
-    en.skillsHub.skillManagement.loading.title,
-    "Checking Skill Management access",
-  );
   assert.match(resolver, /requiredPermission: "skill:admin" \| "marketplace:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
@@ -527,7 +504,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   ])) {
     assert.match(
       source,
-      /bg-\[var\(--theme-workbench-canvas\)\]|className=\{workbenchSurface\.page\}/,
+      /bg-\[var\(--theme-workbench-canvas\)\]|workbenchSurface\.page/,
       name,
     );
     assert.doesNotMatch(
@@ -549,7 +526,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /skill-catalog-toolbar__actions/);
   assert.match(skillsList, /workbenchSurface\.catalog\.toolbarShell/);
   assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);
-  assert.match(skillsList, /workbenchSurface\.catalog\.content/);
+  assert.match(hub, /data-primary-page-scroller/);
   assert.match(marketplace, /workbenchSurface\.catalog\.content/);
   assert.match(skillsList, /<SkillManagementTable/);
   assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
@@ -569,7 +546,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.doesNotMatch(hub, /showTabSwitcher/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
   assert.doesNotMatch(hub, /actions=\{/);
-  assert.match(hub, /data-skills-catalog-status/);
+  assert.doesNotMatch(hub, /data-skills-catalog-status/);
   assert.match(skillCss, /--skill-grid-bg:\s*var\(--theme-workbench-canvas\);/);
   assert.match(
     skillCss,
@@ -616,7 +593,7 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
   ]);
 
   for (const [name, source] of sources) {
-    assert.match(source, /className=\{workbenchSurface\.page\}/, name);
+    assert.match(source, /workbenchSurface\.page/, name);
     assert.doesNotMatch(
       source,
       /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/,

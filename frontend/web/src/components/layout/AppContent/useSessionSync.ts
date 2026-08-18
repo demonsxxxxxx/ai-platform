@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import type { TabType } from "./types.ts";
 import { shouldBlockSessionSelection } from "../../../utils/sessionSelectionGuard.ts";
@@ -48,6 +48,23 @@ interface ShouldLoadSessionFromUrlChangeInput {
   isInternalNavigation: boolean;
   initialUrlSyncPending?: boolean;
   historyLoadEnabled?: boolean;
+}
+
+interface ShouldClearConversationOnRouteIdentityChangeInput {
+  hasAgentWorkspace: boolean;
+  routeSessionId: string | undefined;
+  sessionId: string | null;
+}
+
+interface UseConversationRouteIdentityResetOptions
+  extends ShouldClearConversationOnRouteIdentityChangeInput {
+  conversationIdentityKey: string;
+  onIdentityChange: () => void;
+}
+
+interface SessionHistoryLoadOwner {
+  requestId: number;
+  sessionId: string;
 }
 
 export function isChatPath(pathname: string, sessionRouteBasePath = "/chat"): boolean {
@@ -159,6 +176,57 @@ export function shouldLoadSessionFromUrlChange({
   return true;
 }
 
+/**
+ * A first accepted submission may bind its Session before the URL is
+ * canonicalized. That route-only transition must retain the live authority
+ * and transcript in both ordinary and Agent Chat; every other identity
+ * transition remains a real clear.
+ */
+export function shouldClearConversationOnRouteIdentityChange({
+  hasAgentWorkspace,
+  routeSessionId,
+  sessionId,
+}: ShouldClearConversationOnRouteIdentityChangeInput): boolean {
+  if (
+    hasAgentWorkspace &&
+    sessionId !== null &&
+    (!routeSessionId || routeSessionId === sessionId)
+  ) {
+    return false;
+  }
+
+  return !routeSessionId || routeSessionId !== sessionId;
+}
+
+export function useConversationRouteIdentityReset({
+  conversationIdentityKey,
+  hasAgentWorkspace,
+  routeSessionId,
+  sessionId,
+  onIdentityChange,
+}: UseConversationRouteIdentityResetOptions): void {
+  const previousIdentityKeyRef = useRef<string | undefined>(undefined);
+  const onIdentityChangeRef = useRef(onIdentityChange);
+  onIdentityChangeRef.current = onIdentityChange;
+
+  useLayoutEffect(() => {
+    if (previousIdentityKeyRef.current === conversationIdentityKey) {
+      return;
+    }
+    previousIdentityKeyRef.current = conversationIdentityKey;
+    if (
+      !shouldClearConversationOnRouteIdentityChange({
+        hasAgentWorkspace,
+        routeSessionId,
+        sessionId,
+      })
+    ) {
+      return;
+    }
+    onIdentityChangeRef.current();
+  }, [conversationIdentityKey, hasAgentWorkspace, routeSessionId, sessionId]);
+}
+
 export function useSessionSync({
   activeTab,
   sessionId,
@@ -176,13 +244,15 @@ export function useSessionSync({
   const isSyncingRef = useRef(false);
   // Track if navigation was initiated internally (not from URL)
   const isInternalNavRef = useRef(false);
-  const isLoadingRef = useRef(false);
+  const internalNavigationSourcePathRef = useRef<string | null>(null);
   // Track when a new session is being created to prevent loading stale history
   const isNewSessionRef = useRef(false);
   const initialUrlSyncPendingRef = useRef(false);
   const initialUrlSessionIdRef = useRef(urlSessionId);
   const initialUrlSyncStartedRef = useRef(false);
   const selectSessionRequestIdRef = useRef(0);
+  const historyLoadRequestIdRef = useRef(0);
+  const activeHistoryLoadRef = useRef<SessionHistoryLoadOwner | null>(null);
   // Track a single sync delay timeout for cleanup on unmount
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -200,6 +270,39 @@ export function useSessionSync({
   locationPathRef.current = location.pathname;
   locationStateRef.current = location.state;
 
+  const beginHistoryLoad = useCallback(
+    (targetSessionId: string): SessionHistoryLoadOwner => {
+      const owner = {
+        requestId: ++historyLoadRequestIdRef.current,
+        sessionId: targetSessionId,
+      };
+      activeHistoryLoadRef.current = owner;
+      return owner;
+    },
+    [],
+  );
+
+  const isCurrentHistoryLoad = useCallback(
+    (owner: SessionHistoryLoadOwner): boolean =>
+      activeHistoryLoadRef.current?.requestId === owner.requestId &&
+      activeHistoryLoadRef.current.sessionId === owner.sessionId,
+    [],
+  );
+
+  const finishHistoryLoad = useCallback(
+    (owner: SessionHistoryLoadOwner) => {
+      if (isCurrentHistoryLoad(owner)) {
+        activeHistoryLoadRef.current = null;
+      }
+    },
+    [isCurrentHistoryLoad],
+  );
+
+  const retireHistoryLoad = useCallback(() => {
+    historyLoadRequestIdRef.current += 1;
+    activeHistoryLoadRef.current = null;
+  }, []);
+
   // Cleanup tracked timeouts on unmount
   useEffect(() => {
     return () => {
@@ -207,8 +310,9 @@ export function useSessionSync({
         clearTimeout(syncTimeoutRef.current);
         syncTimeoutRef.current = null;
       }
+      retireHistoryLoad();
     };
-  }, []);
+  }, [retireHistoryLoad]);
 
   const scheduleSyncReset = useCallback(() => {
     if (syncTimeoutRef.current) {
@@ -237,14 +341,24 @@ export function useSessionSync({
     initialUrlSyncStartedRef.current = true;
     isSyncingRef.current = true;
     initialUrlSyncPendingRef.current = true;
-    loadHistory(initialUrlSessionId)
+    const owner = beginHistoryLoad(initialUrlSessionId);
+    loadHistoryRef
+      .current(initialUrlSessionId)
       .then((config) => {
-        if (config && onConfigRestoredRef.current) {
+        if (
+          isCurrentHistoryLoad(owner) &&
+          config &&
+          onConfigRestoredRef.current
+        ) {
           onConfigRestoredRef.current(config);
         }
       })
       .finally(() => {
+        if (!isCurrentHistoryLoad(owner)) {
+          return;
+        }
         initialUrlSyncPendingRef.current = false;
+        finishHistoryLoad(owner);
         const action = getInitialUrlSyncCompletionAction({
           activeTab,
           pathname: locationPathRef.current,
@@ -264,8 +378,10 @@ export function useSessionSync({
       });
   }, [
     activeTab,
+    beginHistoryLoad,
+    finishHistoryLoad,
     historyLoadEnabled,
-    loadHistory,
+    isCurrentHistoryLoad,
     navigate,
     scheduleSyncReset,
     sessionRouteBasePath,
@@ -275,16 +391,50 @@ export function useSessionSync({
   // Load session when URL changes (e.g., from toast click)
   useEffect(() => {
     if (activeTab !== "chat") {
+      selectSessionRequestIdRef.current += 1;
+      if (activeHistoryLoadRef.current) {
+        retireHistoryLoad();
+      }
+      isInternalNavRef.current = false;
+      internalNavigationSourcePathRef.current = null;
+      isNewSessionRef.current = false;
+      if (initialUrlSyncPendingRef.current) {
+        isSyncingRef.current = false;
+      }
+      initialUrlSyncPendingRef.current = false;
       return;
     }
 
     if (!urlSessionId) {
+      if (activeHistoryLoadRef.current && !isInternalNavRef.current) {
+        retireHistoryLoad();
+      }
+      if (initialUrlSyncPendingRef.current) {
+        isSyncingRef.current = false;
+      }
+      initialUrlSyncPendingRef.current = false;
+      if (isNewSessionRef.current) isNewSessionRef.current = false;
       return;
     }
 
-    if (isLoadingRef.current || sessionId === urlSessionId) {
+    const activeHistoryLoad = activeHistoryLoadRef.current;
+
+    if (sessionId === urlSessionId) {
+      if (
+        activeHistoryLoad &&
+        activeHistoryLoad.sessionId !== urlSessionId
+      ) {
+        retireHistoryLoad();
+      }
       if (isNewSessionRef.current) isNewSessionRef.current = false;
-      if (isInternalNavRef.current) isInternalNavRef.current = false;
+      if (isInternalNavRef.current) {
+        isInternalNavRef.current = false;
+        internalNavigationSourcePathRef.current = null;
+      }
+      return;
+    }
+
+    if (activeHistoryLoad?.sessionId === urlSessionId) {
       return;
     }
 
@@ -293,9 +443,15 @@ export function useSessionSync({
       return;
     }
 
+    if (
+      isInternalNavRef.current &&
+      internalNavigationSourcePathRef.current === locationPathRef.current
+    ) {
+      return;
+    }
     if (isInternalNavRef.current) {
       isInternalNavRef.current = false;
-      return;
+      internalNavigationSourcePathRef.current = null;
     }
 
     if (
@@ -303,28 +459,51 @@ export function useSessionSync({
         activeTab,
         sessionId,
         urlSessionId,
-        isLoading: isLoadingRef.current,
+        isLoading: false,
         isNewSession: isNewSessionRef.current,
         isInternalNavigation: isInternalNavRef.current,
-        initialUrlSyncPending: initialUrlSyncPendingRef.current,
+        initialUrlSyncPending:
+          initialUrlSyncPendingRef.current &&
+          initialUrlSessionIdRef.current === urlSessionId,
         historyLoadEnabled,
       })
     ) {
       return;
     }
 
-    isLoadingRef.current = true;
+    if (
+      initialUrlSyncPendingRef.current &&
+      initialUrlSessionIdRef.current !== urlSessionId
+    ) {
+      initialUrlSyncPendingRef.current = false;
+      isSyncingRef.current = false;
+    }
+
+    const owner = beginHistoryLoad(urlSessionId);
     loadHistoryRef
       .current(urlSessionId)
       .then((config) => {
-        if (config && onConfigRestoredRef.current) {
+        if (
+          isCurrentHistoryLoad(owner) &&
+          config &&
+          onConfigRestoredRef.current
+        ) {
           onConfigRestoredRef.current(config);
         }
       })
       .finally(() => {
-        isLoadingRef.current = false;
+        finishHistoryLoad(owner);
       });
-  }, [urlSessionId, sessionId, activeTab, historyLoadEnabled]);
+  }, [
+    activeTab,
+    beginHistoryLoad,
+    finishHistoryLoad,
+    historyLoadEnabled,
+    isCurrentHistoryLoad,
+    retireHistoryLoad,
+    sessionId,
+    urlSessionId,
+  ]);
 
   // Sync URL with sessionId state (when sessionId changes from internal actions)
   useEffect(() => {
@@ -383,32 +562,48 @@ export function useSessionSync({
         return;
       }
 
+      const requestId = ++selectSessionRequestIdRef.current;
+      if (
+        initialUrlSyncPendingRef.current &&
+        initialUrlSessionIdRef.current !== selectedSessionId
+      ) {
+        initialUrlSyncPendingRef.current = false;
+        isSyncingRef.current = false;
+      }
+      const owner = beginHistoryLoad(selectedSessionId);
+      isInternalNavRef.current = true;
+      internalNavigationSourcePathRef.current = currentPathname;
       try {
-        const requestId = ++selectSessionRequestIdRef.current;
-        isInternalNavRef.current = true;
         const config = await loadHistory(selectedSessionId);
-
-        // 恢复配置
-        if (config && onConfigRestoredRef.current) {
-          onConfigRestoredRef.current(config);
-        }
-
         const latestPathname =
           typeof window !== "undefined" ? window.location.pathname : "";
 
         if (
           requestId !== selectSessionRequestIdRef.current ||
+          !isCurrentHistoryLoad(owner) ||
           !isChatPath(latestPathname, sessionRouteBasePath)
         ) {
           return;
         }
 
+        if (config && onConfigRestoredRef.current) {
+          onConfigRestoredRef.current(config);
+        }
         navigate(`${sessionRouteBasePath}/${selectedSessionId}`);
       } catch (err) {
         console.error("[handleSelectSession] Error:", err);
+      } finally {
+        finishHistoryLoad(owner);
       }
     },
-    [navigate, loadHistory, sessionRouteBasePath],
+    [
+      beginHistoryLoad,
+      finishHistoryLoad,
+      isCurrentHistoryLoad,
+      loadHistory,
+      navigate,
+      sessionRouteBasePath,
+    ],
   );
 
   // Handle new session - clear messages and navigate to /chat immediately.
@@ -419,11 +614,16 @@ export function useSessionSync({
   // sessionId (new) !== urlSessionId (old) and call loadHistory with the
   // OLD session ID — overwriting the new session's messages.
   const handleNewSession = useCallback(() => {
+    selectSessionRequestIdRef.current += 1;
+    retireHistoryLoad();
+    initialUrlSyncPendingRef.current = false;
+    isSyncingRef.current = false;
     isNewSessionRef.current = true;
     isInternalNavRef.current = false;
+    internalNavigationSourcePathRef.current = null;
     clearMessages();
     navigate(sessionRouteBasePath, { replace: true });
-  }, [clearMessages, navigate, sessionRouteBasePath]);
+  }, [clearMessages, navigate, retireHistoryLoad, sessionRouteBasePath]);
 
   return {
     handleSelectSession,

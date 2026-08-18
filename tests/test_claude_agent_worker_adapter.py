@@ -11,10 +11,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from openpyxl import Workbook
 
-import app.executors.claude_agent_sdk_runner as sdk_runner
+from app.executors.claude.capability_policy import _dynamic_mcp_server_option
 import app.skills.dependencies as dependency_policy
 import app.worker as worker_module
+from app.context.file_content import ContextFileContentError
 from app.executors import claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -41,8 +43,13 @@ from app.file_parser_contracts import (
     ParsedAttachmentContext,
 )
 from app.required_tool_contract import (
+    REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    REQUIRED_CAPABILITY_EVIDENCE_KEY,
+    TOOL_INVOCATION_EVIDENCE_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
+    ToolInvocationEvidence,
+    parse_required_tool_declaration,
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
@@ -58,9 +65,18 @@ from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
 
 
+def _materialized_xlsx_bytes() -> bytes:
+    stream = io.BytesIO()
+    workbook = Workbook()
+    workbook.active.append(["name", "value"])
+    workbook.active.append(["alpha", 1])
+    workbook.save(stream)
+    return stream.getvalue()
+
+
 @pytest.mark.asyncio
 async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects(monkeypatch, tmp_path):
-    captured = {}
+    captured, lifecycle_facts = {}, []
 
     class TextBlock:
         def __init__(self, text):
@@ -186,6 +202,10 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     subjects_by_identity = {subject["identity"]: subject for subject in builtin_subjects}
     subjects = [subjects_by_identity[identity] for identity in ("Bash", "Write", "Skill")] + [external_subject]
 
+    async def acknowledge_tool_lifecycle(fact):
+        lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
+        return True
+
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
@@ -195,6 +215,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         execution_policy="sandbox_brokered",
         mcp_relay_url="https://platform.example/api/ai/mcp/relay",
         mcp_broker_capability="mcpbrk:mcpctx-test:attempt-token",
+        on_tool_lifecycle=acknowledge_tool_lifecycle,
     )
 
     assert result.error is None
@@ -238,17 +259,32 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "https://mcp.example.test/v1#fragment",
     ):
         with pytest.raises(ValueError, match="dynamic MCP relay registration is invalid"):
-            sdk_runner._dynamic_mcp_server_option(
+            _dynamic_mcp_server_option(
                 relay_url=endpoint,
                 capability="mcpbrk:mcpctx-test:attempt-token",
                 server_id="corp-search",
             )
 
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    allowed = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe"}})
-    denied = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe", "cwd": "other"}})
+    allowed = await hook(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo safe"},
+            "tool_use_id": "bash-call-1",
+        },
+        "bash-call-1",
+    )
+    denied = await hook(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo safe", "cwd": "other"},
+            "tool_use_id": "bash-call-2",
+        },
+        "bash-call-2",
+    )
     assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert lifecycle_facts == [("bash-call-1", "started")]
 
 
 class FakeQueryResult:
@@ -454,7 +490,6 @@ def _mcp_subject():
         "parameters_authorized": True,
         "risk_level": "low",
         "write_capable": False,
-        "mcp_server_config": {"type": "http", "url": "https://private.example/mcp"},
     }
 
 
@@ -495,6 +530,33 @@ def _selected_capability_evidence(request):
                 ).__dict__
             )
     return evidence
+
+
+def _controlled_skill_capability_evidence(request, skill_id):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=skill_id,
+    )
+    binding = {
+        key: getattr(request, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    return [
+        RequiredCapabilityEvidence.from_controlled_runner(
+            declaration=declaration,
+            binding=binding,
+            tool_call_id="controlled-skill-call",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("invocation_requested", "completed")
+    ]
 
 
 def _payload_skill_evidence(current_payload):
@@ -651,15 +713,16 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
                     else ""
                 ),
                 "capability_evidence": _selected_capability_evidence(request),
+                TOOL_INVOCATION_EVIDENCE_KEY: [],
             }
+            resolved_response = dict(response or default_response)
+            resolved_response.setdefault(TOOL_INVOCATION_EVIDENCE_KEY, [])
             return types.SimpleNamespace(
                 status=status,
                 provider=provider,
                 session_id=request.session_id,
                 run_id=request.run_id,
-                executor_response=dict(
-                    response or default_response
-                ),
+                executor_response=resolved_response,
                 timings={},
             )
 
@@ -668,6 +731,98 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
         lambda *args, **kwargs: FakeSandboxRuntime(),
     )
     return requests
+
+
+@pytest.mark.asyncio
+async def test_submit_run_classifies_context_file_size_failure_without_starting_runtime(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def reject_large_file(*args, **kwargs):
+        raise ContextFileContentError("context_file_too_large")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", reject_large_file)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(sandbox_writing_payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "context_file_too_large"
+    assert result.result["message"] == "The input file exceeds the 32 MiB processing limit."
+    assert runtime_requests == []
+    diagnostic = result.executor_payload["context_file_failure"]
+    assert diagnostic["reason_code"] == "context_file_too_large"
+    assert diagnostic["phase"] == "limits"
+    assert diagnostic["exception_chain"] == ["ContextFileContentError"]
+    assert len(diagnostic["diagnostic_id"]) == 16
+    int(diagnostic["diagnostic_id"], 16)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "context_file_pdf_password_required",
+        "context_file_pdf_active_content_unsupported",
+        "context_file_docx_macros_unsupported",
+        "xlsx_encrypted_unsupported",
+    ],
+)
+async def test_submit_run_preserves_allowlisted_context_file_failure_codes(
+    monkeypatch,
+    tmp_path,
+    error_code,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def reject_file(*args, **kwargs):
+        raise ContextFileContentError(
+            error_code,
+            file_kind="pdf",
+            attachment_index=2,
+        )
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", reject_file)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(sandbox_writing_payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == error_code
+    assert runtime_requests == []
+    diagnostic = result.executor_payload["context_file_failure"]
+    assert diagnostic["reason_code"] == error_code
+    assert diagnostic["attachment_index"] == 2
+    assert diagnostic["file_kind"] == "pdf"
+
+
+@pytest.mark.asyncio
+async def test_submit_run_normalizes_unknown_context_file_code_without_leaking_value(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def reject_file(*args, **kwargs):
+        raise ContextFileContentError("private_unknown_reason")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", reject_file)
+    install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(sandbox_writing_payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "context_file_preprocessing_failed"
+    assert "private_unknown_reason" not in str(result.result)
+    assert "private_unknown_reason" not in str(result.executor_payload)
 
 
 def sandbox_workspace_path(current_settings, *, run_id="run_1", attempt_id="qat-test-attempt"):
@@ -1230,12 +1385,16 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(conn, *, tenant_id, run_id, file_id):
-        return {"original_name": "input.docx", "storage_key": "files/input.docx"}
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {
+            "original_name": "input.docx",
+            "size_bytes": 3,
+            "storage_key": "files/input.docx",
+        }
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="run workspace"):
@@ -1243,49 +1402,49 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_materialize_files_captures_exact_facts_before_duplicate_basename_overwrite(
+async def test_materialize_files_rejects_duplicate_basename_before_object_read_or_write(
     monkeypatch,
     tmp_path,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw_by_key = {"files/a": b"AAAA", "files/b": b"BBBB"}
+    storage_reads = []
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
-            return raw_by_key[storage_key]
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            storage_reads.append((storage_key, max_bytes))
+            raise AssertionError("duplicate basenames must fail before object reads")
 
     @asynccontextmanager
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        file_id = kwargs["file_id"]
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": 4,
             "storage_key": f"files/{'a' if file_id == 'file-a' else 'b'}",
         }
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    materialized = await adapter._materialize_files(
-        payload(file_ids=["file-a", "file-b"]),
-        workspace,
-    )
+    with pytest.raises(ValueError, match="context_file_name_conflict"):
+        await adapter._materialize_files(
+            payload(file_ids=["file-a", "file-b"]),
+            workspace,
+        )
 
-    assert list(materialized) == ["book.xlsx", "book.xlsx"]
-    assert [fact.file_id for fact in materialized.attachment_facts] == ["file-a", "file-b"]
-    assert [fact.byte_count for fact in materialized.attachment_facts] == [4, 4]
-    assert materialized.attachment_facts[0].sha256 == hashlib.sha256(b"AAAA").hexdigest()
-    assert materialized.attachment_facts[1].sha256 == hashlib.sha256(b"BBBB").hexdigest()
-    assert materialized.attachment_facts[0].sha256 != materialized.attachment_facts[1].sha256
+    assert storage_reads == []
+    assert list(workspace.iterdir()) == []
 
 
 @pytest.mark.asyncio
-async def test_general_chat_attachment_refs_are_metadata_only_without_object_reads_or_workspace_files(
+async def test_harness_chat_attachment_refs_are_metadata_only_without_object_reads_or_workspace_files(
     monkeypatch,
     tmp_path,
 ):
@@ -1294,13 +1453,15 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
 
     class FakeStorage:
         def get_bytes(self, *, storage_key):
-            raise AssertionError("metadata-only general chat must not fetch object bytes")
+            raise AssertionError(
+                "metadata-only harness chat must not fetch object bytes"
+            )
 
     @asynccontextmanager
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+    async def fake_get_scoped_context_file(_conn, **kwargs):
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
@@ -1310,15 +1471,20 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(
         payload(
             agent_id="general-agent",
-            skill_id="general-chat",
+            execution_kind="harness_chat",
+            skill_id=None,
             file_ids=["file_1"],
             input={"message": "hello"},
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
         ),
         workspace,
     )
@@ -1331,35 +1497,105 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
     assert list(workspace.iterdir()) == []
 
 
+def test_harness_chat_keeps_scoped_file_tools_without_eager_preprocessing():
+    harness_payload = payload(
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=["file_1"],
+        input={"message": "summarize"},
+        schema_version="ai-platform.run-payload.v2",
+        skill_manifests=[],
+        skill_version="",
+        release_decision={},
+    )
+
+    assert not claude_agent_worker._requires_typed_attachment_preprocessing(
+        harness_payload
+    )
+    assert claude_agent_worker._allows_context_file_tools(harness_payload)
+    manifest = claude_agent_worker._context_manifest_with_attachment_metadata(
+        {
+            "available_retrieval_tools": [
+                "read_context_file",
+                "stage_context_file_to_workspace",
+            ]
+        },
+        [],
+        allow_file_content_tools=claude_agent_worker._allows_context_file_tools(
+            harness_payload
+        ),
+    )
+    assert manifest["available_retrieval_tools"] == [
+        "read_context_file",
+        "stage_context_file_to_workspace",
+    ]
+
+
 @pytest.mark.asyncio
-async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materialization(
+async def test_harness_chat_cannot_enter_multi_agent_skill_resume_path(
+    monkeypatch,
+):
+    def fail_registry(*_args, **_kwargs):
+        raise AssertionError("Harness chat must not resolve the Skill catalog")
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.BuiltinSkillRegistry",
+        fail_registry,
+    )
+    adapter = ClaudeAgentWorkerAdapter()
+    result = await adapter._run_multi_agent_file_skill(
+        payload(
+            agent_id="general-agent",
+            execution_kind="harness_chat",
+            skill_id=None,
+            file_ids=[],
+            input={
+                "execution_mode": "multi_agent",
+                "resume": {"completed_step_outputs": {"answer": "done"}},
+            },
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "skill_execution_identity_invalid"
+
+
+@pytest.mark.asyncio
+async def test_legacy_general_chat_with_explicit_skill_keeps_typed_attachment_materialization(
     monkeypatch,
     tmp_path,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw = b"typed-workbook"
+    raw = _materialized_xlsx_bytes()
 
     class FakeStorage:
-        def get_bytes(self, *, storage_key):
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
             assert storage_key == "files/private-book"
+            assert max_bytes == len(raw)
             return raw
 
     @asynccontextmanager
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+    async def fake_get_scoped_context_file(_conn, **kwargs):
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
             "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "storage_key": "files/private-book",
         }
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(
@@ -1640,8 +1876,9 @@ async def test_sandbox_skill_staging_matches_attempt_lease_and_isolates_retries(
                     "message": "sandbox completed",
                     "sdk_used": True,
                     "used_skills": ["qa-file-reviewer"],
-                    "used_skills_source": "executor_hook",
-                    "capability_evidence": _selected_capability_evidence(request),
+                        "used_skills_source": "executor_hook",
+                        "capability_evidence": _selected_capability_evidence(request),
+                        TOOL_INVOCATION_EVIDENCE_KEY: [],
                 },
                 timings={},
             )
@@ -1782,6 +2019,65 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_sandbox_runtime_accepts_only_proven_controlled_skill_use(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills")
+    write_skill(
+        tmp_path / "skills",
+        name="minimax-docx",
+        description="Manipulate Word documents.",
+    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
+
+    async def no_files(_payload, _workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    install_sandbox_runtime(
+        monkeypatch,
+        executor_response=lambda request: {
+            "status": "completed",
+            "message": "controlled runner completed",
+            "sdk_used": False,
+            "used_skills": ["qa-file-reviewer", "unstaged-hostile-skill"],
+            "used_skills_source": "platform_controlled_runner",
+            "capability_evidence": _controlled_skill_capability_evidence(
+                request,
+                "qa-file-reviewer",
+            ),
+        },
+    )
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+            context_snapshot={"execution_tier": "sdk_only_writing"},
+            context_pack={"execution_tier": "sdk_only_writing"},
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
+    assert (
+        result.executor_payload["used_skills_source"]
+        == "platform_controlled_runner"
+    )
+    assert [
+        item["lifecycle_phase"]
+        for item in result.executor_payload["capability_evidence"]
+    ] == ["invocation_requested", "completed"]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")
@@ -1798,10 +2094,10 @@ async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkey
         monkeypatch,
         executor_response={
             "status": "completed",
-            "message": "manual answer without a Skill hook",
-            "sdk_used": True,
-            "used_skills": [],
-            "used_skills_source": "",
+            "message": "unproven controlled runner claim",
+            "sdk_used": False,
+            "used_skills": ["qa-file-reviewer"],
+            "used_skills_source": "platform_controlled_runner",
         },
     )
 
@@ -1982,8 +2278,15 @@ async def test_general_chat_xlsx_metadata_does_not_create_parser_contract_or_req
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
-        assert (tenant_id, run_id, file_id) == ("default", "run_1", "file_1")
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "default",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "session_id": "ses_1",
+            "run_id": "run_1",
+            "file_id": "file_1",
+        }
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
@@ -1998,8 +2301,8 @@ async def test_general_chat_xlsx_metadata_does_not_create_parser_contract_or_req
         FailIfReadStorage,
     )
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_run_file",
-        fake_get_run_file,
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -2144,6 +2447,7 @@ async def test_general_chat_explicit_skill_dispatch_keeps_prior_file_tools_and_t
                     "message": "xlsx answer",
                     "sdk_used": True,
                     "attachment_parser_evidence": [_xlsx_parser_evidence()],
+                    TOOL_INVOCATION_EVIDENCE_KEY: [],
                 },
                 timings={},
             )
@@ -2201,7 +2505,7 @@ async def test_worker_rejects_parser_file_absent_from_dispatched_manifest(monkey
 
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: type("S", (), {})(),
+        lambda: type("S", (), {"sandbox_container_provider": "docker"})(),
     )
 
     result = await adapter._submit_prepared_run_to_sandbox_runtime(
@@ -2310,7 +2614,8 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
                     "executor_tool_call_latency_ms": 0,
                     "executor_model_latency_ms": 8,
                     "document_processing_latency_ms": 0,
-                    "artifact_upload_latency_ms": 0,
+                        "artifact_upload_latency_ms": 0,
+                        TOOL_INVOCATION_EVIDENCE_KEY: [],
                 },
                 timings={
                     "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -2627,6 +2932,68 @@ def test_worker_capability_execution_plan_validates_required_and_observed_calls(
     assert claude_agent_worker._capability_execution_error(current_payload, evidence) == expected_error
 
 
+def test_agent_profile_capability_plan_accepts_only_server_authorized_skill_evidence():
+    manifest = _test_skill_manifest("qa-review")
+    current_payload = payload(
+        agent_id="agt-review",
+        skill_id="qa-review",
+        skill_manifests=[manifest],
+        agent_profile={
+            "agent_id": "agt-review",
+            "revision": 1,
+            "content_hash": "a" * 64,
+            "instructions": "Review documents.",
+            "skill_set": [
+                {
+                    "skill_id": "qa-review",
+                    "expected_version": manifest["content_hash"],
+                }
+            ],
+        },
+    )
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="qa-review",
+    )
+    binding = {
+        key: getattr(current_payload, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    evidence = [
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=binding,
+            tool_call_id="profile-skill-call",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("invocation_requested", "completed")
+    ]
+
+    assert (
+        claude_agent_worker._capability_execution_error(
+            current_payload,
+            evidence,
+            available_skill_identities=["qa-review"],
+        )
+        is None
+    )
+    assert (
+        claude_agent_worker._capability_execution_error(
+            current_payload,
+            evidence,
+            available_skill_identities=["other-skill"],
+        )
+        == "required_tool_completion_evidence_mismatch"
+    )
+
+
 @pytest.mark.asyncio
 async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatch_raises(
     monkeypatch,
@@ -2785,6 +3152,206 @@ def test_sandbox_runtime_fake_provider_result_fails_closed(monkeypatch, tmp_path
     assert result.result["error_code"] == "sandbox_real_provider_required"
 
 
+def test_sandbox_runtime_preserves_bash_invocation_lifecycle_evidence(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="execute the requested command",
+    )
+    current_payload = sandbox_writing_payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={"message": "请执行 Bash 命令 pwd"},
+    )
+    binding = {
+        "tenant_id": current_payload.tenant_id,
+        "workspace_id": current_payload.workspace_id,
+        "user_id": current_payload.user_id,
+        "session_id": current_payload.session_id,
+        "run_id": current_payload.run_id,
+        "attempt_id": current_payload.attempt_id,
+    }
+    evidence = [
+        ToolInvocationEvidence.from_executor_private_payload(
+            binding=binding,
+            tool_call_id="bash-call-1",
+            canonical_identity="Bash",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("started", "completed")
+    ]
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        current_payload,
+        prepared,
+        types.SimpleNamespace(
+            status="completed",
+            provider="docker",
+            executor_response={
+                "status": "completed",
+                "message": "command completed",
+                "sdk_used": True,
+                TOOL_INVOCATION_EVIDENCE_KEY: evidence,
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert result.executor_payload[TOOL_INVOCATION_EVIDENCE_KEY] == evidence
+
+
+def test_sandbox_runtime_rejects_call_id_shared_by_mcp_and_bash(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="search and inspect",
+    )
+    subject = _mcp_subject()
+    current_payload = sandbox_writing_payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={
+            "message": "search and inspect",
+            "_runtime_tool_policy_subjects": [subject],
+        },
+    )
+    request = types.SimpleNamespace(
+        **{
+            key: getattr(current_payload, key)
+            for key in (
+                "tenant_id",
+                "workspace_id",
+                "user_id",
+                "session_id",
+                "run_id",
+                "attempt_id",
+            )
+        },
+        skill_ids=["general-chat"],
+        tool_policy_subjects=[subject],
+    )
+    capability_evidence = _selected_capability_evidence(request)
+    for item in capability_evidence:
+        item["tool_call_id"] = "shared-call"
+    binding = {
+        key: getattr(current_payload, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    bash_evidence = [
+        ToolInvocationEvidence.from_executor_private_payload(
+            binding=binding,
+            tool_call_id="shared-call",
+            canonical_identity="Bash",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("started", "completed")
+    ]
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        current_payload,
+        prepared,
+        types.SimpleNamespace(
+            status="completed",
+            provider="docker",
+            executor_response={
+                "status": "completed",
+                "message": "unsafe result",
+                "sdk_used": True,
+                "capability_evidence": capability_evidence,
+                TOOL_INVOCATION_EVIDENCE_KEY: bash_evidence,
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "tool_invocation_evidence_mismatch"
+
+
+def test_sandbox_runtime_rejects_required_bash_evidence_for_different_or_failed_call(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="inspect",
+    )
+    current_payload = sandbox_writing_payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={"message": "inspect"},
+    )
+    binding = {
+        key: getattr(current_payload, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+    assert declaration is not None
+    failed_bash = [
+        ToolInvocationEvidence.from_executor_private_payload(
+            binding=binding,
+            tool_call_id="failed-call",
+            canonical_identity="Bash",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("started", "failed")
+    ]
+    required_evidence = RequiredCapabilityEvidence.from_executor_private_payload(
+        declaration=declaration,
+        binding=binding,
+        tool_call_id="different-call",
+    ).__dict__
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        current_payload,
+        prepared,
+        types.SimpleNamespace(
+            status="completed",
+            provider="docker",
+            executor_response={
+                "status": "completed",
+                "message": "unsafe result",
+                "sdk_used": True,
+                "capability_evidence": [],
+                TOOL_INVOCATION_EVIDENCE_KEY: failed_bash,
+                REQUIRED_CAPABILITY_EVIDENCE_KEY: required_evidence,
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "tool_invocation_evidence_mismatch"
+
+
 def _xlsx_prepared_run(tmp_path):
     (tmp_path / "book.xlsx").write_bytes(b"xlsx-worker-evidence")
     return PreparedSdkRun(
@@ -2917,7 +3484,8 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
                     "private_untrusted_field": "must-not-project",
                 },
                 "attachment_parser_evidence": [evidence],
-                "capability_evidence": _payload_skill_evidence(current_payload),
+                    "capability_evidence": _payload_skill_evidence(current_payload),
+                    TOOL_INVOCATION_EVIDENCE_KEY: [],
             },
             timings={},
         ),
@@ -3042,7 +3610,7 @@ def test_sandbox_runtime_missing_provider_does_not_fallback_to_settings(monkeypa
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: type("S", (), {"sandbox_container_provider": "docker"})(),
+        lambda: type("S", (), {})(),
     )
 
     result = adapter._executor_result_from_sandbox_runtime(
@@ -3850,6 +4418,7 @@ async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_work
                     "sdk_used": True,
                     "used_skills": [],
                     "used_skills_source": "",
+                    TOOL_INVOCATION_EVIDENCE_KEY: [],
                 },
                 timings={},
             )
@@ -4072,6 +4641,27 @@ async def test_worker_passes_distinct_run_scoped_sdk_session_ids_to_sandbox(monk
     assert captured_session_ids[0]
     assert captured_session_ids[0] != captured_session_ids[1]
     assert captured_session_ids[2] == captured_session_ids[0]
+    for request in runtime_requests:
+        bash_subjects = [
+            subject
+            for subject in request.tool_policy_subjects
+            if subject.get("identity") == "Bash"
+        ]
+        assert len(bash_subjects) == 1
+        assert bash_subjects[0]["command_isolation"] == "sibling-tool-sandbox-v1"
+
+
+def test_sandbox_bash_subject_is_available_without_required_declaration():
+    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+        types.SimpleNamespace(input={"message": "请执行 Bash 命令 pwd"}),
+        sandbox_provider="opensandbox",
+    )
+    bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
+
+    assert bash_subject["active"] is True
+    assert bash_subject["write_capable"] is True
+    assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
+    assert REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY not in bash_subject
 
 
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():
@@ -4596,7 +5186,7 @@ def test_build_sdk_env_maps_anthropic_gateway(monkeypatch):
         "S",
         (),
         {
-            "anthropic_base_url": "http://10.56.0.211:3002",
+            "anthropic_base_url": "https://models.example.internal/anthropic",
             "anthropic_auth_token": "token",
             "anthropic_model": "deepseek-v4-flash",
             "openai_api_key": "",
@@ -4606,7 +5196,7 @@ def test_build_sdk_env_maps_anthropic_gateway(monkeypatch):
 
     env = build_sdk_env()
 
-    assert env["ANTHROPIC_BASE_URL"] == "http://10.56.0.211:3002"
+    assert env["ANTHROPIC_BASE_URL"] == "https://models.example.internal/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "token"
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash"
 
@@ -4620,7 +5210,7 @@ def test_build_sdk_env_overrides_untrusted_inherited_environment(monkeypatch, tm
         "S",
         (),
         {
-            "anthropic_base_url": "http://10.56.0.211:3002",
+            "anthropic_base_url": "https://models.example.internal/anthropic",
             "anthropic_auth_token": "settings-token",
             "anthropic_model": "deepseek-v4-flash",
             "openai_api_key": "",
@@ -4794,6 +5384,11 @@ async def test_sdk_runner_keeps_attachment_data_in_distinct_message_and_deduplic
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class HookMatcher:
+        def __init__(self, *, matcher, hooks):
+            self.matcher = matcher
+            self.hooks = hooks
+
     async def query(prompt, options):
         captured["allowed_tools"] = list(options.kwargs["allowed_tools"])
         captured["messages"] = []
@@ -4819,6 +5414,7 @@ async def test_sdk_runner_keeps_attachment_data_in_distinct_message_and_deduplic
     fake_sdk = types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
@@ -5265,6 +5861,102 @@ async def test_sdk_runner_requires_exact_selected_skill_despite_user_override(mo
 
 
 @pytest.mark.asyncio
+async def test_harness_sdk_wires_no_skill_callback(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    captured = {}
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return FakeQueryResult()
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+
+    result = await adapter._try_run_sdk(
+        payload(
+            agent_id="general-agent",
+            execution_kind="harness_chat",
+            skill_id=None,
+            file_ids=[],
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+        ),
+        workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[],
+        prompt="hello",
+        staged_skill_names=[],
+    )
+
+    assert result.error is None
+    assert captured["skill_id"] is None
+    assert captured["skills"] == []
+    assert captured["on_skill_use"] is None
+    assert "system_prompt" not in captured
+
+
+@pytest.mark.asyncio
+async def test_pinned_harness_profile_uses_private_sdk_system_channel(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    captured = {}
+    private_instruction = "Private profile instruction: never expose this marker."
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return FakeQueryResult()
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+
+    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
+        payload(
+            agent_id="agt_support",
+            execution_kind="harness_chat",
+            skill_id=None,
+            file_ids=[],
+            input={"message": "public user question"},
+            schema_version="ai-platform.run-payload.v2",
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": private_instruction,
+                "required_skill_id": "general-chat",
+                "required_skill_version": "version-a",
+            },
+        ),
+        workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[],
+        prompt="public user question",
+        staged_skill_names=[],
+    )
+
+    assert result.message == "hello from sdk"
+    assert captured["prompt"] == "public user question"
+    assert captured["system_prompt"] == private_instruction
+    assert private_instruction not in json.dumps(
+        {"prompt": captured["prompt"], "result": result.message},
+    )
+
+
+@pytest.mark.asyncio
 async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     captured = {}
@@ -5281,9 +5973,11 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         on_skill_use,
         public_skill_metadata,
         tool_policy_subjects,
+        require_selected_skill_invocation,
     ):
         captured["model_id"] = model_id
         captured["public_skill_metadata"] = public_skill_metadata
+        captured["require_selected_skill_invocation"] = require_selected_skill_invocation
         return FakeQueryResult()
 
     adapter = ClaudeAgentWorkerAdapter()
@@ -5306,6 +6000,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
     assert result.error is None
     assert captured["model_id"] == "deepseek-v4-pro"
     assert captured["public_skill_metadata"] is None
+    assert captured["require_selected_skill_invocation"] is True
 
 
 @pytest.mark.asyncio

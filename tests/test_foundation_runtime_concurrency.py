@@ -1,3 +1,4 @@
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -150,6 +151,27 @@ def test_foundation_runtime_concurrency_missing_evidence_fails_closed():
     assert "missing_evidence" in readiness["failures"]
     assert readiness["non_expansion_invariants"]["ordinary_user_multi_agent_allowed"] is False
     assert readiness["non_expansion_invariants"]["production_concurrency_increase_allowed"] is False
+
+
+def test_foundation_runtime_concurrency_does_not_depend_on_cli_tools():
+    source = (ROOT / "app/foundation_runtime_concurrency.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_tool_modules = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "tools" or alias.name.startswith("tools.")
+    }
+    imported_tool_modules.update(
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and (node.module == "tools" or node.module.startswith("tools."))
+    )
+
+    assert imported_tool_modules == set()
 
 
 def test_foundation_runtime_concurrency_accepts_complete_12_case_evidence():

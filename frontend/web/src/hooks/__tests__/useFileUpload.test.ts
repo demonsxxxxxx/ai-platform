@@ -2,14 +2,141 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { UploadRequestError } from "../../services/api/upload.ts";
-import type { MessageAttachment, UploadResult } from "../../types";
+import type {
+  MessageAttachment,
+  UploadConfig,
+  UploadResult,
+} from "../../types";
 import {
   cancelTemporaryUpload,
   settleUploadFailure,
   startFileUploadTask,
 } from "../useFileUpload.ts";
+import {
+  formatUploadLimitMiB,
+  isFileSizeWithinLimitBytes,
+  resolveUploadBytePolicy,
+} from "../../utils/uploadLimits.ts";
 
 const translate = (key: string) => `translated:${key}`;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+test("upload policy prefers the explicit byte contract and supports the byte-valued legacy alias", () => {
+  assert.equal(resolveUploadBytePolicy(null), null);
+  assert.equal(resolveUploadBytePolicy(undefined), null);
+  assert.equal(
+    resolveUploadBytePolicy("invalid-json-shape" as unknown as UploadConfig),
+    null,
+  );
+
+  const explicit = resolveUploadBytePolicy({
+    enabled: true,
+    uploadLimitsBytes: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+    },
+    maxFiles: 10,
+    uploadLimits: {
+      image: 1,
+      video: 1,
+      audio: 1,
+      document: 1,
+      maxFiles: 1,
+    },
+  });
+  assert.deepEqual(explicit, {
+    limitsBytes: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+    },
+    maxFiles: 10,
+  });
+
+  const legacy = resolveUploadBytePolicy({
+    enabled: true,
+    uploadLimits: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+      maxFiles: 10,
+    },
+  });
+  assert.deepEqual(legacy, explicit);
+
+  const explicitLimitsWithLegacyCount = resolveUploadBytePolicy({
+    enabled: true,
+    uploadLimitsBytes: explicit?.limitsBytes,
+    uploadLimits: {
+      image: 1,
+      video: 1,
+      audio: 1,
+      document: 1,
+      maxFiles: 7,
+    },
+  });
+  assert.deepEqual(explicitLimitsWithLegacyCount, {
+    limitsBytes: explicit?.limitsBytes,
+    maxFiles: 7,
+  });
+
+  const legacyLimitsWithExplicitCount = resolveUploadBytePolicy({
+    enabled: true,
+    maxFiles: 9,
+    uploadLimits: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+      maxFiles: 1,
+    },
+  });
+  assert.deepEqual(legacyLimitsWithExplicitCount, {
+    limitsBytes: explicit?.limitsBytes,
+    maxFiles: 9,
+  });
+
+  const partialExplicitWire = {
+    enabled: true,
+    uploadLimitsBytes: {
+      image: 2,
+    },
+    maxFiles: Number.NaN,
+    uploadLimits: {
+      image: MAX_UPLOAD_BYTES,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+      maxFiles: 4,
+    },
+  } as unknown as UploadConfig;
+  assert.deepEqual(resolveUploadBytePolicy(partialExplicitWire), {
+    limitsBytes: {
+      image: 2,
+      video: MAX_UPLOAD_BYTES,
+      audio: MAX_UPLOAD_BYTES,
+      document: MAX_UPLOAD_BYTES,
+    },
+    maxFiles: 4,
+  });
+});
+
+test("upload size validation compares bytes at the exact boundary and formats MiB only for display", () => {
+  assert.equal(
+    isFileSizeWithinLimitBytes(MAX_UPLOAD_BYTES, MAX_UPLOAD_BYTES),
+    true,
+  );
+  assert.equal(
+    isFileSizeWithinLimitBytes(MAX_UPLOAD_BYTES + 1, MAX_UPLOAD_BYTES),
+    false,
+  );
+  assert.equal(formatUploadLimitMiB(MAX_UPLOAD_BYTES), "50 MiB");
+  assert.equal(formatUploadLimitMiB(1.5 * 1024 * 1024), "1.5 MiB");
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

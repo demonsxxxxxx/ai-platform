@@ -1,6 +1,7 @@
 import pytest
 from datetime import datetime
 
+from app import repositories
 from app.context_builder import (
     executor_context_pack_from_snapshot,
     ensure_public_context_provenance,
@@ -75,10 +76,10 @@ async def test_record_initial_context_snapshot_persists_context_manifest_for_exe
         "agent_id": "general-agent",
         "skill_id": "general-chat",
     }
-    assert manifest["current_message"] == "continue from prior context"
-    assert manifest["recent_messages"] == []
+    assert "current_message" not in manifest
+    assert "recent_messages" not in manifest
     assert manifest["files"] == [{"file_id": "file-a", "requires_retrieval": True}]
-    assert manifest["budget"]["max_prompt_tokens"] > 0
+    assert manifest["budget"]["max_inline_material_tokens"] > 0
     assert context_ref["context_manifest"]["schema_version"] == "ai-platform.context-manifest.v1"
     assert context_ref["context_manifest"]["redaction"]["object_locator_refs_removed"] is True
     assert "file-a" not in str(context_ref)
@@ -685,6 +686,10 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
             },
         ]
 
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        calls.append(("source_file", kwargs["run_id"], kwargs["file_id"]))
+        return {"id": kwargs["file_id"]}
+
     async def fake_create_context_snapshot(conn, **kwargs):
         calls.append(("snapshot", kwargs))
         return {"id": "ctx-followup"}
@@ -698,6 +703,7 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
 
     monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
     monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
@@ -721,6 +727,7 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
     )
 
     assert ("authorize_source", "tenant-a", "user-a", "run-source", False) in calls
+    assert ("source_file", "run-source", "file-a") in calls
     assert ("source_artifacts", "tenant-a", "run-source") in calls
     snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
     assert snapshot_call["included_artifact_ids"] == ["art-v1", "art-v2"]
@@ -803,7 +810,7 @@ async def test_context_builder_preserves_only_authorized_retrieval_file_basename
 
 
 @pytest.mark.asyncio
-async def test_record_initial_context_snapshot_builds_bounded_same_session_continuity(monkeypatch):
+async def test_record_initial_context_snapshot_keeps_messages_without_implicit_session_files(monkeypatch):
     captured = {}
 
     async def fake_count_messages(conn, **kwargs):
@@ -823,7 +830,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
             "user_id": "user-a",
             "session_id": "session-a",
             "run_id": "run-current",
-            "limit": 8,
+            "limit": 64,
         }
         return [
             {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it", "session_generation": 1, "created_at": "2026-07-19T00:00:01Z"},
@@ -852,23 +859,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
         ]
 
     async def fake_list_files(conn, **kwargs):
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-current",
-            "limit": 8,
-        }
-        return [
-            {
-                "id": "file-prior",
-                "run_id": "run-prior",
-                "original_name": "source.docx",
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "size_bytes": 2048,
-            }
-        ]
+        raise AssertionError("session input files must not be injected into this snapshot")
 
     async def fake_memory_policy(conn, **kwargs):
         return {
@@ -913,6 +904,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
         file_ids=["file-current"],
         source="chat_stream",
         include_session_history=True,
+        include_session_files=False,
     )
 
     assert captured["included_message_ids"] == [
@@ -921,36 +913,95 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
         "msg-current",
     ]
     assert captured["included_artifact_ids"] == ["art-prior"]
-    assert captured["included_file_ids"] == ["file-prior", "file-current"]
+    assert captured["included_file_ids"] == ["file-current"]
     manifest = captured["payload_json"]["context_manifest"]
-    assert [item["message_id"] for item in manifest["recent_messages"]] == [
-        "msg-prior-user",
-        "msg-prior-assistant",
-    ]
-    assert [item["inline_content"] for item in manifest["recent_messages"]] == [
-        "translate it",
-        "done",
-    ]
-    assert all(item["run_id"] == "run-prior" for item in manifest["recent_messages"])
+    assert "recent_messages" not in manifest
+    assert manifest["selection"]["history_candidate_count"] == 2
+    assert manifest["selection"]["history_authorized_count"] == 2
+    assert manifest["selection"]["history_omitted_count"] == 0
     assert manifest["artifacts"] == [{"artifact_id": "art-prior", "requires_retrieval": True}]
     assert manifest["files"] == [
-        {"file_id": "file-prior", "requires_retrieval": True},
         {"file_id": "file-current", "requires_retrieval": True},
     ]
     assert manifest["source_runs"] == [{"run_id": "run-prior"}]
 
 
 @pytest.mark.asyncio
-async def test_session_history_manifest_membership_is_clamped_after_eight_message_snapshot_limit(monkeypatch):
+async def test_record_initial_context_snapshot_preserves_more_than_eight_current_files(monkeypatch):
+    captured = {}
+    current_file_ids = [f"file-current-{index}" for index in range(9)]
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def no_history(*_args, **_kwargs):
+        return 0
+
+    async def historical_files(*_args, **_kwargs):
+        return [{"id": f"file-prior-{index}"} for index in range(8)]
+
+    async def no_legacy(*_args, **_kwargs):
+        return False
+
+    async def memory_policy(*_args, **_kwargs):
+        return {
+            "source": "default",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+        }
+
+    async def create_snapshot(_conn, **kwargs):
+        captured.update(kwargs)
+        return {"id": "ctx-current-files"}
+
+    async def ignore(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", no_history)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", empty)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", historical_files)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", empty)
+    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+
+    await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        trace_id="trace-current",
+        agent_id="document-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "review all current files"},
+        file_ids=current_file_ids,
+        source="chat_stream",
+        include_session_history=True,
+    )
+
+    assert captured["included_file_ids"] == current_file_ids
+    assert captured["payload_json"]["context_manifest"]["files"] == [
+        {"file_id": file_id, "requires_retrieval": True}
+        for file_id in current_file_ids
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_history_snapshot_authorizes_candidate_tail_without_manifest_message_refs(monkeypatch):
     captured = {}
 
     async def fake_count_messages(_conn, **_kwargs):
-        return 8
+        return 10
 
     async def fake_list_messages(_conn, **_kwargs):
         return [
             {"id": f"msg-prior-{index}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}"}
-            for index in range(1, 9)
+            for index in range(1, 11)
         ] + [{"id": "msg-current", "run_id": "run-current", "role": "user", "content": "current"}]
 
     async def fake_empty(*_args, **_kwargs):
@@ -981,14 +1032,14 @@ async def test_session_history_manifest_membership_is_clamped_after_eight_messag
     )
 
     included = captured["included_message_ids"]
-    manifest_ids = [row["message_id"] for row in captured["payload_json"]["context_manifest"]["recent_messages"]]
-    assert included == [*(f"msg-prior-{index}" for index in range(2, 9)), "msg-current"]
-    assert manifest_ids == [f"msg-prior-{index}" for index in range(2, 9)]
-    assert set(manifest_ids) < set(included)
+    manifest = captured["payload_json"]["context_manifest"]
+    assert included == [*(f"msg-prior-{index}" for index in range(1, 11)), "msg-current"]
+    assert "recent_messages" not in manifest
+    assert manifest["selection"]["history_authorized_count"] == 10
 
 
 @pytest.mark.asyncio
-async def test_context_builder_counts_long_history_before_fetching_bounded_newest_tail(monkeypatch):
+async def test_context_builder_counts_history_before_fetching_authorized_candidate_tail(monkeypatch):
     captured: dict[str, object] = {}
     call_order: list[str] = []
 
@@ -999,7 +1050,7 @@ async def test_context_builder_counts_long_history_before_fetching_bounded_newes
 
     async def list_messages(_conn, **kwargs):
         call_order.append("list")
-        assert kwargs["limit"] == 8
+        assert kwargs["limit"] == 64
         return [
             {
                 "id": f"msg-{index}",
@@ -1045,10 +1096,10 @@ async def test_context_builder_counts_long_history_before_fetching_bounded_newes
     manifest = captured["payload_json"]["context_manifest"]
     assert call_order == ["count", "list"]
     assert manifest["selection"]["history_candidate_count"] == 13
-    assert manifest["selection"]["history_inline_count"] == 8
-    assert manifest["selection"]["history_trimmed_count"] == 5
+    assert manifest["selection"]["history_authorized_count"] == 8
+    assert manifest["selection"]["history_omitted_count"] == 5
     assert manifest["selection"]["status"] == "trimmed"
-    assert [row["message_id"] for row in manifest["recent_messages"]] == [f"msg-{index}" for index in range(6, 14)]
+    assert "recent_messages" not in manifest
 
 
 @pytest.mark.asyncio
@@ -1090,6 +1141,9 @@ async def test_record_initial_context_snapshot_does_not_invent_artifact_version_
             },
         ]
 
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {"id": kwargs["file_id"]}
+
     async def fake_create_context_snapshot(conn, **kwargs):
         calls.append(("snapshot", kwargs))
         return {"id": "ctx-followup"}
@@ -1103,6 +1157,7 @@ async def test_record_initial_context_snapshot_does_not_invent_artifact_version_
 
     monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
     monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
@@ -1187,7 +1242,7 @@ async def test_record_initial_context_snapshot_skips_source_artifacts_without_sa
         skill_id="qa-file-reviewer",
         input_payload={"message": "continue previous document"},
         message_ids=["msg-followup"],
-        file_ids=["file-a"],
+        file_ids=[],
         source="copy_run",
         source_run_id="run-cross-user",
     )
@@ -1262,7 +1317,7 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_wo
         skill_id="qa-file-reviewer",
         input_payload={"message": "continue previous document"},
         message_ids=["msg-followup"],
-        file_ids=["file-a"],
+        file_ids=[],
         source="copy_run",
         source_run_id="run-other-scope",
     )
@@ -1273,6 +1328,48 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_wo
     assert snapshot_call["included_artifact_ids"] == []
     assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 0
     assert context_ref["referenced_materials"]["artifact_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_rejects_source_file_missing_from_source_snapshot(
+    monkeypatch,
+):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "default",
+            "user_id": user_id,
+            "session_id": "session-a",
+        }
+
+    async def missing_source_file(conn, **kwargs):
+        return None
+
+    async def fail_source_artifacts(*args, **kwargs):
+        raise AssertionError("source artifacts must not be read after file authorization fails")
+
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", missing_source_file)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fail_source_artifacts)
+
+    with pytest.raises(repositories.RepositoryConflictError, match="context_file_unavailable"):
+        await record_initial_context_snapshot(
+            object(),
+            tenant_id="tenant-a",
+            workspace_id="default",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-followup",
+            trace_id="trace-followup",
+            agent_id="qa-word-review",
+            skill_id="qa-file-reviewer",
+            input_payload={"message": "continue previous document"},
+            message_ids=[],
+            file_ids=["file-not-authorized"],
+            source="copy_run",
+            source_run_id="run-source",
+        )
 
 
 @pytest.mark.asyncio
@@ -1335,7 +1432,7 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_te
         skill_id="qa-file-reviewer",
         input_payload={"message": "continue previous document"},
         message_ids=["msg-followup"],
-        file_ids=["file-a"],
+        file_ids=[],
         source="copy_run",
         source_run_id="run-other-owner",
     )

@@ -1,5 +1,4 @@
 import pytest
-from redis.exceptions import TimeoutError as RedisTimeoutError
 from pydantic import ValidationError
 import json
 
@@ -20,7 +19,13 @@ def release_decision(version: str) -> dict:
 
 
 def primary_manifest(skill_id: str, version: str) -> dict:
-    return {"skill_id": skill_id, "content_hash": version}
+    return {
+        "schema_version": "ai-platform.skill-materialization-ref.v1",
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "materialization_sha256": "a" * 64,
+    }
 
 
 def queue_payload(**overrides) -> QueueRunPayload:
@@ -52,8 +57,7 @@ def indexed_message_ids(fake, field: str) -> list[str]:
 
 
 class FakeRedis:
-    def __init__(self, raw=None, lengths=None, processing=None, queued=None, meta=None, retry=None, workers=None, lease_timeout=False):
-        self.raw = raw
+    def __init__(self, raw=None, lengths=None, processing=None, queued=None, meta=None, retry=None, workers=None):
         self.lengths = lengths or {}
         self.processing = processing or []
         self.queued = list(queued) if queued is not None else ([raw] if raw is not None else [])
@@ -66,7 +70,6 @@ class FakeRedis:
         self.sequence = 0
         self.fences = {}
         self.fence_ttls = {}
-        self.lease_timeout = lease_timeout
         self.pushed = []
         self.left_pushed = []
         self.removed = []
@@ -118,19 +121,6 @@ class FakeRedis:
             self.processing.insert(0, value)
             return len(self.processing)
         return len(self.queued)
-
-    async def brpoplpush(self, source, destination, timeout=0):
-        self.source = source
-        self.destination = destination
-        self.timeout = timeout
-        if self.lease_timeout:
-            raise RedisTimeoutError("Timeout reading from redis:6379")
-        raw = self.raw
-        if raw is None and self.queued:
-            raw = self.queued.pop()
-        if raw is not None and destination == queue.PROCESSING_KEY:
-            self.processing.append(raw)
-        return raw
 
     async def lrange(self, key, start, end):
         self.lrange_calls.append((key, start, end))
@@ -679,43 +669,6 @@ class FakeRedis:
             await self.rpush(dead_letter_key, dead_letter_json)
             await self.hdel(retry_meta_key, message_id)
             return json.dumps({"status": "dead_lettered"})
-        if "record-legacy-lease-with-fence" in script:
-            (
-                processing_key,
-                queued_key,
-                processing_meta_key,
-                retry_meta_key,
-                worker_heartbeat_key,
-                queued_meta_key,
-                queued_run_index_key,
-                queued_order_key,
-                queued_sequence_key,
-                fence_key,
-            ) = keys_and_args[:numkeys]
-            raw, message_id, metadata_json, worker_id, now, run_index_field = keys_and_args[numkeys:]
-            if fence_key in self.fences:
-                await self.lrem(processing_key, 1, raw)
-                self.queued.append(raw)
-                self.pushed.append((queued_key, raw))
-                self.sequence += 1
-                metadata = json.loads(metadata_json)
-                metadata["sequence"] = self.sequence
-                metadata["raw"] = raw
-                self.metadata_by_message_id[message_id] = json.dumps(metadata, ensure_ascii=False)
-                self.run_index[run_index_field] = json.dumps([message_id], ensure_ascii=False)
-                self.order_scores[message_id] = self.sequence
-                return json.dumps({"status": "reconciliation_fenced"})
-            self.meta[message_id] = metadata_json
-            self.retry[message_id] = metadata_json
-            self.workers[worker_id] = str(now)
-            self.hset_calls.extend(
-                [
-                    (processing_meta_key, message_id, metadata_json),
-                    (retry_meta_key, message_id, metadata_json),
-                    (worker_heartbeat_key, worker_id, str(now)),
-                ]
-            )
-            return json.dumps({"status": "leased"})
         if "heartbeat-run-with-fence" in script:
             processing_meta_key, worker_heartbeat_key = keys_and_args[:numkeys]
             message_id, attempt_id, owner_token, worker_id, now, fence_prefix = keys_and_args[numkeys:]
@@ -874,13 +827,6 @@ async def test_atomic_fence_blocks_enqueue_lease_and_retry_until_token_release(m
     )
     assert leased is None
     assert raw in fake.queued
-
-    fake.queued.clear()
-    fake.raw = raw
-    legacy_leased = await queue.lease_run(timeout_seconds=0, worker_id="worker-legacy")
-    assert legacy_leased is None
-    assert fake.queued == []
-    assert raw not in fake.processing
 
     fake.queued.clear()
     fake.processing.append(raw)
@@ -1110,6 +1056,62 @@ async def test_enqueue_run_writes_indexed_queue_metadata(monkeypatch):
     assert metadata["raw"] == expected_raw
     assert indexed_message_ids(fake, "tenant-a:run-indexed") == [message_id]
     assert fake.order_scores[message_id] == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_persists_only_skill_materialization_refs(monkeypatch):
+    payload = queue_payload(
+        run_id="run-ref-only",
+        skill_manifests=[
+            {
+                "schema_version": "ai-platform.skill-materialization-ref.v1",
+                "skill_id": "qa-file-reviewer",
+                "version": "hash-qa-file-reviewer",
+                "content_hash": "hash-qa-file-reviewer",
+                "materialization_sha256": "a" * 64,
+            }
+        ],
+    ).model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    await queue.enqueue_run(payload)
+
+    raw = fake.queued[0]
+    queued = json.loads(raw)
+    assert queued["skill_manifests"] == payload["skill_manifests"]
+    assert "files" not in raw
+    assert "content_base64" not in raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "skill_manifests",
+    [
+        [{"skill_id": "qa-file-reviewer", "content_hash": "hash-qa-file-reviewer"}],
+        [
+            primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer"),
+            {"skill_id": "dependency", "content_hash": "hash-dependency"},
+        ],
+    ],
+)
+async def test_enqueue_run_rejects_full_or_mixed_skill_manifests_before_redis(
+    monkeypatch,
+    skill_manifests,
+):
+    payload = queue_payload(skill_manifests=skill_manifests).model_dump()
+
+    async def fail_get_redis():
+        pytest.fail("invalid Skill transport must fail before Redis")
+
+    monkeypatch.setattr("app.queue.get_redis", fail_get_redis)
+
+    with pytest.raises(queue.QueueAdmissionRejected, match="queue_payload_invalid"):
+        await queue.enqueue_run(payload)
 
 
 @pytest.mark.asyncio
@@ -1480,8 +1482,8 @@ async def test_lease_run_returns_idle_when_processing_capacity_is_full(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_lease_run_returns_idle_when_blocking_pop_times_out(monkeypatch):
-    fake = FakeRedis(lease_timeout=True)
+async def test_lease_run_returns_idle_when_queue_is_empty(monkeypatch):
+    fake = FakeRedis()
 
     async def get_redis():
         return fake
@@ -1497,7 +1499,7 @@ async def test_lease_run_returns_idle_when_blocking_pop_times_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lease_run_requeues_message_when_processing_capacity_fills_during_blocking_pop(monkeypatch):
+async def test_lease_run_requeues_message_when_processing_capacity_fills_during_atomic_lease(monkeypatch):
     raw = payload_json()
     fake = FakeRedis(
         raw=raw,
@@ -1576,7 +1578,7 @@ async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lease_run_legacy_invalid_payload_removes_queued_metadata(monkeypatch):
+async def test_lease_run_invalid_payload_removes_queued_metadata(monkeypatch):
     raw = '{"run_id": "../bad"}'
     message_id = queue.message_id_for_raw(raw)
     fake = FakeRedis(queued=[raw])

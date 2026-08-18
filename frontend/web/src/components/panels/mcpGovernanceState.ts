@@ -53,7 +53,7 @@ export function resolveMcpGovernanceState({
   });
   const directoryAvailability = resolveGroupAvailability({
     backed: !permissionDenied,
-    enabled: hasDirectoryRows,
+    enabled: hasDirectoryRows || canManageMcp,
   });
   const lifecycleAvailability = resolveGroupAvailability({
     backed: projectionBacked,

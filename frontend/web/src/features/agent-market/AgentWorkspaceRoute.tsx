@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ChatAppContent } from "../../components/layout/AppContent/ChatAppContent";
@@ -34,7 +34,8 @@ interface LoadedAgentWorkspace {
   agentId: string;
   revision: string;
   profile: AgentProfilePublicProjection;
-  startProfile: AgentProfilePublicProjection;
+  startProfile: AgentProfilePublicProjection | null;
+  readOnly: boolean;
 }
 
 function historicalProfile(
@@ -45,8 +46,18 @@ function historicalProfile(
     expected_revision: identity.revision,
     name: identity.name,
     description: identity.description,
+    welcome_message: identity.welcome_message,
+    starter_prompts: identity.starter_prompts,
+    capability_summary: identity.capability_summary,
+    recommended_tasks: identity.recommended_tasks,
+    supported_input_types: identity.supported_input_types,
+    expected_outputs: identity.expected_outputs,
+    permissions_and_data_access_notice:
+      identity.permissions_and_data_access_notice,
     avatar_ref: identity.avatar_ref,
+    avatar_seed: identity.avatar_seed ?? identity.agent_id,
     category: identity.category,
+    published_at: identity.published_at,
   };
 }
 
@@ -68,6 +79,8 @@ export function AgentWorkspaceRoute() {
   const [loadedWorkspace, setLoadedWorkspace] =
     useState<LoadedAgentWorkspace | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const workspaceViewRef = useRef({ phase, loadedWorkspace });
+  workspaceViewRef.current = { phase, loadedWorkspace };
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
     return saved !== null ? saved === "true" : false;
@@ -84,8 +97,18 @@ export function AgentWorkspaceRoute() {
 
   useEffect(() => {
     let active = true;
-    setPhase("loading");
-    setLoadedWorkspace(null);
+    const currentView = workspaceViewRef.current;
+    const retainsMountedWorkspace =
+      currentView.phase === "ready" &&
+      currentView.loadedWorkspace !== null &&
+      currentView.loadedWorkspace.agentId === agentId &&
+      currentView.loadedWorkspace.revision === revision;
+    // A session-only route change keeps canonical Chat mounted while both the
+    // route and Chat layers independently verify the pinned conversation.
+    if (!retainsMountedWorkspace) {
+      setPhase("loading");
+      setLoadedWorkspace(null);
+    }
 
     if (!agentId || !revision || validRevision === undefined) {
       setPhase("unavailable");
@@ -94,14 +117,16 @@ export function AgentWorkspaceRoute() {
       };
     }
 
-    const currentProfileRequest = agentProfileApi.getPublished(agentId);
+    const currentProfileRequest = routeSessionId
+      ? agentProfileApi.getPublished(agentId).catch(() => null)
+      : agentProfileApi.getPublished(agentId);
     const sessionRequest = routeSessionId
       ? sessionApi.getAuthoritative(routeSessionId)
       : Promise.resolve(null);
     void Promise.all([currentProfileRequest, sessionRequest])
       .then(([currentProfile, session]) => {
         if (!active) return;
-        if (currentProfile.agent_id !== agentId) {
+        if (currentProfile !== null && currentProfile.agent_id !== agentId) {
           setPhase("unavailable");
           return;
         }
@@ -123,13 +148,16 @@ export function AgentWorkspaceRoute() {
             revision,
             profile: historicalProfile(identity),
             startProfile: currentProfile,
+            readOnly:
+              currentProfile === null ||
+              currentProfile.expected_revision !== validRevision,
           });
           setPhase("ready");
           return;
         }
 
         const exactProfile = selectPublishedMarketProfile(
-          [currentProfile],
+          currentProfile ? [currentProfile] : [],
           agentId,
           revision,
         );
@@ -142,6 +170,7 @@ export function AgentWorkspaceRoute() {
           revision,
           profile: exactProfile,
           startProfile: currentProfile,
+          readOnly: false,
         });
         setPhase("ready");
       })
@@ -186,8 +215,9 @@ export function AgentWorkspaceRoute() {
       <ChatAppContent
         agentWorkspace={resolvedWorkspace.profile}
         agentWorkspaceHistoryError={conversationList.error}
+        agentWorkspaceReadOnly={resolvedWorkspace.readOnly}
         agentWorkspaceSessionSource={conversationList}
-        agentWorkspaceStartProfile={resolvedWorkspace.startProfile}
+        agentWorkspaceStartProfile={resolvedWorkspace.startProfile ?? undefined}
         mobileSidebarOpen={mobileSidebarOpen}
         onAgentWorkspaceHistoryRetry={conversationList.refresh}
         onAgentWorkspaceSessionCreated={() => void conversationList.refresh()}
@@ -198,19 +228,20 @@ export function AgentWorkspaceRoute() {
     );
   }
 
-  const handleGenericSession = (sessionId: string) => {
+  const handleGenericSession = (_sessionId: string) => {
     setMobileSidebarOpen(false);
-    navigate(`/chat/${encodeURIComponent(sessionId)}`);
+    navigate("/agent-market");
   };
   const handleGenericNewSession = () => {
     setMobileSidebarOpen(false);
-    navigate("/chat");
+    navigate("/agent-market");
   };
 
   return (
     <AppShell
       activeTab="chat"
       onNewSession={handleGenericNewSession}
+      allowNewSessionAction={false}
       setMobileSidebarOpen={setMobileSidebarOpen}
       sidebar={
         <SessionSidebar
@@ -223,19 +254,20 @@ export function AgentWorkspaceRoute() {
           onSelectSession={handleGenericSession}
           onToggleCollapsed={handleSetSidebarCollapsed}
           sessionSource={EMPTY_WORKSPACE_SESSION_SOURCE}
+          navigationOnly
         />
       }
     >
       <main
         aria-live="polite"
-        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-sm text-[var(--theme-text-secondary)]"
+        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-sm text-[var(--theme-text-secondary)] sm:px-6"
         data-agent-workspace-loading
       >
         <div className="max-w-md text-center">
           <p>
             {phase === "error"
-              ? "暂时无法校验智能体工作区。"
-              : "正在校验当前智能体与会话权限…"}
+              ? "暂时无法校验专家工作区。"
+              : "正在校验当前专家与会话权限…"}
           </p>
           {phase === "error" ? (
             <div className="mt-4 flex justify-center gap-3">

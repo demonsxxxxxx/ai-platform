@@ -1,12 +1,21 @@
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-from app.release_evidence_runtime_acceptance import build_release_evidence_runtime_acceptance
+from app import foundation_alpha_readiness
+from tools.release_evidence_runtime_acceptance import ROOT, build_release_evidence_runtime_acceptance
 
 
 VALID_COMMIT = "948179c73734aa61ed764fb3485f5415fca8f193"
+
+
+def test_release_evidence_runtime_acceptance_is_operator_tooling_with_stable_repo_root():
+    assert importlib.util.find_spec("app.release_evidence_runtime_acceptance") is None
+    assert ROOT == Path(__file__).resolve().parents[1]
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/release_evidence_runtime_acceptance.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/release_evidence_runtime_acceptance.py") is False
 
 
 def _valid_entry(**overrides):
@@ -18,7 +27,7 @@ def _valid_entry(**overrides):
         "gate": "Foundation Alpha POC",
         "issue_refs": ["#15", "#16", "#17"],
         "pr_refs": [],
-        "artifact_kind": "211_runtime_smoke",
+        "artifact_kind": "controlled_host_runtime_smoke",
         "captured_at": "2026-06-12T15:30:00+08:00",
         "source_ref": {
             "branch": "main",

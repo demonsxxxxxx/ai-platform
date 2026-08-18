@@ -2,7 +2,7 @@
 
 This file is the single source for issue/PR records, status language, review
 evidence, and closure. Product and deployment invariants remain in the
-guardrails and 211 runbook.
+repository authority and the release runbook.
 
 ## Closure Loop
 
@@ -26,6 +26,34 @@ of expanding an unrelated product PR.
 - Do not create repository status pages, phase ledgers, or manual-release logs
   for an active change. The issue or PR is the durable status record.
 
+## Change Contract
+
+Before non-mechanical implementation, the issue or persistent-task dispatch
+records one compact Change Contract. The PR links that prior record and
+reconciles it with the actual diff:
+
+- observable problem and single owning authority;
+- repository/worktree, branch, full base/head SHA when available, writable and
+  forbidden paths, and explicit non-goals;
+- behavior delta including failure/compatibility decisions, plus only the
+  security, tenancy, transaction/queue, lifecycle/persistence/event, sandbox,
+  and public-projection invariants the changed risk reaches; mark other
+  categories not applicable instead of producing boilerplate;
+- genuine alternatives and why they lost; use the separate-design rule above
+  when rationale needs durable architecture authority;
+- acceptance criteria, a falsifiable regression test, the required build,
+  packaging, or integration path, evidence ceiling, documentation impact,
+  rollback when relevant, and facts that stop or reopen design.
+
+Read-only exploration may resolve missing fields. Revise the contract before
+changing owner or paths; unrelated findings become separate work. A source-only
+change may stop at focused-test evidence when it claims no assembled or runtime
+behavior. PR text and checkboxes are claims to verify, not evidence, and a
+candidate-controlled test cannot prove the contract existed before coding.
+Only risk categories may be marked non-applicable. Behavior, tests, evidence,
+review, and rollback require observed facts or a reasoned applicability
+statement; a bare `N/A` does not satisfy the contract.
+
 ## Status Language
 
 - `local partial`: focused local checks or one bounded smoke passed.
@@ -33,8 +61,8 @@ of expanding an unrelated product PR.
   merged or deployed.
 - `reviewed`: required independent review ran and every finding was fixed,
   rejected with evidence, or explicitly deferred.
-- `211 verified`: the exact deployed subject passed the required current runtime
-  checks on 211.
+- `runtime verified`: the exact deployed subject passed the required checks on
+  its operator-approved controlled host.
 - `gate closable`: implementation or decision, PR/merge when applicable, review,
   required docs, and required runtime evidence are complete.
 
@@ -51,6 +79,9 @@ requirements, runtime requirement when relevant, and known blockers.
   operational exception, with the same evidence recorded afterward.
 - A PR states its linked subject, changed behavior/modules, tests observed,
   review state, docs impact, and runtime evidence or why it is unnecessary.
+- The PR reconciles its declared writable paths with the actual diff and records
+  scope revisions. Template text and checked boxes are claims for reviewers and
+  gates to verify; they are not evidence by themselves.
 - Use `Closes #N` or `Fixes #N` only when the merge will satisfy all acceptance,
   review, and required runtime criteria. Otherwise link without auto-close.
 
@@ -133,7 +164,7 @@ failures require a new fixed SHA.
   durably. Do not call an empty GitHub `reviewDecision` formally approved.
 - Run the narrowest relevant verification first. Before PR, merge, deployment,
   or closure, run the tests and integration or smoke checks justified by risk.
-- Local/source verification, GitHub review and CI, deployment, and 211 runtime
+- Local/source verification, GitHub review and CI, deployment, and runtime
   evidence are distinct states. Admin evidence does not prove ordinary-user
   behavior, and source evidence does not prove the deployed runtime.
 - Runtime evidence identifies the exact commit/image/container, route and

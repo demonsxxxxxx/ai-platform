@@ -325,7 +325,6 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
     "utf8",
   );
   const zh = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
-  const en = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.doesNotMatch(chatInput, /<ComposerCommandHintBar/);
   assert.doesNotMatch(chatInput, /data-composer-command-hints/);
@@ -340,9 +339,28 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
   assert.match(zh, /输入 \//);
   assert.match(zh, /输入 \$/);
   assert.match(zh, /Skills/);
-  assert.match(en, /Type \//);
-  assert.match(en, /type \$/i);
-  assert.match(en, /Skills/);
+});
+
+test("Agent workspaces disable composer commands without changing ordinary Chat", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const chatView = readFileSync(
+    join(root, "src/components/layout/AppContent/ChatView.tsx"),
+    "utf8",
+  );
+
+  assert.match(chatInput, /disableSlashCommands = false/);
+  assert.match(
+    chatInput,
+    /if \(!disableSlashCommands && handleComposerCommandSubmit\(input\)\) return/,
+  );
+  assert.match(chatInput, /if \(disableSlashCommands\) return false/);
+  assert.match(
+    chatView,
+    /disableSlashCommands: Boolean\(agentEmptyProfile\)/,
+  );
 });
 
 test("composer commands fail closed when a governed surface is unavailable", () => {
@@ -416,25 +434,15 @@ test("composer user-facing copy avoids backend implementation jargon", () => {
   const zh = JSON.parse(
     readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"),
   );
-  const en = JSON.parse(
-    readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"),
-  );
 
   for (const source of [
     chatInput,
     JSON.stringify(zh.composerChip),
     JSON.stringify(zh.composerCommand),
-    JSON.stringify(en.composerChip),
-    JSON.stringify(en.composerCommand),
     JSON.stringify({
       phase2Unavailable: zh.workbench.phase2Unavailable,
       selectionState: zh.workbench.selectionState,
       unavailableShort: zh.workbench.unavailableShort,
-    }),
-    JSON.stringify({
-      phase2Unavailable: en.workbench.phase2Unavailable,
-      selectionState: en.workbench.selectionState,
-      unavailableShort: en.workbench.unavailableShort,
     }),
   ]) {
     assert.doesNotMatch(source, /backend contract/i);
@@ -502,15 +510,13 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
   assert.match(composerPrimitive, /data-librechat-composer-region=\{region\}/);
 });
 
-test("all supported placeholders are slash and dollar skills first", () => {
-  for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
-    const source = readFileSync(
-      join(root, `src/i18n/locales/${locale}.json`),
-      "utf8",
-    );
+test("Chinese placeholders expose slash and dollar entry points", () => {
+  const locale = "zh";
+  const source = readFileSync(
+    join(root, "src/i18n/locales/zh.json"),
+    "utf8",
+  );
 
-    assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\//, locale);
-    assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\$/, locale);
-    assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*Skills/, locale);
-  }
+  assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\//, locale);
+  assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\$/, locale);
 });

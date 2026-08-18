@@ -32,27 +32,25 @@ test("phase 1C discovery pages explain unavailable governance instead of blank d
     "utf8",
   );
 
-  assert.match(skillsHub, /statusCopyKey/);
-  assert.match(skillsHub, /"permissionLimited"/);
-  assert.match(skillsHub, /statusCopyNamespace/);
   assert.match(skillsHub, /data-phase1c-surface="skills-hub"/);
-  assert.match(skillsHub, /GovernanceAvailabilityBadge/);
+  assert.match(skillsHub, /governedUnavailable=\{isAdmin && hubGovernance\.governedUnavailable\}/);
+  assert.doesNotMatch(skillsHub, /GovernanceAvailabilityBadge/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-status/);
   assert.doesNotMatch(skillsHub, /skills\.featureDisabled/);
   assert.match(mcpPanel, /mcp\.permissionLimited/);
   assert.match(mcpPanel, /data-phase1c-surface="mcp"/);
 });
 
-test("phase 1C governance copy exists in every supported locale", () => {
-  for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
-    const source = readFileSync(
-      join(root, `src/i18n/locales/${locale}.json`),
-      "utf8",
-    );
+test("phase 1C governance copy exists in Chinese", () => {
+  const locale = "zh";
+  const source = readFileSync(
+    join(root, "src/i18n/locales/zh.json"),
+    "utf8",
+  );
 
-    assert.match(source, /"mcp"[\s\S]*"permissionLimited"/, locale);
-    assert.match(source, /"skillsHub"[\s\S]*"permissionLimited"/, locale);
-    assert.match(source, /"skillsHub"[\s\S]*"featureDisabled"/, locale);
-  }
+  assert.match(source, /"mcp"[\s\S]*"permissionLimited"/, locale);
+  assert.match(source, /"skillsHub"[\s\S]*"permissionLimited"/, locale);
+  assert.match(source, /"skillsHub"[\s\S]*"featureDisabled"/, locale);
 });
 
 test("launchpad copy keeps click-through boundary visible", () => {
@@ -60,10 +58,8 @@ test("launchpad copy keeps click-through boundary visible", () => {
     join(root, "src/components/launchpad/LaunchpadPanel.tsx"),
     "utf8",
   );
-  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
-  assert.match(enLocale, /"launchpad"[\s\S]*"boundary"/);
   assert.match(zhLocale, /"launchpad"[\s\S]*"boundary"/);
   assert.doesNotMatch(launchpad, /migrate.*nonGMPlims/i);
 });

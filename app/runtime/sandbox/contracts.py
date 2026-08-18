@@ -175,6 +175,7 @@ class SandboxRuntimeRequest(BaseModel):
     mcp_relay_url: str = ""
     mcp_broker_capability: str = Field(default="", repr=False)
     governed_permission_wait: bool = False
+    require_selected_skill_invocation: bool = True
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "attempt_id", "agent_id", "callback_token_id")
     @classmethod
@@ -319,6 +320,9 @@ class StopResult(BaseModel):
 class ExecutorTaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    tenant_id: str
+    workspace_id: str
+    user_id: str
     session_id: str
     run_id: str
     attempt_id: str
@@ -332,10 +336,22 @@ class ExecutorTaskRequest(BaseModel):
     governed_permission_wait: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
+    @field_validator(
+        "tenant_id",
+        "workspace_id",
+        "session_id",
+        "run_id",
+        "attempt_id",
+        "callback_token_id",
+    )
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str):
+        return assert_safe_principal_user_id(value)
 
     @field_validator("sdk_session_id")
     @classmethod

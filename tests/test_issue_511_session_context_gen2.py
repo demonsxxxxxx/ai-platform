@@ -67,6 +67,151 @@ async def test_worker_missing_physical_snapshot_never_rebuilds_context(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_worker_materializes_complete_snapshot_authorized_conversation(monkeypatch):
+    payload = QueueRunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        agent_id="agent-a",
+        skill_id="skill-a",
+        executor_type="fake",
+        skill_version="v1",
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "selected_version": "v1",
+        },
+        skill_manifests=[{"skill_id": "skill-a", "content_hash": "v1"}],
+        context_snapshot_id="ctx-current",
+        context_snapshot={"context_snapshot_id": "ctx-current"},
+    )
+    assistant = "analysis " + ("x" * 900) + "\nA. continue\nB. wait"
+    rows = [
+        {
+            "id": "msg-user-prior",
+            "run_id": "run-prior",
+            "role": "user",
+            "content": "Is this file enough?",
+            "created_at": "2026-08-17T00:00:01Z",
+        },
+        {
+            "id": "msg-assistant-prior",
+            "run_id": "run-prior",
+            "role": "assistant",
+            "content": assistant,
+            "created_at": "2026-08-17T00:00:02Z",
+        },
+        {
+            "id": "msg-user-current",
+            "run_id": "run-current",
+            "role": "user",
+            "content": "A",
+            "created_at": "2026-08-17T00:00:03Z",
+        },
+    ]
+
+    async def get_snapshot(_conn, **kwargs):
+        return {
+            "id": kwargs["context_snapshot_id"],
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "included_message_ids": [row["id"] for row in rows],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "payload_json": {},
+        }
+
+    async def list_messages(_conn, **kwargs):
+        assert kwargs["limit"] == 3
+        return rows
+
+    monkeypatch.setattr(
+        "app.worker.repositories.get_context_snapshot_for_worker",
+        get_snapshot,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.list_scoped_context_messages",
+        list_messages,
+    )
+
+    context_ref = await _ensure_worker_context_snapshot(
+        object(),
+        payload,
+        trace_id="trace-run-current",
+    )
+
+    assert context_ref is not None
+    conversation = context_ref["conversation_context"]
+    assert [message["role"] for message in conversation["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assert conversation["messages"][1]["content"] == assistant
+    assert all(message["content"] != "A" for message in conversation["messages"])
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_incomplete_snapshot_message_materialization(monkeypatch):
+    payload = QueueRunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        agent_id="agent-a",
+        skill_id="skill-a",
+        executor_type="fake",
+        skill_version="v1",
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "selected_version": "v1",
+        },
+        skill_manifests=[{"skill_id": "skill-a", "content_hash": "v1"}],
+        context_snapshot_id="ctx-current",
+        context_snapshot={"context_snapshot_id": "ctx-current"},
+    )
+
+    async def get_snapshot(_conn, **kwargs):
+        return {
+            "id": kwargs["context_snapshot_id"],
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "included_message_ids": ["msg-user", "msg-assistant"],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "payload_json": {},
+        }
+
+    async def list_messages(_conn, **_kwargs):
+        return [
+            {
+                "id": "msg-user",
+                "run_id": "run-prior",
+                "role": "user",
+                "content": "question",
+                "created_at": "2026-08-17T00:00:01Z",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.worker.repositories.get_context_snapshot_for_worker",
+        get_snapshot,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.list_scoped_context_messages",
+        list_messages,
+    )
+
+    assert (
+        await _ensure_worker_context_snapshot(
+            object(), payload, trace_id="trace-run-current"
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_enqueue_compensation_uses_the_durable_failed_transition(monkeypatch):
     calls = []
 
@@ -214,8 +359,8 @@ def test_public_run_context_projection_contains_only_allowlisted_window():
                     "selection": {
                         "status": "trimmed",
                         "history_candidate_count": 3,
-                        "history_inline_count": 2,
-                        "history_trimmed_count": 1,
+                        "history_authorized_count": 2,
+                        "history_omitted_count": 1,
                     },
                     "files": [
                         {"name": r"C:\uploads\approved-report.txt"},
@@ -229,10 +374,10 @@ def test_public_run_context_projection_contains_only_allowlisted_window():
     assert projection == {
         "context_window": {
             "status": "trimmed",
-            "selection_version": "session-context-v1",
+            "selection_version": "conversation-turns-v1",
             "history_candidate_count": 3,
-            "history_inline_count": 2,
-            "history_trimmed_count": 1,
+            "history_authorized_count": 2,
+            "history_omitted_count": 1,
             "legacy_history_excluded": False,
             "selected_file_names": ["approved-report.txt", "报价😀.xlsx"],
         }

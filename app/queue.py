@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 from app.models import QueueRunPayload
 from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
+from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 
 
 DEFAULT_QUEUE_KEY_PREFIX = "ai-platform:runs"
@@ -752,47 +753,6 @@ return cjson.encode({status = "dead_lettered"})
 """
 
 
-RECORD_LEGACY_LEASE_WITH_FENCE_SCRIPT = """
--- ai-platform:record-legacy-lease-with-fence:v1
-local processing_key = KEYS[1]
-local queued_key = KEYS[2]
-local processing_meta_key = KEYS[3]
-local retry_meta_key = KEYS[4]
-local worker_heartbeat_key = KEYS[5]
-local queued_meta_key = KEYS[6]
-local queued_run_index_key = KEYS[7]
-local queued_order_key = KEYS[8]
-local queued_sequence_key = KEYS[9]
-local fence_key = KEYS[10]
-
-local raw = ARGV[1]
-if redis.call("exists", fence_key) == 1 then
-  redis.call("lrem", processing_key, 1, raw)
-  local message_id = ARGV[2]
-  local run_index_field = ARGV[6]
-  local ok, metadata = pcall(cjson.decode, ARGV[3])
-  if ok and type(metadata) == "table" then
-    local sequence = redis.call("incr", queued_sequence_key)
-    metadata["sequence"] = sequence
-    metadata["raw"] = raw
-    redis.call("rpush", queued_key, raw)
-    redis.call("hset", queued_meta_key, message_id, cjson.encode(metadata))
-    redis.call("hset", queued_run_index_key, run_index_field, cjson.encode({message_id}))
-    redis.call("zadd", queued_order_key, sequence, message_id)
-  end
-  return cjson.encode({status = "reconciliation_fenced"})
-end
-local message_id = ARGV[2]
-local metadata_json = ARGV[3]
-local worker_id = ARGV[4]
-local now = ARGV[5]
-redis.call("hset", processing_meta_key, message_id, metadata_json)
-redis.call("hset", retry_meta_key, message_id, metadata_json)
-redis.call("hset", worker_heartbeat_key, worker_id, now)
-return cjson.encode({status = "leased"})
-"""
-
-
 HEARTBEAT_WITH_FENCE_SCRIPT = """
 -- ai-platform:heartbeat-run-with-fence:v1
 local raw_metadata = redis.call("hget", KEYS[1], ARGV[1])
@@ -1100,7 +1060,8 @@ async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMe
 
     try:
         validated = QueueRunPayload.model_validate(payload)
-    except ValidationError as exc:
+        validate_skill_manifest_refs(validated.skill_manifests)
+    except (ValidationError, SkillVersionMaterializationError) as exc:
         raise QueueAdmissionRejected("queue_payload_invalid") from exc
     keys = get_queue_keys()
     redis = await get_redis()
@@ -1185,7 +1146,8 @@ async def read_queue_admission(payload: dict[str, Any]) -> QueueAdmissionMetadat
 
     try:
         validated = QueueRunPayload.model_validate(payload)
-    except ValidationError as exc:
+        validate_skill_manifest_refs(validated.skill_manifests)
+    except (ValidationError, SkillVersionMaterializationError) as exc:
         raise QueueAdmissionRejected("queue_payload_invalid") from exc
     keys = get_queue_keys()
     raw = validated.model_dump_json()
@@ -1429,30 +1391,6 @@ async def get_queue_status() -> dict[str, Any]:
         await redis.aclose()
 
 
-def _count_queued_for_tenant(raw_items: list[str], tenant_id: str) -> int:
-    count = 0
-    for raw in raw_items:
-        try:
-            payload = QueueRunPayload.model_validate_json(raw)
-        except Exception:
-            continue
-        if payload.tenant_id == tenant_id:
-            count += 1
-    return count
-
-
-def _count_processing_for_tenant(meta_items: dict[str, str], tenant_id: str) -> int:
-    count = 0
-    for raw_meta in meta_items.values():
-        try:
-            meta = json.loads(raw_meta)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if meta.get("tenant_id") == tenant_id:
-            count += 1
-    return count
-
-
 def _queued_quota_counts(raw_items: list[str], tenant_id: str) -> tuple[int, dict[str, int]]:
     tenant_queued = 0
     user_queued: dict[str, int] = {}
@@ -1482,63 +1420,6 @@ def _processing_quota_counts_from_raw_items(
         key = (payload.tenant_id, payload.user_id)
         user_counts[key] = user_counts.get(key, 0) + 1
     return tenant_counts, user_counts
-
-
-def _processing_quota_counts(meta_items: dict[str, str]) -> tuple[dict[str, int], dict[tuple[str, str], int]]:
-    tenant_counts: dict[str, int] = {}
-    user_counts: dict[tuple[str, str], int] = {}
-    for raw_meta in meta_items.values():
-        try:
-            meta = json.loads(raw_meta)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        tenant_id = str(meta.get("tenant_id") or "")
-        user_id = str(meta.get("user_id") or "")
-        if tenant_id:
-            tenant_counts[tenant_id] = tenant_counts.get(tenant_id, 0) + 1
-        if tenant_id and user_id:
-            key = (tenant_id, user_id)
-            user_counts[key] = user_counts.get(key, 0) + 1
-    return tenant_counts, user_counts
-
-
-def _quota_snapshot(
-    payload: QueueRunPayload,
-    *,
-    tenant_counts: dict[str, int],
-    user_counts: dict[tuple[str, str], int],
-    tenant_processing_limit: int,
-    user_processing_limit: int,
-) -> dict[str, Any]:
-    tenant_processing = tenant_counts.get(payload.tenant_id, 0)
-    user_processing = user_counts.get((payload.tenant_id, payload.user_id), 0)
-    return {
-        "tenant_processing": tenant_processing,
-        "tenant_processing_limit": tenant_processing_limit,
-        "tenant_processing_saturated": tenant_processing_limit > 0 and tenant_processing >= tenant_processing_limit,
-        "user_processing": user_processing,
-        "user_processing_limit": user_processing_limit,
-        "user_processing_saturated": user_processing_limit > 0 and user_processing >= user_processing_limit,
-    }
-
-
-def _quota_allows(snapshot: dict[str, Any]) -> bool:
-    return not bool(snapshot["tenant_processing_saturated"] or snapshot["user_processing_saturated"])
-
-
-def _next_attempts(*, retry_meta: str | None, existing_meta: str | None) -> int:
-    attempts = 1
-    if retry_meta:
-        try:
-            attempts = int(json.loads(retry_meta).get("attempts", 0)) + 1
-        except (TypeError, ValueError, json.JSONDecodeError):
-            attempts = 1
-    elif existing_meta:
-        try:
-            attempts = int(json.loads(existing_meta).get("attempts", 0)) + 1
-        except (TypeError, ValueError, json.JSONDecodeError):
-            attempts = 1
-    return attempts
 
 
 def _decode_redis_script_result(raw_result: object) -> dict[str, Any]:
@@ -1902,55 +1783,6 @@ async def get_run_queue_position(*, tenant_id: str, run_id: str) -> int | None:
         await redis.aclose()
 
 
-async def _record_legacy_lease_with_fence(
-    redis: Redis,
-    keys: QueueKeys,
-    *,
-    raw: str,
-    message_id: str,
-    payload: dict[str, Any],
-    attempts: int,
-    worker_id: str,
-    now: float,
-) -> bool:
-    """Atomically record legacy lease ownership or yield to a reconciliation fence."""
-
-    metadata = {
-        "message_id": message_id,
-        "raw": raw,
-        "attempts": attempts,
-        "leased_at": now,
-        "heartbeat_at": now,
-        "worker_id": worker_id,
-        "run_id": payload["run_id"],
-        "tenant_id": payload["tenant_id"],
-        "user_id": payload["user_id"],
-    }
-    result = _decode_redis_script_result(
-        await redis.eval(
-            RECORD_LEGACY_LEASE_WITH_FENCE_SCRIPT,
-            10,
-            keys.processing,
-            keys.queued,
-            keys.processing_meta,
-            keys.retry_meta,
-            keys.worker_heartbeat,
-            keys.queued_meta,
-            keys.queued_run_index,
-            keys.queued_order,
-            keys.queued_sequence,
-            reconciliation_fence_key(tenant_id=str(payload["tenant_id"]), run_id=str(payload["run_id"])),
-            raw,
-            message_id,
-            json.dumps(metadata, ensure_ascii=False),
-            worker_id,
-            now,
-            queued_run_index_field(tenant_id=str(payload["tenant_id"]), run_id=str(payload["run_id"])),
-        )
-    )
-    return str(result.get("status") or "") == "leased"
-
-
 async def _requeue_run_with_fence(
     redis: Redis,
     keys: QueueKeys,
@@ -2087,54 +1919,6 @@ async def _delete_queued_metadata_for_payload(
     await redis.zrem(keys.queued_order, message_id)
 
 
-async def _delete_queued_metadata_for_message_id(redis: Redis, keys: QueueKeys, *, message_id: str) -> None:
-    raw_metadata = await redis.hget(keys.queued_meta, message_id)
-    if raw_metadata:
-        try:
-            metadata = json.loads(raw_metadata)
-        except (TypeError, json.JSONDecodeError):
-            metadata = {}
-        tenant_id = str(metadata.get("tenant_id") or "")
-        run_id = str(metadata.get("run_id") or "")
-        if tenant_id and run_id:
-            await _remove_message_id_from_run_index(
-                redis,
-                keys,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                message_id=message_id,
-            )
-    await redis.hdel(keys.queued_meta, message_id)
-    await redis.zrem(keys.queued_order, message_id)
-
-
-async def _dead_letter_invalid_queue_payload(
-    redis: Redis,
-    keys: QueueKeys,
-    *,
-    raw: str,
-    message_id: str,
-    attempts: int,
-    worker_id: str,
-    remove_from_key: str,
-    error_message: str,
-) -> None:
-    await redis.lrem(remove_from_key, 1, raw)
-    await redis.rpush(
-        keys.dead_letter,
-        _dead_letter_json(
-            raw=raw,
-            error_code="invalid_queue_payload",
-            error_message=error_message,
-            attempts=attempts,
-            worker_id=worker_id,
-        ),
-    )
-    await _trim_dead_letters(redis, keys)
-    await redis.hdel(keys.retry_meta, message_id)
-    await _delete_queued_metadata_for_message_id(redis, keys, message_id=message_id)
-
-
 async def _dead_letter_invalid_queued_payload_atomic(
     redis: Redis,
     keys: QueueKeys,
@@ -2168,20 +1952,6 @@ async def _dead_letter_invalid_queued_payload_atomic(
     if str(decoded.get("status") or "") == "dead_lettered":
         await _trim_dead_letters(redis, keys)
     return decoded
-
-
-async def _lease_run_legacy(
-    redis: Redis,
-    keys: QueueKeys,
-    *,
-    timeout_seconds: int = 5,
-    worker_id: str = "worker",
-    max_processing_runs: int | None = None,
-) -> QueueMessage | None:
-    """Fail closed: non-atomic BRPOPLPUSH leasing is intentionally disabled."""
-
-    del redis, keys, timeout_seconds, worker_id, max_processing_runs
-    return None
 
 
 async def _lease_run_with_quota(

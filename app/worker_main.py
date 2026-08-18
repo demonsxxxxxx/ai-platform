@@ -12,12 +12,19 @@ import uuid
 
 from app import queue
 from app import repositories
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
+from app.control_plane_contracts import (
+    RUN_EXECUTION_KIND_SKILL,
+    sanitize_public_payload,
+    sanitize_public_text,
+    standard_trace_id,
+)
+from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.redis_client import close_redis_client
+from app.schema_migrations import require_schema_current
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
@@ -434,6 +441,7 @@ async def run_worker_maintenance(settings: object | None = None) -> None:
     settings = settings or get_settings()
     await cleanup_expired_sandbox_leases()
     await cleanup_expired_memory_records_for_worker(settings)
+    await run_data_retention_maintenance(settings)
     await progress_pending_tool_permission_terminalizations_for_worker(settings)
     await queue.reclaim_expired_leases(
         visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
@@ -504,6 +512,9 @@ async def _terminalize_escaped_process_exception(
             "session_id": str(locked_run.get("session_id") or ""),
             "run_id": str(locked_run.get("id") or ""),
             "agent_id": str(locked_run.get("agent_id") or ""),
+            "execution_kind": str(
+                locked_run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL
+            ),
             "skill_id": str(locked_run.get("skill_id") or ""),
         }
         payload_identity = {
@@ -513,7 +524,8 @@ async def _terminalize_escaped_process_exception(
             "session_id": payload.session_id,
             "run_id": payload.run_id,
             "agent_id": payload.agent_id,
-            "skill_id": payload.skill_id,
+            "execution_kind": payload.execution_kind,
+            "skill_id": str(payload.skill_id or ""),
         }
         if locked_identity != payload_identity:
             return WorkerOutcome("dead_letter", run_id, error_code, error_message)
@@ -708,6 +720,7 @@ async def run_once(
 
 
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
+    await require_schema_current()
     registry = AdapterRegistry()
     worker_id = default_worker_id()
     heartbeat_task = asyncio.create_task(
@@ -767,6 +780,7 @@ async def run_worker_pool(
         await run_forever(poll_timeout_seconds=poll_timeout_seconds, idle_sleep_seconds=idle_sleep_seconds)
         return
 
+    await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
     await run_worker_maintenance(settings)

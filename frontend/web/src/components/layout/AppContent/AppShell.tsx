@@ -71,6 +71,8 @@ export interface AppShellProps {
   // Outline
   showOutlineButton?: boolean;
   onToggleOutline?: () => void;
+  allowNewSessionAction?: boolean;
+  newSessionActionLabel?: string;
 }
 
 export function AppShell({
@@ -87,6 +89,8 @@ export function AppShell({
   onOpenRunPlayback,
   showOutlineButton,
   onToggleOutline,
+  allowNewSessionAction = true,
+  newSessionActionLabel,
 }: AppShellProps) {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -276,7 +280,7 @@ export function AppShell({
       >
         {sidebar}
 
-        <div className="relative z-0 flex flex-1 min-w-0 flex-col overflow-hidden">
+        <div className="relative z-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <Header
             activeTab={activeTab}
             setMobileSidebarOpen={setMobileSidebarOpen}
@@ -289,6 +293,8 @@ export function AppShell({
             onOpenRunPlayback={onOpenRunPlayback}
             showOutlineButton={showOutlineButton}
             onToggleOutline={onToggleOutline}
+            allowNewSessionAction={allowNewSessionAction}
+            newSessionActionLabel={newSessionActionLabel}
           />
 
           {children}

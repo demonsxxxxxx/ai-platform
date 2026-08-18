@@ -16,7 +16,9 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
 from app.projection_redaction import (
+    PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
     public_agent_id_for_projection,
     required_tool_public_detail,
@@ -69,11 +71,72 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
     "required_capability_unavailable": required_tool_public_detail("unavailable")["message"],
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
+    "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+    "context_file_pdf_password_required": "PDF 文件需要密码。请先解除密码保护后重新上传。",
+    "context_file_password_required": "文件受密码保护。请先解除密码保护后重新上传。",
+    "context_file_unsafe_content": "文件包含不允许的活动内容、宏或外部引用。请导出安全副本后重试。",
+    "context_file_page_limit_exceeded": "PDF 页数超过处理上限。请拆分文件后重试。",
+    "context_file_processing_limit_exceeded": "文件结构或内容数量超过处理上限。请拆分或精简文件后重试。",
+    "context_file_invalid": "文件已损坏或无法解析。请重新导出文件后上传。",
+    "context_file_encoding_unsupported": "文件文本编码暂不支持。请转换为 UTF-8 后重新上传。",
+    "context_file_type_unsupported": "文件实际格式与声明类型不一致，或该格式暂不支持。",
+    "context_file_identity_mismatch": "文件完整性校验失败。请重新上传该文件。",
+    "context_file_unavailable": "文件当前不可用或已失去访问权限。请重新上传后重试。",
+    "context_file_name_conflict": "多个附件名称冲突。请重命名后重新上传。",
+    "context_file_storage_unavailable": "文件存储服务暂时不可用。请稍后重试。",
+    "context_file_staging_unavailable": "文件暂存失败。请稍后重试；如问题持续，请联系管理员。",
+    "context_file_parser_contract_invalid": "文件处理器未能验证输入。请重新上传；如问题持续，请联系管理员。",
+    "context_file_preprocessing_failed": "文件预处理失败。请重新导出后上传；如问题持续，请联系管理员。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
 
 PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
+    "attachment_materialized_fact_invalid": "context_file_identity_mismatch",
+    "attachment_parser_file_mapping_invalid": "context_file_identity_mismatch",
+    "attachment_parser_file_too_large": "context_file_too_large",
+    "attachment_parser_prompt_too_large": "context_file_processing_limit_exceeded",
+    "attachment_parser_staged_file_invalid": "context_file_invalid",
+    "attachment_parser_staged_file_mismatch": "context_file_identity_mismatch",
+    "attachment_parser_unsupported": "context_file_type_unsupported",
+    "attachment_preprocessing_contract_invalid": "context_file_parser_contract_invalid",
+    "context_file_too_large": "context_file_too_large",
+    "context_file_pdf_password_required": "context_file_pdf_password_required",
+    "context_file_pdf_active_content_unsupported": "context_file_unsafe_content",
+    "context_file_docx_embedded_content_unsupported": "context_file_unsafe_content",
+    "context_file_docx_external_relationship_unsupported": "context_file_unsafe_content",
+    "context_file_docx_macros_unsupported": "context_file_unsafe_content",
+    "xlsx_macros_unsupported": "context_file_unsafe_content",
+    "context_file_pdf_page_limit_exceeded": "context_file_page_limit_exceeded",
+    "context_file_pdf_parse_failed": "context_file_invalid",
+    "context_file_docx_archive_invalid": "context_file_invalid",
+    "context_file_docx_archive_entry_limit_exceeded": "context_file_processing_limit_exceeded",
+    "context_file_docx_archive_structure_invalid": "context_file_invalid",
+    "context_file_docx_archive_too_large": "context_file_processing_limit_exceeded",
+    "context_file_docx_encrypted": "context_file_password_required",
+    "context_file_docx_parse_failed": "context_file_invalid",
+    "context_file_docx_relationship_invalid": "context_file_invalid",
+    "context_file_docx_required_part_missing": "context_file_invalid",
+    "context_file_json_invalid": "context_file_invalid",
+    "context_file_staging_write_failed": "context_file_staging_unavailable",
+    "context_file_text_encoding_unsupported": "context_file_encoding_unsupported",
+    "xlsx_archive_too_large": "context_file_processing_limit_exceeded",
+    "xlsx_cell_limit_exceeded": "context_file_processing_limit_exceeded",
+    "xlsx_content_types_structure_unsupported": "context_file_invalid",
+    "xlsx_encrypted_unsupported": "context_file_password_required",
+    "xlsx_relationship_structure_unsupported": "context_file_invalid",
+    "xlsx_workbook_part_unsupported": "context_file_invalid",
+    "xlsx_workbook_structure_unsupported": "context_file_invalid",
+    "xlsx_worksheet_structure_unsupported": "context_file_invalid",
+    "xlsx_xml_encoding_unsupported": "context_file_encoding_unsupported",
+    "xlsx_xml_entities_unsupported": "context_file_unsafe_content",
+    "xlsx_parse_failed": "context_file_invalid",
+    "context_file_type_unsupported": "context_file_type_unsupported",
+    "context_file_identity_mismatch": "context_file_identity_mismatch",
+    "context_file_unavailable": "context_file_unavailable",
+    "context_file_name_conflict": "context_file_name_conflict",
+    "context_file_storage_unavailable": "context_file_storage_unavailable",
+    "context_file_preprocessing_failed": "context_file_preprocessing_failed",
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
     "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",
@@ -100,6 +163,8 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
 }
 
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
+
+RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
 
 def public_terminal_projection(
     status: object,
@@ -148,7 +213,12 @@ def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
 
 
 def public_chat_answer_text(run: dict[str, object], value: object) -> str:
-    """Sanitize terminal and delta text with the run-owned identifier policy."""
+    """Sanitize terminal and delta text with the run-owned identifier policy.
+
+    Identifier tokens are replaced with stable public labels when one is known,
+    otherwise redacted. A private or unprojectable answer is never fabricated
+    into a success message: an empty result propagates to the caller.
+    """
     content = sanitize_public_text(value)
     if not content:
         return ""
@@ -156,7 +226,6 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
     raw_agent_id = str(run.get("agent_id") or "")
     skill_capability_id = capability_id_from_skill(raw_skill_id)
     agent_capability_id = capability_id_from_skill(None, raw_agent_id)
-    run_capability_id = skill_capability_id or agent_capability_id
     public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
     identifiers = (
         (raw_skill_id, skill_capability_id),
@@ -171,24 +240,94 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
             matched_identifiers.append(
                 (identifier, identifier_capability_id, token_pattern)
             )
-    if (
-        matched_identifiers
-        and raw_skill_id
-        and raw_agent_id
-        and skill_capability_id != agent_capability_id
-    ):
-        return ""
     for identifier, identifier_capability_id, token_pattern in matched_identifiers:
+        replacement = None
+        if identifier_capability_id:
+            replacement = PUBLIC_AGENT_ID_BY_CAPABILITY.get(identifier_capability_id)
         if (
-            not run_capability_id
-            or identifier_capability_id != run_capability_id
-            or not public_agent_id
+            not replacement
+            and public_agent_id
+            and public_agent_id != raw_agent_id
+            and public_agent_id != raw_skill_id
         ):
-            return ""
-        if public_agent_id != identifier:
-            content = token_pattern.sub(public_agent_id, content)
+            replacement = public_agent_id
+        if replacement:
+            content = token_pattern.sub(replacement, content)
+        else:
+            redaction_pattern = re.compile(rf"\s*{token_pattern.pattern}\s*")
+            content = redaction_pattern.sub("", content)
     content = sanitize_public_text(content)
     return content if content.strip() else ""
+
+
+PublicChatAnswerStreamState = tuple[str, str, bool]
+
+
+class PublicChatAnswerStreamProjector:
+    """Incrementally project answer text without exposing split identifiers."""
+
+    def __init__(
+        self,
+        run: dict[str, object],
+        state: PublicChatAnswerStreamState | None = None,
+    ) -> None:
+        self._run = run
+        self._identifiers = tuple(
+            identifier
+            for identifier in (
+                str(run.get("skill_id") or ""),
+                str(run.get("agent_id") or ""),
+            )
+            if identifier
+        )
+        self._raw, self._emitted, self._blocked = state or ("", "", False)
+
+    @property
+    def state(self) -> PublicChatAnswerStreamState:
+        return self._raw, self._emitted, self._blocked
+
+    def _unstable_suffix_length(self) -> int:
+        unstable = 0
+        token_character = re.compile(r"[\w.:\-]")
+        for identifier in self._identifiers:
+            for length in range(1, min(len(identifier), len(self._raw)) + 1):
+                if not self._raw.endswith(identifier[:length]):
+                    continue
+                start = len(self._raw) - length
+                if start and token_character.fullmatch(self._raw[start - 1]):
+                    continue
+                unstable = max(unstable, length)
+        for marker in FORBIDDEN_PUBLIC_MARKERS:
+            for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
+                if self._raw.endswith(marker[:length]):
+                    unstable = max(unstable, length)
+        return unstable
+
+    def push(self, value: object, *, final: bool = False) -> str:
+        if self._blocked:
+            return ""
+        if value is not None:
+            self._raw += str(value)
+        projected = public_chat_answer_text(self._run, self._raw)
+        unstable = 0 if final else self._unstable_suffix_length()
+        if unstable:
+            if self._emitted and not projected.startswith(self._emitted):
+                self._blocked = True
+            return ""
+        stable = projected
+        if (
+            not stable.startswith(self._emitted)
+            or (stable and not projected.startswith(stable))
+            or (self._emitted and not projected.startswith(self._emitted))
+        ):
+            self._blocked = True
+            return ""
+        delta = stable[len(self._emitted) :]
+        self._emitted = stable
+        return delta
+
+    def flush(self) -> str:
+        return self.push("", final=True)
 
 
 def _chat_terminal_answer_candidate(run: dict[str, object]) -> object:
@@ -204,16 +343,29 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
     """Build the sole versioned Chat payload for a terminal run state."""
     status = normalize_run_status(str(run.get("status") or ""))
     if status == "succeeded":
-        content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run)) or "任务完成"
+        content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run))
+        if content:
+            return {
+                "event_type": "message:chunk",
+                "payload": {
+                    "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                    "projection_kind": "assistant_final",
+                    "content": content,
+                },
+                "message": content,
+                "event_payload": {},
+                "severity": "info",
+            }
         return {
-            "event_type": "message:chunk",
+            "event_type": "final_detail",
             "payload": {
                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                "projection_kind": "assistant_final",
-                "content": content,
+                "detail_kind": "result_unavailable",
+                "detail_code": "result_unavailable",
+                "message": RESULT_UNAVAILABLE_MESSAGE,
             },
-            "message": content,
-            "event_payload": {},
+            "message": RESULT_UNAVAILABLE_MESSAGE,
+            "event_payload": {"detail_code": "result_unavailable"},
             "severity": "info",
         }
     terminal = public_terminal_projection(status, run.get("error_code"))
@@ -346,6 +498,7 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
 
 
 PUBLIC_EVENT_TYPE_ALIASES = {
+    "artifact_created": "artifact_ready",
     "legacy_runtime211_direct_executor_denied": "status",
     "mcp_tool_call_completed": "tool_call_completed",
     "mcp_tool_call_started": "tool_call_started",
@@ -527,6 +680,46 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
+        ("capability_staged",),
+        stage="capability",
+        message="所需能力已加载到受控环境。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_sdk_registered",),
+        stage="capability",
+        message="所需能力已注册到执行引擎。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_actually_invoked",),
+        stage="capability",
+        message="所需能力已由执行引擎实际调用。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_completed",),
+        stage="capability",
+        message="所需能力已实际执行完成。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_optional_not_invoked",),
+        stage="capability",
+        message="可选能力本次未调用。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
         ("intent_detected",),
         stage="preparation",
         message="正在准备受控运行请求。",
@@ -551,10 +744,11 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
-        ("artifact_created",),
+        ("artifact_created", "artifact_ready"),
         stage="artifact",
-        message="已生成结果文件，正在完成可用性检查。",
+        message="结果文件已可安全下载。",
         status="completed",
+        event_type="artifact_ready",
     )
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(

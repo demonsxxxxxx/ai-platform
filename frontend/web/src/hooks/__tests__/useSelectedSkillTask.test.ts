@@ -117,22 +117,19 @@ test("unauthorized or hidden cached selection clears identity and blocks fallbac
   assert.equal(hiddenAfterRefresh.requiresReconfirmation, true);
 });
 
-test("requires-file preflight accepts only a completed existing upload", () => {
+test("file-capable Skill preflight permits text-only and uploaded submissions", () => {
   assert.equal(typeof selectedSkillTask.getSelectedSkillPreflightError, "function");
   const state = selectedSkillTask.selectedSkillTaskReducer(
     selectedSkillTask.createSelectedSkillTaskState(),
     { type: "select", skill: skill("document-review", "hash-docx", true) },
   );
 
-  assert.equal(
-    selectedSkillTask.getSelectedSkillPreflightError(state, []),
-    "file_required_for_skill",
-  );
+  assert.equal(selectedSkillTask.getSelectedSkillPreflightError(state, []), null);
   assert.equal(
     selectedSkillTask.getSelectedSkillPreflightError(state, [
       { id: "uploading", isUploading: true },
     ]),
-    "file_required_for_skill",
+    null,
   );
   assert.equal(
     selectedSkillTask.getSelectedSkillPreflightError(state, [
@@ -142,7 +139,7 @@ test("requires-file preflight accepts only a completed existing upload", () => {
   );
 });
 
-test("file-required recovery materializes the selected request once a file is ready", () => {
+test("legacy file-required recovery no longer pins the next turn to an attachment", () => {
   const selected = selectedSkillTask.selectedSkillTaskReducer(
     selectedSkillTask.createSelectedSkillTaskState(),
     { type: "select", skill: skill("document-review", "hash-docx", true) },
@@ -166,7 +163,13 @@ test("file-required recovery materializes the selected request once a file is re
   );
   assert.deepEqual(
     selectedSkillTask.prepareSelectedSkillSubmission(fileRequired, []),
-    { error: "file_required_for_skill", request: null },
+    {
+      error: null,
+      request: {
+        skill_id: "document-review",
+        expected_version: "hash-docx",
+      },
+    },
   );
 });
 

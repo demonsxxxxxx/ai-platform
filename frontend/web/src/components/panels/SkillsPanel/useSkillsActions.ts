@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -15,6 +15,11 @@ import {
   toggleZipSkillSelection,
   type ZipSkillPreview,
 } from "./zipSelection";
+import {
+  removeArchivedActionSelections,
+  resolveArchivedSkillCatalogEntries,
+  type ArchivedSkillCatalogEntry,
+} from "./skillCatalogEntries";
 
 export type { ZipSkillPreview } from "./zipSelection";
 
@@ -31,7 +36,12 @@ interface GitHubSkill {
   description: string;
 }
 
-export function useSkillsActions(options?: { enabled?: boolean }) {
+export function useSkillsActions(options?: {
+  allAuthorizedCatalog?: boolean;
+  enabled?: boolean;
+  loadAdminCatalog?: boolean;
+  onSkillsArchived?: (skills: ArchivedSkillCatalogEntry[]) => void;
+}) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const location = useLocation();
@@ -61,8 +71,9 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     effectivePermissions,
     effectivePermissionsKnown,
     catalogReadResolved,
-    total,
+    total: catalogTotal,
     isLoading,
+    isDeleting,
     error,
     listError,
     getSkill,
@@ -83,8 +94,27 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     installGitHubSkills,
     clearError,
     fetchSkills,
-  } = useSkills({ enabled, listParams });
-  const filteredSkills = skills;
+  } = useSkills({
+    enabled,
+    listParams,
+    allAuthorizedCatalog: options?.allAuthorizedCatalog,
+  });
+  const filteredSkills = useMemo(() => {
+    if (!options?.allAuthorizedCatalog) return skills;
+    const query = searchQuery.trim().normalize("NFKC").toLocaleLowerCase();
+    return skills.filter((skill) => {
+      if (
+        query &&
+        !`${skill.name}\n${skill.description}`
+          .normalize("NFKC")
+          .toLocaleLowerCase()
+          .includes(query)
+      ) {
+        return false;
+      }
+      return selectedTags.every((tag) => skill.tags.includes(tag));
+    });
+  }, [options?.allAuthorizedCatalog, searchQuery, selectedTags, skills]);
   const canAdminUploadSkills = isAiAdminUser(user);
 
   useEffect(() => {
@@ -102,7 +132,12 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     navigate(location.pathname, { replace: true });
   }, [location.pathname, location.state, navigate]);
 
-  const paginatedSkills = filteredSkills;
+  const paginatedSkills = options?.allAuthorizedCatalog
+    ? filteredSkills.slice((page - 1) * pageSize, page * pageSize)
+    : filteredSkills;
+  const total = options?.allAuthorizedCatalog
+    ? filteredSkills.length
+    : catalogTotal;
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -122,6 +157,10 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   // Batch selection state
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
   const [batchLoading, setBatchLoading] = useState(false);
+
+  useEffect(() => {
+    setSelectedNames(new Set());
+  }, [page, searchQuery, selectedTags]);
 
   // Delete confirmation
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -145,13 +184,19 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const refreshAdminSkillCatalog = async (): Promise<
+  const refreshAdminSkillCatalog = useCallback(async (): Promise<
     AdminSkillCatalogItem[] | null
   > => {
     const items = await adminListSkills();
     if (items) setAdminCatalogItems(items);
     return items;
-  };
+  }, [adminListSkills]);
+
+  useEffect(() => {
+    if (options?.loadAdminCatalog && canAdminUploadSkills) {
+      void refreshAdminSkillCatalog();
+    }
+  }, [canAdminUploadSkills, options?.loadAdminCatalog, refreshAdminSkillCatalog]);
 
   // GitHub import state
   const [showGithubModal, setShowGithubModal] = useState(false);
@@ -225,12 +270,30 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
   const confirmDelete = async () => {
     if (!deleteConfirmData) return;
-    try {
-      await deleteSkill(deleteConfirmData.name);
-    } finally {
-      setIsDeleteConfirmOpen(false);
-      setDeleteConfirmData(null);
+    const skillName = deleteConfirmData.name;
+    const archived = await deleteSkill(skillName);
+    if (!archived) {
+      toast.error(t("skills.deleteFailed"));
+      return;
     }
+    const archivedEntries = resolveArchivedSkillCatalogEntries(
+      adminCatalogItems,
+      [skillName],
+    );
+    const archivedIds = new Set(archivedEntries.map((entry) => entry.id));
+    setAdminCatalogItems((current) =>
+      current.filter((item) => !archivedIds.has(item.skillId)),
+    );
+    setSelectedNames((current) =>
+      removeArchivedActionSelections(current, [skillName]),
+    );
+    options?.onSkillsArchived?.(archivedEntries);
+    if (options?.loadAdminCatalog) {
+      await refreshAdminSkillCatalog();
+    }
+    toast.success(t("skills.deleteSuccess"));
+    setIsDeleteConfirmOpen(false);
+    setDeleteConfirmData(null);
   };
 
   const cancelDelete = () => {
@@ -254,11 +317,15 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     });
   };
 
-  const handleSelectAll = () => {
-    if (selectedNames.size === filteredSkills.length) {
+  const handleSelectAll = (names = filteredSkills.map((skill) => skill.name)) => {
+    const selectableNames = [...new Set(names)];
+    if (
+      selectableNames.length > 0 &&
+      selectableNames.every((name) => selectedNames.has(name))
+    ) {
       setSelectedNames(new Set());
     } else {
-      setSelectedNames(new Set(filteredSkills.map((s) => s.name)));
+      setSelectedNames(new Set(selectableNames));
     }
   };
 
@@ -266,13 +333,41 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
   const handleBatchDelete = async () => {
     if (selectedNames.size === 0) return;
+    const requestedNames = Array.from(selectedNames);
     setBatchLoading(true);
     try {
-      await batchDeleteSkills(Array.from(selectedNames));
-      clearSelection();
-      toast.success(
-        t("skills.batchDeleteSuccess", { count: selectedNames.size }),
+      const deletedNames = await batchDeleteSkills(requestedNames);
+      if (deletedNames.length > 0) {
+        const archivedEntries = resolveArchivedSkillCatalogEntries(
+          adminCatalogItems,
+          deletedNames,
+        );
+        const archivedIds = new Set(archivedEntries.map((entry) => entry.id));
+        setAdminCatalogItems((current) =>
+          current.filter((item) => !archivedIds.has(item.skillId)),
+        );
+        options?.onSkillsArchived?.(archivedEntries);
+        if (options?.loadAdminCatalog) {
+          await refreshAdminSkillCatalog();
+        }
+      }
+      setSelectedNames(
+        new Set(requestedNames.filter((name) => !deletedNames.includes(name))),
       );
+      if (deletedNames.length === requestedNames.length) {
+        toast.success(
+          t("skills.batchDeleteSuccess", { count: deletedNames.length }),
+        );
+      } else if (deletedNames.length > 0) {
+        toast.error(
+          t("skills.batchDeletePartial", {
+            deleted: deletedNames.length,
+            failed: requestedNames.length - deletedNames.length,
+          }),
+        );
+      } else {
+        toast.error(t("skills.batchDeleteFailed"));
+      }
     } catch {
       toast.error(t("skills.batchDeleteFailed"));
     } finally {
@@ -643,6 +738,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     // Delete confirm
     isDeleteConfirmOpen,
     deleteConfirmData,
+    isDeleting,
     confirmDelete,
     cancelDelete,
 

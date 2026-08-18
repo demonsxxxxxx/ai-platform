@@ -194,7 +194,7 @@ class Violation:
 
 @dataclass(frozen=True)
 class Evaluation:
-    """Stable result returned across the code-governance seam."""
+    """Stable additive-v1 result returned across the code-governance seam."""
 
     base_ref: str
     head_ref: str
@@ -205,6 +205,7 @@ class Evaluation:
     ruff: dict[str, Any]
     exception: dict[str, Any]
     violations: tuple[Violation, ...]
+    advisories: tuple[Violation, ...]
     exempted_violations: tuple[Violation, ...]
 
     @property
@@ -214,6 +215,7 @@ class Evaluation:
     def as_dict(self) -> dict[str, Any]:
         return {
             "base_ref": self.base_ref,
+            "advisories": [item.as_dict() for item in self.advisories],
             "changes": [change.as_dict() for change in self.changes],
             "exception": self.exception,
             "exempted_violations": [item.as_dict() for item in self.exempted_violations],
@@ -380,12 +382,13 @@ class CodeGovernanceEvaluator:
         self._assert_repository()
         git_range = self._git_reader.read(base_ref, head_ref)
         changes = git_range.changes
-        violations, metrics = self._evaluate_policy(changes)
+        violations, metrics, advisories = self._evaluate_policy(changes)
         ruff, ruff_violation = self._evaluate_ruff(changes)
         if ruff_violation is not None:
             violations.append(ruff_violation)
 
         ordered = _sort_violations(violations)
+        ordered_advisories = _sort_violations(advisories)
         exception_contract = self._git_reader.load_exception(git_range.head)
         if exception_contract is not None:
             _validate_exception_payload(exception_contract, self._today)
@@ -394,7 +397,11 @@ class CodeGovernanceEvaluator:
                 base_ref=git_range.base,
                 scope_sha256=self._git_reader.exception_scope_sha256(git_range.base, git_range.head),
             )
-        active, exempted, exception_summary = self._apply_exception(ordered, exception_contract)
+        active, exempted, exception_summary = self._apply_exception(
+            ordered,
+            ordered_advisories,
+            exception_contract,
+        )
         mode = _evaluation_mode(changes)
         return Evaluation(
             base_ref=git_range.base,
@@ -406,6 +413,7 @@ class CodeGovernanceEvaluator:
             ruff=ruff,
             exception=exception_summary,
             violations=tuple(active),
+            advisories=tuple(ordered_advisories),
             exempted_violations=tuple(exempted),
         )
 
@@ -418,7 +426,10 @@ class CodeGovernanceEvaluator:
             self._repo_root = discovered
             self._git_reader = _GitChangeReader(self._repo_root, self._runner)
 
-    def _evaluate_policy(self, changes: Sequence[_ChangedFile]) -> tuple[list[Violation], dict[str, Any]]:
+    def _evaluate_policy(
+        self,
+        changes: Sequence[_ChangedFile],
+    ) -> tuple[list[Violation], dict[str, Any], list[Violation]]:
         behavior_files = [item for item in changes if item.is_behavior_change]
         move_only_files = [item for item in changes if item.is_move_only]
         test_files = [item for item in changes if item.is_test]
@@ -430,62 +441,121 @@ class CodeGovernanceEvaluator:
             round(test_added_loc / production_added_loc, 4) if production_added_loc > 0 else None
         )
         violations: list[Violation] = []
+        advisories: list[Violation] = []
 
         if len(behavior_files) > PRODUCTION_FILE_LIMIT:
-            violations.append(
+            advisories.append(
                 Violation(
                     "production_file_count",
-                    f"behavior-changing production files must be <= {PRODUCTION_FILE_LIMIT}",
+                    f"review the responsibility split across more than {PRODUCTION_FILE_LIMIT} behavior-changing production files",
                     details={"actual": len(behavior_files), "limit": PRODUCTION_FILE_LIMIT},
                 )
             )
         if net_loc >= PRODUCTION_NET_LOC_LIMIT:
-            violations.append(
+            advisories.append(
                 Violation(
                     "production_net_loc",
-                    f"net behavior-changing production LOC must be < {PRODUCTION_NET_LOC_LIMIT}",
+                    f"review the responsibility split for {PRODUCTION_NET_LOC_LIMIT} or more net behavior-changing production LOC",
                     details={"actual": net_loc, "limit_exclusive": PRODUCTION_NET_LOC_LIMIT},
                 )
             )
         for item in changes:
             peak_lines = max(item.old_lines, item.new_lines)
-            if item.is_behavior_change and peak_lines > HOT_FILE_LINES and item.production_net_loc > HOT_FILE_NET_GROWTH_LIMIT:
-                violations.append(
-                    Violation(
-                        "hot_file_growth",
-                        f"production files over {HOT_FILE_LINES} lines may grow by at most {HOT_FILE_NET_GROWTH_LIMIT} net lines",
-                        path=item.production_path,
-                        details={"net_loc": item.production_net_loc, "peak_lines": peak_lines},
-                    )
-                )
             if (
                 item.is_behavior_change
                 and item.is_functional
                 and peak_lines > FUNCTIONAL_HOT_FILE_LINES
                 and item.production_net_loc > FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT
             ):
-                violations.append(
+                advisories.append(
                     Violation(
                         "functional_hot_file_growth",
-                        f"functional production files over {FUNCTIONAL_HOT_FILE_LINES} lines may not grow",
+                        f"review responsibilities added to a functional production file over {FUNCTIONAL_HOT_FILE_LINES} lines",
+                        path=item.production_path,
+                        details={"net_loc": item.production_net_loc, "peak_lines": peak_lines},
+                    )
+                )
+            elif (
+                item.is_behavior_change
+                and peak_lines > HOT_FILE_LINES
+                and item.production_net_loc > HOT_FILE_NET_GROWTH_LIMIT
+            ):
+                advisories.append(
+                    Violation(
+                        "hot_file_growth",
+                        f"review responsibilities added to a production file over {HOT_FILE_LINES} lines",
                         path=item.production_path,
                         details={"net_loc": item.production_net_loc, "peak_lines": peak_lines},
                     )
                 )
             if item.is_test and peak_lines > TEST_HOT_FILE_LINES and item.net_loc > TEST_HOT_FILE_NET_GROWTH_LIMIT:
-                violations.append(
+                advisories.append(
                     Violation(
                         "test_hot_file_growth",
-                        f"test files over {TEST_HOT_FILE_LINES} lines may grow by at most {TEST_HOT_FILE_NET_GROWTH_LIMIT} net lines",
+                        f"review responsibilities added to a test file over {TEST_HOT_FILE_LINES} lines",
                         path=item.path,
                         details={"net_loc": item.net_loc, "peak_lines": peak_lines},
                     )
                 )
 
+        test_loc_review_recommended = (production_added_loc == 0 and test_added_loc > 0) or test_added_loc > TEST_ADDED_LOC_REVIEW_THRESHOLD or (
+            test_to_production_ratio is not None
+            and test_to_production_ratio > TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO
+        )
+        if test_loc_review_recommended:
+            advisories.append(
+                Violation(
+                    "test_loc_review",
+                    "review and explain the test-to-production change mix",
+                    details={
+                        "production_added_loc": production_added_loc,
+                        "test_added_loc": test_added_loc,
+                        "test_to_production_added_loc_ratio": test_to_production_ratio,
+                    },
+                )
+            )
+
+        responsibilities: dict[str, set[str]] = {}
+        for item in behavior_files:
+            responsibility = _production_subsystem(item.production_path)
+            responsibilities.setdefault(responsibility, set()).add(item.production_path)
+        changed_responsibilities = [
+            {"name": name, "paths": sorted(paths)}
+            for name, paths in sorted(responsibilities.items())
+        ]
+
+        hot_files: list[dict[str, Any]] = []
+        for item in changes:
+            peak_lines = max(item.old_lines, item.new_lines)
+            if item.is_behavior_change and item.is_functional and peak_lines > FUNCTIONAL_HOT_FILE_LINES:
+                kind = "functional_production"
+                path = item.production_path
+                net_change = item.production_net_loc
+            elif item.is_behavior_change and peak_lines > HOT_FILE_LINES:
+                kind = "production"
+                path = item.production_path
+                net_change = item.production_net_loc
+            elif item.is_test and peak_lines > TEST_HOT_FILE_LINES:
+                kind = "test"
+                path = item.path
+                net_change = item.net_loc
+            else:
+                continue
+            hot_files.append(
+                {
+                    "kind": kind,
+                    "net_loc": net_change,
+                    "path": path,
+                    "peak_lines": peak_lines,
+                }
+            )
+
         metrics = {
             "behavior_production_files": len(behavior_files),
             "changed_files": len(changes),
+            "changed_responsibilities": changed_responsibilities,
             "changed_test_files": len(test_files),
+            "hot_files": sorted(hot_files, key=lambda item: item["path"]),
             "move_only_production_files": len(move_only_files),
             "production_added_loc": production_added_loc,
             "production_net_loc": net_loc,
@@ -494,11 +564,10 @@ class CodeGovernanceEvaluator:
             "test_added_loc": test_added_loc,
             "test_net_loc": sum(item.test_net_loc for item in changes),
             "test_to_production_added_loc_ratio": test_to_production_ratio,
-            "test_loc_review_explanation_recommended": (production_added_loc == 0 and test_added_loc > 0)
-            or test_added_loc > TEST_ADDED_LOC_REVIEW_THRESHOLD
-            or (test_to_production_ratio is not None and test_to_production_ratio > TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO),
+            "review_recommendations": ["explain_test_loc_mix"] if test_loc_review_recommended else [],
+            "test_loc_review_explanation_recommended": test_loc_review_recommended,
         }
-        return violations, metrics
+        return violations, metrics, advisories
 
     def _evaluate_ruff(self, changes: Sequence[_ChangedFile]) -> tuple[dict[str, Any], Violation | None]:
         paths = sorted(
@@ -548,6 +617,7 @@ class CodeGovernanceEvaluator:
     def _apply_exception(
         self,
         violations: Sequence[Violation],
+        advisories: Sequence[Violation],
         payload: dict[str, Any] | None,
     ) -> tuple[list[Violation], list[Violation], dict[str, Any]]:
         if payload is None:
@@ -558,13 +628,20 @@ class CodeGovernanceEvaluator:
             raise GovernanceError("invalid_exception", f"non-exemptible violation codes requested: {', '.join(blocked)}")
         exempted = [item for item in violations if (item.code, item.path) in requested]
         active = [item for item in violations if (item.code, item.path) not in requested]
+        acknowledged_advisories = [
+            item for item in advisories if (item.code, item.path) in requested
+        ]
         matched = {(item.code, item.path) for item in exempted}
+        matched.update((item.code, item.path) for item in acknowledged_advisories)
         unused = sorted(requested - matched, key=lambda item: (item[0], item[1] or ""))
         if unused:
             rendered = ", ".join(f"{code}:{path or '<global>'}" for code, path in unused)
             raise GovernanceError("invalid_exception", f"exception entries must match current violations exactly: {rendered}")
         summary = {
             "candidate": payload["candidate"],
+            "acknowledged_advisories": [
+                item.as_dict() for item in acknowledged_advisories
+            ],
             "expires_on": payload["expires_on"],
             "owner": payload["owner"],
             "path": EXCEPTION_PATH,
@@ -690,12 +767,21 @@ def _sort_violations(violations: Iterable[Violation]) -> list[Violation]:
 
 def _policy_as_dict() -> dict[str, Any]:
     return {
+        "advisory_codes": [
+            "functional_hot_file_growth",
+            "hot_file_growth",
+            "production_file_count",
+            "production_net_loc",
+            "test_hot_file_growth",
+            "test_loc_review",
+        ],
         "functional_hot_file_lines_exclusive": FUNCTIONAL_HOT_FILE_LINES,
         "functional_hot_file_net_growth_max": FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT,
         "hot_file_lines_exclusive": HOT_FILE_LINES,
         "hot_file_net_growth_max": HOT_FILE_NET_GROWTH_LIMIT,
         "production_file_count_max": PRODUCTION_FILE_LIMIT,
         "production_net_loc_max_exclusive": PRODUCTION_NET_LOC_LIMIT,
+        "size_and_hot_file_gates": "advisory",
         "test_hot_file_lines_exclusive": TEST_HOT_FILE_LINES,
         "test_hot_file_net_growth_max": TEST_HOT_FILE_NET_GROWTH_LIMIT,
         "test_loc_review": {
@@ -784,11 +870,32 @@ def _render_text(evaluation: Evaluation) -> str:
         f"mode: {evaluation.mode}",
         f"behavior production files: {evaluation.metrics['behavior_production_files']}",
         f"move-only production files: {evaluation.metrics['move_only_production_files']}",
+        f"production added LOC: {evaluation.metrics['production_added_loc']}",
         f"production net LOC: {evaluation.metrics['production_net_loc']}",
+        f"test added LOC: {evaluation.metrics['test_added_loc']}",
         f"production subsystem count: {evaluation.metrics['production_subsystem_count']}",
         f"production subsystems: {', '.join(evaluation.metrics['production_subsystems']) or 'none'}",
         f"Ruff: {evaluation.ruff['status']}",
     ]
+    lines.append("changed responsibilities:")
+    if evaluation.metrics["changed_responsibilities"]:
+        for responsibility in evaluation.metrics["changed_responsibilities"]:
+            lines.append(
+                f"- {responsibility['name']}: {', '.join(responsibility['paths'])}"
+            )
+    else:
+        lines.append("- none")
+    lines.append("hot files:")
+    if evaluation.metrics["hot_files"]:
+        for hot_file in evaluation.metrics["hot_files"]:
+            lines.append(
+                f"- {hot_file['path']} ({hot_file['kind']}, "
+                f"{hot_file['peak_lines']} lines, net {hot_file['net_loc']:+d})"
+            )
+    else:
+        lines.append("- none")
+    lines.append("advisories:" if evaluation.advisories else "advisories: none")
+    lines.extend(_violation_text(item) for item in evaluation.advisories)
     lines.append("violations:" if evaluation.violations else "violations: none")
     lines.extend(_violation_text(item) for item in evaluation.violations)
     if evaluation.exempted_violations:

@@ -16,7 +16,7 @@ from app.skills.release_dashboard_readiness import build_skill_release_dashboard
 
 _DASHBOARD_GAPS = [
     "admin_skill_release_dashboard_visual_acceptance",
-    "admin_skill_release_dashboard_211_acceptance",
+    "admin_skill_release_dashboard_controlled_host_acceptance",
 ]
 
 
@@ -117,7 +117,7 @@ def _valid_skill_dependency_runtime_acceptance() -> dict:
     return {
         "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
         "status": "verified_runtime_acceptance",
-        "target": "211_api_admin_runtime",
+        "target": "controlled_host_api_admin_runtime",
         "runtime_acceptance_requires_real_admin_runtime_payload": False,
         "does_not_close_runtime_acceptance": False,
         "runtime_payload_verified": True,
@@ -191,7 +191,7 @@ def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g
 
     assert readiness["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
     assert readiness["status"] == "partial_blocked"
-    assert readiness["policy"] == "source_runtime_acceptance_recorded_not_visual_or_211"
+    assert readiness["policy"] == "source_contract_recorded_not_visual_or_deployed_runtime_acceptance"
     assert readiness["does_not_close_g6"] is True
     assert readiness["dashboard_contract"] == {
         "schema_version": "ai-platform.skill-release-dashboard-contract.v1",
@@ -282,11 +282,11 @@ def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g
         "forbidden_payload_classes": readiness["forbidden_payload_classes"],
         "does_not_close_g6": True,
         "does_not_close_visual_acceptance": True,
-        "does_not_close_211_acceptance": True,
+        "does_not_close_runtime_acceptance": True,
     }
     assert readiness["open_gaps"] == [
         "admin_skill_release_dashboard_visual_acceptance",
-        "admin_skill_release_dashboard_211_acceptance",
+        "admin_skill_release_dashboard_controlled_host_acceptance",
     ]
     assert "admin_skill_release_dashboard_runtime_acceptance" not in readiness["open_gaps"]
 
@@ -362,7 +362,7 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert runtime_contract["runtime_payload_schema_version"] == (
         "ai-platform.skill-dependency-review-runtime-acceptance.v1"
     )
-    assert runtime_contract["target"] == "211_api_admin_runtime"
+    assert runtime_contract["target"] == "controlled_host_api_admin_runtime"
     assert runtime_contract["acceptance_gap"] == "skill_dependency_review_policy_runtime_acceptance"
     assert runtime_contract["runtime_acceptance_requires_real_admin_runtime_payload"] is True
     assert "check_skill_dependency_review_runtime_acceptance" in runtime_contract[
@@ -1118,8 +1118,8 @@ def test_skill_release_readiness_closes_only_runtime_gap_from_reviewed_runtime_a
         "path": "docs/release-evidence/skill-release-runtime/8e0389e/2026-06-17-211-skill-release-8e0389e-dependency-review-runtime-acceptance.json",
         "runtime_payload_verified": True,
         "runtime_subject": "8e0389e-main-runtime-rebase",
-        "status": "verified_211_runtime_acceptance",
-        "target": "211_api_admin_runtime",
+        "status": "verified_runtime_acceptance",
+        "target": "controlled_host_api_admin_runtime",
         "verifier": "tools/verify_governance_runtime_smoke.py",
     }
     assert readiness["status"] == "partial_blocked"

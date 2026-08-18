@@ -98,7 +98,7 @@ _DELIVERY_CHANNEL_POLICY = {
         "Redis URL",
     ],
     "requires_runtime_dashboard_acceptance": True,
-    "requires_211_smoke": True,
+    "requires_controlled_host_smoke": True,
     "does_not_enable_alert_delivery": True,
     "does_not_close_g9": True,
 }
@@ -119,7 +119,7 @@ def build_alert_slo_readiness() -> dict[str, Any]:
     _validate_rules(rules)
     categories = [str(rule["category"]) for rule in rules]
     open_gaps = [
-        "alert_rules_runtime_dashboard_and_211_acceptance",
+        "alert_rules_runtime_dashboard_and_controlled_host_acceptance",
         "alert_delivery_channel_runtime_acceptance",
         "slo_threshold_runtime_calibration",
     ]
@@ -137,6 +137,6 @@ def build_alert_slo_readiness() -> dict[str, Any]:
         "open_gaps": open_gaps,
         "evidence_policy": (
             "rule templates narrow the G9 alerts gap only; dashboard wiring, delivery policy, "
-            "runtime calibration, review, tests, and 211 smoke remain required before enabling alerts"
+            "runtime calibration, review, tests, and controlled-host smoke remain required before enabling alerts"
         ),
     }

@@ -52,6 +52,20 @@ function profile(
     status: "draft",
     name: "文档审阅助手",
     description: "审阅授权文档。",
+    welcome_message: "欢迎使用企业专家。",
+    starter_prompts: ["请审阅这份材料"],
+    capability_summary: "在授权范围内审阅企业文档。",
+    recommended_tasks: ["文档审阅"],
+    supported_input_types: ["text", "file"],
+    expected_outputs: ["审阅意见"],
+    permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
+    avatar_ref: "builtin:document",
+    avatar_asset_id: null,
+    category: "operations",
+    visibility: "tenant",
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
     instructions: "仅使用已授权资料。",
     model_id: model.id,
     selected_skill: {
@@ -113,7 +127,7 @@ test("initial load exposes loading then hydrates exact server profiles", async (
 
   assert.equal(loaded.listPhase, "ready");
   assert.equal(loaded.profiles.length, 1);
-  assert.deepEqual(loaded.activeEditor?.selectedSkill, profile().selected_skill);
+  assert.deepEqual(loaded.activeEditor?.selectedSkills, [profile().selected_skill]);
   assert.deepEqual(loaded.activeEditor?.selectedMcpToolIds, profile().mcp_tool_ids);
   assert.equal(loaded.activeEditor?.revision, 7);
 });
@@ -210,12 +224,16 @@ test("successful create materializes server identity and enables publish", async
   controller.updateActiveEditor((editor) => ({
     ...editor,
     name: "新智能体",
+    capabilitySummary: "在授权范围内处理企业任务。",
+    recommendedTasks: ["企业任务处理"],
+    expectedOutputs: ["处理建议"],
+    permissionsAndDataAccessNotice: "仅访问当前用户授权的数据。",
     instructions: "服务端说明",
     modelId: model.id,
-    selectedSkill: {
+    selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
-    },
+    }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
   }));
 
@@ -271,13 +289,32 @@ test("edit disables publish, save fences the exact revision, then publish adopts
     draft: {
       name: "文档审阅助手",
       description: "审阅授权文档。",
+      welcome_message: "欢迎使用企业专家。",
+      starter_prompts: ["请审阅这份材料"],
+      capability_summary: "在授权范围内审阅企业文档。",
+      recommended_tasks: ["文档审阅"],
+      supported_input_types: ["text", "file"],
+      expected_outputs: ["审阅意见"],
+      permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
       instructions: "更新后的说明",
       model_id: "model-id",
       selected_skill: {
         skill_id: "document-review",
         expected_version: "2026.07.28",
       },
+      skill_set: [{
+        skill_id: "document-review",
+        expected_version: "2026.07.28",
+      }],
       mcp_tool_ids: ["mcp:knowledge:search"],
+      avatar_ref: "builtin:document",
+      avatar_seed: "agt_document_review",
+      avatar_asset_id: null,
+      category: "operations",
+      visibility: "tenant",
+      allowed_department_ids: [],
+      allowed_roles: [],
+      allowed_user_ids: [],
       expected_draft_revision: 7,
     },
   }]);
@@ -349,6 +386,22 @@ test("safe save errors expose typed status and code but never raw messages", asy
   assert.doesNotMatch(unknown.message, /secret backend copy/);
   assert.equal(unknown.status, undefined);
   assert.equal(unknown.code, undefined);
+});
+
+test("revision integrity errors use action-neutral copy for publish and unpublish", () => {
+  for (const action of ["publish", "unpublish"] as const) {
+    const projected = projectAgentBuilderError(
+      action,
+      new ApiRequestError(
+        "private integrity detail",
+        409,
+        "agent_profile_revision_integrity_mismatch",
+      ),
+    );
+    assert.match(projected.message, /当前操作/);
+    assert.match(projected.message, /重新保存为新版本/);
+    assert.doesNotMatch(projected.message, /阻止发布|阻止下架|private integrity detail/);
+  }
 });
 
 test("revision conflict recovery discards edits only after an explicit successful reload", async () => {
@@ -573,4 +626,85 @@ test("busy publish rejects a later refresh and adopts the published response", a
   assert.equal(controller.state.mutation.phase, "success");
   assert.equal(controller.state.activeEditor?.revision, 8);
   assert.equal(controller.state.activeEditor?.status, "published");
+});
+
+test("unpublish fences the exact published revision and adopts immutable withdrawn history", async () => {
+  const calls: Array<{ agentId: string; revision: number }> = [];
+  const controller = new AgentBuilderController(fakeApi({
+    listAdmin: async () => ({
+      agent_profiles: [profile({
+        revision: 10,
+        status: "draft",
+        published_revision: 9,
+      })],
+    }),
+    unpublish: async (agentId, revision) => {
+      calls.push({ agentId, revision });
+      return {
+        agent_profile: profile({
+          revision: 11,
+          status: "withdrawn",
+          published_revision: null,
+        }),
+        audit_id: "audit-unpublish",
+      };
+    },
+  }));
+  await controller.loadProfiles();
+
+  await controller.unpublishActiveProfile();
+
+  assert.deepEqual(calls, [{ agentId: "agt_document_review", revision: 9 }]);
+  assert.equal(controller.state.activeEditor?.revision, 11);
+  assert.equal(controller.state.activeEditor?.status, "withdrawn");
+  assert.deepEqual(controller.state.mutation, {
+    phase: "success",
+    action: "unpublish",
+    revision: 11,
+  });
+});
+
+test("real Builder test creates one controlled test submission for the exact published revision", async () => {
+  const calls: Array<{
+    agentId: string;
+    revision: number;
+    message: string;
+    submissionId: string;
+  }> = [];
+  const trialRun = {
+    session_id: "ses_test_7ea9303330f540ea8a332f3c6e7b21c4",
+    run_id: "run-test",
+    status: "queued" as const,
+    submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    purpose: "builder_test" as const,
+  };
+  const controller = new AgentBuilderController(fakeApi({
+    listAdmin: async () => ({
+      agent_profiles: [profile({ revision: 9, status: "published" })],
+    }),
+    runTest: async (agentId, revision, message, submissionId) => {
+      calls.push({ agentId, revision, message, submissionId });
+      return { ...trialRun, submission_id: submissionId };
+    },
+  }));
+  await controller.loadProfiles();
+
+  await controller.runActiveProfileTest("  Review this request  ");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.agentId, "agt_document_review");
+  assert.equal(calls[0]?.revision, 9);
+  assert.equal(calls[0]?.message, "Review this request");
+  assert.match(
+    calls[0]?.submissionId ?? "",
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  assert.equal(controller.state.mutation.phase, "success");
+  if (controller.state.mutation.phase === "success") {
+    assert.equal(controller.state.mutation.action, "test");
+    assert.deepEqual(controller.state.mutation.trialRun, {
+      ...trialRun,
+      submission_id: calls[0]?.submissionId,
+    });
+  }
 });

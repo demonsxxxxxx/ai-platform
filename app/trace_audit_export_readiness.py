@@ -50,7 +50,7 @@ _EXPORT_CONTRACT = {
 _OPEN_GAPS = [
     "trace_audit_export_runtime_acceptance",
     "trace_audit_export_dashboard_acceptance",
-    "trace_audit_export_211_acceptance",
+    "trace_audit_export_controlled_host_acceptance",
 ]
 
 

@@ -61,7 +61,7 @@ authority requires explicit re-charter.
 ## Release Lifecycle
 
 - Read-only release readiness must pass for the exact release subject under
-  `docs/operations/211-release-operations-runbook.md` before granting mutation
+  `docs/operations/release-operations-runbook.md` before granting mutation
   authority. Missing, stale, or blocked evidence keeps the release blocked.
 - After readiness passes, use exactly one project-bound persistent release task
   and one mutation lease. Do not run a second release attempt or mutate the host

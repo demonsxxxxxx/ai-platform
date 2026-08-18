@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildCheckpointForkUrl,
-  buildMessageCheckpointUrl,
   buildMessageForkUrl,
   buildRunCancelUrl,
   buildRunControlOperationUrl,
@@ -14,12 +12,25 @@ import {
   buildSessionRunsUrl,
   buildChatSubmissionUrl,
   buildChatSubmissionRetryAdmissionUrl,
+  buildAgentAppRunBody,
+  buildAgentAppRunUrl,
   buildSubmitChatUrl,
   buildSubmitChatBody,
   isChatStreamNeedsConfirmation,
   resolveChatSessionAgentId,
   sessionApi,
 } from "../session.ts";
+
+const defaultEnterpriseProjection = {
+  welcome_message: "",
+  starter_prompts: [] as string[],
+  capability_summary: "",
+  recommended_tasks: [] as string[],
+  supported_input_types: ["text", "file"] as ["text", "file"],
+  expected_outputs: [] as string[],
+  permissions_and_data_access_notice: "",
+  published_at: null,
+};
 
 test("builds the active session list URL with pagination", () => {
   assert.equal(
@@ -61,6 +72,7 @@ test("preserves legacy session get while adding safe authoritative recovery", as
         agent_id: "agt_support",
         title: "支持助手",
         agent_conversation: {
+          ...defaultEnterpriseProjection,
           agent_id: "agt_support",
           revision: 7,
           name: "支持助手",
@@ -81,11 +93,13 @@ test("preserves legacy session get while adding safe authoritative recovery", as
     const authoritative = await sessionApi.getAuthoritative("session-agent");
     assert.equal(legacy?.id, "session-agent");
     assert.deepEqual(authoritative.agent_conversation, {
+      ...defaultEnterpriseProjection,
       agent_id: "agt_support",
       revision: 7,
       name: "支持助手",
       description: "处理已授权的支持请求。",
       avatar_ref: "builtin:assistant",
+      avatar_seed: "agt_support",
       category: "support",
     });
     assert.equal("selected_skill" in authoritative.agent_conversation!, false);
@@ -390,6 +404,116 @@ test("submits only the exact published Agent profile lock", () => {
   assert.equal("mcp_tool_ids" in body, false);
 });
 
+test("builds the selector-free Agent App run URL and deduplicated file body", () => {
+  const attachment = {
+    id: "client-upload-8bd6fe68-4c41-4577-a4b6-60c3ec36b75a",
+    key: "file-a",
+    name: "source.pdf",
+    type: "document" as const,
+    mimeType: "application/pdf",
+    size: 42,
+    url: "/private/source.pdf",
+  };
+
+  assert.equal(
+    buildAgentAppRunUrl("agent/with space", "session/with space"),
+    "/api/ai/agent-apps/agent%2Fwith%20space/conversations/session%2Fwith%20space/runs",
+  );
+  assert.deepEqual(
+    buildAgentAppRunBody({
+      message: "Review this",
+      attachments: [attachment, attachment],
+      submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      userTimezone: "Asia/Shanghai",
+    }),
+    {
+      message: "Review this",
+      submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      file_ids: ["file-a"],
+      user_timezone: "Asia/Shanghai",
+    },
+  );
+});
+
+test("omits unfinished Agent App attachments without a server file id", () => {
+  assert.deepEqual(
+    buildAgentAppRunBody({
+      message: "Review this",
+      attachments: [
+        {
+          id: "client-upload-pending",
+          key: "",
+          name: "pending.pdf",
+          type: "document",
+          mimeType: "application/pdf",
+          size: 42,
+          isUploading: true,
+        },
+      ],
+      submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    }),
+    {
+      message: "Review this",
+      submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      file_ids: [],
+    },
+  );
+});
+
+test("pinned Agent conversations submit only through the dedicated selector-free transport", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    return new Response(JSON.stringify({
+      session_id: "session-agent",
+      run_id: "run-agent",
+      trace_id: "trace-agent",
+      status: "queued",
+    }));
+  }) as typeof fetch;
+
+  try {
+    await sessionApi.submitChat(
+      "Review this",
+      "session-agent",
+      { model_id: "client-override" },
+      [],
+      ["client-disabled-skill"],
+      ["client-disabled-mcp"],
+      { skill_id: "client-skill", expected_version: "client-version" },
+      "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      "general-agent",
+      ["client-mcp"],
+      { agent_id: "agt_support", expected_revision: 7 },
+    );
+
+    assert.equal(
+      calls[0]?.url,
+      "/api/ai/agent-apps/agt_support/conversations/session-agent/runs",
+    );
+    assert.equal(calls[0]?.body.message, "Review this");
+    assert.equal(calls[0]?.body.submission_id, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
+    assert.deepEqual(calls[0]?.body.file_ids, []);
+    for (const forbidden of [
+      "agent_options",
+      "selected_agent_profile",
+      "selected_skill",
+      "selected_mcp_tool_ids",
+      "disabled_skills",
+      "disabled_mcp_tools",
+      "expected_revision",
+    ]) {
+      assert.equal(forbidden in calls[0]!.body, false);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("detects chat stream confirmation responses without a run id", () => {
   assert.equal(
     isChatStreamNeedsConfirmation({
@@ -448,19 +572,5 @@ test("builds the message fork url", () => {
   assert.equal(
     buildMessageForkUrl("session-1", "message-1"),
     "/api/sessions/session-1/messages/message-1/fork",
-  );
-});
-
-test("builds the message checkpoint url", () => {
-  assert.equal(
-    buildMessageCheckpointUrl("session-1", "message-1"),
-    "/api/sessions/session-1/messages/message-1/checkpoints",
-  );
-});
-
-test("builds the checkpoint fork url", () => {
-  assert.equal(
-    buildCheckpointForkUrl("session-1", "checkpoint-1"),
-    "/api/sessions/session-1/checkpoints/checkpoint-1/fork",
   );
 });

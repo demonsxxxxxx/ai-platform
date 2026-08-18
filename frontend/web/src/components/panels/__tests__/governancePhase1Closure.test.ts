@@ -62,7 +62,6 @@ test("skills and marketplace remain catalog shells when backend enablement is un
 test("marketplace no longer renders ordinary-user unavailable placeholders", () => {
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.doesNotMatch(marketplace, /data-marketplace-ordinary-user-copy/);
   assert.doesNotMatch(marketplace, /marketplacePlaceholderItems/);
@@ -72,9 +71,6 @@ test("marketplace no longer renders ordinary-user unavailable placeholders", () 
     JSON.stringify(zh.marketplace),
     JSON.stringify(zh.skillsHub),
     JSON.stringify(zh.skills.marketplace),
-    JSON.stringify(en.marketplace),
-    JSON.stringify(en.skillsHub),
-    JSON.stringify(en.skills.marketplace),
   ]) {
     assert.doesNotMatch(source, /backend authority/i);
     assert.doesNotMatch(source, /policy placeholders/i);
@@ -104,11 +100,12 @@ test("mcp lifecycle governance exposes the backed admin lifecycle within role bo
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   assert.match(mcp, /data-phase1c-surface="mcp"/);
-  assert.match(mcp, /data-fail-closed-surface="mcp-lifecycle"/);
   assert.match(mcp, /lifecycleAvailability/);
-  assert.match(mcp, /mcp\.admin\.credentialsSummary/);
   assert.match(mcp, /mcp\.lifecycleGovernance/);
-  assert.match(mcp, /mcp\.credentialsGovernance/);
+  assert.doesNotMatch(mcp, /data-mcp-summary-status/);
+  assert.doesNotMatch(mcp, /summaryGridFour/);
+  assert.doesNotMatch(mcp, /mcp\.admin\.credentialsSummary/);
+  assert.doesNotMatch(mcp, /mcp\.credentialsGovernance/);
   assert.doesNotMatch(mcp, /mcp\.credentialsUnavailable/);
   assert.doesNotMatch(mcp, /mcp\.lifecycleUnavailable/);
   assert.match(mcp, /data-mcp-directory-shell/);
@@ -331,7 +328,7 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillsList, /canEditSkills/);
   assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /canManageSkills/);
-  assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canBatchSkills && selectableNames\.length > 0 &&/);
   assert.match(skillsList, /\{canImportSkills && \(/);
   assert.doesNotMatch(skillsList, /canCreateSkills|onCreate/);
   assert.doesNotMatch(
@@ -403,7 +400,7 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillsPanel, /skillFileWriteBacked = true/);
   assert.match(skillsPanel, /skillImportBacked = true/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
-  assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canBatchSkills && selectableNames\.length > 0 &&/);
   assert.match(
     skillsActions,
     /initialZipSkillSelection\(result\.skills, canAdminUploadSkills\)/,
@@ -468,7 +465,6 @@ test("role plaza stays reachable without claiming missing backend projection", (
   const rolesPanel = read("src/components/panels/RolesPanel.tsx");
   const roleGovernanceApi = read("src/services/api/roleGovernance.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(rolesPanel, /data-role-plaza-shell/);
   assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
@@ -476,7 +472,6 @@ test("role plaza stays reachable without claiming missing backend projection", (
   for (const source of [
     rolesPanel,
     JSON.stringify(zh.roles?.plaza ?? {}),
-    JSON.stringify(en.roles?.plaza ?? {}),
   ]) {
     assert.doesNotMatch(source, /backendGap/);
     assert.doesNotMatch(source, /public projection/i);

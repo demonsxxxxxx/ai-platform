@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate verification for the ai-platform + LambChat POC on 211.
+"""Aggregate verification for the ai-platform + LambChat POC on a controlled host.
 
 The script is intentionally evidence-oriented. It does not claim completion when
 the real company-login audit gate is missing.
@@ -21,14 +21,19 @@ from urllib import error, request
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.public_context_keys import public_context_input_key_findings, safe_public_context_pack_version
+from app.public_context_keys import (
+    CONTEXT_FORBIDDEN_PROJECTION_MARKERS,
+    public_context_input_key_findings,
+    safe_public_context_pack_version,
+)
 from app.validation import assert_safe_id
 
 
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
 DEFAULT_API_URL = "http://127.0.0.1:8020"
-DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/frontend-pr111-smoke/dist"
-DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FRONTEND_DIST = str(REPOSITORY_ROOT / "frontend/web/dist")
+DEFAULT_DEPLOY_ENV = str(REPOSITORY_ROOT / "deploy/ai-platform/.env")
 DEFAULT_API_CONTAINER = "ai-platform-api"
 DEFAULT_WORKER_CONTAINER = "ai-platform-worker"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
@@ -85,19 +90,6 @@ CONTEXT_RAW_MATERIAL_ID_KEYS = frozenset(
         "included_artifact_ids",
         "included_memory_record_ids",
     }
-)
-CONTEXT_FORBIDDEN_PROJECTION_MARKERS = (
-    "executor_private_payload",
-    "executor_payload",
-    "runtime_private_payload",
-    "private_payload",
-    "raw_storage_key",
-    "storage_key",
-    "sandbox_workdir",
-    "/tmp/",
-    "/home/",
-    "/var/lib/ai-platform",
-    "tenants/default",
 )
 CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIASES = frozenset(
     {
@@ -1320,14 +1312,14 @@ group by r.id;
 
 
 def sample_docx_bytes() -> tuple[str, bytes] | None:
-    candidates = [
-        Path("/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/.venv/lib/python3.12/site-packages/docx/templates/default.docx"),
-        Path("/home/xinlin.jiang/ai-platform-phaseb/tmp-smoke-translate.docx"),
-        Path("/home/xinlin.jiang/ai-platform-phaseb/review-artifact-download-20260523.docx"),
-    ]
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate.name, candidate.read_bytes()
+    try:
+        import docx
+    except ImportError:
+        return None
+    package_file = Path(docx.__file__) if docx.__file__ else None
+    candidate = package_file.parent / "templates" / "default.docx" if package_file else None
+    if candidate is not None and candidate.is_file():
+        return candidate.name, candidate.read_bytes()
     return None
 
 
@@ -1440,7 +1432,7 @@ group by r.id;
             "storage_key",
             "tenants/default",
             "/tmp/",
-            "/home/xinlin.jiang",
+            "/" "home/",
             "/var/lib/ai-platform",
             "private_payload",
             "runtime_private_payload",
@@ -1521,14 +1513,12 @@ group by r.id;
     )
 
 
-def check_auth_audit(container: str, db_user: str, db_name: str, allow_missing: bool) -> Gate:
+def check_auth_audit(container: str, db_user: str, db_name: str) -> Gate:
     sql = """
 select json_build_object(
   'count', count(*),
   'ordinary_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = false),
-  'admin_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = true),
-  'latest_user_id', (array_agg(user_id order by created_at desc))[1],
-  'latest_payload', (array_agg(payload_json order by created_at desc))[1]
+  'admin_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = true)
 )::text
 from audit_logs
 where action = 'auth.login'
@@ -1538,30 +1528,16 @@ where action = 'auth.login'
   and payload_json ? 'is_admin';
 """
     rows = psql_rows(container, db_user, db_name, sql)
-    evidence = rows[0] if rows else {"count": 0}
-    raw_sql = """
-select json_build_object(
-  'all_auth_login_count', count(*),
-  'latest_any_user_id', (array_agg(user_id order by created_at desc))[1],
-  'latest_any_payload', (array_agg(payload_json order by created_at desc))[1]
-)::text
-from audit_logs
-where action = 'auth.login';
-"""
-    raw_rows = psql_rows(container, db_user, db_name, raw_sql)
-    if raw_rows:
-        evidence.update(raw_rows[0])
-    count = int(evidence.get("count") or 0)
-    ordinary_user_count = int(evidence.get("ordinary_user_count") or 0)
-    admin_user_count = int(evidence.get("admin_user_count") or 0)
-    payload = evidence.get("latest_payload") if isinstance(evidence.get("latest_payload"), dict) else {}
-    ok = (
-        count > 0
-        and ordinary_user_count > 0
-        and admin_user_count > 0
-        and payload.get("source") == "company-login"
-        and bool(payload.get("work_id"))
-    )
+    row = rows[0] if rows else {}
+    count = int(row.get("count") or 0)
+    ordinary_user_count = int(row.get("ordinary_user_count") or 0)
+    admin_user_count = int(row.get("admin_user_count") or 0)
+    evidence = {
+        "count": count,
+        "ordinary_user_count": ordinary_user_count,
+        "admin_user_count": admin_user_count,
+    }
+    ok = count > 0 and ordinary_user_count > 0 and admin_user_count > 0
     missing_requirements = []
     if ordinary_user_count <= 0:
         missing_requirements.append("ordinary_company_login_audit")
@@ -1569,9 +1545,6 @@ where action = 'auth.login';
         missing_requirements.append("admin_company_login_audit")
     if missing_requirements:
         evidence["missing_requirements"] = missing_requirements
-    if allow_missing and not ok:
-        evidence["allowed_missing_for_partial_gate"] = True
-        ok = True
     return Gate("company_login_audit", ok, evidence)
 
 
@@ -1586,7 +1559,6 @@ def main() -> int:
     parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
-    parser.add_argument("--allow-missing-auth-audit", action="store_true")
     parser.add_argument("--upload-run-wait-seconds", type=int, default=45)
     parser.add_argument("--word-review-run-wait-seconds", type=int, default=90)
     args = parser.parse_args()
@@ -1639,7 +1611,7 @@ def main() -> int:
             bool(word_review_gate.evidence.get("context_snapshot_public_projection", {}).get("ok")),
             word_review_gate.evidence.get("context_snapshot_public_projection", {}),
         ),
-        check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db, args.allow_missing_auth_audit),
+        check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db),
     ]
     result = {
         "ok": all(gate.ok for gate in gates),

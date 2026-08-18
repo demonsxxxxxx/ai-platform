@@ -7,7 +7,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import agent_conversation_repository, repositories
-from app.agent_profiles import get_public_profile
 from app.auth import AuthPrincipal, require_principal
 from app.chat_session_projection import session_response
 from app.db import transaction
@@ -112,9 +111,8 @@ async def list_sessions(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     boundary = _decode_session_cursor(cursor) if cursor is not None else None
     async with transaction() as conn:
-        # Immutable N history remains readable after N+1, but a withdrawn or
-        # unpublished current Agent must still fail closed at the API boundary.
-        await get_public_profile(conn, principal=principal, agent_id=safe_agent_id)
+        # Historical reads are authorized by session ownership and immutable
+        # profile pins. Current publication only gates new conversations/runs.
         rows = await agent_conversation_repository.list_authorized_agent_conversations(
             conn,
             tenant_id=principal.tenant_id,

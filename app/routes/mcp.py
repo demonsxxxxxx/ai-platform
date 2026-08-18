@@ -339,44 +339,6 @@ def _server_read_response(
     return _ordinary_server_response(row, distribution=distribution)
 
 
-def _legacy_server_response(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    updated_at = next((row.get("updated_at") for row in rows if row.get("updated_at") is not None), None)
-    return {
-        "name": name,
-        "transport": "streamable_http",
-        "enabled": _server_enabled(rows),
-        "is_system": True,
-        "can_edit": False,
-        "allowed_roles": ["user"],
-        "allowed_departments": [],
-        "role_quotas": {},
-        "credential_state": "platform_managed",
-        "credential_metadata": {},
-        "created_at": None,
-        "updated_at": updated_at,
-        "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
-    }
-
-
-async def _server_rows(principal: AuthPrincipal, *, include_disabled: bool = True) -> list[dict[str, Any]]:
-    async with transaction() as conn:
-        rows = await repositories.list_tenant_mcp_server_registry(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=include_disabled,
-        )
-    return [dict(row) for row in rows]
-
-
-async def _server_names(principal: AuthPrincipal) -> set[str]:
-    async with transaction() as conn:
-        names = await repositories.list_mcp_server_registry_names(
-            conn,
-            tenant_id=principal.tenant_id,
-        )
-    return {str(name) for name in names if str(name)}
-
-
 async def _tool_rows(principal: AuthPrincipal, *, include_disabled: bool = True) -> list[dict[str, Any]]:
     async with transaction() as conn:
         rows = await repositories.list_workbench_mcp_tools(
@@ -389,10 +351,6 @@ async def _tool_rows(principal: AuthPrincipal, *, include_disabled: bool = True)
 
 def _server_name(row: dict[str, Any]) -> str:
     return str(row.get("server_id") or row.get("name") or row.get("tool_id") or row.get("id") or "")
-
-
-def _server_enabled(rows: list[dict[str, Any]]) -> bool:
-    return any(str(row.get("effective_status") or row.get("status") or "") == "active" for row in rows)
 
 
 def _group_by_server(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -418,12 +376,6 @@ def _find_registry_server(rows: list[dict[str, Any]], *, name: str) -> dict[str,
         if row.get("name") == name:
             return row
     raise HTTPException(status_code=404, detail="mcp_server_not_found")
-
-
-async def _legacy_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
-    rows = await _tool_rows(principal, include_disabled=True)
-    grouped = _group_by_server(rows)
-    return [_legacy_server_response(name, grouped[name]) for name in sorted(grouped)]
 
 
 def _capability_access_context(principal: AuthPrincipal) -> CapabilityAccessContext:

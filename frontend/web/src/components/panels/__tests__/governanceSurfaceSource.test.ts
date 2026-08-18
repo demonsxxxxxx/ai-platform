@@ -5,7 +5,7 @@ import test from "node:test";
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
 
 const root = process.cwd();
-const shippedLocales = ["en", "zh", "ja", "ko", "ru"] as const;
+const shippedLocales = ["zh"] as const;
 
 function locale(localeName: (typeof shippedLocales)[number]) {
   return JSON.parse(
@@ -29,15 +29,17 @@ test("skills hub exposes governed catalog status without composer help copy", ()
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
   );
-  assert.match(source, /GovernanceAvailabilityBadge/);
-  assert.match(source, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
+  assert.doesNotMatch(source, /GovernanceAvailabilityBadge/);
+  assert.doesNotMatch(source, /data-skills-catalog-status/);
+  assert.doesNotMatch(source, /data-skills-hub-state-detail/);
   assert.doesNotMatch(source, /skillsHub\.composerEntry/);
   assert.doesNotMatch(source, /data-skills-hub-composer-entry/);
   assert.match(source, /marketplace:\s*"\/marketplace"/);
   assert.match(source, /data-auth-projection-has-permission/);
   assert.match(source, /onCatalogStateChange/);
   assert.match(source, /isAiAdminUser\(user\)/);
-  assert.match(source, /AvailableSkillsPanel/);
+  assert.match(source, /<SkillsPanel[\s\S]*allAuthorizedCatalog/);
+  assert.doesNotMatch(source, /AvailableSkillsPanel/);
 
   const ordinarySkills = readFileSync(
     join(root, "src/components/panels/AvailableSkillsPanel.tsx"),
@@ -66,10 +68,10 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     join(root, "src/components/panels/OrdinaryMcpCatalog.tsx"),
     "utf8",
   );
-  assert.match(source, /GovernanceAvailabilityBadge/);
-  assert.match(source, /mcp\.permissionMode/);
   assert.match(source, /mcp\.lifecycleGovernance/);
-  assert.match(source, /mcp\.credentialsGovernance/);
+  assert.doesNotMatch(source, /GovernanceAvailabilityBadge/);
+  assert.doesNotMatch(source, /mcp\.permissionMode/);
+  assert.doesNotMatch(source, /mcp\.credentialsGovernance/);
   assert.doesNotMatch(source, /mcp\.lifecycleUnavailable/);
   assert.doesNotMatch(source, /mcp\.credentialsUnavailable/);
   assert.match(source, /roleQuotaCount/);
@@ -86,16 +88,11 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.match(source, /if \(!isAiAdmin\)/);
   assert.match(source, /allAuthorizedCatalog: !isAiAdmin/);
   assert.match(source, /OrdinaryMcpCatalog/);
-  assert.match(source, /data-mcp-summary-status/);
-  assert.equal(
-    (source.match(/<GovernanceAvailabilityBadge/g) ?? []).length,
-    1,
-    "MCP panel keeps one authoritative status badge",
-  );
-  assert.match(source, /mcp\.admin\.directorySummary/);
-  assert.match(source, /mcp\.admin\.permissionSummary/);
-  assert.match(source, /mcp\.admin\.lifecycleSummary/);
-  assert.match(source, /mcp\.admin\.credentialsSummary/);
+  assert.doesNotMatch(source, /data-mcp-summary-status/);
+  assert.doesNotMatch(source, /mcp\.admin\.directorySummary/);
+  assert.doesNotMatch(source, /mcp\.admin\.permissionSummary/);
+  assert.doesNotMatch(source, /mcp\.admin\.lifecycleSummary/);
+  assert.doesNotMatch(source, /mcp\.admin\.credentialsSummary/);
   assert.match(source, /mcp\.card\.statusLabel/);
   assert.match(source, /mcp\.card\.statusEnabled/);
   assert.match(source, /mcp\.card\.statusDisabled/);
@@ -141,7 +138,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   );
 });
 
-test("mcp governance copy exists across shipped workbench locales", () => {
+test("mcp governance copy exists in the shipped Chinese catalog", () => {
   for (const localeName of shippedLocales) {
     const mcp = locale(localeName).mcp;
     assert.equal(
@@ -175,10 +172,8 @@ test("mcp governance copy exists across shipped workbench locales", () => {
       `${localeName} missing mcp.credentialsGovernance.description`,
     );
   }
-  assert.equal(typeof locale("en").mcp.form.removeRole, "string");
   assert.equal(typeof locale("zh").mcp.form.removeRole, "string");
   assert.equal(locale("zh").mcp.available.empty, "暂无可用工具");
-  assert.equal(locale("en").mcp.available.empty, "No tools available");
 });
 
 test("share dialog fails closed until ai-platform share ACL projection exists", () => {
@@ -198,7 +193,10 @@ test("tool selector cannot toggle system disabled MCP tools", () => {
     "utf8",
   );
   assert.match(source, /handleToolToggle/);
-  assert.match(source, /if\s*\(tool\.system_disabled\)\s*return/);
+  assert.match(
+    source,
+    /if\s*\(!catalogAllowsSelection \|\| tool\.system_disabled\)\s*return/,
+  );
   assert.match(source, /aria-disabled=\{tool\.system_disabled/);
   assert.doesNotMatch(source, /onClick=\{\(\) => onToggleTool\(tool\.name\)\}/);
 });

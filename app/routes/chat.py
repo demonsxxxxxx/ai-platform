@@ -1,6 +1,11 @@
+import base64
+import binascii
 import hashlib
+import json
 import logging
-from typing import Any
+import re
+from datetime import datetime
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -10,7 +15,7 @@ from fastapi.exception_handlers import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse
 
 from app import repositories
 from app.agent_profiles import (
@@ -18,6 +23,7 @@ from app.agent_profiles import (
     resolve_bound_profile_for_submission,
     resolve_profile_for_admission,
 )
+from app.agent_apps.api import pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -25,7 +31,16 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
-from app.control_plane_contracts import sanitize_public_text, standard_trace_id
+from app.context.file_continuity import select_authorized_run_file_snapshot
+from app.control_plane_contracts import (
+    HARNESS_CHAT_EXECUTOR_TYPE,
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
+    RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    sanitize_public_text,
+    standard_trace_id,
+)
 from app.db import transaction
 from app.intent_router import (
     FileSummary,
@@ -75,7 +90,6 @@ from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.required_tool_contract import (
     attach_required_tool_declaration,
-    declaration_from_input,
     public_required_tool_detail,
 )
 from app.run_admission_policy import (
@@ -92,6 +106,7 @@ from app.skills.pinning import (
     build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
+    validate_skill_manifest_refs,
 )
 from app.skills.registry import BuiltinSkillRegistry
 from app.skills.release_policy import (
@@ -101,13 +116,97 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+
+
 logger = logging.getLogger(__name__)
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
 _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
+_CHAT_SUBMISSION_INTERNAL_ERROR_CODE = "chat_submission_internal_error"
+_QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
 _SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
+_SAFE_SUBMISSION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_MESSAGE_CURSOR_VERSION = 1
+
+
+def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
+    return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
+
+
+def _new_submission_diagnostic_id() -> str:
+    return f"diag_{uuid4().hex[:16]}"
+
+
+def _log_safe_submission_exception(
+    *,
+    phase: str,
+    diagnostic_id: str,
+    exc: BaseException,
+) -> None:
+    frames: list[str] = []
+    traceback_cursor = exc.__traceback__
+    while traceback_cursor is not None:
+        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
+        if module_name == "app" or module_name.startswith("app."):
+            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
+        traceback_cursor = traceback_cursor.tb_next
+    logger.error(
+        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
+        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
+    )
+
+
+def _submission_error_detail(
+    *,
+    code: str,
+    rejected_before_persist: bool,
+    diagnostic_id: str | None = None,
+) -> dict[str, str]:
+    detail = {"code": _safe_submission_code(code)}
+    if rejected_before_persist:
+        detail["submission_disposition"] = "rejected_before_persist"
+    if diagnostic_id is not None:
+        detail["diagnostic_id"] = diagnostic_id
+    return detail
+
+
+def _encode_message_cursor(row: dict[str, Any], *, session_id: str) -> str:
+    created_at = row.get("created_at")
+    if isinstance(created_at, datetime):
+        created_at = created_at.isoformat()
+    if not isinstance(created_at, str) or not created_at:
+        raise ValueError("message_cursor_invalid")
+    payload = {
+        "v": _MESSAGE_CURSOR_VERSION,
+        "session_id": session_id,
+        "created_at": created_at,
+        "message_id": str(row.get("id") or ""),
+    }
+    if not payload["message_id"]:
+        raise ValueError("message_cursor_invalid")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_message_cursor(value: str, *, session_id: str) -> tuple[datetime, str]:
+    try:
+        padding = "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(f"{value}{padding}").decode("utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != _MESSAGE_CURSOR_VERSION
+            or payload.get("session_id") != session_id
+        ):
+            raise ValueError
+        created_at = datetime.fromisoformat(str(payload["created_at"]).replace("Z", "+00:00"))
+        message_id = str(payload["message_id"])
+        if created_at.tzinfo is None or not message_id or len(message_id) > 200:
+            raise ValueError
+        return created_at, message_id
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="message_cursor_invalid") from exc
 
 
 class _ChatSubmissionNoStoreRoute(APIRoute):
@@ -123,23 +222,40 @@ class _ChatSubmissionNoStoreRoute(APIRoute):
                 response = await http_exception_handler(request, exc)
             except RequestValidationError as exc:
                 response = await request_validation_exception_handler(request, exc)
-            except Exception:
-                logger.exception("chat submission resolver failed unexpectedly")
-                response = PlainTextResponse("Internal Server Error", status_code=500)
+            except Exception as exc:
+                diagnostic_id = _new_submission_diagnostic_id()
+                _log_safe_submission_exception(
+                    phase="resolver",
+                    diagnostic_id=diagnostic_id,
+                    exc=exc,
+                )
+                detail = _submission_error_detail(
+                    code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                    rejected_before_persist=False,
+                    diagnostic_id=diagnostic_id,
+                )
+                response = JSONResponse({"detail": detail}, status_code=500)
             response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
             return response
 
         return no_store_handler
 
 
-def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException:
+def _chat_submission_http_error(
+    *,
+    status_code: int,
+    code: str,
+    diagnostic_id: str | None = None,
+) -> HTTPException:
     """Return the sole server-controlled pre-persistence rejection signal."""
 
-    detail = {
-        "code": code,
-        "submission_disposition": "rejected_before_persist",
-    }
-    if code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE:
+    safe_code = _safe_submission_code(code)
+    detail = _submission_error_detail(
+        code=safe_code,
+        rejected_before_persist=True,
+        diagnostic_id=diagnostic_id,
+    )
+    if safe_code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE:
         detail.update(public_required_tool_detail("unavailable"))
     return HTTPException(
         status_code=status_code,
@@ -149,11 +265,11 @@ def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException
 
 def _submission_code(detail: object, fallback: str = "chat_submission_rejected") -> str:
     if isinstance(detail, dict) and isinstance(detail.get("code"), str):
-        return str(detail["code"])
+        return _safe_submission_code(detail["code"], fallback)
     if isinstance(detail, dict) and detail.get("detail_code") in _SAFE_SUBMISSION_DETAIL_CODES:
-        return str(detail["detail_code"])
-    if isinstance(detail, str) and detail:
-        return detail
+        return _safe_submission_code(detail["detail_code"], fallback)
+    if isinstance(detail, str):
+        return _safe_submission_code(detail, fallback)
     return fallback
 
 
@@ -203,6 +319,31 @@ def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResp
             submission_id=str(row["submission_id"]),
         )
     raise HTTPException(status_code=409, detail="chat_submission_unresolved")
+
+
+def _existing_chat_submission_response(
+    row: dict[str, Any],
+    *,
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    query_agent_id: str | None,
+    request_fingerprint: str,
+) -> ChatStreamResponse:
+    """Resolve an existing claim identically for generic and Agent submissions."""
+
+    if _is_preledger_recovery_tombstone(row, principal=principal):
+        return _chat_stream_response_from_submission(row)
+    claimed_fingerprint = request_fingerprint
+    if row.get("state") == "rejected_before_persist":
+        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code=str(row.get("rejection_code") or "chat_submission_rejected"),
+        )
+    if row.get("request_fingerprint_sha256") != claimed_fingerprint:
+        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+    return _chat_stream_response_from_submission(row)
 
 
 def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
@@ -397,30 +538,6 @@ async def _persist_pre_persistence_rejection(
             )
 
 
-async def _load_existing_chat_submission(
-    *,
-    principal: AuthPrincipal,
-    submission_id: str | None,
-    request_fingerprint: str | None,
-) -> ChatStreamResponse | None:
-    if submission_id is None or request_fingerprint is None:
-        return None
-    async with transaction() as conn:
-        existing = await repositories.get_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=submission_id,
-        )
-    if existing is None:
-        return None
-    if _is_preledger_recovery_tombstone(existing, principal=principal):
-        return _chat_stream_response_from_submission(existing)
-    if existing.get("request_fingerprint_sha256") != request_fingerprint:
-        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-    return _chat_stream_response_from_submission(existing)
-
-
 async def _admit_chat_submission(
     *,
     principal: AuthPrincipal,
@@ -528,7 +645,12 @@ async def _admit_chat_submission(
                 "session_id": str(run["session_id"]),
                 "run_id": run_id,
                 "agent_id": str(run["agent_id"]),
-                "skill_id": str(run["skill_id"]),
+                "execution_kind": str(
+                    run.get("execution_kind") or RUN_EXECUTION_KIND_SKILL
+                ),
+                "skill_id": (
+                    str(run["skill_id"]) if run.get("skill_id") is not None else None
+                ),
                 **execution_snapshot,
             }
         )
@@ -813,7 +935,9 @@ def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_i
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return QueueRunPayload.model_validate(payload).model_dump(mode="json")
+        validated = QueueRunPayload.model_validate(payload)
+        validate_skill_manifest_refs(validated.skill_manifests)
+        return validated.model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
 
@@ -928,8 +1052,10 @@ def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | N
     raw_model_id = agent_options.get("model_id")
     if raw_model_id is None:
         return None
+    if not isinstance(raw_model_id, str):
+        raise HTTPException(status_code=400, detail="model_id_not_available")
     try:
-        return resolve_model_selection(str(raw_model_id), get_settings())
+        return resolve_model_selection(raw_model_id, get_settings())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="model_id_not_available") from exc
 
@@ -1120,7 +1246,7 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
         "reason": "请求指定了通用聊天能力",
         "selected_capability": "general_chat",
         "agent_id": agent_id,
-        "skill_id": skill_id or "general-chat",
+        "skill_id": skill_id,
         "confirmed_by_user": True,
         "suggestions": [],
     }
@@ -1197,6 +1323,8 @@ async def create_chat_session(
 @router.get("/chat/sessions/{session_id}/messages", response_model=ChatMessagesResponse)
 async def list_messages(
     session_id: str,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=1000)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatMessagesResponse:
     async with transaction() as conn:
@@ -1208,12 +1336,16 @@ async def list_messages(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        rows = await repositories.list_authorized_messages(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-        )
+        boundary = _decode_message_cursor(cursor, session_id=session_id) if cursor is not None else None
+        message_query: dict[str, Any] = {
+            "tenant_id": principal.tenant_id,
+            "user_id": principal.user_id,
+            "session_id": session_id,
+        }
+        if boundary is not None or limit != 100:
+            message_query.update({"cursor": boundary, "limit": limit + 1})
+        rows = await repositories.list_authorized_messages(conn, **message_query)
+    page = rows[:limit]
     return ChatMessagesResponse(
         messages=[
             ChatMessageResponse(
@@ -1225,8 +1357,9 @@ async def list_messages(
                 metadata=_message_metadata(row, principal),
                 created_at=row.get("created_at"),
             )
-            for row in rows
-        ]
+            for row in page
+        ],
+        next_cursor=_encode_message_cursor(page[-1], session_id=session_id) if len(rows) > limit and page else None,
     )
 
 
@@ -1351,7 +1484,7 @@ async def chat_stream(
         raise
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
-    resolved_file_ids = _file_ids_from_request(request)
+    requested_file_ids = _file_ids_from_request(request)
     if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
         await _persist_pre_persistence_rejection(
@@ -1372,7 +1505,6 @@ async def chat_stream(
             redact_public=not is_ai_admin(principal),
         )
         run_input = attach_required_tool_declaration(run_input)
-        required_tool_declaration = declaration_from_input(run_input)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
@@ -1393,8 +1525,29 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
-    selected_skill_for_execution = request.selected_skill if skill_selector_allowed else None
-    selected_mcp_tool_ids_for_execution = request.selected_mcp_tool_ids if allowed else None
+    selected_skill_for_execution = (
+        request.selected_skill if skill_selector_allowed else None
+    )
+    selected_mcp_tool_ids_for_execution = (
+        request.selected_mcp_tool_ids if allowed else None
+    )
+    if (
+        selected_skill_for_execution is not None
+        and selected_skill_for_execution.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
+    ) or requested_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+        code = "general_chat_is_not_a_skill"
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request=request,
+            query_agent_id=query_agent_id,
+            workspace_id=request.workspace_id,
+            session_id=request.session_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=400, code=code)
+        raise HTTPException(status_code=400, detail=code)
     if not allowed and selected_skill_for_execution is None:
         requested_agent_id, requested_skill_id = "general-agent", None
     if selected_skill_for_execution is not None:
@@ -1631,7 +1784,11 @@ async def chat_stream(
             if submission_id is not None:
                 request_fingerprint = resolved_request_fingerprint
 
-            if submission_id is not None and request_fingerprint is not None:
+            if (
+                admitted_agent_profile is None
+                and submission_id is not None
+                and request_fingerprint is not None
+            ):
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1641,25 +1798,13 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
-                    if _is_preledger_recovery_tombstone(
+                    return _existing_chat_submission_response(
                         claimed_submission,
+                        request=request,
                         principal=principal,
-                    ):
-                        return _chat_stream_response_from_submission(claimed_submission)
-                    claimed_fingerprint = request_fingerprint
-                    if claimed_submission.get("state") == "rejected_before_persist":
-                        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-                            request=request,
-                            principal=principal,
-                            query_agent_id=query_agent_id,
-                            code=str(
-                                claimed_submission.get("rejection_code")
-                                or "chat_submission_rejected"
-                            ),
-                        )
-                    if claimed_submission.get("request_fingerprint_sha256") != claimed_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
 
             if preserve_continuation_skill and admitted_agent_profile is None:
                 continuation_prior_runs = await repositories.list_authorized_session_runs(
@@ -1677,7 +1822,11 @@ async def chat_stream(
                     )
                     or ""
                 ).strip()
-                requested_skill_id = prior_skill_id or None
+                requested_skill_id = (
+                    None
+                    if prior_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                    else prior_skill_id or None
+                )
 
             explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
             is_terminal_implicit_decision = False
@@ -1754,24 +1903,58 @@ async def chat_stream(
                         )
                     return confirmation_response
                 resolved_agent_id = str(decision.agent_id)
-                resolved_skill_id = str(decision.skill_id)
+                resolved_skill_id = decision.skill_id
             else:
                 decision_payload = explicit_payload
                 resolved_agent_id = str(decision_payload["agent_id"])
-                resolved_skill_id = str(decision_payload["skill_id"])
-            authorization_input = run_input
-            authorization_kwargs = {
-                "tenant_id": principal.tenant_id,
-                "agent_id": resolved_agent_id,
-                "skill_id": resolved_skill_id,
-                "normalized_input": authorization_input,
-                "principal_department_id": principal.department_id,
-                "principal_roles": principal.roles,
-                "is_admin": is_ai_admin(principal),
-                "permissions": principal.permissions,
-            }
+                raw_resolved_skill_id = decision_payload["skill_id"]
+                resolved_skill_id = (
+                    str(raw_resolved_skill_id)
+                    if raw_resolved_skill_id is not None
+                    else None
+                )
+            if resolved_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+                resolved_skill_id = None
+                decision_payload["skill_id"] = None
+            execution_kind = (
+                RUN_EXECUTION_KIND_HARNESS_CHAT
+                if resolved_skill_id is None
+                else RUN_EXECUTION_KIND_SKILL
+            )
+            profile_skill_id = (
+                str(admitted_agent_profile.skill.get("skill_id") or "")
+                if admitted_agent_profile is not None
+                else None
+            )
+            if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT and (
+                decision_payload.get("selected_capability") != "general_chat"
+                or (
+                    admitted_agent_profile is not None
+                    and (
+                        resolved_agent_id != admitted_agent_profile.agent_id
+                        or profile_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                    )
+                )
+            ):
+                raise HTTPException(
+                    status_code=409, detail="harness_chat_identity_mismatch"
+                )
+            authorization_kwargs = (
+                {
+                    "tenant_id": principal.tenant_id,
+                    "agent_id": resolved_agent_id,
+                    "skill_id": resolved_skill_id,
+                    "normalized_input": run_input,
+                    "principal_department_id": principal.department_id,
+                    "principal_roles": principal.roles,
+                    "is_admin": is_ai_admin(principal),
+                    "permissions": principal.permissions,
+                }
+                if resolved_skill_id is not None
+                else None
+            )
             implicit_skill = None
-            if is_terminal_implicit_decision:
+            if is_terminal_implicit_decision and authorization_kwargs is not None:
                 strict_implicit_authorization_kwargs = {
                     **authorization_kwargs,
                     "is_admin": False,
@@ -1787,18 +1970,29 @@ async def chat_stream(
                     decision = fallback_to_general_chat()
                     decision_payload = decision.as_payload()
                     resolved_agent_id = str(decision.agent_id)
-                    resolved_skill_id = str(decision.skill_id)
-                    implicit_skill = await repositories.authorize_run_capabilities(
-                        conn,
-                        **{
-                            **strict_implicit_authorization_kwargs,
-                            "agent_id": resolved_agent_id,
-                            "skill_id": resolved_skill_id,
-                        },
+                    resolved_skill_id = decision.skill_id
+                    execution_kind = RUN_EXECUTION_KIND_HARNESS_CHAT
+                    authorization_kwargs = None
+            if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+                harness_agent = await repositories.get_agent(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    agent_id=resolved_agent_id,
+                )
+                if (
+                    harness_agent is None
+                    or str(harness_agent.get("agent_type") or "") != "chat"
+                ):
+                    raise HTTPException(
+                        status_code=409, detail="harness_chat_agent_unavailable"
                     )
-            if implicit_skill is not None:
+                skill = None
+                executor_type = HARNESS_CHAT_EXECUTOR_TYPE
+                input_modes = ["chat"]
+            elif implicit_skill is not None:
                 skill = implicit_skill
             elif selected_skill_for_execution is not None:
+                assert authorization_kwargs is not None
                 skill = await repositories.authorize_selected_run_capabilities(
                     conn,
                     expected_version=selected_skill_for_execution.expected_version,
@@ -1809,13 +2003,17 @@ async def chat_stream(
                     skill.get("skill_display_label")
                 )
             else:
+                assert authorization_kwargs is not None
                 skill = await repositories.authorize_run_capabilities(
                     conn,
                     **authorization_kwargs,
                 )
+            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                executor_type = str(skill.get("executor_type") or "")
+                input_modes = list(skill.get("input_modes") or [])
             if (
                 repositories.extract_run_mcp_tool_ids(run_input)
-                and str(skill.get("executor_type") or "") != "claude-agent-worker"
+                and executor_type != HARNESS_CHAT_EXECUTOR_TYPE
             ):
                 raise repositories.RepositoryAuthorizationError(
                     "mcp_tool_not_available",
@@ -1836,76 +2034,101 @@ async def chat_stream(
                         )[0],
                     ),
                 )
-            if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
+            file_selection = await select_authorized_run_file_snapshot(
+                conn=conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=effective_workspace_id,
+                user_id=principal.user_id,
+                session_id=request.session_id,
+                requested_file_ids=requested_file_ids,
+                input_modes=input_modes,
+                preserve_agent_history=admitted_agent_profile is not None,
+                load_session_files=repositories.list_authorized_session_input_files,
+            )
+            primary_file_ids = list(file_selection.primary_file_ids)
+            reusable_primary_file_ids = list(file_selection.reusable_primary_file_ids)
+            if file_selection.file_required:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
             )
-            release_decision = resolve_rollout_skill_decision(
-                skill,
-                tenant_id=principal.tenant_id,
-                skill_id=resolved_skill_id,
-                rollout_key=principal.user_id,
-            )
-            selected_policy_version = release_decision.selected_version
-            release_decision_payload = release_decision.to_payload()
-            release_policy_version = selected_policy_version if release_decision.policy_active else None
-            skill_manifests = await _governed_skill_manifest_pins(
-                conn,
-                skill_id=resolved_skill_id,
-                input_payload=run_input,
-                release_policy_version=release_policy_version,
-            )
-            skill_version = governed_locked_skill_version(
-                skill_id=resolved_skill_id,
-                skill_manifests=skill_manifests,
-                fallback_version=selected_policy_version,
-                release_policy_version=release_policy_version,
-            )
-            release_decision_payload = release_decision_payload_for_locked_version(
-                release_decision,
-                locked_version=skill_version,
-            )
-            skill_manifests = attach_skill_snapshot_governance(
-                skill_manifests,
-                release_decision=release_decision_payload,
-            )
-            skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
-                skill_manifests,
-                skill_id=resolved_skill_id,
-                mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
-            )
-            if (
-                required_tool_declaration is not None
-                and required_tool_declaration.capability_kind == "builtin"
-            ):
-                primary_manifest = next(
-                    (
-                        manifest
-                        for manifest in skill_manifests
-                        if isinstance(manifest, dict)
-                        and str(manifest.get("skill_id") or "") == resolved_skill_id
-                    ),
-                    None,
+            if admitted_agent_profile is not None and execution_kind == RUN_EXECUTION_KIND_SKILL:
+                skill_manifests, skill_version, release_decision_payload = await pin_agent_skill_set(
+                    admitted_agent_profile.skills,
+                    manifest_scope=conn,
+                    input_payload=run_input,
+                    tenant_id=principal.tenant_id,
+                    rollout_key=principal.user_id,
+                    resolve_release_decision=resolve_rollout_skill_decision,
+                    governed_manifest_pins=_governed_skill_manifest_pins,
+                    locked_skill_version=governed_locked_skill_version,
+                    decision_payload_for_version=release_decision_payload_for_locked_version,
+                    attach_snapshot_governance=attach_skill_snapshot_governance,
+                    pin_mcp_tool_ids=repositories.pin_primary_skill_mcp_tool_ids,
+                    mcp_tool_ids_for_skill=repositories.run_mcp_tool_ids_for_skill,
+                    conflict_error=RepositoryConflictError,
                 )
-                try:
-                    canonical_builtin_identities = (
-                        repositories.canonical_builtin_tool_identities(primary_manifest)
-                        if isinstance(primary_manifest, dict)
-                        else []
-                    )
-                except RepositoryConflictError:
-                    canonical_builtin_identities = []
-                if required_tool_declaration.canonical_identity not in canonical_builtin_identities:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=public_required_tool_detail("unavailable"),
-                    )
+            elif admitted_agent_profile is not None:
+                skill_version, release_decision_payload, skill_manifests = None, {}, []
+            elif execution_kind == RUN_EXECUTION_KIND_SKILL:
+                assert skill is not None and resolved_skill_id is not None
+                release_decision = resolve_rollout_skill_decision(
+                    skill,
+                    tenant_id=principal.tenant_id,
+                    skill_id=resolved_skill_id,
+                    rollout_key=principal.user_id,
+                )
+                selected_policy_version = release_decision.selected_version
+                release_decision_payload = release_decision.to_payload()
+                release_policy_version = (
+                    selected_policy_version if release_decision.policy_active else None
+                )
+                skill_manifests = await _governed_skill_manifest_pins(
+                    conn,
+                    skill_id=resolved_skill_id,
+                    input_payload=run_input,
+                    release_policy_version=release_policy_version,
+                )
+                skill_version = governed_locked_skill_version(
+                    skill_id=resolved_skill_id,
+                    skill_manifests=skill_manifests,
+                    fallback_version=selected_policy_version,
+                    release_policy_version=release_policy_version,
+                )
+                release_decision_payload = release_decision_payload_for_locked_version(
+                    release_decision,
+                    locked_version=skill_version,
+                )
+                skill_manifests = attach_skill_snapshot_governance(
+                    skill_manifests,
+                    release_decision=release_decision_payload,
+                )
+                skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                    skill_manifests,
+                    skill_id=resolved_skill_id,
+                    mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(
+                        skill, run_input
+                    ),
+                )
+            else:
+                skill_version = None
+                release_decision_payload = {}
+                skill_manifests = []
+            skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
+            agent_profile_execution_input = None
+            if admitted_agent_profile is not None:
+                agent_profile_execution_input = {
+                    **admitted_agent_profile.private_execution_input,
+                }
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
-            mcp_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, run_input)
+            mcp_tool_ids = (
+                repositories.run_mcp_tool_ids_for_skill(skill, run_input)
+                if skill is not None
+                else repositories.extract_run_mcp_tool_ids(run_input)
+            )
             effective_mcp_context_id = request.mcp_context_id if mcp_tool_ids else None
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
@@ -1915,19 +2138,25 @@ async def chat_stream(
                     "session_id": session_id,
                     "run_id": run_id,
                     "agent_id": resolved_agent_id,
+                    "execution_kind": execution_kind,
                     "skill_id": resolved_skill_id,
-                    "file_ids": resolved_file_ids,
+                    "file_ids": primary_file_ids,
                     "input": run_input,
-                    "executor_type": skill["executor_type"],
+                    "executor_type": executor_type,
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
-                    "skill_manifests": skill_manifests,
+                    "skill_manifests": skill_manifest_transport,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                     "mcp_context_id": effective_mcp_context_id,
                     **(
-                        {"agent_profile": admitted_agent_profile.private_execution_input}
-                        if admitted_agent_profile is not None
+                        {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
+                        if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+                        else {}
+                    ),
+                    **(
+                        {"agent_profile": agent_profile_execution_input}
+                        if agent_profile_execution_input is not None
                         else {}
                     ),
                 }
@@ -1952,15 +2181,19 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=resolved_file_ids,
+                file_ids=primary_file_ids,
+                reusable_file_ids=reusable_primary_file_ids,
+                input_modes=(None if admitted_agent_profile is not None else input_modes),
             )
-            if admitted_agent_profile is not None and submission_id is None:
-                # Canonical clients claim their own key before routing. A
-                # legacy unkeyed Agent request gets the same durable recovery
-                # only after every capability and resource check has passed,
-                # immediately before the first session/run write.
-                submission_id = str(uuid4())
-                request_fingerprint = resolved_request_fingerprint
+            if admitted_agent_profile is not None:
+                # Canonical clients supply their own key; a legacy unkeyed
+                # Agent request gets one here. Both are claimed only after
+                # every capability and resource check has passed, immediately
+                # before the first session/run write.
+                if submission_id is None:
+                    submission_id = str(uuid4())
+                    request_fingerprint = resolved_request_fingerprint
+                assert request_fingerprint is not None
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1970,36 +2203,43 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
-                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
-            session_create_kwargs = {
-                "tenant_id": principal.tenant_id,
-                "workspace_id": effective_workspace_id,
-                "user_id": principal.user_id,
-                "agent_id": resolved_agent_id,
-                "title": request.title or request.message[:80],
-                "session_id": session_id,
-            }
-            if admitted_agent_profile is not None:
-                session_create_kwargs.update(
-                    {
-                        "admitted_agent_profile_revision": admitted_agent_profile.revision,
-                        "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
-                    }
-                )
-            session_id = await repositories.create_session(conn, **session_create_kwargs)
+                    return _existing_chat_submission_response(
+                        claimed_submission,
+                        request=request,
+                        principal=principal,
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
+            if request.session_id is None:
+                session_create_kwargs = {
+                    "tenant_id": principal.tenant_id,
+                    "workspace_id": effective_workspace_id,
+                    "user_id": principal.user_id,
+                    "agent_id": resolved_agent_id,
+                    "title": request.title or request.message[:80],
+                    "session_id": session_id,
+                }
+                if admitted_agent_profile is not None:
+                    session_create_kwargs.update(
+                        {
+                            "admitted_agent_profile_revision": admitted_agent_profile.revision,
+                            "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
+                        }
+                    )
+                session_id = await repositories.create_session(conn, **session_create_kwargs)
             run_create_kwargs = {
                 "tenant_id": principal.tenant_id,
                 "workspace_id": effective_workspace_id,
                 "session_id": session_id,
                 "user_id": principal.user_id,
                 "agent_id": resolved_agent_id,
+                "execution_kind": execution_kind,
                 "skill_id": resolved_skill_id,
                 "input_json": {
                     "input": run_input,
-                    "file_ids": resolved_file_ids,
-                    "executor_type": skill["executor_type"],
+                    "file_ids": primary_file_ids,
+                    "execution_kind": execution_kind,
+                    "executor_type": executor_type,
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                     "skill_manifests": queue_payload["skill_manifests"],
@@ -2007,9 +2247,10 @@ async def chat_stream(
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                     "mcp_context_id": effective_mcp_context_id,
+                    "schema_version": queue_payload["schema_version"],
                     **(
-                        {"agent_profile": admitted_agent_profile.private_execution_input}
-                        if admitted_agent_profile is not None
+                        {"agent_profile": queue_payload["agent_profile"]}
+                        if agent_profile_execution_input is not None
                         else {}
                     ),
                 },
@@ -2017,6 +2258,9 @@ async def chat_stream(
                 "principal_department_id": principal.department_id,
                 "auth_source": principal.source,
                 "mcp_context_id": effective_mcp_context_id,
+                "authz_policy_version": principal.authz_policy_version,
+                "authority_source": principal.authority_source or principal.source,
+                "authority_checked_at": principal.authority_checked_at or None,
             }
             if admitted_agent_profile is not None:
                 run_create_kwargs.update(
@@ -2026,13 +2270,14 @@ async def chat_stream(
                     }
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
-            await repositories.insert_run_skill_snapshots_at_creation(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                skill_manifests=queue_payload["skill_manifests"],
-                release_decision=release_decision_payload,
-            )
+            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                await repositories.insert_run_skill_snapshots_at_creation(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    skill_manifests=skill_manifests,
+                    release_decision=release_decision_payload,
+                )
             message_id = await repositories.append_message(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -2042,8 +2287,13 @@ async def chat_stream(
                 content=request.message,
                 metadata_json=sanitize_user_control_input(
                     {
-                        "skill_id": resolved_skill_id,
-                        "file_ids": resolved_file_ids,
+                        "execution_kind": execution_kind,
+                        **(
+                            {"skill_id": resolved_skill_id}
+                            if resolved_skill_id is not None
+                            else {}
+                        ),
+                        "file_ids": primary_file_ids,
                         "attachments": request.attachments,
                         "intent": decision_payload,
                         **(
@@ -2055,8 +2305,13 @@ async def chat_stream(
                 )
                 if not is_ai_admin(principal)
                 else {
-                    "skill_id": resolved_skill_id,
-                    "file_ids": resolved_file_ids,
+                    "execution_kind": execution_kind,
+                    **(
+                        {"skill_id": resolved_skill_id}
+                        if resolved_skill_id is not None
+                        else {}
+                    ),
+                    "file_ids": primary_file_ids,
                     "attachments": request.attachments,
                     "intent": decision_payload,
                     **(
@@ -2073,7 +2328,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=resolved_file_ids,
+                file_ids=requested_file_ids,
             )
             context_ref = await record_initial_context_snapshot(
                 conn,
@@ -2087,9 +2342,10 @@ async def chat_stream(
                 skill_id=resolved_skill_id,
                 input_payload=run_input,
                 message_ids=[message_id] if message_id else [],
-                file_ids=resolved_file_ids,
+                file_ids=primary_file_ids,
                 source="chat_stream",
                 include_session_history=True,
+                include_session_files=False,
             )
             for event in intent_event_specs(decision_payload):
                 await repositories.append_event(
@@ -2105,9 +2361,10 @@ async def chat_stream(
                 agent_id=resolved_agent_id,
                 skill_id=resolved_skill_id,
                 skill_version=skill_version,
-                executor_type=str(skill["executor_type"]),
-                file_ids=resolved_file_ids,
+                executor_type=executor_type,
+                file_ids=primary_file_ids,
                 source="chat_stream",
+                execution_kind=execution_kind,
             ):
                 await repositories.append_event(
                     conn,
@@ -2118,15 +2375,20 @@ async def chat_stream(
                     message=event["message"],
                     payload=event["payload"],
                 )
-            await repositories.append_event(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                event_type="skill_release_decision",
-                stage="control",
-                message="已锁定 Skill 发布决策",
-                payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
-            )
+            if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                assert resolved_skill_id is not None
+                await repositories.append_event(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    event_type="skill_release_decision",
+                    stage="control",
+                    message="已锁定 Skill 发布决策",
+                    payload=_release_decision_event_payload(
+                        release_decision_payload,
+                        skill_id=resolved_skill_id,
+                    ),
+                )
             if submission_id is not None:
                 pending_submission_response = ChatStreamResponse(
                     session_id=session_id,
@@ -2170,8 +2432,12 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise HTTPException(status_code=exc.status_code, detail=code) from exc
     except HTTPException as exc:
+        authorization_error = exc.__cause__
+        if isinstance(authorization_error, repositories.RepositoryAuthorizationError):
+            await _audit_capability_denial(principal, authorization_error, source="chat_stream")
         code = _submission_code(exc.detail)
-        if 400 <= exc.status_code < 500:
+        rejected_before_persist = 400 <= exc.status_code < 500 or code == _QUEUE_PAYLOAD_INVALID_CODE
+        if rejected_before_persist:
             await _persist_pre_persistence_rejection(
                 principal=principal,
                 submission_id=submission_id,
@@ -2181,7 +2447,7 @@ async def chat_stream(
                 session_id=request.session_id,
                 code=code,
             )
-        if submission_id is not None and 400 <= exc.status_code < 500:
+        if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise
     except repositories.RepositoryAuthorizationError as exc:
@@ -2246,6 +2512,43 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
+    except Exception as exc:
+        diagnostic_id = _new_submission_diagnostic_id()
+        _log_safe_submission_exception(
+            phase="admission_transaction",
+            diagnostic_id=diagnostic_id,
+            exc=exc,
+        )
+        try:
+            await _persist_pre_persistence_rejection(
+                principal=principal,
+                submission_id=submission_id,
+                request=request,
+                query_agent_id=query_agent_id,
+                workspace_id=effective_workspace_id,
+                session_id=request.session_id,
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+            )
+        except Exception as persistence_exc:
+            _log_safe_submission_exception(
+                phase="rejection_ledger",
+                diagnostic_id=diagnostic_id,
+                exc=persistence_exc,
+            )
+        if submission_id is not None:
+            raise _chat_submission_http_error(
+                status_code=500,
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                diagnostic_id=diagnostic_id,
+            ) from None
+        raise HTTPException(
+            status_code=500,
+            detail=_submission_error_detail(
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                rejected_before_persist=True,
+                diagnostic_id=diagnostic_id,
+            ),
+        ) from None
     if submission_id is not None:
         try:
             admitted = _require_chat_submission_admitted(

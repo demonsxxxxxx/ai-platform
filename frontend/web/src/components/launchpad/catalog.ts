@@ -1,9 +1,16 @@
+import type {
+  LaunchpadRuntimeUrlKey,
+  LaunchpadRuntimeUrls,
+} from "../../services/api/browserRuntimeConfig";
+
 export type LaunchpadTabKey = "lingxi" | "common" | "ai";
 
 export interface LaunchpadTab {
   key: LaunchpadTabKey;
   label: string;
+  runtimeUrlKey?: LaunchpadRuntimeUrlKey;
   url?: string;
+  unavailableReason?: string;
 }
 
 export interface LaunchpadEntry {
@@ -14,6 +21,7 @@ export interface LaunchpadEntry {
   name: string;
   description?: string;
   color?: string;
+  runtimeUrlKey?: LaunchpadRuntimeUrlKey;
   url?: string;
   unavailableReason?: string;
 }
@@ -33,7 +41,8 @@ export const launchpadTabs: LaunchpadTab[] = [
   {
     key: "lingxi",
     label: "灵犀平台",
-    url: "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
+    runtimeUrlKey: "lingxi",
+    unavailableReason: "运行时地址未配置",
   },
   { key: "common", label: "网页导航" },
   { key: "ai", label: "AI应用" },
@@ -1216,7 +1225,8 @@ export const launchpadGroups: LaunchpadGroup[] = [
         "name": "SOP问询助手",
         "description": "通过公司知识库支持制度、流程、SOP问答。",
         "color": "#00a6a6",
-        "url": "http://10.56.0.25:8189/#/AI/RAGFlowSOP"
+        "runtimeUrlKey": "sop_assistant",
+        "unavailableReason": "运行时地址未配置"
       }
     ]
   },
@@ -1233,7 +1243,8 @@ export const launchpadGroups: LaunchpadGroup[] = [
         "name": "Word文档翻译",
         "description": "基于DeepSeekV4模型，支持Word文档中英互译，格式原样保留。",
         "color": "#4f46e5",
-        "url": "http://10.56.0.210:8000"
+        "runtimeUrlKey": "word_translate",
+        "unavailableReason": "运行时地址未配置"
       },
       {
         "id": "ai-Other-1-Word文档审核",
@@ -1243,7 +1254,8 @@ export const launchpadGroups: LaunchpadGroup[] = [
         "name": "Word文档审核",
         "description": "基于DeepSeekV4模型，上传Word文档后执行Word审核，并生成批注版Word文档。",
         "color": "#f97316",
-        "url": "http://10.56.0.25:8189/#/AI/WordReview"
+        "runtimeUrlKey": "word_review",
+        "unavailableReason": "运行时地址未配置"
       }
     ]
   },
@@ -1282,6 +1294,45 @@ export function filterLaunchpadGroups(
       ),
     }))
     .filter((group) => group.entries.length > 0);
+}
+
+function configureRuntimeTarget<
+  Target extends {
+    runtimeUrlKey?: LaunchpadRuntimeUrlKey;
+    url?: string;
+    unavailableReason?: string;
+  },
+>(
+  target: Target,
+  runtimeUrls: LaunchpadRuntimeUrls,
+  unavailableReason?: string,
+): Target {
+  if (!target.runtimeUrlKey) return target;
+  const url = runtimeUrls[target.runtimeUrlKey] || undefined;
+  return {
+    ...target,
+    url,
+    unavailableReason: url
+      ? undefined
+      : unavailableReason || target.unavailableReason || "运行时地址未配置",
+  };
+}
+
+export function configureLaunchpadCatalog(
+  runtimeUrls: LaunchpadRuntimeUrls,
+  unavailableReason?: string,
+): { tabs: LaunchpadTab[]; groups: LaunchpadGroup[] } {
+  return {
+    tabs: launchpadTabs.map((tab) =>
+      configureRuntimeTarget(tab, runtimeUrls, unavailableReason),
+    ),
+    groups: launchpadGroups.map((group) => ({
+      ...group,
+      entries: group.entries.map((entry) =>
+        configureRuntimeTarget(entry, runtimeUrls, unavailableReason),
+      ),
+    })),
+  };
 }
 
 export function resolveLaunchpadDestination(

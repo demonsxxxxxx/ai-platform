@@ -16,10 +16,47 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 READINESS_TOOL = REPO_ROOT / "tools" / "pre_push_readiness.py"
 GOVERNANCE_TOOL = REPO_ROOT / "tools" / "code_governance.py"
+ARCHITECTURE_TOOL = REPO_ROOT / "tools" / "architecture_governance.py"
+ARCHITECTURE_POLICY = REPO_ROOT / "architecture-policy.json"
+ARCHITECTURE_SCHEMA = REPO_ROOT / "schemas" / "architecture-policy.v1.schema.json"
 CODE_GOVERNANCE_TEST = REPO_ROOT / "tests" / "test_code_governance.py"
 ISSUE_WORKFLOW = REPO_ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 EXCEPTION_PATH = ".code-governance-exception.json"
 FRONTEND_PACKAGE_MANAGER = "pnpm@10.32.1"
+
+
+def _retired_runs_legacy_api_cutover() -> dict[str, object]:
+    return {
+        "source_path": "app/repositories.py",
+        "public_module": "app.runs.api",
+        "canonical_module": "app.runs.domain.terminalization",
+        "module_alias": "runs_api",
+        "removed_imports": [{"module": "dataclasses", "name": "dataclass"}],
+        "rewrites": [
+            {
+                "old_symbol": "TERMINAL_RUN_STATUSES",
+                "new_symbol": "TERMINAL_RUN_STATUSES",
+            },
+            {
+                "old_symbol": "ToolPermissionTerminalizationProgress",
+                "new_symbol": "RunTerminalizationProgress",
+            },
+            {
+                "old_symbol": "_terminalization_progress_for_requested_status",
+                "new_symbol": "progress_for_requested_status",
+            },
+        ],
+        "owner": "runs",
+        "reason": (
+            "The frozen global repository may perform one exact hard cut from its "
+            "locally owned Run terminalization policy symbols to the public Runs API "
+            "without retaining policy aliases or importing Runs internals."
+        ),
+        "removal_condition": (
+            "After the exact Runs policy cutover is merged, remove this consumed "
+            "authority entry before any further app/repositories.py source change."
+        ),
+    }
 
 
 def _run(
@@ -64,8 +101,129 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
     _write(repo, "README.md", "fixture\n")
     _write(repo, "app/__init__.py", "")
     _write(repo, "app/billing.py", "RATE = 2\n")
+    _write(
+        repo,
+        "app/artifact_lifecycle_repository.py",
+        "from app.persistence.object_deletions import OUTBOX_TARGET_ARTIFACT\n\n"
+        "__all__ = ['OUTBOX_TARGET_ARTIFACT']\n",
+    )
+    _write(repo, "app/persistence/object_deletions.py", "OUTBOX_TARGET_ARTIFACT = 'artifact'\nOUTBOX_TARGET_FILE = 'file'\n")
+    _write(repo, "app/executors/claude_agent_worker.py", "class ClaudeAgentWorkerAdapter:\n    pass\n")
+    _write(
+        repo,
+        "app/executors/registry.py",
+        "from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter\n\n\n"
+        "def _default_adapters():\n"
+        "    return {'claude-agent-worker': ClaudeAgentWorkerAdapter()}\n",
+    )
+    _write(repo, "app/repositories.py", "DEFAULT_RUN_EXECUTOR_TYPES = {'claude-agent-worker'}\n")
+    _write(repo, "docs/architecture/source-code-architecture.md", "# Source architecture\n")
     _write(repo, "tools/code_governance.py", GOVERNANCE_TOOL.read_text(encoding="utf-8"))
+    _write(repo, "tools/architecture_governance.py", ARCHITECTURE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/pre_push_readiness.py", READINESS_TOOL.read_text(encoding="utf-8"))
+    policy = json.loads(ARCHITECTURE_POLICY.read_text(encoding="utf-8"))
+    policy["legacy_api_cutovers"] = [_retired_runs_legacy_api_cutover()]
+    migration_bridge_sources = sorted(
+        {bridge["source_path"] for bridge in policy["migration_bridges"]}
+    )
+    cutover_sources = sorted(
+        {cutover["source_path"] for cutover in policy["legacy_api_cutovers"]}
+    )
+    for source_path in sorted(set(migration_bridge_sources) | set(cutover_sources)):
+        if not (repo / source_path).exists():
+            _write(repo, source_path, "FIXTURE = True\n")
+    for cutover in policy["legacy_api_cutovers"]:
+        source_path = cutover["source_path"]
+        source = (repo / source_path).read_text(encoding="utf-8")
+        imports = "".join(
+            f"from {item['module']} import {item['name']}\n"
+            for item in cutover["removed_imports"]
+        )
+        definitions: list[str] = []
+        for rewrite in cutover["rewrites"]:
+            name = rewrite["old_symbol"]
+            if name.isupper():
+                definitions.append(f"{name} = {{'succeeded'}}")
+            elif name[:1].isupper():
+                definitions.append(f"class {name}:\n    pass")
+            else:
+                definitions.append(f"def {name}(value=None):\n    return value")
+        _write(
+            repo,
+            source_path,
+            imports
+            + source
+            + "\n\n"
+            + "\n\n".join(definitions)
+            + "\n\ndef fixture_cutover_use():\n    return ("
+            + ", ".join(item["old_symbol"] for item in cutover["rewrites"])
+            + ")\n",
+        )
+    policy["approved_root_modules"] = sorted(
+        {
+            "app/__init__.py",
+            "app/artifact_lifecycle_repository.py",
+            "app/billing.py",
+            "app/repositories.py",
+            *(
+                source_path
+                for source_path in sorted(set(migration_bridge_sources) | set(cutover_sources))
+                if Path(source_path).parent.as_posix() == "app"
+            ),
+        }
+    )
+    policy["frozen_hot_files"] = [
+        {
+            "path": "app/persistence/object_deletions.py",
+            "max_lines": 2,
+            "owner": "fixture",
+            "reason": "Fixture hot-file authority.",
+        }
+    ]
+    policy["compatibility_facades"] = [
+        {
+            "path": "app/artifact_lifecycle_repository.py",
+            "canonical_prefix": "app.persistence",
+            "max_lines": 8,
+            "shape": "imports_only",
+            "owner": "fixture",
+            "reason": "Fixture facade authority.",
+        }
+    ]
+    policy["production_registries"] = [
+        {
+            "path": "app/executors/registry.py",
+            "factory_function": "_default_adapters",
+            "allowed_keys": ["claude-agent-worker"],
+            "adapter_constructors": [
+                {
+                    "module": "app.executors.claude_agent_worker",
+                    "name": "ClaudeAgentWorkerAdapter",
+                }
+            ],
+            "selector_owners": [
+                {"path": "app/repositories.py", "symbol": "DEFAULT_RUN_EXECUTOR_TYPES"}
+            ],
+            "test_double_terms": ["dummy", "fake", "mock", "stub", "test"],
+            "owner": "fixture",
+            "reason": "Fixture registry authority.",
+        }
+    ]
+    policy["governed_symbols"] = [
+        {
+            "name": name,
+            "path": "app/persistence/object_deletions.py",
+            "owner": "fixture",
+            "reason": "Fixture governed symbol authority.",
+        }
+        for name in ("OUTBOX_TARGET_ARTIFACT", "OUTBOX_TARGET_FILE")
+    ]
+    _write(repo, "architecture-policy.json", json.dumps(policy, indent=2, sort_keys=True) + "\n")
+    _write(
+        repo,
+        "schemas/architecture-policy.v1.schema.json",
+        ARCHITECTURE_SCHEMA.read_text(encoding="utf-8"),
+    )
     _write(repo, code_governance_test_path, CODE_GOVERNANCE_TEST.read_text(encoding="utf-8"))
     base = _commit(repo, "base")
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
@@ -75,6 +233,30 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
 @pytest.fixture
 def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     return _create_readiness_repo(tmp_path, code_governance_test_path="tests/test_code_governance.py")
+
+
+def test_readiness_fixture_materializes_every_governed_migration_source(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, authority = readiness_repo
+    policy = json.loads(_git(repo, "show", f"{authority}:architecture-policy.json"))
+
+    governed_sources = {
+        item["source_path"]
+        for key in ("migration_bridges", "legacy_api_cutovers")
+        for item in policy[key]
+    }
+    for source_path in sorted(governed_sources):
+        assert _run(
+            repo,
+            "git",
+            "cat-file",
+            "-e",
+            f"{authority}:{source_path}",
+            check=False,
+        ).returncode == 0
+        if Path(source_path).parent.as_posix() == "app":
+            assert source_path in policy["approved_root_modules"]
 
 
 def _check(
@@ -335,6 +517,33 @@ def _readiness_module() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize(
+    ("returncode", "code", "infrastructure_codes", "expected"),
+    (
+        (3, "git_failed", frozenset({"git_failed"}), "infrastructure_failure"),
+        (3, "git_output_invalid", frozenset({"git_output_invalid"}), "infrastructure_failure"),
+        (3, "invalid_exception", frozenset({"git_failed"}), "governance_violation"),
+        (2, "git_failed", frozenset({"git_failed"}), "governance_violation"),
+    ),
+)
+def test_governance_failure_taxonomy_preserves_infrastructure_errors(
+    returncode: int,
+    code: str,
+    infrastructure_codes: frozenset[str],
+    expected: str,
+) -> None:
+    module = _readiness_module()
+
+    assert (
+        module._governance_failure_category(
+            returncode,
+            code,
+            infrastructure_codes=infrastructure_codes,
+        )
+        == expected
+    )
 
 
 class _CleanupRunner:
@@ -870,6 +1079,188 @@ def test_authority_worktree_never_executes_a_candidate_tool_replacement(
     assert payload["authority"]["status"] == "verified"
 
 
+def test_trusted_architecture_rejects_a_new_app_root_before_candidate_tests(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, base = readiness_repo
+    _write(repo, "app/new_root.py", "VALUE = 1\n")
+    _write(repo, "tests/test_new_root.py", "def test_new_root():\n    assert True\n")
+    head = _commit(repo, "add unowned app root")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"] == {
+        "code": "unapproved_app_root_module",
+        "message": "new app-root modules require an explicit architecture-policy owner",
+        "path": "app/new_root.py",
+        "test_identity": None,
+    }
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    assert architecture["status"] == "failed"
+    assert Path(architecture["command"][2]).name == "authority-architecture.py"
+    assert architecture["command"][4:10] == [
+        "--authority-ref",
+        base,
+        "--base-ref",
+        base,
+        "--head-ref",
+        head,
+    ]
+    assert architecture["policy"]["path"] == "architecture-policy.json"
+    assert architecture["exception"]["status"] == "absent"
+    assert architecture["exempted_findings"] == []
+    assert all(stage["name"] != "responsibility_tests" for stage in payload["stages"])
+
+
+def test_pre_push_accepts_exact_one_shot_legacy_api_cutover(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, base = readiness_repo
+    policy = json.loads(_git(repo, "show", f"{base}:architecture-policy.json"))
+    cutover = policy["legacy_api_cutovers"][0]
+    source_path = repo / cutover["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    for removed in cutover["removed_imports"]:
+        source = source.replace(
+            f"from {removed['module']} import {removed['name']}\n",
+            "",
+            1,
+        )
+    for rewrite in cutover["rewrites"]:
+        old = rewrite["old_symbol"]
+        if old.isupper():
+            definition = f"{old} = {{'succeeded'}}\n\n"
+        elif old[:1].isupper():
+            definition = f"class {old}:\n    pass\n\n"
+        else:
+            definition = f"def {old}(value=None):\n    return value\n\n"
+        source = source.replace(definition, "", 1)
+        source = source.replace(
+            old,
+            f"{cutover['module_alias']}.{rewrite['new_symbol']}",
+        )
+    source_path.write_text(
+        f"import {cutover['public_module']} as {cutover['module_alias']}\n" + source,
+        encoding="utf-8",
+    )
+    target_symbols = sorted(rewrite["new_symbol"] for rewrite in cutover["rewrites"])
+    _write(
+        repo,
+        f"{cutover['canonical_module'].replace('.', '/')}.py",
+        "\n\n".join(
+            f"def {name}(value=None):\n    return value"
+            if not name.isupper() and not name[:1].isupper()
+            else (
+                f"{name} = {{'succeeded'}}"
+                if name.isupper()
+                else f"class {name}:\n    pass"
+            )
+            for name in target_symbols
+        )
+        + "\n",
+    )
+    _write(
+        repo,
+        f"{cutover['public_module'].replace('.', '/')}.py",
+        f"from {cutover['canonical_module']} import "
+        + ", ".join(f"{name} as {name}" for name in target_symbols)
+        + "\n",
+    )
+    _write(repo, "tests/test_runs_cutover.py", "def test_runs_cutover():\n    assert True\n")
+    head = _commit(repo, "exact public API hard cut")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    assert architecture["status"] == "pass"
+
+
+def test_authority_architecture_snapshot_never_executes_a_candidate_replacement(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    marker = tmp_path / "candidate-architecture-executed.txt"
+    _write(
+        repo,
+        "tools/architecture_governance.py",
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+        "raise RuntimeError('candidate architecture executed')\n",
+    )
+    _write(
+        repo,
+        "tests/test_architecture_governance.py",
+        "def test_candidate_architecture_change():\n    assert True\n",
+    )
+    head = _commit(repo, "replace candidate architecture checker")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    assert marker.exists() is False
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    assert architecture["status"] == "pass"
+    assert Path(architecture["command"][2]).name == "authority-architecture.py"
+    assert payload["authority"]["architecture_governance"] == "sealed"
+
+
+@pytest.mark.parametrize(
+    "authority_path",
+    (
+        "tools/architecture_governance.py",
+        "architecture-policy.json",
+        "schemas/architecture-policy.v1.schema.json",
+    ),
+)
+def test_candidate_cannot_tamper_with_architecture_authority_after_it_is_sealed(
+    readiness_repo: tuple[Path, str], authority_path: str
+) -> None:
+    repo, base = readiness_repo
+    _write(
+        repo,
+        "tests/test_architecture_authority_tamper.py",
+        "import subprocess\n"
+        "from pathlib import Path\n\n\n"
+        "def test_tamper_architecture_authority():\n"
+        "    worktrees = subprocess.check_output(['git', 'worktree', 'list', '--porcelain'], text=True)\n"
+        "    authority = next(\n"
+        "        Path(line.removeprefix('worktree '))\n"
+        "        for line in worktrees.splitlines()\n"
+        "        if line.startswith('worktree ') and Path(line.removeprefix('worktree ')).name == 'authority'\n"
+        "    )\n"
+        f"    target = authority / {authority_path!r}\n"
+        "    target.write_text('candidate tamper\\n', encoding='utf-8')\n",
+    )
+    head = _commit(repo, f"tamper {authority_path} from candidate test")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"]["code"] == "authority_post_candidate_integrity_mismatch"
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    tests = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
+    integrity = next(stage for stage in payload["stages"] if stage["name"] == "authority_integrity")
+    assert architecture["status"] == "pass"
+    assert payload["stages"].index(architecture) < payload["stages"].index(tests)
+    assert integrity["status"] == "failed"
+
+
 def test_candidate_authority_governance_tamper_cannot_change_the_sealed_result(
     readiness_repo: tuple[Path, str],
 ) -> None:
@@ -1136,14 +1527,31 @@ def test_cross_layer_behavior_change_runs_a_changed_test_without_stem_matching(
 
 
 @pytest.mark.parametrize(
-    ("source", "destination", "production_path"),
+    ("source", "destination", "production_path", "category", "code"),
     (
-        ("docs/moved.py", "app/moved.py", "app/moved.py"),
-        ("app/moved.py", "docs/moved.py", "app/moved.py"),
+        (
+            "docs/moved.py",
+            "app/moved.py",
+            "app/moved.py",
+            "governance_violation",
+            "unapproved_app_root_module",
+        ),
+        (
+            "app/moved.py",
+            "docs/moved.py",
+            "app/moved.py",
+            "external_check",
+            "regression_test_suite_required",
+        ),
     ),
 )
 def test_cross_boundary_r100_rename_requires_regression_evidence(
-    readiness_repo: tuple[Path, str], source: str, destination: str, production_path: str
+    readiness_repo: tuple[Path, str],
+    source: str,
+    destination: str,
+    production_path: str,
+    category: str,
+    code: str,
 ) -> None:
     repo, _authority = readiness_repo
     _write(repo, source, "MOVED = True\n")
@@ -1157,8 +1565,8 @@ def test_cross_boundary_r100_rename_requires_regression_evidence(
     payload = _payload(result)
 
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
-    assert payload["category"] == "external_check"
-    assert payload["failure"]["code"] == "regression_test_suite_required"
+    assert payload["category"] == category
+    assert payload["failure"]["code"] == code
     assert payload["failure"]["path"] == production_path
 
 
@@ -1257,11 +1665,12 @@ def test_frozen_mcp_mapping_applies_to_the_source_of_an_r100_rename(
 ) -> None:
     repo, _authority = readiness_repo
     source = "app/mcp/catalog.py"
-    destination = "app/mcp/renamed_catalog.py"
+    destination = "app/mcp/domain/renamed_catalog.py"
     suites = MCP_IRREGULAR_RESPONSIBILITY_SUITES[source]
     _write_irregular_responsibility_suites(repo, suites)
     _write(repo, source, "CATALOG_READY = True\n")
     base = _commit(repo, "mapped rename source")
+    (repo / destination).parent.mkdir(parents=True, exist_ok=True)
     _git(repo, "mv", source, destination)
     head = _commit(repo, "rename mapped mcp path")
 
@@ -1542,7 +1951,12 @@ def test_non_add_modify_exception_transitions_remain_external(
     assert payload["category"] == "external_check"
     assert payload["failure"]["code"] == "responsibility_suite_required"
     assert payload["failure"]["path"] == EXCEPTION_PATH
-    assert {stage["name"] for stage in payload["stages"]} == {"diff_check", "governance", "worktree_cleanup"}
+    assert {stage["name"] for stage in payload["stages"]} == {
+        "architecture_governance",
+        "diff_check",
+        "governance",
+        "worktree_cleanup",
+    }
 
 
 def test_regression_suite_traversal_never_executes_an_outside_file(
@@ -1638,7 +2052,7 @@ def test_mixed_backend_and_frontend_changes_run_both_responsibility_suites(
     readiness_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
     repo, base = readiness_repo
-    _write(repo, "app/invoice.py", "TOTAL = 1\n")
+    _write(repo, "app/runs/application/invoice.py", "TOTAL = 1\n")
     _write(repo, "tests/test_invoice.py", "def test_invoice():\n    assert True\n")
     _write_frontend_project(repo)
     _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
@@ -1721,7 +2135,7 @@ def test_deterministic_product_failure_preserves_pytest_identity(
     assert payload["failure"]["test_identity"] == "tests/test_deterministic_failure.py::test_deterministic_failure"
 
 
-def test_governance_failure_keeps_rule_and_path(readiness_repo: tuple[Path, str]) -> None:
+def test_size_advisory_does_not_fail_pre_push_readiness(readiness_repo: tuple[Path, str]) -> None:
     repo, _authority = readiness_repo
     _write(
         repo,
@@ -1736,10 +2150,10 @@ def test_governance_failure_keeps_rule_and_path(readiness_repo: tuple[Path, str]
     result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert result.returncode == 2
-    assert payload["category"] == "governance_violation"
-    assert payload["failure"]["code"] == "functional_hot_file_growth"
-    assert payload["failure"]["path"] == "app/billing.py"
+    assert result.returncode == 0, result.stderr
+    assert payload["status"] == "pass"
+    governance_stage = next(stage for stage in payload["stages"] if stage["name"] == "governance")
+    assert governance_stage["status"] == "pass"
 
 
 def test_governance_ruff_ignores_a_head_root_shadow_module(readiness_repo: tuple[Path, str]) -> None:
@@ -1780,6 +2194,7 @@ def test_success_uses_the_exact_resolved_range_and_stable_taxonomy(
         "stale_base",
     }
     assert {stage["name"] for stage in payload["stages"]} == {
+        "architecture_governance",
         "authority_integrity",
         "compileall",
         "diff_check",
@@ -1787,6 +2202,18 @@ def test_success_uses_the_exact_resolved_range_and_stable_taxonomy(
         "responsibility_tests",
         "worktree_cleanup",
     }
+    architecture = next(
+        stage for stage in payload["stages"] if stage["name"] == "architecture_governance"
+    )
+    governance = next(stage for stage in payload["stages"] if stage["name"] == "governance")
+    compileall = next(stage for stage in payload["stages"] if stage["name"] == "compileall")
+    assert architecture["status"] == "pass"
+    assert architecture["policy"]["schema_version"] == "ai-platform.architecture-policy.v1"
+    assert architecture["exception"]["status"] == "absent"
+    assert architecture["exempted_findings"] == []
+    assert payload["stages"].index(governance) < payload["stages"].index(architecture)
+    assert payload["stages"].index(architecture) < payload["stages"].index(compileall)
+    assert payload["authority"]["architecture_governance"] == "sealed"
 
 
 def test_docs_only_range_does_not_run_an_unrelated_existing_test(

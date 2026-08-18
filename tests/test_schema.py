@@ -37,10 +37,23 @@ def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_histor
 
     assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
     assert "fk_agent_profiles_current_publication" in schema
+
+
+def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "raise exception 'agent_profile_skill_set_invalid'" in schema
+    assert "new.skill_set->0->>'skill_id' is distinct from new.skill_id" in schema
+    assert "new.skill_set->0->>'expected_version' is distinct from new.skill_version" in schema
+    assert "having count(*) > 1" in schema
     assert "published_hash text" in schema
     assert "published_status text" in schema
     assert "unique (tenant_id, agent_id, revision, content_hash, revision_status)" in schema
     assert "withdrawn_from_revision bigint" in schema
+    first_repair = schema.index("update agent_profile_revisions\nset skill_set")
+    second_repair = schema.index("update agent_profile_revisions\nset skill_set", first_repair + 1)
+    assert "where legacy_compatibility_write\n  and (" in schema[first_repair:second_repair]
+    assert "where legacy_compatibility_write\n  and (" in schema[second_repair:]
 
 
 def test_schema_declares_capability_distribution_authority_constraints():
@@ -140,6 +153,22 @@ def test_uploaded_files_can_be_created_before_sessions():
     assert "session_id text," in schema
     assert "session_id text references sessions" not in schema
     assert "user_id text not null references users(id)" in schema
+
+
+def test_schema_declares_file_lifecycle_and_typed_object_deletion_targets():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "alter table files add column if not exists lifecycle_state" in schema
+    assert "chk_files_lifecycle_state" in schema
+    assert "target_type text not null default 'artifact'" in schema
+    assert "file_id text references files(id)" in schema
+    assert "lease_generation bigint not null default 0" in schema
+    assert "chk_object_deletion_outbox_target" in schema
+    assert "chk_object_deletion_outbox_target_state" in schema
+    assert "target_type = 'artifact' and artifact_id is not null and file_id is null" in schema
+    assert "target_type = 'file' and artifact_id is null and file_id is not null" in schema
+    assert "when 'pending' then 'file_pending'" in schema
+    assert "'file_pending', 'file_processing', 'file_failed'" in schema
 
 
 def test_schema_declares_run_copy_and_cancel_columns():
@@ -346,12 +375,31 @@ def test_schema_adds_run_event_sequence_before_sequence_index_for_existing_datab
     assert schema.index(add_column) < schema.index(create_index)
 
 
-def test_general_chat_seed_uses_platform_owned_claude_worker_not_poco_fact_source():
+def test_runs_schema_separates_harness_chat_from_skill_identity():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    runs_table = schema.split("create table if not exists runs (", 1)[1].split(
+        "create index if not exists idx_runs_tenant_created", 1
+    )[0]
+
+    assert "execution_kind text not null default 'skill'" in runs_table
+    assert "skill_id text references skills(id)" in runs_table
+    assert "skill_id text not null references skills(id)" not in runs_table
+    assert "(execution_kind = 'harness_chat' and skill_id is null)" in runs_table
+    assert "(execution_kind = 'skill' and skill_id is not null)" in runs_table
+    assert "alter table runs alter column skill_id drop not null" in schema
+
+
+def test_general_chat_is_not_seeded_as_a_skill():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "'general-chat', 'General Chat Agent'" in schema
-    assert "'general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker." in schema
-    assert "'general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by embedded Poco runtime kernel." not in schema
+    assert "'general-chat', 'General Chat Agent'" not in schema
+    assert "'general-chat', 'Legacy General Chat Skill'" not in schema
+    assert "'skv_seed_general_chat" not in schema
+    assert (
+        "backed by the governed Harness without a Skill identity.', null, 'active')"
+        in schema
+    )
+    assert "('default', 'general-chat', 'active', true)" not in schema
 
 
 def test_schema_declares_run_skill_snapshots():
@@ -370,6 +418,16 @@ def test_schema_declares_run_skill_snapshots():
     assert "inferred_used boolean not null default false" in schema
     assert "unique(tenant_id, run_id, skill_id)" in schema
     assert "idx_run_skill_snapshots_run" in schema
+
+
+def test_schema_declares_private_run_skill_materializations():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists run_skill_materializations" in schema
+    assert "materialization_sha256 text not null" in schema
+    assert "manifest_json jsonb not null" in schema
+    assert "primary key (tenant_id, run_id, skill_id)" in schema
+    assert "references run_skill_snapshots(tenant_id, run_id, skill_id) on delete cascade" in schema
 
 
 def test_schema_declares_skill_versions():
@@ -462,7 +520,7 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     skill_version_seed = schema[schema.index("insert into skill_versions"):]
     assert "'qa-file-reviewer', '0.1.0'" in schema
     assert "'minimax-docx', '0.1.0'" in schema
-    assert "'general-chat', '0.1.0'" in schema
+    assert "'general-chat', '0.1.0'" not in schema
     assert "'baoyu-translate', '0.1.0'" in schema
     assert "'ragflow-knowledge-search', '0.1.0'" in schema
     assert "on conflict (skill_id, version) do nothing" in skill_version_seed

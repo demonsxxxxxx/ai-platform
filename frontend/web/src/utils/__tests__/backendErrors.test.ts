@@ -4,7 +4,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TFunction } from "i18next";
 import {
+  projectChatAdmissionError,
   projectSafeBackendError,
+  safeDiagnosticCode,
   translateChatAdmissionError,
   translateBackendError,
 } from "../backendErrors.ts";
@@ -47,9 +49,69 @@ test("chat admission maps only the typed active-run 409 to actionable guidance",
       translateChatAdmissionError(error, t),
       error.status === 401 || error.code === "auth_context_stale"
         ? "translated:backendErrors.unauthenticated"
-        : "translated:chat.requestFailed",
+        : "translated:chat.sendFailed",
     );
   }
+});
+
+test("chat admission retains only bounded codes and never exposes private detail", () => {
+  assert.deepEqual(
+    projectChatAdmissionError(
+      {
+        status: 503,
+        code: "queue_unavailable",
+        message: "C:\\private\\worker.log?token=secret",
+      },
+      t,
+    ),
+    {
+      code: "queue_unavailable",
+      message: "translated:chat.sendFailed",
+    },
+  );
+  const unsafe = projectChatAdmissionError(
+    {
+      status: 500,
+      code: "a".repeat(65),
+      message: "Bearer private-token",
+    },
+    t,
+  );
+  assert.deepEqual(unsafe, { message: "translated:chat.sendFailed" });
+  assert.equal(safeDiagnosticCode({ code: "queue_unavailable" }), "queue_unavailable");
+  assert.equal(safeDiagnosticCode({ code: "a".repeat(65) }), undefined);
+  assert.doesNotMatch(JSON.stringify([unsafe]), /private|token|worker/i);
+});
+
+test("chat admission projects only bounded diagnostic identifiers", () => {
+  assert.deepEqual(
+    projectChatAdmissionError(
+      {
+        status: 500,
+        code: "chat_submission_internal_error",
+        message: "private database failure",
+        diagnosticId: "diag_0123456789abcdef",
+      },
+      t,
+    ),
+    {
+      code: "chat_submission_internal_error",
+      diagnosticId: "diag_0123456789abcdef",
+      message:
+        "translated:backendErrors.chatSubmissionInternalError [diag_0123456789abcdef]",
+    },
+  );
+  const unsafe = projectChatAdmissionError(
+    {
+      status: 500,
+      code: "chat_submission_internal_error",
+      message: "private database failure",
+      diagnosticId: "diag_private-token",
+    },
+    t,
+  );
+  assert.equal(unsafe.diagnosticId, undefined);
+  assert.doesNotMatch(unsafe.message, /private|token/i);
 });
 
 test("translates backend error patterns", () => {
@@ -101,7 +163,7 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
   }
 });
 
-test("all shipped locales include fail-closed governance error copy", () => {
+test("the shipped Chinese catalog includes fail-closed governance error copy", () => {
   const requiredKeys = [
     "skillFileWriteNotBacked",
     "skillFileDeleteNotBacked",
@@ -124,18 +186,17 @@ test("all shipped locales include fail-closed governance error copy", () => {
     "skillVersionHasActiveReleasePolicy",
   ];
 
-  for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
-    const messages = JSON.parse(
-      readFileSync(join(process.cwd(), `src/i18n/locales/${locale}.json`), "utf8"),
-    );
-    for (const key of requiredKeys) {
-      assert.equal(
-        typeof messages.backendErrors[key],
-        "string",
-        `${locale}.${key}`,
-      );
-      assert.ok(messages.backendErrors[key].length > 12, `${locale}.${key}`);
-    }
+  const locale = "zh";
+  const messages = JSON.parse(
+    readFileSync(join(process.cwd(), "src/i18n/locales/zh.json"), "utf8"),
+  );
+  for (const key of requiredKeys) {
+    assert.equal(typeof messages.backendErrors[key], "string", `${locale}.${key}`);
+    assert.ok(messages.backendErrors[key].length > 12, `${locale}.${key}`);
+  }
+  for (const key of ["historyLoadFailed", "sendFailed"]) {
+    assert.equal(typeof messages.chat[key], "string", `${locale}.chat.${key}`);
+    assert.ok(messages.chat[key].length > 3, `${locale}.chat.${key}`);
   }
 });
 

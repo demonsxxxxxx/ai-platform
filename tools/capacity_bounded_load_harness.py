@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.capacity_bounded_load_harness import (
+from tools.capacity.bounded_load import (  # noqa: E402 - repository root is added above for direct CLI execution.
     OPERATOR_ACKNOWLEDGEMENT,
     render_capacity_bounded_load_harness_markdown,
     run_capacity_bounded_load_harness,

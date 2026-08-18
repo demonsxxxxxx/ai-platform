@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
@@ -9,13 +8,9 @@ import {
   resolveSkillsHubGovernance,
   type SkillsHubTab,
 } from "./SkillsHubPanel/state";
-import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
-import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { isAiAdminUser } from "./capabilityAdmin";
-import { AvailableSkillsPanel } from "./AvailableSkillsPanel";
-import { SkillDistributionGovernancePanel } from "./SkillDistributionGovernancePanel";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -31,7 +26,6 @@ interface CatalogState {
 }
 
 export function SkillsHubPanel() {
-  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const {
@@ -107,28 +101,7 @@ export function SkillsHubPanel() {
     catalogReadPending: catalogReadPendingByTab[requestedTab],
   });
   const governanceState = hubGovernance.pageState;
-  const statusCopyKey =
-    governanceState === "ready"
-      ? "ready"
-      : governanceState === "loading"
-        ? "loading"
-      : governanceState === "degraded"
-        ? "degraded"
-        : "permissionLimited";
-  const statusCopyNamespace = "skillsHub.skillManagement";
-  const statusIndicatorClass =
-    governanceState === "ready"
-      ? "bg-[var(--theme-primary)]"
-      : governanceState === "degraded"
-        ? "bg-amber-500"
-        : governanceState === "forbidden"
-          ? "bg-rose-500"
-          : "bg-[var(--theme-text-tertiary)]";
-  const permissionAvailability = resolveGroupAvailability({
-    backed: governanceState !== "degraded",
-    enabled: governanceState === "ready",
-    adminOnly: governanceState === "forbidden",
-  });
+  const isAdmin = isAiAdminUser(user);
 
   useEffect(() => {
     if (!visibleTab) return;
@@ -159,10 +132,6 @@ export function SkillsHubPanel() {
     [requestedTab],
   );
 
-  if (!isAiAdminUser(user)) {
-    return <AvailableSkillsPanel />;
-  }
-
   return (
     <div
       data-phase1c-surface="skills-hub"
@@ -175,60 +144,21 @@ export function SkillsHubPanel() {
       className={workbenchSurface.page}
     >
       <div
-        data-skills-catalog-status
-        className="px-4 pt-2"
+        className="flex min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4 sm:px-6"
+        data-primary-page-scroller
       >
-        <div
-          data-skills-catalog-status-strip
-          className={`${workbenchSurface.catalog.summaryCard} flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`}
-        >
-          <div className="flex min-w-0 flex-1 items-start gap-2">
-            <span
-              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${statusIndicatorClass}`}
-            />
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <h2 className="text-sm font-semibold leading-5 text-[var(--theme-text)]">
-                  {t(`${statusCopyNamespace}.${statusCopyKey}.title`)}
-                </h2>
-                <span
-                  data-skills-hub-state-detail
-                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-[11px] font-semibold text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
-                >
-                  {hubGovernance.requiredPermission}
-                </span>
-                <span
-                  data-skills-hub-state-detail
-                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
-                >
-                  {t(
-                    `skillsHub.permissionSource.${hubGovernance.effectivePermissionsSource}`,
-                  )}
-                </span>
-              </div>
-              <p className="mt-0.5 line-clamp-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                {t(`${statusCopyNamespace}.${statusCopyKey}.description`)}
-              </p>
-            </div>
-          </div>
-          <GovernanceAvailabilityBadge
-            state={permissionAvailability.state}
-            labelKey={permissionAvailability.labelKey}
-          />
-        </div>
-      </div>
-
-      <div className="flex min-h-0 flex-1 px-4 pb-4 pt-2">
         <section
           data-skills-catalog-main
-          className="min-h-0 min-w-0 flex-1 overflow-hidden"
+          className="min-h-0 min-w-0 flex-1"
         >
           {visibleTab === "skills" ? (
-            <div data-skill-catalog-shell className="h-full min-h-0">
+            <div data-skill-catalog-shell className="min-h-0">
               <SkillsPanel
+                allAuthorizedCatalog
                 embedded
-                governedUnavailable={hubGovernance.governedUnavailable}
+                governedUnavailable={isAdmin && hubGovernance.governedUnavailable}
                 onCatalogStateChange={handleCatalogStateChange}
+                showDistributionEditor={isAdmin}
               />
             </div>
           ) : (
@@ -242,7 +172,6 @@ export function SkillsHubPanel() {
           )}
         </section>
       </div>
-      <SkillDistributionGovernancePanel />
     </div>
   );
 }

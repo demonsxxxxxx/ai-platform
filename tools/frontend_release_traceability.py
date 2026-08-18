@@ -6,6 +6,8 @@ import re
 import subprocess
 from typing import Any
 
+import yaml
+
 
 SCHEMA_VERSION = "ai-platform.frontend-release-traceability.v1"
 FRONTEND_PATH = Path("frontend/web")
@@ -14,6 +16,14 @@ FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
 FRONTEND_NGINX_TEMPLATE_PATH = Path("frontend/web/nginx.conf.template")
 FRONTEND_COMPOSE_RUNTIME_PATH = Path("deploy/ai-platform/docker-compose.yml")
 DIST_BUILD_PROVENANCE_FILENAME = "ai-platform-build-provenance.json"
+FRONTEND_NODE_BASE = (
+    "node:22.23.2-bookworm@"
+    "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+)
+FRONTEND_NGINX_BASE = (
+    "nginx:1.30.4-alpine@"
+    "sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46"
+)
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
@@ -27,30 +37,108 @@ STATIC_FRONTEND_PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
-    "tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py "
-    "tests/test_release_authority.py tests/test_runtime_launch_script.py "
+    "tests/test_frontend_ci_workflow.py "
+    "tests/test_require_zero_junit_skips.py "
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
+)
+LINUX_FRONTEND_PYTEST_COMMAND = (
+    "python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp"
 )
 WORKFLOW_STEP_COMMANDS = {
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
     "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
+    "Install Linux contract test dependencies": "python -m pip install pytest",
+    "Verify Linux frontend healthcheck contract": LINUX_FRONTEND_PYTEST_COMMAND,
+}
+WORKFLOW_STEP_JOBS = {
+    "Verify static frontend Python contracts": "frontend",
+    "Verify static frontend deploy helper": "frontend",
+    "Install Linux contract test dependencies": "frontend-image",
+    "Verify Linux frontend healthcheck contract": "frontend-image",
 }
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "python -m pip install pytest pyyaml",
     STATIC_FRONTEND_PYTEST_COMMAND,
+    LINUX_FRONTEND_PYTEST_COMMAND,
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
     "python tools/deploy_frontend_static.py --help",
     "python tools/frontend_packaged_runtime_smoke.py --format json",
     "docker build",
-    "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
+    '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"',
     "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
+    '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"',
     "-f frontend/web/Dockerfile",
     "docker run --rm --entrypoint cat",
     "ai-platform-build-provenance.json",
 ]
+WORKFLOW_COMMAND_JOBS = {
+    "corepack pnpm install --frozen-lockfile": "frontend",
+    "python -m pip install pytest pyyaml": "frontend",
+    STATIC_FRONTEND_PYTEST_COMMAND: "frontend",
+    LINUX_FRONTEND_PYTEST_COMMAND: "frontend-image",
+    "corepack pnpm run ci:verify": "frontend",
+    "python tools/frontend_release_traceability.py --format json": "frontend",
+    "python tools/deploy_frontend_static.py --help": "frontend",
+    "python tools/frontend_packaged_runtime_smoke.py --format json": "frontend",
+    "docker build": "frontend-image",
+    '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"': "frontend-image",
+    "--build-arg AI_PLATFORM_BUILD_DIRTY=false": "frontend-image",
+    '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"': "frontend-image",
+    "-f frontend/web/Dockerfile": "frontend-image",
+    "docker run --rm --entrypoint cat": "frontend-image",
+    "ai-platform-build-provenance.json": "frontend-image",
+}
+
+
+def _validate_workflow_contract_mappings(
+    workflow_commands: list[str],
+    workflow_command_jobs: dict[str, str],
+    workflow_step_commands: dict[str, str],
+    workflow_step_jobs: dict[str, str],
+) -> None:
+    command_keys = set(workflow_commands)
+    if len(command_keys) != len(workflow_commands) or command_keys != set(
+        workflow_command_jobs
+    ):
+        raise RuntimeError("frontend_workflow_command_job_mapping_mismatch")
+    if set(workflow_step_commands) != set(workflow_step_jobs):
+        raise RuntimeError("frontend_workflow_step_job_mapping_mismatch")
+
+
+_validate_workflow_contract_mappings(
+    WORKFLOW_COMMANDS,
+    WORKFLOW_COMMAND_JOBS,
+    WORKFLOW_STEP_COMMANDS,
+    WORKFLOW_STEP_JOBS,
+)
+
+
+class UniqueKeyLoader(yaml.BaseLoader):
+    """Reject duplicate keys while preserving every YAML scalar as text."""
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 PACKAGED_DELIVERY_PATHS = [
     FRONTEND_DOCKERFILE_PATH,
     FRONTEND_NGINX_TEMPLATE_PATH,
@@ -76,6 +164,8 @@ PACKAGED_DELIVERY_FORBIDDEN_TERMS = [
 ]
 PACKAGED_DELIVERY_REQUIRED_TERMS = {
     FRONTEND_DOCKERFILE_PATH: {
+        "dockerfile_node_base_digest_required": f"FROM {FRONTEND_NODE_BASE} AS build",
+        "dockerfile_nginx_base_digest_required": f"FROM {FRONTEND_NGINX_BASE} AS runtime",
         "dockerfile_build_commit_arg_required": "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
         "dockerfile_build_dirty_arg_required": "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
         "dockerfile_build_commit_env_required": "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
@@ -109,7 +199,13 @@ FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS = {
 
 
 def _dockerfile_has_debian_build_stage(content: str) -> bool:
-    return re.search(r"(?im)^\s*FROM\s+node:22-bookworm\s+AS\s+build\s*$", content) is not None
+    return (
+        re.search(
+            rf"(?im)^\s*FROM\s+{re.escape(FRONTEND_NODE_BASE)}\s+AS\s+build\s*$",
+            content,
+        )
+        is not None
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -329,18 +425,66 @@ def _dist_manifest(
     return manifest
 
 
+def _workflow_job_steps(payload: object, job_name: str) -> list[dict[str, object]]:
+    if not isinstance(payload, dict):
+        return []
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, dict):
+        return []
+    job = jobs.get(job_name)
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [step for step in steps if isinstance(step, dict)]
+
+
+def _workflow_job_run_text(payload: object, job_name: str) -> str:
+    runs = []
+    for step in _workflow_job_steps(payload, job_name):
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        active_lines = [line for line in run.splitlines() if not line.lstrip().startswith("#")]
+        runs.append("\n".join(active_lines))
+    return "\n".join(runs)
+
+
 def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
-    missing_commands: list[str] = []
-    missing_step_commands: list[str] = []
+    missing_commands = list(WORKFLOW_COMMANDS)
+    missing_step_commands = list(WORKFLOW_STEP_COMMANDS)
+    yaml_invalid = False
     if workflow_path.exists():
-        workflow_content = workflow_path.read_text(encoding="utf-8")
-        missing_commands = [command for command in WORKFLOW_COMMANDS if command not in workflow_content]
-        missing_step_commands = [
-            step_name
-            for step_name, command in WORKFLOW_STEP_COMMANDS.items()
-            if f"      - name: {step_name}\n        run: {command}" not in workflow_content
-        ]
+        try:
+            workflow = yaml.load(
+                workflow_path.read_text(encoding="utf-8"),
+                Loader=UniqueKeyLoader,
+            )
+        except yaml.YAMLError:
+            yaml_invalid = True
+        else:
+            missing_commands = [
+                command
+                for command in WORKFLOW_COMMANDS
+                if command not in _workflow_job_run_text(
+                    workflow,
+                    WORKFLOW_COMMAND_JOBS[command],
+                )
+            ]
+            missing_step_commands = []
+            for step_name, command in WORKFLOW_STEP_COMMANDS.items():
+                steps = _workflow_job_steps(workflow, WORKFLOW_STEP_JOBS[step_name])
+                if not any(
+                    step.get("name") == step_name
+                    and isinstance(step.get("run"), str)
+                    and step["run"].strip() == command
+                    for step in steps
+                ):
+                    missing_step_commands.append(step_name)
     blockers = []
+    if yaml_invalid:
+        blockers.append("frontend_workflow_yaml_invalid")
     if missing_commands:
         blockers.append("frontend_workflow_enforced_commands_missing")
     if missing_step_commands:

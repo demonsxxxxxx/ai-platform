@@ -3,7 +3,7 @@ ARG AI_PLATFORM_BUILD_DIRTY=unknown
 ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 ARG VITE_MCP_AUTH_SOURCE_ORIGIN=
 
-FROM node:22-bookworm AS build
+FROM node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a AS build
 
 WORKDIR /workspace
 
@@ -34,7 +34,7 @@ COPY .github/workflows/ai-platform-frontend.yml ./.github/workflows/ai-platform-
 WORKDIR /workspace/frontend/web
 RUN corepack pnpm run ci:verify
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46 AS runtime
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown

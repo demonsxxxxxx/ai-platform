@@ -6,9 +6,10 @@ DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
+OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
+S72_COLOCATION_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.s72-colocation.yml"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
-TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
-STALE_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
+REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
 
 def compose_service_text(compose_text: str, service_name: str) -> str:
@@ -20,29 +21,64 @@ def compose_service_text(compose_text: str, service_name: str) -> str:
     return section
 
 
-def test_company_auth_defaults_match_webui_production_backend():
+def env_example_values(env_example_text: str) -> dict[str, str]:
+    return {
+        name: value
+        for line in env_example_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+        for name, _, value in (line.partition("="),)
+    }
+
+
+def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    env_values = env_example_values(env_example_text)
+
+    for service_name in ("api", "worker"):
+        service = compose_service_text(compose_text, service_name)
+        assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
+        assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
+    assert "10.56.0.25" not in compose_text
+    assert env_values["EXISTING_AUTH_BASE_URL"] == "http://10.56.0.25:7263"
+    assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
+
+
+def test_compose_projects_all_browser_authentication_windows_as_twenty_four_hours():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+
+    for service_name in ("api", "worker"):
+        service = compose_service_text(compose_text, service_name)
+        assert 'AI_SESSION_MAX_AGE_SECONDS: "86400"' in service
+        assert 'AUTH_CONTEXT_MAX_AGE_SECONDS: "86400"' in service
+        assert 'COMPANY_AUTHORITY_FRESHNESS_SECONDS: "86400"' in service
+    env_values = env_example_values(ENV_EXAMPLE_FILE.read_text(encoding="utf-8"))
+    assert "AI_SESSION_MAX_AGE_SECONDS" not in env_values
+    assert "AUTH_CONTEXT_MAX_AGE_SECONDS" not in env_values
+    assert "COMPANY_AUTHORITY_FRESHNESS_SECONDS" not in env_values
+
+
+def test_production_cors_origin_is_operator_managed_and_browser_visible():
     settings_text = Path("app/settings.py").read_text(encoding="utf-8")
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    env_values = env_example_values(env_example_text)
+    retired_origin = "http://10.56.0.211:18001"
 
-    assert 'existing_auth_base_url: str = Field(default="http://10.56.0.25:7263")' in settings_text
-    assert 'existing_user_info_base_url: str = Field(default="http://10.56.0.25:5166")' in settings_text
-    assert "EXISTING_AUTH_BASE_URL:-http://10.56.0.25:7263" in compose_text
-    assert "EXISTING_USER_INFO_BASE_URL:-http://10.56.0.25:5166" in compose_text
-    assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_example_text
-    assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_example_text
-    assert "EXISTING_AUTH_BASE_URL=http://10.56.0.211" not in env_example_text
-
-
-def test_cors_defaults_include_current_211_frontend_origin():
-    settings_text = Path("app/settings.py").read_text(encoding="utf-8")
-    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
-    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
-    current_origin = "http://10.56.0.211:18001"
-
-    assert current_origin in settings_text
-    assert compose_text.count(current_origin) == 2
-    assert current_origin in env_example_text
+    assert retired_origin not in settings_text
+    assert retired_origin not in compose_text
+    for service_name in ("api", "worker"):
+        service = compose_service_text(compose_text, service_name)
+        assert (
+            "CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:?set CORS_ALLOW_ORIGINS "
+            "to the browser-visible frontend origin}"
+        ) in service
+    assert env_values["CORS_ALLOW_ORIGINS"] == "https://ai-platform.example.internal"
+    assert "localhost" not in env_values["CORS_ALLOW_ORIGINS"]
+    assert retired_origin not in env_values["CORS_ALLOW_ORIGINS"]
+    runbook = Path("docs/operations/release-operations-runbook.md").read_text(encoding="utf-8")
+    assert "browser-visible frontend origin" in runbook
+    assert "defaults to `18001`" in runbook
 
 
 def test_worker_is_default_required_service_in_compose():
@@ -68,13 +104,24 @@ def test_worker_compose_forwards_memory_retention_cleanup_settings():
         assert f"{name}: ${{{name}:-{default}}}" in worker_section
 
 
+def test_skill_manifest_reference_transport_has_no_rollout_switch():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    api_section = compose_service_text(compose_text, "api")
+    worker_section = compose_service_text(compose_text, "worker")
+    env_values = env_example_values(ENV_EXAMPLE_FILE.read_text(encoding="utf-8"))
+
+    assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in api_section
+    assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in worker_section
+    assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in env_values
+
+
 def test_run_api_with_deploy_env_derives_database_and_s3_settings():
     script = Path("tools/run_api_with_deploy_env.sh")
 
     text = script.read_text(encoding="utf-8")
 
-    assert TARGET_211_DEPLOY_ENV in text
-    assert STALE_211_DEPLOY_ENV not in text
+    assert REPOSITORY_DEPLOY_ENV in text
+    assert "/home/" not in text
     assert 'PORT="${AI_PLATFORM_PORT:-8020}"' in text
     assert "Default: 8020" in text
     assert "18080" not in text
@@ -140,6 +187,20 @@ def test_worker_compose_forwards_worker_concurrency_setting_only_to_worker():
     assert name not in api_section
 
 
+def test_compose_and_example_use_document_workflow_sdk_timeout_default():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS=1200" in env_example_text
+    assert (
+        compose_text.count(
+            "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS: ${CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-1200}"
+        )
+        == 2
+    )
+    assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-300}" not in compose_text
+
+
 def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_server():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
@@ -166,11 +227,12 @@ def test_worker_compose_forwards_maintenance_interval_setting():
     assert name not in api_section
 
 
-def test_poc_gate_default_env_path_matches_repo_local_211_deploy():
+def test_poc_gate_default_env_path_is_repository_relative():
     text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
 
-    assert f'DEFAULT_DEPLOY_ENV = "{TARGET_211_DEPLOY_ENV}"' in text
-    assert STALE_211_DEPLOY_ENV not in text
+    assert 'REPOSITORY_ROOT = Path(__file__).resolve().parents[1]' in text
+    assert 'DEFAULT_DEPLOY_ENV = str(REPOSITORY_ROOT / "deploy/ai-platform/.env")' in text
+    assert "/home/" not in text
 
 
 def test_poc_gate_validates_api_run_id_before_psql_interpolation():
@@ -213,7 +275,11 @@ def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabli
 
     assert "ARG APT_MIRROR" in content
     assert "ARG APT_SECURITY_MIRROR" in content
-    assert content.count("FROM python:3.11-slim-bookworm") == 2
+    python_base = (
+        "python:3.13.14-slim-bookworm@"
+        "sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8"
+    )
+    assert content.count(f"FROM {python_base}") == 2
     assert "http://deb.debian.org/debian-security" in content
     assert "https://deb.debian.org/debian-security" in content
     assert "http://security.debian.org/debian-security" in content
@@ -227,7 +293,7 @@ def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabli
 
 
 def test_runbook_documents_ustc_pair_preflight_no_deploy_probe_and_upstream_rollback():
-    text = Path("docs/operations/211-release-operations-runbook.md").read_text(encoding="utf-8")
+    text = Path("docs/operations/release-operations-runbook.md").read_text(encoding="utf-8")
 
     assert 'https://mirrors.ustc.edu.cn/debian"' in text
     assert 'https://mirrors.ustc.edu.cn/debian-security"' in text
@@ -318,6 +384,7 @@ def test_compose_workspace_init_is_narrow_and_blocks_api_and_worker_until_succes
     assert init["network_mode"] == "none"
     assert init["read_only"] is True
     assert init["restart"] == "no"
+    assert init["ulimits"] == {"nofile": {"soft": 65536, "hard": 65536}}
     assert init["cap_drop"] == ["ALL"]
     assert set(init["cap_add"]) == {"CHOWN", "DAC_READ_SEARCH", "SETUID", "SETGID"}
     assert init["entrypoint"] == ["python", "-m", "app.runtime.sandbox.workspace_permissions"]
@@ -404,14 +471,13 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
         environment = overlay["services"][service_name]["environment"]
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
+        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
         for required in (
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
             "SANDBOX_RUNTIME_SUBJECT",
             "OPENSANDBOX_DOMAIN",
             "OPENSANDBOX_PROTOCOL",
             "OPENSANDBOX_API_KEY",
-            "OPENSANDBOX_ATTESTATION_PATH",
-            "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
             "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
@@ -435,6 +501,26 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
 
+def test_opensandbox_internal_test_overlay_explicitly_forwards_model_credentials():
+    import yaml
+
+    overlay = yaml.safe_load(OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8"))
+
+    assert set(overlay["services"]) == {"api", "worker"}
+    for service_name in ("api", "worker"):
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["DEPLOYMENT_ENVIRONMENT"] == "test"
+        assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS"] == "true"
+        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""
+        assert "SANDBOX_EGRESS_PROOF_SIGNING_KEY" not in environment
+        assert "volumes" not in overlay["services"][service_name]
+
+
 def test_compose_does_not_mount_docker_socket_by_default():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     sandbox_text = SANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
@@ -447,16 +533,20 @@ def test_compose_does_not_mount_docker_socket_by_default():
 def test_compose_requires_non_empty_sandbox_callback_token():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    env_values = env_example_values(env_example_text)
 
     assert "SANDBOX_CALLBACK_TOKEN: ${SANDBOX_CALLBACK_TOKEN:?set SANDBOX_CALLBACK_TOKEN}" in compose_text
-    assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_example_text
+    assert env_values["SANDBOX_CALLBACK_TOKEN"] == ""
+    assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" not in env_example_text
 
 
 def test_env_example_documents_sandbox_egress_policy_defaults():
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    colocation_text = S72_COLOCATION_COMPOSE_FILE.read_text(encoding="utf-8")
 
     for expected in [
-        "SANDBOX_CONTAINER_PROVIDER=fake",
+        "SANDBOX_CONTAINER_PROVIDER=opensandbox",
+        "SANDBOX_SECURITY_PROFILE=governed",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
@@ -469,6 +559,20 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
         "SANDBOX_CALLBACK_HOST_GATEWAY=",
     ]:
         assert expected in env_example_text
+
+    assert "SANDBOX_CONTAINER_PROVIDER=fake" not in env_example_text
+    assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" not in env_example_text
+    assert colocation_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
+    assert colocation_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
+    assert colocation_text.count(
+        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: http://127.0.0.1:18043"
+    ) == 2
+    assert colocation_text.count(
+        "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: http://127.0.0.1:18043/openai/v1"
+    ) == 2
+    assert colocation_text.count(
+        "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: http://127.0.0.1:18043/anthropic"
+    ) == 2
 
 
 def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():

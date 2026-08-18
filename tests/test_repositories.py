@@ -13,6 +13,21 @@ import pytest
 
 from app import agent_conversation_repository, repositories
 from app import run_event_repository
+from app.agent_apps.infrastructure import postgres as agent_profile_persistence
+from app.conversations.infrastructure import postgres as conversation_persistence
+from app.persistence_limits import RUN_INPUT_MAX_BYTES
+from app.platform.postgres.errors import (
+    RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
+)
+from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
+from app.skills.infrastructure import postgres as skill_persistence
+from app.runs.api import RunTerminalizationProgress
+from app.platform.postgres.sandbox_leases import (
+    SandboxLeaseReleaseScopeMismatchError,
+    create_sandbox_lease,
+    fence_sandbox_lease_release,
+)
+from app.streaming import redis as streaming_redis
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -23,7 +38,6 @@ from app.repositories import (
     count_active_runs_for_user,
     create_artifact,
     create_context_snapshot,
-    create_sandbox_lease,
     create_tool_permission_request,
     create_run,
     admin_delete_memory_record,
@@ -57,6 +71,51 @@ from app.repositories import (
 
 async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
+
+
+def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
+    canonical_names = (
+        "acquire_agent_profile_lifecycle_lock",
+        "create_agent_profile_revision",
+        "ensure_agent_profile_identity",
+        "get_agent_profile_aggregate",
+        "get_agent_profile_revision",
+        "get_bound_published_agent_profile",
+        "get_current_published_agent_profile",
+        "list_agent_profile_revision_history",
+        "list_current_published_agent_profiles",
+        "list_latest_agent_profile_revisions",
+        "record_agent_profile_draft",
+        "record_agent_profile_publication",
+        "record_agent_profile_withdrawal",
+    )
+
+    for name in canonical_names:
+        assert getattr(repositories, name) is getattr(agent_profile_persistence, name)
+
+    assert RepositoryConflictError is PlatformRepositoryConflictError
+
+
+def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
+    canonical_names = (
+        "canonical_builtin_tool_identities",
+        "get_skill_version",
+        "run_skill_snapshot_source_json",
+        "validate_replay_skill_manifests",
+    )
+
+    for name in canonical_names:
+        assert getattr(repositories, name) is getattr(skill_persistence, name)
+
+    assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
+
+
+@pytest.fixture(autouse=True)
+def _isolate_legacy_repository_fakes_from_sse_terminal_extension(monkeypatch):
+    async def no_terminal_intent(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(streaming_redis, "ensure_run_terminal_intent", no_terminal_intent)
 
 
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
@@ -343,7 +402,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[21] is None else "database-timestamp"}
+                    {"published_at": None if params[32] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -372,30 +431,115 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
-          model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
-          avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
-          allowed_user_ids, created_by, published_by, published_at,
+          model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+          avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
+          allowed_user_ids, welcome_message, starter_prompts, capability_summary,
+          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+          permissions_and_data_access_notice, avatar_asset_id,
+          created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
-                case when %s::text is null then null else now() end, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+                %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
+                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
+                %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-                  model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
-                  avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
-                  allowed_user_ids,
+                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+                  avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
+                  allowed_user_ids, welcome_message, starter_prompts, capability_summary,
+                  recommended_tasks, supported_input_types,
+                  supported_file_types as legacy_supported_file_types, expected_outputs,
+                  permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """.split()
     )
-    assert len(params) == insert_sql.count("%s") == 24
+    assert len(params) == insert_sql.count("%s") == 35
     assert params == (
         "tenant-a", "agt_support", 8, expected_legacy_status, status,
         "Support assistant", "Approved support helper.",
-        "Private instruction", "model-a", "general-chat", "version-a", '["mcp-a", "mcp-b"]',
-        "a" * 64, "builtin:agent", "general", "tenant", "[]", "[]", "[]",
+        "Private instruction", "model-a", "general-chat", "version-a",
+        '[{"skill_id": "general-chat", "expected_version": "version-a"}]',
+        '["mcp-a", "mcp-b"]',
+        "a" * 64, "builtin:agent", "", "general", "tenant", "[]", "[]", "[]",
+        "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
         "creator-a", published_by, published_by, published_from_revision, None,
     )
     assert saved["published_at"] == expected_published_at
+
+
+@pytest.mark.asyncio
+async def test_list_published_agent_profiles_searches_safe_public_use_fields():
+    class RowsCursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, statement, params):
+            self.sql = " ".join(statement.split())
+            self.params = params
+            return RowsCursor()
+
+    conn = Connection()
+    rows = await repositories.list_current_published_agent_profiles(
+        conn,
+        tenant_id="company-default",
+        query="内部通知润色",
+        category="writing",
+        limit=500,
+    )
+
+    assert rows == []
+    assert "normalize(agent_profile_revisions.name, NFKC) ilike %s" in conn.sql
+    assert "normalize(agent_profile_revisions.description, NFKC) ilike %s" in conn.sql
+    assert "normalize(agent_profile_revisions.capability_summary, NFKC) ilike %s" in conn.sql
+    assert "jsonb_array_elements_text" in conn.sql
+    assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
+    assert "normalize(recommended_task.value, NFKC) ilike %s" in conn.sql
+    assert conn.sql.count("escape E'\\\\'") == 4
+    assert conn.params == (
+        "company-default",
+        "%内部通知润色%",
+        "%内部通知润色%",
+        "%内部通知润色%",
+        "%内部通知润色%",
+        "writing",
+        200,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_published_agent_profiles_escapes_like_metacharacters():
+    class RowsCursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.params = None
+
+        async def execute(self, _statement, params):
+            self.params = params
+            return RowsCursor()
+
+    conn = Connection()
+    await repositories.list_current_published_agent_profiles(
+        conn,
+        tenant_id="company-default",
+        query="%_\\",
+    )
+
+    assert conn.params == (
+        "company-default",
+        "%\\%\\_\\\\%",
+        "%\\%\\_\\\\%",
+        "%\\%\\_\\\\%",
+        "%\\%\\_\\\\%",
+        200,
+    )
 
 
 class TwoSnapshotFileMembershipConnection:
@@ -767,7 +911,8 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "from messages" in messages_sql
     assert "tenant_id = %s and session_id = %s" in messages_sql
     assert "order by created_at asc, id asc" in messages_sql
-    assert messages_params == ("tenant-a", "session-a")
+    assert "limit %s" in messages_sql
+    assert messages_params == ("tenant-a", "session-a", 201)
 
 
 @pytest.mark.asyncio
@@ -954,7 +1099,52 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
     assert "messages.session_id = %s" in sql
     assert "sessions.user_id = %s" in sql
     assert "order by messages.created_at asc, messages.id asc" in sql
-    assert params == ("tenant-a", "session-a", "user-a")
+    assert "limit %s" in sql
+    assert params == ("tenant-a", "session-a", "user-a", 101)
+
+    boundary = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    await repositories.list_authorized_messages(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        cursor=(boundary, "msg-a"),
+        limit=50,
+    )
+    sql, params = conn.calls[-1]
+    assert "(messages.created_at, messages.id) > (%s, %s)" in sql
+    assert params == ("tenant-a", "session-a", "user-a", boundary, "msg-a", 50)
+
+
+@pytest.mark.asyncio
+async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
+    class RetentionConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if len(self.calls) == 1:
+                return SingleRowCursor({"id": "artifact-a", "tenant_id": "tenant-a", "storage_key": "a"})
+            return FakeCursor()
+
+    conn = RetentionConnection()
+    await repositories.queue_expired_artifacts_for_deletion(conn, limit=20)
+    lock_sql, lock_params = conn.calls[0]
+    write_sql, write_params = conn.calls[1]
+    assert "for update of artifacts skip locked" in lock_sql
+    assert "sessions.status <> 'active'" in lock_sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in lock_sql
+    assert lock_params == (20,)
+    assert "insert into object_deletion_outbox" in write_sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert json.loads(write_params[0]) == ["artifact-a"]
+
+    await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
+    sql, params = conn.calls[-1]
+    assert "for update of memory_records skip locked" in sql
+    assert "snapshots.included_memory_record_ids ? memory_records.id" in sql
+    assert "sessions.status = 'active'" in sql
+    assert "delete from memory_records" in sql
+    assert params == (7, 25)
 
 
 @pytest.mark.asyncio
@@ -1343,7 +1533,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
 
     monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
     monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     skill = await repositories.authorize_replay_run_capabilities(
         object(),
@@ -1403,7 +1593,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
 
     monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
     monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_replay_run_capabilities(
@@ -1453,7 +1643,7 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
         }
 
     monkeypatch.setattr(repositories, "_authorize_run_capabilities", shared_authorizer)
-    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+    monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     await repositories.authorize_replay_run_capabilities(
         object(),
@@ -1535,7 +1725,19 @@ def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
 
 
 @pytest.mark.asyncio
-async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writes(monkeypatch):
+@pytest.mark.parametrize(
+    "malformed_refs",
+    [
+        pytest.param("mixed-string", id="mixed-string"),
+        pytest.param("mixed-null", id="mixed-null"),
+        pytest.param("not-a-list", id="not-a-list"),
+        pytest.param(None, id="null"),
+    ],
+)
+async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_before_writes(
+    monkeypatch,
+    malformed_refs,
+):
     source_manifest = {
         "skill_id": "department-review",
         "version": "hash-v1",
@@ -1545,6 +1747,13 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
         "dependency_ids": [],
         "mcp_tool_ids": [],
     }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+    transported_refs = {
+        "mixed-string": [source_ref, "unexpected"],
+        "mixed-null": [source_ref, None],
+        "not-a-list": "unexpected",
+        None: None,
+    }[malformed_refs]
 
     async def source_run(conn, **kwargs):
         return {
@@ -1560,9 +1769,54 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
                 "executor_type": "claude-agent-worker",
                 "skill_version": "hash-v1",
                 "release_decision": {"selected_version": "hash-v1", "selected_track": "current"},
-                "skill_manifests": [source_manifest],
+                "skill_manifests": transported_refs,
             },
         }
+
+    monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+
+    with pytest.raises(RepositoryConflictError, match="run_skill_materialization_identity_mismatch"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
+        )
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writes(monkeypatch):
+    source_manifest = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": [],
+    }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+
+    async def source_run(conn, **kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "default",
+            "session_id": "ses-source",
+            "agent_id": "general-agent",
+            "skill_id": "department-review",
+            "principal_roles": ["reviewer"],
+            "principal_department_id": "qa",
+            "input_json": {
+                "input": {"message": "review"},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-v1",
+                "release_decision": {"selected_version": "hash-v1", "selected_track": "current"},
+                "skill_manifests": [source_ref],
+            },
+        }
+
+    async def materialize(*args, **kwargs):
+        return [source_manifest]
 
     async def mismatch(*args, **kwargs):
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
@@ -1571,6 +1825,7 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
         raise AssertionError("source snapshot mismatch must deny before replay authorization or writes")
 
     monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+    monkeypatch.setattr(repositories, "materialize_run_skill_manifests", materialize)
     monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", mismatch)
     monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbidden_replay)
 
@@ -1603,6 +1858,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "selected_version": "hash-v1",
         "selected_track": "current",
     }
+    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
     source = {
         "id": "run-source",
         "tenant_id": "tenant-a",
@@ -1616,11 +1872,11 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "auth_source": "session-token",
         "input_json": {
             "input": {"message": "retry"},
-            "file_ids": [],
+            "file_ids": ["file-prior"],
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-v1",
             "release_decision": source_release,
-            "skill_manifests": [source_manifest],
+            "skill_manifests": [source_ref],
         },
     }
     calls = {}
@@ -1652,8 +1908,30 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     monkeypatch.setattr(repositories, "append_message", no_write)
     monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", insert_snapshots)
 
+    class MaterializationCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": source_manifest["skill_id"],
+                    "materialization_sha256": source_ref[
+                        "materialization_sha256"
+                    ],
+                    "manifest_json": source_manifest,
+                }
+            ]
+
+    class MaterializationConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "from run_skill_materializations" in normalized:
+                self.calls.append((normalized, params))
+                assert params == ("tenant-a", "run-source")
+                return MaterializationCursor()
+            return await super().execute(sql, params)
+
+    conn = MaterializationConnection()
     copied = await repositories.copy_run_as_new_task(
-        RecordingConnection(),
+        conn,
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-source",
@@ -1667,7 +1945,146 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert calls["snapshots"]["skill_manifests"] == [source_manifest]
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
-    assert copied["skill_manifests"] == [source_manifest]
+    assert copied["skill_manifests"] == repositories.skill_manifest_refs([source_manifest])
+    assert "files" not in copied["skill_manifests"][0]
+    assert "content_base64" not in json.dumps(copied["skill_manifests"])
+    assert copied["file_ids"] == ["file-prior"]
+    assert not any(sql.startswith("update files") for sql, _params in conn.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["copy", "retry", "resume"])
+async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless_harness(
+    monkeypatch,
+    operation,
+):
+    source = {
+        "id": "run-legacy",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "session_id": "session-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "execution_kind": "skill",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "principal_roles": ["user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+        "input_json": {
+            "input": {"message": "continue the historical chat"},
+            "file_ids": ["file-prior"],
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v1",
+        },
+    }
+    calls = {}
+
+    async def get_source(*args, **kwargs):
+        return source
+
+    async def authorize_mcp(conn, **kwargs):
+        calls["mcp"] = kwargs
+        return []
+
+    async def completed(*args, **kwargs):
+        return {"step-a": "done"}, {}
+
+    async def no_active_child(*args, **kwargs):
+        return None
+
+    async def no_write(*args, **kwargs):
+        return None
+
+    async def forbid_skill_authority(*args, **kwargs):
+        raise AssertionError("legacy base chat must not re-enter Skill replay authority")
+
+    async def record_message(conn, **kwargs):
+        calls["message"] = kwargs
+
+    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
+    monkeypatch.setattr(repositories, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbid_skill_authority)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", forbid_skill_authority)
+    monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", forbid_skill_authority)
+    monkeypatch.setattr(repositories, "_completed_steps_for_resume", completed)
+    monkeypatch.setattr(repositories, "get_active_retry_for_source_run", no_active_child)
+    monkeypatch.setattr(repositories, "get_active_resume_for_source_run", no_active_child)
+    monkeypatch.setattr(repositories, "append_event", no_write)
+    monkeypatch.setattr(repositories, "append_message", record_message)
+    monkeypatch.setattr(repositories, "append_audit_log", no_write)
+
+    conn = RecordingConnection()
+    operation_function = {
+        "copy": repositories.copy_run_as_new_task,
+        "retry": repositories.retry_run_as_new_task,
+        "resume": repositories.resume_run_as_new_task,
+    }[operation]
+    copied = await operation_function(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-legacy",
+    )
+
+    assert calls["mcp"]["tool_ids"] == []
+    assert copied["execution_kind"] == "harness_chat"
+    assert copied["skill_id"] is None
+    assert copied["schema_version"] == "ai-platform.run-payload.v2"
+    assert copied["skill_version"] is None
+    assert copied["release_decision"] == {}
+    assert copied["skill_manifests"] == []
+    assert copied["file_ids"] == ["file-prior"]
+    assert calls["message"]["metadata_json"]["skill_id"] is None
+
+    insert_sql, insert_params = next(
+        (sql, params) for sql, params in conn.calls if sql.startswith("insert into runs")
+    )
+    assert "execution_kind, skill_id" in insert_sql
+    assert insert_params[6:8] == ("harness_chat", None)
+    persisted_input = json.loads(insert_params[19])
+    assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
+    assert persisted_input["skill_manifests"] == []
+
+
+@pytest.mark.asyncio
+async def test_copy_run_rejects_expanded_resume_input_before_generation_write(monkeypatch):
+    async def get_source(*_args, **_kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "workspace-a",
+            "session_id": "session-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "principal_roles": ["user"],
+            "principal_department_id": "qa",
+            "auth_source": "company-login",
+            "input_json": {"input": {"message": "retry"}},
+        }
+
+    async def allow(*_args, **_kwargs):
+        return None
+
+    async def oversized_resume(*_args, **_kwargs):
+        return {"step-a": {"value": "x" * RUN_INPUT_MAX_BYTES}}, {}
+
+    async def forbidden_generation(*_args, **_kwargs):
+        raise AssertionError("oversized copied input must fail before session generation allocation")
+
+    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
+    monkeypatch.setattr(repositories, "require_replay_source_identity", lambda **_kwargs: None)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", allow)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", allow)
+    monkeypatch.setattr(repositories, "_completed_steps_for_resume", oversized_resume)
+    monkeypatch.setattr(repositories, "allocate_session_run_generation", forbidden_generation)
+
+    with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
+        )
 
 
 @pytest.mark.asyncio
@@ -1790,7 +2207,60 @@ async def test_capability_distribution_projection_rejects_malformed_department_i
 
 
 @pytest.mark.asyncio
-async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_bypass(monkeypatch):
+async def test_principal_agent_projection_keeps_skillless_chat_without_skill_distribution(
+    monkeypatch,
+):
+    async def fake_list_agents(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+        return [
+            {
+                "id": "general-agent",
+                "agent_type": "chat",
+                "default_skill_id": None,
+                "status": "active",
+                "skill_version": None,
+            }
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return []
+
+    async def fail_audit(*args, **kwargs):
+        raise AssertionError(
+            "skillless Harness discovery must not audit a Skill bypass"
+        )
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(
+        repositories,
+        "list_capability_distribution_rows",
+        fake_list_distributions,
+    )
+    monkeypatch.setattr(repositories, "append_audit_log", fail_audit)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="user-a",
+        department_id="",
+        roles=[],
+        is_admin=False,
+        permissions=["chat:read"],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "general-agent"
+    assert rows[0]["default_skill_id"] is None
+    assert rows[0]["skill_version"] is None
+    assert rows[0]["skill_version_status"] is None
+    assert rows[0]["input_modes"] == ["chat"]
+    assert rows[0]["output_modes"] == ["answer"]
+
+
+@pytest.mark.asyncio
+async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_bypass(
+    monkeypatch,
+):
     rows = [
         {
             "id": "general-agent",
@@ -2285,11 +2755,27 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
             return self.row
 
     class Connection:
+        def __init__(self):
+            self.calls = []
+
         async def execute(self, sql, params=()):
+            self.calls.append((sql, params))
             compact = " ".join(sql.split())
             if compact.startswith("select metadata_json"):
                 return Cursor({"metadata_json": {"archived_at": "invalid"}})
             assert "metadata_json ? 'archived_at'" not in compact
+            if compact.startswith("update tenant_capability_distributions"):
+                assert compact.count("%s") == len(params)
+                assert params == (
+                    True,
+                    True,
+                    "admin-a",
+                    "tenant-a",
+                    "skill",
+                    "qa-file-reviewer",
+                )
+                assert "catalog_generation" not in compact
+                assert "catalog_status" not in compact
             return Cursor(
                 {
                     "id": "capdist-a",
@@ -2306,8 +2792,9 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
             )
 
     monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
     row = await repositories.toggle_capability_distribution_row(
-        Connection(),
+        conn,
         tenant_id="tenant-a",
         capability_kind="skill",
         capability_id="qa-file-reviewer",
@@ -2316,6 +2803,86 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
     )
 
     assert row["status"] == "active"
+    update_params = next(params for sql, params in conn.calls if "update tenant_capability_distributions" in sql)
+    assert update_params == (True, True, "admin-a", "tenant-a", "skill", "qa-file-reviewer")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "distribution_status", "expected_catalog_status"),
+    [(True, "active", "refresh_required"), (False, "disabled", "disabled")],
+)
+async def test_mcp_distribution_toggle_invalidates_server_catalog(
+    monkeypatch,
+    enabled,
+    distribution_status,
+    expected_catalog_status,
+):
+    async def no_backfill(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if "pg_advisory_xact_lock" in compact:
+                return Cursor(None)
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": {}})
+            if compact.startswith("update tenant_capability_distributions"):
+                assert "catalog_status" not in compact
+                assert params == (
+                    enabled,
+                    enabled,
+                    "admin-a",
+                    "tenant-a",
+                    "mcp_server",
+                    "qa-mcp",
+                )
+                return Cursor(
+                    {
+                        "id": "capdist-mcp",
+                        "tenant_id": "tenant-a",
+                        "capability_kind": "mcp_server",
+                        "capability_id": "qa-mcp",
+                        "status": distribution_status,
+                        "visible_to_user": True,
+                        "scope_mode": "allowlist",
+                        "department_ids": [],
+                        "allowed_roles": [],
+                        "metadata_json": {},
+                    }
+                )
+            if compact.startswith("update mcp_servers"):
+                assert "catalog_generation = catalog_generation + 1" in compact
+                assert "catalog_discovered_count = 0" in compact
+                assert "catalog_selectable_count = 0" in compact
+                assert params == (enabled, enabled, "tenant-a", "qa-mcp")
+                assert expected_catalog_status in compact
+                return Cursor({"name": "qa-mcp"})
+            raise AssertionError(compact)
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    row = await repositories.toggle_capability_distribution_row(
+        Connection(),
+        tenant_id="tenant-a",
+        capability_kind="mcp_server",
+        capability_id="qa-mcp",
+        enabled=enabled,
+        updated_by="admin-a",
+    )
+
+    assert row["status"] == distribution_status
 
 
 @pytest.mark.asyncio
@@ -3355,6 +3922,9 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
     files_sql, files_params = conn.calls[-1]
     assert "sessions.status = 'active'" in files_sql
     assert "runs.session_id = files.session_id" in files_sql
+    assert "authorized_snapshot.included_file_ids ? files.id" in files_sql
+    assert "runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id" in files_sql
+    assert "runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id" in files_sql
     assert "runs.session_generation <" in files_sql
     assert "order by runs.session_generation desc" in files_sql
     assert "order by session_generation asc" in files_sql
@@ -3630,12 +4200,12 @@ async def test_list_workbench_skills_projects_distribution_without_legacy_status
         async def fetchall(self):
             return [
                 {
-                    "skill_id": "general-chat",
-                    "name": "General Chat",
+                    "skill_id": "qa-file-reviewer",
+                    "name": "QA Word Review",
                     "version": "0.1.0",
-                    "description": "Chat",
-                    "input_modes": ["chat"],
-                    "output_modes": ["answer"],
+                    "description": "Review",
+                    "input_modes": ["docx"],
+                    "output_modes": ["reviewed_docx"],
                     "executor_type": "claude-agent-worker",
                     "lifecycle_status": "active",
                     "status": "disabled",
@@ -3656,6 +4226,7 @@ async def test_list_workbench_skills_projects_distribution_without_legacy_status
     assert "tenant_capability_distributions" in conn.sql
     assert "tenant_workbench_skills" not in conn.sql
     assert "skills.status as lifecycle_status" in conn.sql
+    assert "general-chat" not in conn.sql
 
 
 @pytest.mark.asyncio
@@ -3688,6 +4259,11 @@ async def test_list_workbench_capabilities_uses_global_lifecycle_and_distributio
     assert "skills.status" in conn.sql
     assert "tenant_capability_distributions.status" in conn.sql
     assert "tenant_capability_distributions.visible_to_user" in conn.sql
+    assert "left join skills on skills.id = agents.default_skill_id" in conn.sql
+    assert (
+        "when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'"
+        in conn.sql
+    )
     assert conn.params == ("tenant-a", "tenant-a")
 
 
@@ -4572,6 +5148,59 @@ async def test_create_run_persists_g2_contract_fields():
 
 
 @pytest.mark.asyncio
+async def test_create_run_persists_skillless_harness_identity():
+    conn = RecordingConnection()
+
+    await create_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        input_json={"execution_kind": "harness_chat"},
+    )
+
+    sql, params = conn.calls[-1]
+    assert "execution_kind, skill_id" in sql
+    assert "harness_chat" in params
+    harness_index = params.index("harness_chat")
+    assert params[harness_index + 1] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("execution_kind", "skill_id"),
+    [
+        ("harness_chat", "general-chat"),
+        ("skill", None),
+        ("unknown", None),
+    ],
+)
+async def test_create_run_rejects_execution_skill_identity_mismatch(
+    execution_kind,
+    skill_id,
+):
+    with pytest.raises(
+        repositories.RepositoryConflictError,
+        match="run_execution_skill_identity_mismatch",
+    ):
+        await create_run(
+            RecordingConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            execution_kind=execution_kind,
+            skill_id=skill_id,
+            input_json={},
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_run_binds_normalized_auth_snapshot():
     conn = RecordingConnection()
 
@@ -4692,10 +5321,9 @@ async def test_create_session_validates_workspace_tenant_before_insert(monkeypat
         calls.append(("ensure_workspace", tenant_id, workspace_id, len(conn.calls)))
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
-        raising=False,
     )
     conn = RecordingConnection()
 
@@ -4718,7 +5346,7 @@ async def test_create_session_conflict_is_atomic_and_requires_exact_binding(monk
         assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
     )
@@ -4754,7 +5382,7 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
         assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
 
     monkeypatch.setattr(
-        repositories,
+        conversation_persistence,
         "ensure_workspace_belongs_to_tenant",
         ensure_workspace_belongs_to_tenant,
     )
@@ -4782,7 +5410,40 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
         "Agent A",
         None,
         None,
+        "conversation",
     )
+    assert "sessions.purpose = excluded.purpose" in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_create_session_reports_whether_an_exact_operation_created_the_row(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        conversation_persistence,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection({"id": "ses_agent_operation", "created": False})
+
+    result = await repositories.create_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="agent-a",
+        title="Agent A",
+        session_id="ses_agent_operation",
+        admitted_agent_profile_revision=3,
+        admitted_agent_profile_hash="profile-hash",
+        return_created=True,
+    )
+
+    assert result == ("ses_agent_operation", False)
+    assert "on conflict (id) do update" in conn.sql
+    assert "sessions.title = excluded.title" in conn.sql
+    assert "(xmax = 0) as created" in conn.sql
 
 
 @pytest.mark.asyncio
@@ -4855,6 +5516,9 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
         principal_roles=[" QA-Operator ", "qa operator", "User"],
         principal_department_id="qa",
         auth_source="trusted-header",
+        authz_policy_version=7,
+        authority_source="identity-gateway",
+        authority_checked_at="2026-08-12T01:02:03Z",
     )
 
     sql, params = conn.calls[-1]
@@ -4862,10 +5526,16 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
     assert "principal_roles = %s::jsonb" in sql
     assert "principal_department_id = %s" in sql
     assert "auth_source = %s" in sql
+    assert "authz_policy_version = %s" in sql
+    assert "authority_source = %s" in sql
+    assert "authority_checked_at = %s" in sql
     assert params == (
         json.dumps(["qa-operator", "qa operator", "user"], ensure_ascii=False),
         "qa",
         "trusted-header",
+        7,
+        "identity-gateway",
+        "2026-08-12T01:02:03Z",
         "tenant-a",
         "run-a",
     )
@@ -4878,6 +5548,7 @@ async def test_locked_run_query_projects_complete_auth_snapshot():
     await repositories.mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
 
     sql, _params = conn.calls[0]
+    assert "runs.execution_kind" in sql
     assert "runs.principal_roles" in sql
     assert "runs.principal_department_id" in sql
     assert "runs.auth_source" in sql
@@ -5054,6 +5725,8 @@ async def test_create_context_snapshot_persists_scope_and_context_contract():
     assert "eligible_message_count = jsonb_array_length(message_ids)" in sql
     assert "eligible_file_count = jsonb_array_length(file_ids)" in sql
     assert "eligible_artifact_count = jsonb_array_length(artifact_ids)" in sql
+    assert "locked_artifacts as materialized" in sql
+    assert "for update of artifacts" in sql
     assert "eligible_memory_record_count = jsonb_array_length(memory_record_ids)" in sql
     assert "runs.workspace_id = %s" not in sql
     assert "runs.session_id = %s" not in sql
@@ -7671,8 +8344,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
                 message="任务已取消",
                 payload={"visible_to_user": True},
             )
-            return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
-        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled")
+            return RunTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled")
 
     async def record_event(_conn, **kwargs):
         events.append(kwargs["event_type"])
@@ -8218,7 +8891,7 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
         return {"permission_terminalization_target": "failed"}
 
     async def progress(*_args, **_kwargs):
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def no_leases(*_args, **_kwargs):
         return []
@@ -8243,7 +8916,7 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     assert result == {
         "run_id": "run-a",
         "status": "failed",
-        "_permission_terminalization_progress": repositories.ToolPermissionTerminalizationProgress(
+        "_permission_terminalization_progress": RunTerminalizationProgress(
             True, "failed", True, True
         ),
     }
@@ -8383,7 +9056,7 @@ async def test_terminalization_maintenance_lists_ready_parent_rollup_recovery_wo
 def test_terminalization_progress_soft_cancel_intent_is_not_truthy_completion():
     """A recorded cancellation request is not evidence that a run reached cancelled."""
 
-    progress = repositories.ToolPermissionTerminalizationProgress(
+    progress = RunTerminalizationProgress(
         completed=True,
         status="cancel_requested",
     )
@@ -8914,6 +9587,7 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
         resource_limits_json={"max_seconds": 60},
         user_visible_payload_json={"workspace": "/workspace"},
         lease_payload_json={"purpose": "test"},
+        lease_id="lease-fixed",
     )
     await renew_sandbox_lease(
         conn,
@@ -8927,11 +9601,225 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
     create_sql, create_params = conn.calls[0]
     renew_sql, renew_params = conn.calls[1]
     assert "sandbox_leases" in create_sql
+    assert create_params[0] == "lease-fixed"
     assert "now() + (%s * interval '1 second')" in create_sql
     assert 600 in create_params
     assert "status = 'active'" in renew_sql
     assert "(expires_at is null or expires_at > now())" in renew_sql
     assert renew_params == (900, "tenant-a", "user-a", "run-a", "lease-a")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_release_fence_is_durable_before_or_after_insert():
+    row = {
+        "id": "lease-a",
+        "tenant_id": "tenant-a",
+        "status": "released",
+    }
+    conn = SingleRowConnection(row)
+
+    result = await fence_sandbox_lease_release(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        sandbox_mode="ephemeral",
+        provider="docker",
+        browser_enabled=False,
+        reason="lease_record_failed",
+    )
+
+    assert result == row
+    assert "insert into sandbox_leases" in conn.sql
+    assert "on conflict (id) do update" in conn.sql
+    assert "set status = 'released'" in conn.sql
+    assert "coalesce(sandbox_leases.attempt_id, '') = coalesce(excluded.attempt_id, '')" in conn.sql
+    assert conn.params == (
+        "lease-a",
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "session-a",
+        "run-a",
+        "attempt-a",
+        "ephemeral",
+        "docker",
+        False,
+        "lease_record_failed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_release_fence_rejects_id_scope_collision():
+    with pytest.raises(
+        SandboxLeaseReleaseScopeMismatchError,
+        match="sandbox_lease_release_scope_mismatch",
+    ):
+        await fence_sandbox_lease_release(
+            SingleRowConnection(None),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-collision",
+            sandbox_mode="ephemeral",
+            provider="docker",
+            browser_enabled=False,
+            reason="lease_record_failed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_release_fence_serializes_with_postgres_insert():
+    dsn = _run_control_postgres_dsn()
+    schema_name = f"sandbox_lease_fence_{uuid.uuid4().hex}"
+    observer = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    creator: psycopg.AsyncConnection | None = None
+    releaser: psycopg.AsyncConnection | None = None
+    fence_task: asyncio.Task | None = None
+    try:
+        await observer.execute(
+            psycopg_sql.SQL("create schema {}").format(
+                psycopg_sql.Identifier(schema_name)
+            )
+        )
+        await observer.execute(
+            psycopg_sql.SQL(
+                """
+                create table {}.sandbox_leases (
+                  id text primary key,
+                  tenant_id text not null,
+                  workspace_id text not null,
+                  user_id text not null,
+                  session_id text not null,
+                  run_id text not null,
+                  attempt_id text,
+                  trace_id text not null default '',
+                  sandbox_mode text not null,
+                  provider text not null,
+                  status text not null default 'active',
+                  browser_enabled boolean not null default false,
+                  resource_limits_json jsonb not null default '{}'::jsonb,
+                  user_visible_payload_json jsonb not null default '{}'::jsonb,
+                  lease_payload_json jsonb not null default '{}'::jsonb,
+                  runtime_container_id text,
+                  runtime_container_name text,
+                  runtime_executor_url text,
+                  runtime_workspace_container_path text,
+                  runtime_handle_verified_at timestamptz,
+                  heartbeat_at timestamptz,
+                  expires_at timestamptz,
+                  released_at timestamptz,
+                  release_reason text not null default '',
+                  created_at timestamptz not null default now(),
+                  updated_at timestamptz not null default now()
+                )
+                """
+            ).format(psycopg_sql.Identifier(schema_name))
+        )
+        creator = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        releaser = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        for connection in (creator, releaser):
+            await connection.execute(
+                psycopg_sql.SQL("set search_path to {}").format(
+                    psycopg_sql.Identifier(schema_name)
+                )
+            )
+            await connection.commit()
+        creator_pid = int(
+            (await (await creator.execute("select pg_backend_pid() as pid")).fetchone())["pid"]
+        )
+        releaser_pid = int(
+            (await (await releaser.execute("select pg_backend_pid() as pid")).fetchone())["pid"]
+        )
+        await creator.commit()
+        await releaser.commit()
+
+        await create_sandbox_lease(
+            creator,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={"attempt_id": "attempt-a"},
+            lease_id="lease-race-a",
+        )
+        fence_task = asyncio.create_task(
+            fence_sandbox_lease_release(
+                releaser,
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id="user-a",
+                session_id="session-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                lease_id="lease-race-a",
+                sandbox_mode="ephemeral",
+                provider="fake",
+                browser_enabled=False,
+                reason="lease_record_failed",
+            )
+        )
+        blocking_deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            cursor = await observer.execute(
+                "select %s = any(pg_blocking_pids(%s)) as blocked",
+                (creator_pid, releaser_pid),
+            )
+            if (await cursor.fetchone())["blocked"]:
+                break
+            if asyncio.get_running_loop().time() >= blocking_deadline:
+                raise AssertionError(
+                    "release fence did not block behind the active insert"
+                )
+            await asyncio.sleep(0.02)
+
+        await creator.commit()
+        fenced = await asyncio.wait_for(fence_task, timeout=5)
+        await releaser.commit()
+        assert fenced["status"] == "released"
+        cursor = await observer.execute(
+            psycopg_sql.SQL(
+                "select status, release_reason from {}.sandbox_leases where id = %s"
+            ).format(psycopg_sql.Identifier(schema_name)),
+            ("lease-race-a",),
+        )
+        assert await cursor.fetchone() == {
+            "status": "released",
+            "release_reason": "lease_record_failed",
+        }
+    finally:
+        if fence_task is not None and not fence_task.done():
+            fence_task.cancel()
+        if creator is not None:
+            await creator.close()
+        if releaser is not None:
+            await releaser.close()
+        await observer.execute(
+            psycopg_sql.SQL("drop schema if exists {} cascade").format(
+                psycopg_sql.Identifier(schema_name)
+            )
+        )
+        await observer.close()
 
 
 @pytest.mark.asyncio
@@ -8976,7 +9864,7 @@ async def test_real_sandbox_lease_requires_attempt_and_complete_runtime_handle()
 async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
     conn = RecordingConnection()
 
-    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+    with pytest.raises(ValueError, match="sandbox_lease_attempt_binding_mismatch"):
         await create_sandbox_lease(
             conn,
             tenant_id="tenant-a",
@@ -8996,6 +9884,29 @@ async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
         )
 
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sandbox_lease_insert_requires_returned_persisted_row():
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RuntimeError, match="sandbox_lease_insert_returning_missing"):
+        await create_sandbox_lease(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={},
+        )
 
 
 @pytest.mark.asyncio
@@ -9256,8 +10167,14 @@ async def test_upsert_run_step_merges_existing_payload_on_conflict():
         payload_json={"checkpoint_reused": True, "output": "code output"},
     )
 
-    sql, _params = conn.calls[0]
-    assert "payload_json = run_steps.payload_json || excluded.payload_json" in sql
+    assert conn.calls[0][0].startswith("select pg_advisory_xact_lock")
+    assert conn.calls[1][0].endswith("for update")
+    update_sql, update_params = conn.calls[2]
+    assert update_sql.startswith("update run_steps")
+    assert json.loads(update_params[5]) == {
+        "checkpoint_reused": True,
+        "output": "code output",
+    }
 
 
 @pytest.mark.asyncio
@@ -9813,6 +10730,11 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
     assert "snapshot_governance" in serialized_params
     assert "content_base64" not in serialized_params
     assert "storage_key" not in serialized_params
+    materialization_sql, materialization_params = conn.calls[1]
+    assert "insert into run_skill_materializations" in materialization_sql
+    assert materialization_params[:3] == ("tenant-a", "run-a", "department-review")
+    assert len(materialization_params[3]) == 64
+    assert "content_base64" in materialization_params[4]
 
 
 @pytest.mark.asyncio
@@ -9844,9 +10766,141 @@ async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_exe
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
 
-    assert len(conn.calls) == 2
-    dependency_source = json.loads(conn.calls[1][1][6])
+    assert len(conn.calls) == 4
+    dependency_source = json.loads(conn.calls[2][1][6])
     assert dependency_source["mcp_tool_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_insert_run_skill_snapshots_preserves_each_root_release_decision():
+    conn = RecordingConnection()
+    manifests = [
+        {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "source": {"kind": "builtin"},
+            "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+            "dependency_ids": [],
+            "mcp_tool_ids": [],
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "selected_version": version,
+                "selected_track": track,
+            },
+        }
+        for skill_id, version, track in (
+            ("skill-a", "hash-a", "current"),
+            ("skill-b", "hash-b", "previous"),
+        )
+    ]
+
+    await repositories.insert_run_skill_snapshots_at_creation(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_manifests=manifests,
+        release_decision=manifests[0]["release_decision"],
+    )
+
+    first_source = json.loads(conn.calls[0][1][6])
+    second_source = json.loads(conn.calls[2][1][6])
+    assert first_source["release_decision_sha256"] != second_source["release_decision_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(monkeypatch):
+    async def get_version(_conn, *, skill_id, version):
+        return {"version": version, "content_hash": version, "status": "released"}
+
+    monkeypatch.setattr(skill_persistence, "get_skill_version", get_version)
+    manifests = [
+        {
+            "skill_id": "skill-a",
+            "version": "hash-a",
+            "content_hash": "hash-a",
+            "files": [{}],
+            "dependency_ids": [],
+            "mcp_tool_ids": ["mcp:a"],
+        },
+        {
+            "skill_id": "skill-b",
+            "version": "hash-b",
+            "content_hash": "hash-b",
+            "files": [{}],
+            "dependency_ids": [],
+            "mcp_tool_ids": ["mcp:b"],
+        },
+    ]
+
+    assert await repositories.validate_replay_skill_manifests(
+        object(),
+        skill_id="skill-a",
+        pinned_version="hash-a",
+        pinned_executor_type="claude-agent-worker",
+        skill_manifests=manifests,
+        skill_set=[
+            {"skill_id": "skill-a", "expected_version": "hash-a"},
+            {"skill_id": "skill-b", "expected_version": "hash-b"},
+        ],
+    ) == ["mcp:a", "mcp:b"]
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=manifests,
+            skill_set=[],
+        )
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=[manifests[0], dict(manifests[0])],
+            skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+        )
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=manifests,
+            skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+        )
+
+    dependency_manifests = [
+        {**manifests[0], "dependency_ids": ["skill-b"]},
+        manifests[1],
+    ]
+    assert await repositories.validate_replay_skill_manifests(
+        object(),
+        skill_id="skill-a",
+        pinned_version="hash-a",
+        pinned_executor_type="claude-agent-worker",
+        skill_manifests=dependency_manifests,
+        skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+    ) == ["mcp:a"]
+
+    cyclic_manifests = [
+        {**manifests[0], "dependency_ids": ["skill-b"]},
+        {**manifests[1], "dependency_ids": ["skill-a"]},
+    ]
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.validate_replay_skill_manifests(
+            object(),
+            skill_id="skill-a",
+            pinned_version="hash-a",
+            pinned_executor_type="claude-agent-worker",
+            skill_manifests=cyclic_manifests,
+            skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
+        )
 
 
 @pytest.mark.asyncio
@@ -9872,6 +10926,106 @@ async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable
 
 
 @pytest.mark.asyncio
+async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift():
+    manifests = [
+        {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "source": {"kind": "builtin"},
+            "files": [
+                {"relative_path": "SKILL.md", "content_base64": encoded, "size_bytes": 5}
+            ],
+            "dependency_ids": [],
+        }
+        for skill_id, version, encoded in (
+            ("primary", "hash-primary", "c2tpbGw="),
+            ("dependency", "hash-dependency", "aGVscGU="),
+        )
+    ]
+    refs = repositories.skill_manifest_refs(manifests)
+
+    class Cursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": item["skill_id"],
+                    "materialization_sha256": repositories.skill_manifest_materialization_sha256(
+                        item
+                    ),
+                    "manifest_json": item,
+                }
+                for item in reversed(manifests)
+            ]
+
+    class Connection:
+        async def execute(self, sql, params):
+            assert "from run_skill_materializations" in sql
+            assert params == ("tenant-a", "run-a")
+            return Cursor()
+
+    loaded = await repositories.materialize_run_skill_manifests(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_manifest_refs=refs,
+    )
+
+    assert [item["skill_id"] for item in loaded] == ["primary", "dependency"]
+    with pytest.raises(
+        RepositoryConflictError,
+        match="run_skill_materialization_identity_mismatch",
+    ):
+        await repositories.materialize_run_skill_manifests(
+            Connection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            skill_manifest_refs=[{**refs[0], "materialization_sha256": "0" * 64}, refs[1]],
+        )
+    for invalid in (
+        [manifests[0]],
+        [refs[0], manifests[1]],
+        [refs[0], "unexpected"],
+        [refs[0], None],
+        "not-a-list",
+        None,
+    ):
+        with pytest.raises(
+            RepositoryConflictError,
+            match="run_skill_materialization_identity_mismatch",
+        ):
+            await repositories.materialize_run_skill_manifests(
+                Connection(),
+                tenant_id="tenant-a",
+                run_id="run-a",
+                skill_manifest_refs=invalid,
+            )
+
+
+def test_skill_manifest_transport_is_always_reference_only():
+    manifest = {
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-primary",
+        "content_hash": "hash-primary",
+        "source": {"kind": "builtin"},
+        "files": [
+            {
+                "relative_path": "SKILL.md",
+                "content_base64": "c2tpbGw=",
+                "size_bytes": 5,
+            }
+        ],
+        "dependency_ids": [],
+    }
+
+    references = repositories.skill_manifest_refs([manifest])
+
+    assert references == repositories.skill_manifest_refs([manifest])
+    assert "files" not in references[0]
+    assert "content_base64" not in json.dumps(references)
+
+
+@pytest.mark.asyncio
 async def test_authorize_files_for_run_locks_and_validates_without_writing():
     class FileCursor:
         async def fetchone(self):
@@ -9882,6 +11036,10 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
                 "user_id": "user-a",
                 "session_id": None,
                 "run_id": None,
+                "original_name": "source.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
             }
 
     class FileConnection(RecordingConnection):
@@ -9902,10 +11060,192 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
 
     assert len(conn.calls) == 1
     sql, params = conn.calls[0]
-    assert "select id, tenant_id, workspace_id, user_id, session_id, run_id" in sql
+    assert "select id, tenant_id, workspace_id, user_id, session_id, run_id," in sql
+    assert "lifecycle_state = 'active'" in sql
     assert "for update" in sql
     assert "update files" not in sql
     assert params == ("file-a",)
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_skill_file_with_mismatched_mime():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+                "original_name": "source.docx",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="file_required_for_skill"):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_ids=["file-a"],
+            input_modes=["docx"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_does_not_apply_profile_format_whitelists():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+                "original_name": "report.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    rows = await repositories.authorize_files_for_run(
+        FileConnection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_ids=["file-a"],
+    )
+    assert [row["id"] for row in rows] == ["file-a"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_accepts_mixed_authorized_file_formats():
+    rows = {
+        "file-requested": {
+            "id": "file-requested",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": None,
+            "run_id": None,
+            "original_name": "report.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 1024,
+            "sha256": "a" * 64,
+        },
+        "file-reusable": {
+            "id": "file-reusable",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-prior",
+            "original_name": "diagram.png",
+            "content_type": "image/png",
+            "size_bytes": 2048,
+            "sha256": "b" * 64,
+        },
+    }
+
+    class FileCursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor(rows.get(params[0]))
+
+    conn = FileConnection()
+    authorized = await repositories.authorize_files_for_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        file_ids=["file-requested", "file-reusable"],
+        reusable_file_ids=["file-reusable"],
+    )
+    assert [row["id"] for row in authorized] == ["file-requested", "file-reusable"]
+    reusable_sql = conn.calls[1][0]
+    assert "join run_context_snapshots authorized_snapshot" in reusable_sql
+    assert "authorized_snapshot.included_file_ids ? files.id" in reusable_sql
+    assert "for update of files" in reusable_sql
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_reusable_id_outside_requested_set():
+    class ForbiddenConnection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("invalid reusable file scope must fail before SQL")
+
+    with pytest.raises(repositories.RepositoryConflictError, match="file_scope_mismatch"):
+        await repositories.authorize_files_for_run(
+            ForbiddenConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-current",
+            file_ids=["file-requested"],
+            reusable_file_ids=["file-prior"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_rejects_reusable_file_from_other_session():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-prior",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-other",
+                "run_id": "run-prior",
+                "original_name": "prior.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    class FileConnection:
+        async def execute(self, *_args, **_kwargs):
+            return FileCursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="file_session_mismatch"):
+        await repositories.authorize_files_for_run(
+            FileConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-current",
+            file_ids=["file-prior"],
+            reusable_file_ids=["file-prior"],
+        )
 
 
 @pytest.mark.asyncio
@@ -9949,7 +11289,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
                                 "ref": "skill_dependency_policy",
                                 "dependency_count": 1,
                             },
-                            "does_not_close_b4_or_211": True,
+                            "does_not_close_b4_or_deployed_runtime_acceptance": True,
                             "storage_key": "tenants/default/private/package.zip",
                         },
                     },
@@ -10003,7 +11343,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
                         "ref": "skill_dependency_policy",
                         "dependency_count": 1,
                     },
-                    "does_not_close_b4_or_211": True,
+                    "does_not_close_b4_or_deployed_runtime_acceptance": True,
                 },
             },
             "dependency_ids": ["minimax-docx"],
@@ -10068,17 +11408,23 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
     )
 
     sql, params = conn.calls[0]
-    assert "update runs" in sql
-    assert "coalesce(input_json, '{}'::jsonb) || %s::jsonb" in sql
+    assert "select id, input_json" in sql
+    assert sql.endswith("for update")
     assert "tenant_id = %s and id = %s" in sql
     assert params == (
-        json.dumps(execution_snapshot, ensure_ascii=False),
         "default",
         "run-a",
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+    )
+    update_sql, update_params = conn.calls[1]
+    assert update_sql.startswith("update runs set input_json = %s::jsonb")
+    assert update_params == (
+        repositories.compact_json_dumps(execution_snapshot),
+        "default",
+        "run-a",
     )
 
 
@@ -10106,16 +11452,15 @@ async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_
         execution_snapshot=execution_snapshot,
     )
 
-    assert len(conn.calls) == 1
+    assert len(conn.calls) == 2
     _, params = conn.calls[0]
     assert params == (
-        json.dumps(execution_snapshot, ensure_ascii=False),
         "tenant-a",
         "run-empty",
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
     )
 
 
@@ -10152,7 +11497,22 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
         "model_id": "model-catalog-a",
         "model_value": "provider-model-a",
         "schema_version": "ai-platform.run-payload.v1",
+        "execution_kind": "skill",
     }
+
+
+@pytest.mark.parametrize(
+    "invalid_manifests",
+    ([{"skill_id": "general-chat"}, "unexpected"], [{"skill_id": "general-chat"}, None], "not-a-list", None),
+)
+def test_copied_run_execution_snapshot_preserves_invalid_manifest_transport_for_strict_validation(
+    invalid_manifests,
+):
+    snapshot = repositories.copied_run_execution_snapshot(
+        {"skill_manifests": invalid_manifests}
+    )
+
+    assert snapshot["skill_manifests"] == invalid_manifests
 
 
 @pytest.mark.asyncio
@@ -10767,6 +12127,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                         "executor_type": "claude_agent",
                         "status": "active",
                         "visible_to_user": True,
+                        "distribution_metadata_json": {},
                     }
                 )
             if "from skill_versions" in compact:
@@ -10841,7 +12202,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                                         "ref": "skill_dependency_policy",
                                         "dependency_count": 1,
                                     },
-                                    "does_not_close_b4_or_211": True,
+                                    "does_not_close_b4_or_deployed_runtime_acceptance": True,
                                     "storage_key": "tenants/default/private/package.zip",
                                 },
                             },
@@ -10891,7 +12252,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                 "ref": "skill_dependency_policy",
                 "dependency_count": 1,
             },
-            "does_not_close_b4_or_211": True,
+            "does_not_close_b4_or_deployed_runtime_acceptance": True,
         },
     }
     serialized_snapshots = json.dumps(detail["recent_snapshots"], ensure_ascii=False)
@@ -10903,6 +12264,53 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
     assert "version" not in detail["recent_snapshots"][0]["source"]
     assert "track" not in serialized_snapshots
     assert "rollout" not in serialized_snapshots
+
+
+@pytest.mark.asyncio
+async def test_admin_skill_detail_hides_archived_distribution(monkeypatch):
+    async def no_backfill(_conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "skill_id": "archived-demo",
+                "name": "archived-demo",
+                "version": "hash-a",
+                "description": "Archived demo",
+                "input_modes": ["chat"],
+                "output_modes": ["answer"],
+                "executor_type": "claude-agent-worker",
+                "lifecycle_status": "active",
+                "status": "disabled",
+                "visible_to_user": False,
+                "distribution_metadata_json": {
+                    "archived_at": "2026-08-10T00:00:00.000Z",
+                    "archived_by": "admin-a",
+                },
+            }
+
+    class Connection:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, sql, params):
+            self.calls += 1
+            assert self.calls == 1
+            compact = " ".join(sql.split())
+            assert "distribution_metadata_json" in compact
+            assert params == ("tenant-a", "archived-demo")
+            return Cursor()
+
+    detail = await repositories.get_admin_skill_detail(
+        Connection(),
+        tenant_id="tenant-a",
+        skill_id="archived-demo",
+    )
+
+    assert detail is None
 
 
 @pytest.mark.asyncio
@@ -10922,10 +12330,27 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
                     "lifecycle_status": "active",
                     "distribution_status": "disabled",
                     "visible_to_user": False,
+                    "distribution_metadata_json": {},
                     "latest_version": "hash-a",
                     "latest_version_status": "draft",
                     "current_version": None,
                     "rollout_percent": None,
+                },
+                {
+                    "skill_id": "archived-demo",
+                    "name": "archived-demo",
+                    "description": "Archived demo",
+                    "lifecycle_status": "active",
+                    "distribution_status": "disabled",
+                    "visible_to_user": False,
+                    "distribution_metadata_json": {
+                        "archived_at": "2026-08-10T00:00:00.000Z",
+                        "archived_by": "admin-a",
+                    },
+                    "latest_version": "hash-archived",
+                    "latest_version_status": "released",
+                    "current_version": "hash-archived",
+                    "rollout_percent": 100,
                 }
             ]
 
@@ -10935,6 +12360,7 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
             assert params == ("tenant-a", "tenant-a")
             assert "source_json" not in compact
             assert "storage_key" not in compact
+            assert "distribution_metadata_json" in compact
             assert "left join lateral" in compact
             return SummaryCursor()
 
@@ -11567,6 +12993,24 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
     assert "admin-audit-secret" not in serialized
     assert "/var/lib/ai-platform" not in serialized
     assert "runtime_private_payload" not in serialized
+
+
+def test_skill_snapshot_reader_normalizes_legacy_governance_boundary_marker():
+    source = repositories._sanitize_skill_snapshot_source(
+        {
+            "kind": "builtin",
+            "snapshot_governance": {
+                "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                "snapshot_source": "platform_release_lock",
+                "does_not_close_b4_or_211": True,
+            },
+        }
+    )
+
+    governance = source["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["does_not_close_b4_or_deployed_runtime_acceptance"] is True
+    assert "does_not_close_b4_or_211" not in governance
 
 
 @pytest.mark.asyncio

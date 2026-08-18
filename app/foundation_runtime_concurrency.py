@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from tools.verify_poc_gate import CONTEXT_FORBIDDEN_PROJECTION_MARKERS
+from app.public_context_keys import CONTEXT_FORBIDDEN_PROJECTION_MARKERS
 
 
 FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA = "ai-platform.foundation-runtime-concurrency.v1"

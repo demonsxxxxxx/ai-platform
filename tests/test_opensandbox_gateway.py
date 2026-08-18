@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import concurrent.futures
 import hashlib
@@ -25,7 +24,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.runtime.sandbox.opensandbox_attestation import _OpenSandboxAttestor, _TransportResponse
 import services.opensandbox_gateway.adapters as gateway_adapters
 import services.opensandbox_gateway.helper as gateway_helper
 import services.opensandbox_gateway.server as gateway_server
@@ -43,7 +41,6 @@ from services.opensandbox_gateway.adapters import (
 from services.opensandbox_gateway.gateway import (
     API_KEY_HEADER,
     CAPABILITY_VERSION,
-    CONTRACT_VERSION,
     ROUTE_HEADER,
     DeadlineExceeded,
     GatewayApplication,
@@ -74,6 +71,7 @@ API_KEY = "lifecycle-" + "a" * 32
 CAPABILITY_TOKEN = "capability-" + "b" * 32
 PUBLIC_AUTHORITY = "10.56.1.72:8443"
 BRIDGE_ORIGIN = "https://bridge.internal.example:18443"
+LOOPBACK_BRIDGE_ORIGIN = "http://127.0.0.1:18043"
 
 
 def _test_tls_context() -> ssl.SSLContext:
@@ -103,6 +101,15 @@ def gateway_config() -> GatewayConfig:
     )
 
 
+def loopback_gateway_config() -> GatewayConfig:
+    return replace(
+        gateway_config(),
+        callback_upstream_base=LOOPBACK_BRIDGE_ORIGIN,
+        openai_upstream_base=LOOPBACK_BRIDGE_ORIGIN + "/openai/v1",
+        anthropic_upstream_base=LOOPBACK_BRIDGE_ORIGIN + "/anthropic",
+    )
+
+
 def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | None = None) -> dict[str, object]:
     scope = {
         "tenant_id": f"tenant-{suffix}",
@@ -129,6 +136,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "ai-platform.external_egress.profile_id": config.profile_id,
         "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(f"https://{PUBLIC_AUTHORITY}".encode()).hexdigest(),
         "ai-platform.external_egress.runtime_identity": "runsc",
+        "ai-platform.external_egress.network_mode": config.expected_network_mode,
         "ai-platform.runtime_subject": config.runtime_subject,
         "ai-platform.external_egress.gateway_policy_subject": config.gateway_policy_subject,
         "ai-platform.external_egress.callback_boundary_subject": config.callback_boundary_subject,
@@ -247,7 +255,7 @@ def _collection_proxy():
     return app, lifecycle, runtime, store, sandbox_id, token, f"/v1/sandboxes/{sandbox_id}/proxy/44772"
 
 
-def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> None:
+def test_create_rewrites_only_broker_bases_and_returns_official_lifecycle_info() -> None:
     app, lifecycle, runtime, store = application()
     config = gateway_config()
     response = call(app, "POST", "/v1/sandboxes", create_payload(config))
@@ -264,95 +272,9 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
     assert store.get(sandbox_id).metadata["ai-platform.model_id_sha256"] == base64.b32encode(
         hashlib.sha256(b"deepseek-v4-flash").digest()
     ).decode("ascii").rstrip("=")
-    attestation = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
-    assert attestation.status == 200
-    value = decoded(attestation)
-    assert value == {
-        "contract_version": CONTRACT_VERSION,
-        "provider": "opensandbox",
-        "sandbox_id": sandbox_id,
-        "scope_labels": {
-            "tenant_id": "tenant-one",
-            "workspace_id": "workspace-one",
-            "user_id": "user-one",
-            "session_id": "session-one",
-            "run_id": "run-one",
-            "attempt_id": "attempt-one",
-            "lease_id": f"opensandbox:opensandbox-run-one-attempt-one:{sandbox_id}",
-        },
-        "runtime": {"identity": "runsc", "subject": config.runtime_subject},
-        "network": {"mode": "none", "default_deny": True},
-        "security": {"no_new_privileges": True, "user": "1000:1000", "uid": "1000", "gid": "1000"},
-        "image": {"subject": IMAGE, "digest": IMAGE.rsplit("@", 1)[1]},
-        "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
-        "upstream_bridge": {
-            "version": UPSTREAM_BRIDGE_VERSION,
-            "callback_base_url": config.callback_upstream_base,
-            "openai_base_url": config.openai_upstream_base,
-            "anthropic_base_url": config.anthropic_upstream_base,
-        },
-        "subjects": {
-            "gateway_policy": config.gateway_policy_subject,
-            "callback_boundary": config.callback_boundary_subject,
-            "capability": config.profile_id,
-            "deny_audit": config.deny_audit_subject,
-            "deny_counter": config.deny_counter_subject,
-        },
-        "signed_profile": {
-            "id": config.profile_id,
-            "version": "v1",
-            "proof_key_id": config.proof_key_id,
-            "profile_signature": value["signed_profile"]["profile_signature"],
-        },
-    }
-
-
-def test_payload_is_accepted_by_merged_ai_platform_attestor() -> None:
-    app, _, _, _ = application()
-    config = gateway_config()
-    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(config)))["id"]
-    body = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").body
-    endpoint = f"https://{PUBLIC_AUTHORITY}/v1/sandboxes/{sandbox_id}/attestation"
-    attestor = _OpenSandboxAttestor(
-        base_url=f"https://{PUBLIC_AUTHORITY}",
-        api_key=API_KEY,
-        path_template="/v1/sandboxes/{sandbox_id}/attestation",
-        contract_version=CONTRACT_VERSION,
-        timeout_seconds=1,
-        runtime_subject=config.runtime_subject,
-        gateway_policy_subject=config.gateway_policy_subject,
-        callback_boundary_subject=config.callback_boundary_subject,
-        callback_base_url=config.callback_upstream_base,
-        openai_base_url=config.openai_upstream_base,
-        anthropic_base_url=config.anthropic_upstream_base,
-        proof_key_id=config.proof_key_id,
-        proof_signing_key=config.record_signing_key.decode(),
-        transport=lambda *_: _TransportResponse(200, endpoint, body),
-    )
-    capability = SimpleNamespace(
-        runtime_identity="runsc",
-        runtime_subject=config.runtime_subject,
-        gateway_policy_subject=config.gateway_policy_subject,
-        callback_boundary_subject=config.callback_boundary_subject,
-        requested_image=IMAGE,
-        requested_image_digest=IMAGE.rsplit("@", 1)[1],
-        profile_id=config.profile_id,
-        deny_audit_subject=config.deny_audit_subject,
-        deny_counter_subject=config.deny_counter_subject,
-        upstream_bridge_version=UPSTREAM_BRIDGE_VERSION,
-        callback_base_url=config.callback_upstream_base,
-        openai_base_url=config.openai_upstream_base,
-        anthropic_base_url=config.anthropic_upstream_base,
-    )
-    request = SimpleNamespace(
-        tenant_id="tenant-one",
-        workspace_id="workspace-one",
-        user_id="user-one",
-        session_id="session-one",
-        run_id="run-one",
-        attempt_id="attempt-one",
-    )
-    assert asyncio.run(attestor(capability, request, sandbox_id, {"id": sandbox_id})) is True
+    info = call(app, "GET", f"/v1/sandboxes/{sandbox_id}")
+    assert info.status == 200
+    assert decoded(info)["id"] == sandbox_id
 
 
 def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
@@ -372,6 +294,96 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
         replace(config, anthropic_upstream_base=BRIDGE_ORIGIN + "/anthropic/v1").validate()
     with pytest.raises(ValueError, match="one origin"):
         replace(config, openai_upstream_base="https://other.internal.example:18443/openai/v1").validate()
+
+
+@pytest.mark.parametrize(
+    ("callback", "openai", "anthropic"),
+    tuple(
+        (
+            f"http://{host}:18043",
+            f"http://{host}:18043/openai/v1",
+            f"http://{host}:18043/anthropic",
+        )
+        for host in ("localhost", "0.0.0.0", "host.docker.internal", "10.56.1.72")
+    )
+    + tuple(
+        (
+            f"http://127.0.0.1:{port}",
+            f"http://127.0.0.1:{port}/openai/v1",
+            f"http://127.0.0.1:{port}/anthropic",
+        )
+        for port in (80, 18042, 18044)
+    )
+    + (
+        (
+            LOOPBACK_BRIDGE_ORIGIN,
+            "https://127.0.0.1:18043/openai/v1",
+            LOOPBACK_BRIDGE_ORIGIN + "/anthropic",
+        ),
+    ),
+)
+def test_loopback_bridge_rejects_non_loopback_and_mixed_transport(
+    callback: str,
+    openai: str,
+    anthropic: str,
+) -> None:
+    with pytest.raises(ValueError, match="upstream bridge"):
+        replace(
+            gateway_config(),
+            callback_upstream_base=callback,
+            openai_upstream_base=openai,
+            anthropic_upstream_base=anthropic,
+        ).validate()
+
+
+def test_loopback_gateway_policy_is_closed_and_needs_no_cross_host_trust(tmp_path) -> None:
+    config = loopback_gateway_config()
+    config.validate()
+    assert config.upstream_transport == "loopback_http"
+
+    policy = gateway_server._load_broker_policy(config, "")
+    assert policy.transport == "loopback_http"
+    assert {target[1] for target in policy.targets.values()} == {("127.0.0.1",)}
+    assert _app_scoped_upstream_ca_path({}, required=False) == ""
+
+    with pytest.raises(ValueError, match="must not configure upstream CA"):
+        _app_scoped_upstream_ca_path(
+            {"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE": UPSTREAM_CA_BUNDLE_PATH},
+            required=False,
+        )
+    retired_policy = tmp_path / "retired-policy.json"
+    retired_policy.write_text('{"version":1,"targets":{}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="must not configure an external egress policy"):
+        gateway_server._load_broker_policy(config, str(retired_policy))
+
+
+def test_loopback_mailbox_uses_plain_pinned_http_without_tls(monkeypatch) -> None:
+    policy = gateway_server._load_broker_policy(loopback_gateway_config(), "")
+    broker = MailboxBroker(SimpleNamespace(), policy, 1.0, 1024)
+    observed: list[tuple[str, int, float]] = []
+
+    class PlainConnection:
+        sock = None
+
+        def __init__(self, host: str, port: int, timeout: float) -> None:
+            observed.append((host, port, timeout))
+
+    monkeypatch.setattr(gateway_adapters.http.client, "HTTPConnection", PlainConnection)
+    connection = broker._upstream_connection(
+        urllib.parse.urlsplit(LOOPBACK_BRIDGE_ORIGIN),
+        ("127.0.0.1",),
+        MonotonicDeadline.after(1.0),
+    )
+    assert isinstance(connection, PlainConnection)
+    assert observed and observed[0][:2] == ("127.0.0.1", 18043)
+    with pytest.raises(ValueError, match="must not load upstream TLS"):
+        MailboxBroker(
+            SimpleNamespace(),
+            policy,
+            1.0,
+            1024,
+            upstream_tls_context=_test_tls_context(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -498,7 +510,7 @@ def test_skill_mount_declaration_and_volume_are_bidirectionally_bound(case) -> N
     }
 
 
-def test_skill_mount_runtime_fingerprint_drift_fails_attestation() -> None:
+def test_skill_mount_runtime_fingerprint_drift_fails_lifecycle_read() -> None:
     app, _, runtime, _ = application()
     value = create_payload(gateway_config())
     workspace_path = value["volumes"][0]["host"]["path"]
@@ -519,9 +531,9 @@ def test_skill_mount_runtime_fingerprint_drift_fails_attestation() -> None:
         skill_mount_fingerprint="b" * 64,
     )
 
-    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
+    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}")
     assert response.status == 409
-    assert decoded(response)["error"]["code"] == "runtime_attestation_drift"
+    assert decoded(response)["error"]["code"] == "runtime_evidence_drift"
 
 
 def test_runtime_skill_mount_fingerprint_uses_exact_opened_source_inodes(monkeypatch) -> None:
@@ -624,7 +636,7 @@ def test_scope_reuse_workspace_conflict_and_parallel_attempt_lifecycle() -> None
         "attempt-two",
     ]
     assert call(app, "DELETE", f"/v1/sandboxes/{first_id}").status == 204
-    assert call(app, "GET", f"/v1/sandboxes/{second_id}/attestation").status == 200
+    assert call(app, "GET", f"/v1/sandboxes/{second_id}").status == 200
     assert call(app, "DELETE", f"/v1/sandboxes/{second_id}").status == 204
 
 
@@ -670,24 +682,58 @@ def test_signature_metadata_runtime_drift_and_route_auth_are_rejected() -> None:
     record = store.get(sandbox_id)
     assert record is not None
     record.signature = "0" * 64
-    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
     record.signature = app._sign_record(record)
     lifecycle.sandboxes[sandbox_id]["metadata"]["ai-platform.user_id"] = "other"
-    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
     lifecycle.sandboxes[sandbox_id]["metadata"] = dict(record.metadata)
     old = runtime.evidence[sandbox_id]
     runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "network_mode": "bridge"})
-    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
 
 
-def test_live_root_user_is_rejected_before_attestation() -> None:
+def test_internal_test_bridge_profile_accepts_only_bridge_runtime_evidence() -> None:
+    config = replace(
+        gateway_config(),
+        profile_id="s72-internal-test-runsc-bridge-v1",
+        expected_network_mode="bridge",
+    )
+    lifecycle = InMemoryLifecycleTransport()
+
+    class BridgeRuntime(InMemoryRuntimeAdapter):
+        def provision(self, record) -> None:
+            super().provision(record)
+            self.evidence[record.sandbox_id] = replace(
+                self.evidence[record.sandbox_id],
+                network_mode="bridge",
+            )
+
+    runtime = BridgeRuntime()
+    app = GatewayApplication(config, lifecycle, runtime, InMemoryStateStore())
+
+    response = call(app, "POST", "/v1/sandboxes", create_payload(config, "bridge"))
+
+    assert response.status == 201
+    sandbox_id = decoded(response)["id"]
+    runtime.evidence[sandbox_id] = replace(runtime.evidence[sandbox_id], network_mode="none")
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
+
+
+def test_bridge_network_profile_configuration_fails_closed() -> None:
+    with pytest.raises(ValueError, match="internal-test"):
+        replace(gateway_config(), expected_network_mode="bridge").validate()
+    with pytest.raises(ValueError, match="network mode"):
+        replace(gateway_config(), expected_network_mode="host").validate()
+
+
+def test_live_root_user_is_rejected_before_lifecycle_read() -> None:
     app, _, runtime, _ = application()
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
     old = runtime.evidence[sandbox_id]
     runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "user": "0:0"})
-    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
+    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}")
     assert response.status == 409
-    assert decoded(response)["error"]["code"] == "runtime_attestation_drift"
+    assert decoded(response)["error"]["code"] == "runtime_evidence_drift"
 
 
 def test_list_requires_scope_and_cancel_delete_are_idempotent() -> None:
@@ -971,13 +1017,43 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     crashed_store = SQLiteStateStore(str(crash_path))
     crashed = GatewayApplication(config, crash_lifecycle, InMemoryRuntimeAdapter(), crashed_store)
     assert call(crashed, "POST", "/v1/sandboxes", create_payload(config, "crash")).status == 500
-    assert len(crashed_store.list({"state": "uncertain_create"})) == 1
+    assert len(crashed_store.list({"state": "reconciling"})) == 1
     recovered_runtime = InMemoryRuntimeAdapter()
     recovered_store = SQLiteStateStore(str(crash_path))
     GatewayApplication(config, crash_lifecycle, recovered_runtime, recovered_store)
     active = recovered_store.list({"state": "active"})
     assert len(active) == len(crash_lifecycle.sandboxes) == 1
     assert active[0].sandbox_id in recovered_runtime.relays
+
+
+def test_same_process_retry_reconciles_timeout_after_upstream_create() -> None:
+    class TimeoutAfterCreate(InMemoryLifecycleTransport):
+        timeout_once = True
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            response = super().request(method, path, body)
+            if method == "POST" and path == "/v1/sandboxes" and self.timeout_once:
+                self.timeout_once = False
+                raise RuntimeError("simulated response timeout after create")
+            return response
+
+    config = gateway_config()
+    lifecycle = TimeoutAfterCreate()
+    runtime = InMemoryRuntimeAdapter()
+    store = InMemoryStateStore()
+    app = GatewayApplication(config, lifecycle, runtime, store)
+    payload = create_payload(config, "same-process-retry")
+
+    assert call(app, "POST", "/v1/sandboxes", payload).status == 500
+    recovered = call(app, "POST", "/v1/sandboxes", payload)
+
+    assert recovered.status == 201
+    sandbox_id = decoded(recovered)["id"]
+    assert len(lifecycle.sandboxes) == 1
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+    assert store.list({"state": "uncertain_create"}) == []
+    assert store.get(sandbox_id) is not None
+    assert sandbox_id in runtime.relays
 
 
 def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(tmp_path) -> None:
@@ -999,7 +1075,7 @@ def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(t
     first = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), store)
 
     assert call(first, "POST", "/v1/sandboxes", payload).status == 500
-    intent = store.list({"state": "uncertain_create"})[0]
+    intent = store.list({"state": "reconciling"})[0]
     restarted_store = SQLiteStateStore(str(state_path))
     restarted = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), restarted_store)
     tombstone = restarted_store.get(intent.sandbox_id)
@@ -2246,9 +2322,9 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
+            "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
         }
     )
     broker = MailboxBroker(
@@ -2378,9 +2454,9 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
+            "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
         }
     )
     broker = MailboxBroker(
@@ -2692,6 +2768,43 @@ def test_broker_loop_isolates_iteration_exception_and_continues() -> None:
     assert calls == 2 and not thread.is_alive()
 
 
+def test_capability_only_mode_does_not_load_model_credentials_or_start_broker(monkeypatch) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("capability-only mode touched the model broker")
+
+    monkeypatch.setattr(gateway_server, "_model_provider_credentials", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_broker_policy", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_upstream_tls_context", unexpected)
+    monkeypatch.setattr(gateway_server, "MailboxBroker", unexpected)
+
+    runtime = gateway_server._start_broker_runtime(
+        loopback_gateway_config(),
+        SimpleNamespace(),
+        "",
+        "",
+        {"OPENSANDBOX_GATEWAY_BROKER_ENABLED": "false"},
+    )
+
+    assert runtime is None
+
+
+def test_gateway_broker_defaults_enabled_and_requires_model_credentials() -> None:
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE"):
+        gateway_server._start_broker_runtime(
+            loopback_gateway_config(),
+            SimpleNamespace(),
+            "",
+            "",
+            {},
+        )
+
+
+@pytest.mark.parametrize("value", ("", "0", "False", "yes", " disabled "))
+def test_gateway_broker_mode_rejects_ambiguous_values(value: str) -> None:
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_BROKER_ENABLED"):
+        gateway_server._broker_enabled({"OPENSANDBOX_GATEWAY_BROKER_ENABLED": value})
+
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
     reason="real relay owner/mode and timeout cleanup requires a root-capable POSIX release gate",
@@ -2771,8 +2884,11 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     helper_unit = (root / "deploy/opensandbox/opensandbox-gateway-helper.service").read_text(encoding="utf-8")
     install = (root / "deploy/opensandbox/install-s72.sh").read_text(encoding="utf-8")
     rollback = (root / "deploy/opensandbox/rollback-s72.sh").read_text(encoding="utf-8")
+    atomic_helper = (
+        root / "deploy/opensandbox/lib/s72-atomic-recovery-authority.sh"
+    ).read_text(encoding="utf-8")
     env_example = (root / "deploy/opensandbox/gateway.env.example").read_text(encoding="utf-8")
-    policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
+    retired_policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
     nginx = (root / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     frontend_dockerfile = (root / "frontend/web/Dockerfile").read_text(encoding="utf-8")
     compose = (root / "deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
@@ -2796,27 +2912,47 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
             "systemctl daemon-reload",
             "systemctl restart",
             "WorkingDirectory",
-            "CURRENT_LINK.next",
+            "s72_atomic_apply_current_link",
+            "s72_atomic_publish_transaction_record",
+            "s72_atomic_verify_snapshot_seal",
+            "recover_active_transaction",
             "require_gateway_config_contract",
+            "require_resolved_egress_policy_at",
             "require_root_owned_regular",
             "upstream-ca.pem",
         )
     )
-    assert install.index("systemctl restart") < install.index("CURRENT_LINK.next")
     assert all(
         marker in rollback
-        for marker in ("previous-snapshot", "config.present", "workspaces.acl", "verify_manifest", "validate_release", "daemon-reload", "systemctl restart", "CURRENT_LINK.next")
+        for marker in (
+            "action=--rollback",
+            "--recover",
+            'installer=${s72_loader_entrypoint%/*}/install-s72.sh',
+            "exec 8<",
+        )
     )
-    assert rollback.index("systemctl restart") < rollback.index("CURRENT_LINK.next")
+    assert all(
+        marker in atomic_helper
+        for marker in (
+            "s72_atomic_restore_snapshot",
+            "s72_atomic_apply_current_link",
+            "s72_atomic_verify_snapshot_seal",
+            "s72_atomic_publish_transaction_record",
+        )
+    )
+    restore = atomic_helper[atomic_helper.index("s72_atomic_restore_snapshot()") :]
+    payload = install[install.index("restore_snapshot_payload()") :]
+    assert payload.index("s72_atomic_apply_current_link") < install.index("restore_snapshot_runtime()")
+    assert restore.index("restore_snapshot_payload") < restore.index("restore_snapshot_runtime")
+    assert restore.index("s72_atomic_verify_snapshot_seal") < restore.index("systemctl stop")
     assert "InaccessiblePaths=/var/lib/opensandbox-gateway-deploy" in public_unit
     callback_base = next(line.split("=", 1)[1] for line in env_example.splitlines() if line.startswith("OPENSANDBOX_GATEWAY_CALLBACK_BASE="))
-    assert callback_base == policy["targets"]["callback"]["base_url"]
+    assert callback_base == LOOPBACK_BRIDGE_ORIGIN
     assert urllib.parse.urlsplit(callback_base).path == ""
-    assert env_example.count(f"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE={UPSTREAM_CA_BUNDLE_PATH}") == 1
-    assert {tuple(value["expected_ips"]) for value in policy["targets"].values()} == {("10.56.0.211",)}
-    assert {urllib.parse.urlsplit(value["base_url"]).netloc for value in policy["targets"].values()} == {
-        "REQUIRED_FIXED_EGRESS_HOSTNAME:18443"
-    }
+    assert "OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=" not in env_example
+    assert "OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE=" not in env_example
+    assert "OPENSANDBOX_GATEWAY_UPSTREAM_TRANSPORT=" not in env_example
+    assert callback_base != retired_policy["targets"]["callback"]["base_url"]
     assert nginx.count("listen 8080;") == 1
     assert nginx.count("listen 8443 ssl;") == 1
     assert nginx.count("listen 8443 ssl default_server;") == 1
@@ -2854,9 +2990,83 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
         [executable, "-c", textwrap.dedent(body), "gateway-contract", str(script), str(root)],
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=90,
         check=False,
     )
+
+
+def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        s72_lock_parent_mode_is_safe 1777
+        s72_lock_parent_mode_is_safe 755
+        for unsafe in 777 1775 2777 invalid ''; do
+          if s72_lock_parent_mode_is_safe "$unsafe"; then
+            exit 41
+          fi
+        done
+        ''',
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_installer_rejects_unresolved_or_malformed_egress_policy(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$1; ROOT=$2
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        cp "${SCRIPT%/*}/egress-policy.v1.example.json" "$ROOT/policy.json"
+        ! require_resolved_egress_policy_at "$ROOT/policy.json"
+        printf '%s\n' '{"version":1,"targets":{}}' > "$ROOT/policy.json"
+        ! require_resolved_egress_policy_at "$ROOT/policy.json"
+        printf '%s\n' '{"version":1,"targets":{"callback":{"base_url":"https://gateway.example.internal:18443","expected_ips":["10.0.0.10"]},"openai":{"base_url":"https://gateway.example.internal:18443/openai/v1","expected_ips":["10.0.0.10"]},"anthropic":{"base_url":"https://gateway.example.internal:18443/anthropic","expected_ips":["10.0.0.10"]}}}' > "$ROOT/policy.json"
+        require_resolved_egress_policy_at "$ROOT/policy.json"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_installer_config_metadata_survives_recoverable_ctime_change(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        TREE=$ROOT/config; METADATA=$ROOT/config.metadata
+        mkdir "$TREE"; chmod 0750 "$TREE"
+        printf 'sealed-config\n' > "$TREE/gateway.env"; chmod 0640 "$TREE/gateway.env"
+        require_gateway_config_contract_at() { :; }
+        s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        capture_config_metadata "$TREE" > "$METADATA"; chmod 0400 "$METADATA"
+
+        verify_config_metadata "$TREE" "$METADATA"
+        awk -F '\t' 'BEGIN { OFS = "\t" }
+          { split($3, fields, ":"); $3 = fields[1] ":" fields[2] ":" fields[3] ":" fields[4] ":" fields[5] ":123"; print }' \
+          "$METADATA" > "$ROOT/legacy.metadata"
+        chmod 0400 "$ROOT/legacy.metadata"
+        verify_config_metadata "$TREE" "$ROOT/legacy.metadata"
+
+        chmod 0600 "$TREE/gateway.env"
+        ! verify_config_metadata "$TREE" "$METADATA"
+        chmod 0640 "$TREE/gateway.env"
+        printf 'tampered-config\n' > "$TREE/gateway.env"
+        ! verify_config_metadata "$TREE" "$METADATA"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
@@ -2871,17 +3081,34 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
         DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
-        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence; mkdir -p "$DEPLOY_STATE"
-        mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$STATE"
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        EXPECTED_AUTHORITY_SHA=1111111111111111111111111111111111111111
+        AUTHORITY_EVIDENCE_ID=sealed-source-evidence
+        mkdir -p "$DEPLOY_STATE" "$TRANSACTION_RECORDS" "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$STATE"
+        chmod 0700 "$DEPLOY_STATE" "$TRANSACTION_RECORDS"
         printf 'acl-before\n' > "$ROOT/acl.current"
         require_root_tree() { test -d "$1" && test ! -L "$1"; }
+            s72_atomic_require_root_owned_directory() { test -d "$1" && test ! -L "$1"; }
+                s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+                s72_atomic_require_identity() { test -e "$1" || test -L "$1"; }
+                s72_atomic_fsync_path() { :; }
+                s72_atomic_advance_transaction() { :; }
+            preflight_live_state() { :; }
+            preflight_snapshot() { :; }
+            s72_atomic_write_lifecycle_authority() { : > "$1"; }
+            s72_atomic_prepare_workspace() {
+              workspace=$1/.s72-$2-$3
+              mkdir -p "$workspace"
+              printf '%s\n' "$workspace"
+            }
         write_manifest() { : > "$1/MANIFEST.sha256"; }
         verify_manifest() { test -f "$1/MANIFEST.sha256"; }
         validate_release() { is_commit "$1"; }
         chown() { :; }
         stat() {
-          test "$1" = -c && test "${@: -1}" = "$DEPLOY_STATE" && { echo 0:0:700; return; }
-          test "$1" = -c && { echo 0; return; }
+          test "$1:$2" = '-c:%u:%g:%a' && { echo 0:0:400; return; }
           command stat "$@"
         }
         install() {
@@ -2890,26 +3117,51 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         getfacl() { cat "$ROOT/acl.current"; }
         setfacl() { cp "${1#--restore=}" "$ROOT/acl.current"; }
         systemctl() {
-          action=$1; unit=${@: -1}; printf '%s:%s\n' "$action" "$unit" >> "$ACTIONS"
-          case "$action" in
-            is-active) test -f "$STATE/$unit.active" ;;
-            is-enabled) test -f "$STATE/$unit.enabled" ;;
-            enable) : > "$STATE/$unit.enabled" ;;
-            disable) rm -f "$STATE/$unit.enabled" ;;
-            restart) : > "$STATE/$unit.active" ;;
-            stop) rm -f "$STATE/$unit.active" ;;
-            daemon-reload) : ;;
-          esac
-        }
-        snapshot_state "$ROOT/snapshot"
-        printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
-        printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
-        mkdir "$CONFIG_DIR"; printf 'new-config\n' > "$CONFIG_DIR/gateway.env"
-        printf 'acl-mutated\n' > "$ROOT/acl.current"
-        : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
-        : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
-        restore_snapshot "$ROOT/snapshot"
-        test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
+              action=$1; unit=${@: -1}; printf '%s:%s\n' "$action" "$unit" >> "$ACTIONS"
+              case "$action" in
+                is-active) test -f "$STATE/$unit.active" ;;
+                is-enabled) test -f "$STATE/$unit.enabled" ;;
+                enable) : > "$STATE/$unit.enabled" ;;
+                disable) rm -f "$STATE/$unit.enabled" ;;
+                restart) : > "$STATE/$unit.active" ;;
+                stop) rm -f "$STATE/$unit.active" ;;
+                daemon-reload) : ;;
+                show)
+                  unit=$2
+                  case "$4" in
+                    ActiveState)
+                      test -f "$STATE/$unit.active" && printf '%s\n' active || printf '%s\n' inactive
+                      ;;
+                    UnitFileState)
+                      test -f "$STATE/$unit.enabled" && printf '%s\n' enabled || printf '%s\n'
+                      ;;
+                    LoadState)
+                      test -f "$SYSTEMD_DIR/$unit" && printf '%s\n' loaded || printf '%s\n' not-found
+                      ;;
+                    *) return 1 ;;
+                  esac
+                  ;;
+              esac
+            }
+            SNAPSHOT=$ROOT/snapshot
+            mkdir "$SNAPSHOT"
+            printf '%s\n' schema=s72-transaction-owner-v1 \
+              transaction=11111111111111111111111111111111 \
+              "root=$(command stat -c %d:%i "$SNAPSHOT")" > "$SNAPSHOT/transaction-owner"
+            snapshot_state "$SNAPSHOT"
+            printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
+            printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
+            mkdir "$CONFIG_DIR"; printf 'new-config\n' > "$CONFIG_DIR/gateway.env"
+            printf 'acl-mutated\n' > "$ROOT/acl.current"
+            printf '%040d\n' 2 > "$AUTHORITY_SHA_STATE"
+            printf 'mutated-evidence\n' > "$AUTHORITY_EVIDENCE_STATE"
+            printf '.rollback.22222222222222222222222222222222\n' > "$ROLLBACK_POINTER"
+                : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
+                : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
+                TX=11111111111111111111111111111111
+                restore_snapshot_payload "$SNAPSHOT" "$TX"
+            restore_snapshot_runtime "$SNAPSHOT"
+            test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
         test ! -e "$AUTHORITY_SHA_STATE"
@@ -2944,7 +3196,10 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
         DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
-        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence; mkdir -p "$DEPLOY_STATE"
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        mkdir -p "$DEPLOY_STATE" "$TRANSACTION_RECORDS"
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$STATE"
         printf 'old-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'old-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
@@ -2955,6 +3210,23 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
         : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
         require_root_tree() {{ test -d "$1" && test ! -L "$1"; }}
+        s72_atomic_require_root_owned_directory() {{ test -d "$1" && test ! -L "$1"; }}
+        s72_atomic_require_root_owned_regular() {{ test -f "$1" && test ! -L "$1"; }}
+        s72_atomic_require_identity() {{ test -e "$1" || test -L "$1"; }}
+        s72_atomic_fsync_path() {{ :; }}
+        s72_atomic_advance_transaction() {{ :; }}
+        s72_atomic_write_lifecycle_authority() {{ : > "$1"; }}
+        s72_atomic_prepare_workspace() {{
+          workspace=$1/.s72-$2-$3
+          mkdir -p "$workspace"
+          printf '%s\n' "$workspace"
+        }}
+        s72_atomic_directory_matches() {{ diff -r "$1" "$2" >/dev/null; }}
+        preflight_live_state() {{ :; }}
+        preflight_snapshot() {{ :; }}
+        require_gateway_config_contract() {{ :; }}
+        write_config_metadata() {{ : > "$2"; }}
+        verify_config_metadata() {{ :; }}
         write_manifest() {{ : > "$1/MANIFEST.sha256"; }}
         verify_manifest() {{ test -f "$1/MANIFEST.sha256"; }}
         validate_release() {{ is_commit "$1"; }}
@@ -2975,14 +3247,41 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         setfacl() {{ cp "${{1#--restore=}}" "$ROOT/acl.current"; }}
         systemctl() {{
           action=$1; unit=${{@: -1}}; printf '%s:%s:%s\n' "$action" "$unit" "$(readlink "$CURRENT_LINK" 2>/dev/null || true)" >> "$ACTIONS"
-          case "$action" in is-active) test -f "$STATE/$unit.active";; is-enabled) test -f "$STATE/$unit.enabled";; enable) : > "$STATE/$unit.enabled";; disable) rm -f "$STATE/$unit.enabled";; restart) : > "$STATE/$unit.active";; stop) rm -f "$STATE/$unit.active";; daemon-reload) :;; esac
+          case "$action" in
+            is-active) test -f "$STATE/$unit.active" ;;
+            is-enabled) test -f "$STATE/$unit.enabled" ;;
+            enable) : > "$STATE/$unit.enabled" ;;
+            disable) rm -f "$STATE/$unit.enabled" ;;
+            restart) : > "$STATE/$unit.active" ;;
+            stop) rm -f "$STATE/$unit.active" ;;
+            daemon-reload) : ;;
+            show)
+              unit=$2
+              case "$4" in
+                ActiveState)
+                  test -f "$STATE/$unit.active" && printf '%s\n' active || printf '%s\n' inactive
+                  ;;
+                UnitFileState)
+                  test -f "$STATE/$unit.enabled" && printf '%s\n' enabled || printf '%s\n' disabled
+                  ;;
+                LoadState) printf '%s\n' loaded ;;
+                *) return 1 ;;
+              esac
+              ;;
+          esac
         }}
-        snapshot_state "$ROOT/snapshot"
+        SNAPSHOT=$ROOT/snapshot
+        mkdir "$SNAPSHOT"
+        printf '%s\n' schema=s72-transaction-owner-v1 \
+          transaction=11111111111111111111111111111111 \
+          "root=$(command stat -c %d:%i "$SNAPSHOT")" > "$SNAPSHOT/transaction-owner"
+        snapshot_state "$SNAPSHOT"
         printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         rm "$CURRENT_LINK"; ln -s releases/{new} "$CURRENT_LINK"
-        restore_snapshot "$ROOT/snapshot"
+        restore_snapshot_payload "$SNAPSHOT" 11111111111111111111111111111111
+        restore_snapshot_runtime "$SNAPSHOT"
         grep -qx old-public "$SYSTEMD_DIR/opensandbox-gateway.service"
         grep -qx old-helper "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         grep -qx old-config "$CONFIG_DIR/gateway.env"; grep -qx acl-old "$ROOT/acl.current"
@@ -3110,31 +3409,38 @@ def test_installer_restore_failure_preserves_backup_and_stops_partial_mutation(t
         set -eu
         SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
-        BACKUP=$ROOT/unique-backup; STAGE=$ROOT/stage; RESTORE_FROM=$BACKUP; SUCCESS=0
+        BACKUP=$ROOT/unique-backup; STAGE=$ROOT/stage; SUCCESS=0
+        TRANSACTION_ID=11111111111111111111111111111111
         mkdir "$BACKUP" "$STAGE"
-        restore_snapshot() { return 1; }
+        recover_active_transaction() { return 1; }
         set +e; ( cleanup_install ) >/dev/null 2>&1; STATUS=$?; set -e
         test "$STATUS" -eq 125
         test -d "$BACKUP" && test -d "$STAGE"
 
-        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
         AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
         AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
         mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$DEPLOY_STATE"
         ACTIONS=$ROOT/actions; : > "$ACTIONS"
-        preflight_snapshot() { :; }
-        rm() {
-          printf 'rm:%s\n' "$*" >> "$ACTIONS"
-          case "$*" in *opensandbox-gateway-helper.service*) return 1;; esac
+        for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+          : > "$BACKUP/$unit.absent"
+        done
+        : > "$BACKUP/config.absent"; : > "$BACKUP/authority-sha.absent"
+        : > "$BACKUP/authority-evidence.absent"; : > "$BACKUP/current.absent"
+        : > "$BACKUP/rollback-pointer.absent"; printf 'acl\n' > "$BACKUP/workspaces.acl"
+        s72_atomic_prepare_workspace() { mkdir -p "$1/work"; printf '%s\n' "$1/work"; }
+        s72_atomic_apply_file() {
+          printf 'apply-file:%s\n' "$4" >> "$ACTIONS"
+          test "$4" != opensandbox-gateway-helper.service
         }
+        s72_atomic_advance_transaction() { printf 'advance:%s\n' "$3" >> "$ACTIONS"; }
         setfacl() { printf 'setfacl\n' >> "$ACTIONS"; }
         systemctl() { printf 'systemctl:%s\n' "$*" >> "$ACTIONS"; }
-        set +e; restore_snapshot "$BACKUP"; STATUS=$?; set -e
+        set +e; restore_snapshot_payload "$BACKUP" "$TRANSACTION_ID"; STATUS=$?; set -e
         test "$STATUS" -ne 0
-        test "$(grep -c '^rm:' "$ACTIONS")" -eq 2
-        ! grep -q '^setfacl\|^systemctl' "$ACTIONS"
+        test "$(grep -c '^apply-file:' "$ACTIONS")" -eq 2
+        ! grep -q '^advance:\|^setfacl\|^systemctl' "$ACTIONS"
         test -d "$BACKUP"
         ''',
     )
@@ -3175,19 +3481,20 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         tmp_path,
         r'''
         set -eu
-        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2"); ROLLBACK_SCRIPT=$SCRIPT
         eval "$(sed '/^rollback_main "\$@"$/d' "$SCRIPT")"
+        INSTALL_SCRIPT=${ROLLBACK_SCRIPT%/*}/install-s72.sh
+        SCRIPT=$INSTALL_SCRIPT
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
         ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot; STATE=$ROOT/systemctl
         AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
         AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
-        SNAPSHOT_ID=.rollback.contract; SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
+        TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
+        SNAPSHOT_ID=.rollback.11111111111111111111111111111111
+        SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$SNAPSHOT" "$STATE"
-        EXPECTED_AUTHORITY_SHA=2222222222222222222222222222222222222222
-        AUTHORITY_EVIDENCE_ID=ls-remote-current
-        mkdir "$RELEASES/$EXPECTED_AUTHORITY_SHA"; : > "$CURRENT_LINK"
-        printf '%s\n' "$SNAPSHOT_ID" > "$ROLLBACK_POINTER"
         : > "$SNAPSHOT/opensandbox-gateway.service.absent"
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.absent"
         : > "$SNAPSHOT/opensandbox-gateway.service.inactive"
@@ -3196,32 +3503,35 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.disabled"
         : > "$SNAPSHOT/config.absent"; : > "$SNAPSHOT/authority-sha.absent"
         : > "$SNAPSHOT/authority-evidence.absent"; printf 'acl-original\n' > "$SNAPSHOT/workspaces.acl"
-        : > "$SNAPSHOT/current.absent"; : > "$SNAPSHOT/MANIFEST.sha256"
+        : > "$SNAPSHOT/current.absent"; : > "$SNAPSHOT/rollback-pointer.absent"
         printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         printf '%040d\n' 1 > "$AUTHORITY_SHA_STATE"
         printf 'current-evidence\n' > "$AUTHORITY_EVIDENCE_STATE"
-        id() { test "$1" = -u && echo 0; }
-        test() {
-          if builtin test "$#" -eq 2 && builtin test "$1" = -L && builtin test "$2" = "$CURRENT_LINK"; then return 0; fi
-          builtin test "$@"
-        }
-        readlink() {
-          if builtin test "$#" -eq 1 && builtin test "$1" = "$CURRENT_LINK"; then
-            printf 'releases/%s\n' "$EXPECTED_AUTHORITY_SHA"
-          else
-            command readlink "$@"
-          fi
-        }
-        stat() { target=${@: -1}; case "$target" in "$DEPLOY_STATE") echo 0:0:700;; "$ROLLBACK_POINTER") echo 0:0:600;; *) command stat "$@";; esac; }
-        flock() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }; verify_manifest() { test -f "$1/MANIFEST.sha256"; }
-        validate_release() { :; }
+        s72_atomic_require_identity() { test -e "$1" || test -L "$1"; }
+        s72_atomic_fsync_path() { :; }
+        s72_atomic_advance_transaction() { :; }
+        s72_atomic_prepare_workspace() { mkdir -p "$1/work"; printf '%s\n' "$1/work"; }
         install() { if test "$1" = -d; then mkdir -p "${@: -1}"; else cp "${@: -2:1}" "${@: -1}"; fi; }
         setfacl() { cp "${1#--restore=}" "$ROOT/acl.current"; }
-        systemctl() { case "$1" in is-active) test "${@: -1}" = opensandbox.service;; disable|stop|daemon-reload) :;; *) :;; esac; }
-        ss() { printf 'LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*\n'; }
-        rollback_main
+        systemctl() {
+          action=$1; unit=${@: -1}
+          case "$action" in
+            disable|stop|daemon-reload) : ;;
+            show)
+              case "$4" in
+                ActiveState) printf '%s\n' inactive ;;
+                UnitFileState) printf '%s\n' ;;
+                LoadState) printf '%s\n' not-found ;;
+                *) return 1 ;;
+              esac
+              ;;
+            *) : ;;
+          esac
+        }
+        restore_snapshot_payload "$SNAPSHOT" 11111111111111111111111111111111
+        restore_snapshot_runtime "$SNAPSHOT"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"

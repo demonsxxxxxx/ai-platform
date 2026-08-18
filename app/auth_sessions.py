@@ -1,6 +1,7 @@
 """Redis-backed browser auth contexts with operation fencing."""
 
 from dataclasses import dataclass
+from datetime import datetime
 import base64
 import hashlib
 import hmac
@@ -1126,7 +1127,7 @@ def _context_ttl_seconds(settings: Any) -> int:
             _settings_value(
                 settings,
                 "auth_context_max_age_seconds",
-                _settings_value(settings, "ai_session_max_age_seconds", 8 * 60 * 60),
+                _settings_value(settings, "ai_session_max_age_seconds", 24 * 60 * 60),
             )
         ),
     )
@@ -1636,6 +1637,9 @@ def principal_snapshot(principal: Any) -> dict[str, object]:
         "roles": [str(role) for role in principal.roles],
         "permissions": [str(permission) for permission in principal.permissions],
         "source": str(principal.source),
+        "authz_policy_version": int(principal.authz_policy_version),
+        "authority_source": str(principal.authority_source or principal.source),
+        "authority_checked_at": str(principal.authority_checked_at),
     }
 
 
@@ -1708,6 +1712,21 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
         return None
     if any(not isinstance(item, str) for item in value["roles"] + value["permissions"]):
         return None
+    policy_version = value.get("authz_policy_version")
+    authority_source = value.get("authority_source")
+    authority_checked_at = value.get("authority_checked_at")
+    if isinstance(policy_version, bool) or not isinstance(policy_version, int):
+        return None
+    if policy_version < 1 or not isinstance(authority_source, str) or not authority_source.strip():
+        return None
+    if not isinstance(authority_checked_at, str) or not authority_checked_at.strip():
+        return None
+    try:
+        checked_at = datetime.fromisoformat(authority_checked_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if checked_at.tzinfo is None:
+        return None
     return {
         "user_id": value["user_id"],
         "display_name": value["display_name"],
@@ -1716,6 +1735,9 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
         "roles": list(value["roles"]),
         "permissions": list(value["permissions"]),
         "source": value["source"],
+        "authz_policy_version": policy_version,
+        "authority_source": authority_source,
+        "authority_checked_at": authority_checked_at,
     }
 
 

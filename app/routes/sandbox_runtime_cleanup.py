@@ -13,6 +13,11 @@ from app.settings import get_settings
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
 from app.runtime.sandbox.opensandbox_legacy_cleanup import trusted_internal_cleanup_labels_from_persisted_row
+from app.runtime.sandbox.opensandbox_policy import (
+    SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+    internal_test_orphan_cleanup_expected_labels,
+    requested_opensandbox_image,
+)
 from app.validation import assert_safe_id
 from app import repositories
 from app.db import transaction
@@ -61,11 +66,51 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
             lease_payload = row.get("lease_payload")
         if not isinstance(lease_payload, dict):
             return None
-        if lease_payload.get("security_profile") == "trusted_internal":
+        security_profile = lease_payload.get("security_profile")
+        if security_profile == "trusted_internal":
             rebuilt_labels = trusted_internal_cleanup_labels_from_persisted_row(row, lease_payload)
             if rebuilt_labels is None:
                 return None
             labels.update(rebuilt_labels)
+        elif security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+            persisted = lease_payload.get("labels")
+            settings = get_settings()
+            if not (
+                isinstance(persisted, dict)
+                and getattr(settings, "sandbox_security_profile", "") == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+                and getattr(settings, "deployment_environment", "") == "test"
+                and getattr(settings, "sandbox_container_provider", "") == "opensandbox"
+                and getattr(settings, "opensandbox_expected_network_mode", "") == "bridge"
+            ):
+                return None
+            try:
+                expected_image, expected_digest = requested_opensandbox_image(settings)
+                attempt_id = assert_safe_id(str(lease_payload.get("attempt_id") or ""), "attempt_id")
+            except ValueError:
+                return None
+            expected = internal_test_orphan_cleanup_expected_labels(
+                {
+                    "tenant_id": str(row["tenant_id"]),
+                    "workspace_id": str(row["workspace_id"]),
+                    "user_id": str(row["user_id"]),
+                    "session_id": str(row["session_id"]),
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "sandbox_mode": str(row["sandbox_mode"]),
+                    "security_profile": SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+                },
+                settings,
+            )
+            if expected is None:
+                return None
+            if (
+                lease_payload.get("requested_image") != expected_image
+                or lease_payload.get("requested_image_digest") != expected_digest
+            ):
+                return None
+            if any(str(persisted.get(key) or "") != value for key, value in expected.items()):
+                return None
+            labels.update({str(key): str(value) for key, value in persisted.items()})
         else:
             attempt_id = lease_payload.get("attempt_id")
             if not isinstance(attempt_id, str):

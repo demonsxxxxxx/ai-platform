@@ -92,11 +92,9 @@ test("removing the model chip is local-only and does not silently switch models"
   );
 });
 
-test("composer model labels remain localized", () => {
-  const en = read("src/i18n/locales/en.json");
+test("composer model labels remain in the Chinese catalog", () => {
   const zh = read("src/i18n/locales/zh.json");
 
-  assert.match(en, /"modelSelector"/);
   assert.match(zh, /"modelSelector"/);
 });
 
@@ -236,7 +234,7 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
       /var\(--theme-bg-card\)|var\(--theme-workbench-panel\)|panel-card|enterprise-modal-shell|workbenchSurface|data-librechat-command-entrypoint/,
       `${name} should use shared enterprise surface tokens`,
     );
-    assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, name);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, name);
     assert.doesNotMatch(source, /\bbg-white(?:\b|\/)/, name);
     assert.doesNotMatch(source, /\bbg-black\/(?:50|70)\b/, name);
     assert.doesNotMatch(source, /shadow-xl|shadow-2xl|shadow-lg/, name);

@@ -38,6 +38,11 @@ import {
 } from "./composerSelections";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
+  reconcileChatInputSubmissionLock,
+  releaseChatInputSubmissionLock,
+  tryAcquireChatInputSubmissionLock,
+} from "./chatInputSubmissionLock";
+import {
   consumePendingSelectionActionPrompt,
   SELECTION_ACTION_EVENT,
   type SelectionActionEventDetail,
@@ -69,6 +74,8 @@ export const ChatInput = memo(function ChatInput({
   disabled,
   canSend = true,
   placeholder,
+  acceptedFileTypes,
+  disableSlashCommands = false,
   tools = [],
   onToggleTool,
   onToggleCategory,
@@ -140,23 +147,30 @@ export const ChatInput = memo(function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
-  const isSubmittingRef = useRef(false);
+  const isSubmittingRef = useRef<symbol | null>(null);
   const [, setCursorPosition] = useState(0);
   const { hasPermission } = useAuth();
 
+  useEffect(() => {
+    reconcileChatInputSubmissionLock(isSubmittingRef, isLoading);
+  }, [isLoading]);
+
   const uploadCategories = (
-    Object.keys(FILE_CATEGORY_PERMISSIONS) as Array<
-      keyof typeof FILE_CATEGORY_PERMISSIONS
-    >
+    acceptedFileTypes?.length === 0
+      ? []
+      : (Object.keys(FILE_CATEGORY_PERMISSIONS) as Array<
+          keyof typeof FILE_CATEGORY_PERMISSIONS
+        >)
   ).filter((cat) => hasPermission(FILE_CATEGORY_PERMISSIONS[cat]));
 
   const attachments = externalAttachments ?? internalAttachments;
   const setAttachments = externalOnAttachmentsChange ?? setInternalAttachments;
 
-  const { uploadFiles, uploadLimits, validateCount, cancelUpload } =
+  const { uploadFiles, uploadLimitsBytes, validateCount, cancelUpload } =
     useFileUpload({
       attachments,
       onAttachmentsChange: setAttachments,
+      acceptedFileTypes,
     });
 
   const { history, pushHistory, navigateUp, navigateDown } = useInputHistory();
@@ -167,7 +181,7 @@ export const ChatInput = memo(function ChatInput({
     textareaRef,
     input,
     setInput,
-    uploadFiles,
+    uploadFiles: acceptedFileTypes?.length === 0 ? () => {} : uploadFiles,
     validateCount,
     scheduleTextareaResize,
   });
@@ -210,8 +224,8 @@ export const ChatInput = memo(function ChatInput({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSend) return;
-    if (handleComposerCommandSubmit(input)) return;
-    if (input.trim() && !isLoading && !disabled && !isSubmittingRef.current) {
+    if (!disableSlashCommands && handleComposerCommandSubmit(input)) return;
+    if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
       const selectedSkillSubmission = selectedSkillState
         ? prepareSelectedSkillSubmission(selectedSkillState, attachments)
@@ -221,7 +235,8 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
 
-      isSubmittingRef.current = true;
+      const submissionToken = tryAcquireChatInputSubmissionLock(isSubmittingRef);
+      if (!submissionToken) return;
       try {
         const outcome = await onSend(
           trimmed,
@@ -243,13 +258,13 @@ export const ChatInput = memo(function ChatInput({
           });
         }
       } finally {
-        isSubmittingRef.current = false;
+        releaseChatInputSubmissionLock(isSubmittingRef, submissionToken);
       }
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (slashMenuOpen) {
+    if (!disableSlashCommands && slashMenuOpen) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
         setSlashMenuHighlight((index) =>
@@ -406,6 +421,7 @@ export const ChatInput = memo(function ChatInput({
 
   const openCommandPanel = useCallback(
     (nextValue: string): boolean => {
+      if (disableSlashCommands) return false;
       const draft = resolveComposerCommandDraft(
         nextValue,
         commandPanelAvailability,
@@ -441,6 +457,7 @@ export const ChatInput = memo(function ChatInput({
     [
       closeSlashMenu,
       commandPanelAvailability,
+      disableSlashCommands,
       scheduleTextareaResize,
       upsertUnavailableCommandChip,
     ],
@@ -448,10 +465,10 @@ export const ChatInput = memo(function ChatInput({
 
   const slashCommandItems = useMemo(
     () =>
-      slashMenuOpen
+      !disableSlashCommands && slashMenuOpen
         ? resolveSlashCommandMenu(input, commandPanelAvailability)
         : [],
-    [commandPanelAvailability, input, slashMenuOpen],
+    [commandPanelAvailability, disableSlashCommands, input, slashMenuOpen],
   );
 
   useEffect(() => {
@@ -729,6 +746,7 @@ export const ChatInput = memo(function ChatInput({
     setIsDraggingOver(false);
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
+    if (acceptedFileTypes?.length === 0) return;
     if (!validateCount(files.length)) return;
     uploadFiles(files);
   };
@@ -772,7 +790,7 @@ export const ChatInput = memo(function ChatInput({
           className="relative"
           data-composer-command-menu-anchor
         >
-          {slashMenuOpen && (
+          {!disableSlashCommands && slashMenuOpen && (
             <SlashCommandMenu
               items={slashCommandItems}
               highlightedIndex={slashMenuHighlight}
@@ -845,7 +863,7 @@ export const ChatInput = memo(function ChatInput({
                 placeholder={
                   canSend
                     ? placeholder ?? t("chat.placeholder")
-                    : t("chat.noPermission")
+                    : placeholder ?? t("chat.noPermission")
                 }
                 disabled={disabled || !canSend}
                 rows={1}
@@ -875,7 +893,7 @@ export const ChatInput = memo(function ChatInput({
                 thinkingLabel={thinkingLabel}
                 thinkingLevel={thinkingLevel}
                 uploadCategories={uploadCategories}
-                uploadLimits={uploadLimits}
+                uploadLimitsBytes={uploadLimitsBytes}
                 uploadFiles={uploadFiles}
                 onFileCommandReady={(openFileCommand) => {
                   openFileCommandRef.current = openFileCommand;

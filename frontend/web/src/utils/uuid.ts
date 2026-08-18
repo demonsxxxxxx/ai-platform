@@ -1,18 +1,17 @@
-/**
- * Generate a UUID v4. Falls back to a manual implementation when
- * `crypto.randomUUID()` is unavailable (non-secure contexts like HTTP on
- * non-localhost hosts).
- */
+/** Generate an authority-safe UUID v4 or fail closed without Web Crypto. */
 export function uuid(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
+  const cryptoSource = globalThis.crypto;
+  if (!cryptoSource) throw new Error("secure_uuid_unavailable");
+  if (typeof cryptoSource.randomUUID === "function") {
+    return cryptoSource.randomUUID();
   }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  if (typeof cryptoSource.getRandomValues !== "function") {
+    throw new Error("secure_uuid_unavailable");
+  }
+
+  const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

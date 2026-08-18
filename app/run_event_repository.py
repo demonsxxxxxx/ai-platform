@@ -6,6 +6,12 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.persistence_limits import (
+    RUN_EVENT_MESSAGE_MAX_BYTES,
+    RUN_EVENT_PAYLOAD_MAX_BYTES,
+    ensure_json_size,
+    ensure_text_size,
+)
 from app.streaming import postgres as _ledger
 from app.streaming.authority import RunCursor
 
@@ -39,7 +45,13 @@ def _ledger_event_from_values(
         payload = {}
     if not isinstance(payload, dict):
         raise ValueError("run_event_payload_invalid")
-    optional_strings = {"trace_id": trace_id, "severity": severity, "error_code": error_code}
+    ensure_text_size(message, max_bytes=RUN_EVENT_MESSAGE_MAX_BYTES, code="run_event_message_too_large")
+    ensure_json_size(payload, max_bytes=RUN_EVENT_PAYLOAD_MAX_BYTES, code="run_event_payload_too_large")
+    optional_strings = {
+        "trace_id": trace_id,
+        "severity": severity,
+        "error_code": error_code,
+    }
     for field, value in optional_strings.items():
         if value is not None and not isinstance(value, str):
             raise ValueError(f"run_event_{field}_invalid")
@@ -53,7 +65,9 @@ def _ledger_event_from_values(
         "estimated_cost_minor": estimated_cost_minor,
     }
     for field, value in integer_values.items():
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int)
+        ):
             raise ValueError(f"run_event_{field}_invalid")
     return _ledger.LedgerEvent(
         event_type=event_type,
@@ -72,7 +86,7 @@ def _ledger_event_from_values(
     )
 
 
-async def append_event(
+async def _append_event_receipt(
     conn: AsyncConnection,
     *,
     tenant_id: str,
@@ -90,7 +104,7 @@ async def append_event(
     output_token_count: int = 0,
     total_token_count: int = 0,
     estimated_cost_minor: int = 0,
-) -> str:
+) -> tuple[_ledger.LedgerEvent, _ledger.EventReceipt]:
     event = _ledger_event_from_values(
         event_type=event_type,
         stage=stage,
@@ -106,7 +120,48 @@ async def append_event(
         total_token_count=total_token_count,
         estimated_cost_minor=estimated_cost_minor,
     )
-    return (await _ledger.append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event)).event_id
+    receipt = await _ledger.append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        event=event,
+    )
+    return event, receipt
+
+
+async def append_event(
+    conn: AsyncConnection,
+    **kwargs: Any,
+) -> str | dict[str, Any]:
+    if kwargs.pop("return_record", False):
+        return await append_event_record(conn, **kwargs)
+    _, receipt = await _append_event_receipt(conn, **kwargs)
+    return receipt.event_id
+
+
+async def append_event_record(
+    conn: AsyncConnection,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Return the exact durable row facts needed by a post-commit projector."""
+
+    event, receipt = await _append_event_receipt(conn, **kwargs)
+    return {
+        "id": receipt.event_id,
+        "run_id": kwargs["run_id"],
+        "sequence": receipt.cursor.sequence,
+        "event_type": event.event_type,
+        "stage": event.stage,
+        "message": event.message,
+        "severity": event.severity or event.payload.get("severity") or "info",
+        "visible_to_user": (
+            event.visible_to_user
+            if event.visible_to_user is not None
+            else bool(event.payload.get("visible_to_user", True))
+        ),
+        "payload_json": dict(event.payload),
+        "created_at": receipt.created_at,
+    }
 
 
 def _ledger_event_from_dict(event: object) -> _ledger.LedgerEvent:
@@ -153,6 +208,7 @@ async def append_event_batch(
         "event_ids_json": list(receipt.event_ids),
         "first_sequence": receipt.first_cursor.sequence if receipt.first_cursor else None,
         "through_sequence": receipt.through_cursor.sequence if receipt.through_cursor else None,
+        "callback_received_at": receipt.callback_received_at,
     }
 
 

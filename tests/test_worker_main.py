@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import app.worker_main as worker_main
-from app import repositories
 from app.queue import LeaseMutationOutcome, QueueMessage
+from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
 from app.worker_main import run_once
 
@@ -68,6 +68,12 @@ def default_sandbox_cleanup(monkeypatch):
     async def cleanup_expired_memory_records_for_worker(settings=None):
         return []
 
+    async def run_data_retention_maintenance(settings=None):
+        return {"status": "not_due"}
+
+    async def require_schema_current():
+        return {"ready": True}
+
     async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
         return []
 
@@ -89,6 +95,16 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         cleanup_expired_memory_records_for_worker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.run_data_retention_maintenance",
+        run_data_retention_maintenance,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.require_schema_current",
+        require_schema_current,
         raising=False,
     )
     monkeypatch.setattr(
@@ -176,7 +192,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"], kwargs["max_batches"]))
-        return repositories.ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=kwargs["run_id"] == "run-a",
             status="failed",
         )
@@ -239,9 +255,9 @@ async def test_permission_terminalization_maintenance_reconciles_only_one_final_
     async def drain(**kwargs):
         status = kwargs["run_id"]
         return {
-            "partial": repositories.ToolPermissionTerminalizationProgress(False, "failed"),
-            "final": repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True),
-            "retry": repositories.ToolPermissionTerminalizationProgress(True, "failed"),
+            "partial": RunTerminalizationProgress(False, "failed"),
+            "final": RunTerminalizationProgress(True, "failed", True, True),
+            "retry": RunTerminalizationProgress(True, "failed"),
         }[status]
 
     async def reconcile(**kwargs):
@@ -426,7 +442,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"]))
-        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled", True, True)
 
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"]))
@@ -511,7 +527,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["run_id"]))
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["run_id"]))
@@ -827,7 +843,7 @@ async def test_stale_run_fence_renews_through_stage_and_drain_transactions(monke
         return {"run_id": "run-renewed"}
 
     async def drain(**_kwargs):
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, False)
+        return RunTerminalizationProgress(True, "failed", True, False)
 
     async def release(_fence):
         return True
@@ -1365,11 +1381,11 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
                 kwargs["result_json"],
             )
         )
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def cancel_run(_conn, **kwargs):
         calls.append(("cancel", kwargs["tenant_id"], kwargs["run_id"]))
-        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled", True, True)
 
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].status))
@@ -1566,7 +1582,7 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
         }
 
     async def fail_run(*_args, **_kwargs):
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(**_kwargs):
         raise RuntimeError("parent reconciliation retry")
@@ -1611,6 +1627,7 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
         session_id="session-a",
         run_id="run-a",
         agent_id="agent-a",
+        execution_kind="skill",
         skill_id="skill-a",
     )
     message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
@@ -1648,6 +1665,7 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
         session_id="session-a",
         run_id="run-a",
         agent_id="agent-a",
+        execution_kind="skill",
         skill_id="skill-a",
     )
     message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
@@ -1678,7 +1696,7 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
 
     async def fail_run(*_args, **_kwargs):
         calls.append(("terminal_write",))
-        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     monkeypatch.setattr(worker_main, "parse_leased_queue_envelope", lambda _value: SimpleNamespace(payload=payload))
     monkeypatch.setattr(worker_main, "transaction", Transaction)

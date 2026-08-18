@@ -10,13 +10,8 @@ const activeFiles = [
   "public/manifest.json",
   "public/offline.html",
   "public/robots.txt",
-  "public/sitemap.xml",
   "src/constants/index.ts",
-  "src/i18n/locales/en.json",
   "src/i18n/locales/zh.json",
-  "src/i18n/locales/ja.json",
-  "src/i18n/locales/ko.json",
-  "src/i18n/locales/ru.json",
   "src/sw.ts",
   "src/pwa.ts",
   "src/pwaGuards.ts",
@@ -60,10 +55,8 @@ test("active frontend no longer exposes LambChat brand authority", () => {
 test("ai-platform product constants are the active brand source", () => {
   const constants = readFileSync(join(root, "src/constants/index.ts"), "utf8");
   assert.match(constants, /export const APP_NAME = "AI Platform"/);
-  assert.match(
-    constants,
-    /export const APP_HOME_URL = "http:\/\/10\.56\.0\.211:18001\/"/,
-  );
+  assert.match(constants, /export const APP_HOME_URL = "\/"/);
+  assert.doesNotMatch(constants, /https?:\/\/10\.56\./);
 });
 
 test("brand entry surfaces consume the ai-platform home authority", () => {

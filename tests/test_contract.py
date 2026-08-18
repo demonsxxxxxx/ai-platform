@@ -4,7 +4,11 @@ from app.main import create_app
 from app.routes import health as health_routes
 from app.executors.base import RunPayload
 from app.models import CreateRunRequest, QueueRunPayload, SkillDefinition
-from app.control_plane_contracts import sanitize_public_payload
+from app.product_events import initial_run_event_specs
+from app.control_plane_contracts import (
+    is_legacy_synthetic_chat_identity,
+    sanitize_public_payload,
+)
 from app.repositories import new_id
 from fastapi.testclient import TestClient
 
@@ -34,6 +38,29 @@ def test_generated_ids_are_prefixed_and_unique():
     assert first != second
 
 
+def test_legacy_synthetic_chat_identity_is_exact_and_never_matches_v2_harness():
+    assert is_legacy_synthetic_chat_identity(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        execution_kind="skill",
+    )
+    assert not is_legacy_synthetic_chat_identity(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        execution_kind="harness_chat",
+    )
+    assert not is_legacy_synthetic_chat_identity(
+        agent_id="other-agent",
+        skill_id="general-chat",
+        execution_kind="skill",
+    )
+    assert not is_legacy_synthetic_chat_identity(
+        agent_id="general-agent",
+        skill_id="other-skill",
+        execution_kind="skill",
+    )
+
+
 def test_create_run_request_uses_file_ids_contract_only():
     fields = set(CreateRunRequest.model_fields)
 
@@ -61,11 +88,18 @@ def test_app_registers_platform_routes():
 def test_app_allows_browser_cors_for_frontend_cutover():
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/health", headers={"Origin": "http://10.56.0.211:8080"})
+    response = client.get("/api/ai/health", headers={"Origin": "http://127.0.0.1:9527"})
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://10.56.0.211:8080"
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:9527"
     assert response.headers["access-control-allow-credentials"] == "true"
+
+    retired = client.get(
+        "/api/ai/health",
+        headers={"Origin": "http://10.56.0.211:8080"},
+    )
+    assert retired.status_code == 200
+    assert "access-control-allow-origin" not in retired.headers
 
 
 def test_health_reports_dynamic_runtime_commit(monkeypatch):
@@ -86,6 +120,7 @@ def test_readiness_requires_postgresql_and_redis(monkeypatch):
 
     monkeypatch.setenv("AI_PLATFORM_RUNTIME_COMMIT", commit)
     monkeypatch.setattr(health_routes, "_probe_postgresql", available)
+    monkeypatch.setattr(health_routes, "_probe_schema", available)
     monkeypatch.setattr(health_routes, "_probe_redis", available)
 
     response = TestClient(create_app()).get("/api/ai/ready")
@@ -94,7 +129,12 @@ def test_readiness_requires_postgresql_and_redis(monkeypatch):
     assert response.json() == {
         "status": "ready",
         "runtime_commit": commit,
-        "dependencies": {"postgresql": "ok", "redis": "ok"},
+        "dependencies": {
+            "postgresql": "ok",
+            "schema": "ok",
+            "target_schema_version": health_routes.TARGET_SCHEMA_VERSION,
+            "redis": "ok",
+        },
     }
 
 
@@ -106,13 +146,19 @@ def test_readiness_fails_closed_without_exposing_dependency_errors(monkeypatch):
         return None
 
     monkeypatch.setattr(health_routes, "_probe_postgresql", postgresql_unavailable)
+    monkeypatch.setattr(health_routes, "_probe_schema", postgresql_unavailable)
     monkeypatch.setattr(health_routes, "_probe_redis", redis_available)
 
     response = TestClient(create_app()).get("/api/ai/ready")
 
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
-    assert response.json()["dependencies"] == {"postgresql": "unavailable", "redis": "ok"}
+    assert response.json()["dependencies"] == {
+        "postgresql": "unavailable",
+        "schema": "unavailable",
+        "target_schema_version": health_routes.TARGET_SCHEMA_VERSION,
+        "redis": "ok",
+    }
     assert "secret database detail" not in response.text
 
 
@@ -128,6 +174,7 @@ def test_readiness_times_out_each_dependency(monkeypatch):
 
     monkeypatch.setattr(health_routes, "get_settings", lambda: Settings())
     monkeypatch.setattr(health_routes, "_probe_postgresql", unavailable_before_timeout)
+    monkeypatch.setattr(health_routes, "_probe_schema", hangs)
     monkeypatch.setattr(health_routes, "_probe_redis", hangs)
 
     response = TestClient(create_app()).get("/api/ai/ready")
@@ -135,6 +182,8 @@ def test_readiness_times_out_each_dependency(monkeypatch):
     assert response.status_code == 503
     assert response.json()["dependencies"] == {
         "postgresql": "unavailable",
+        "schema": "unavailable",
+        "target_schema_version": health_routes.TARGET_SCHEMA_VERSION,
         "redis": "unavailable",
     }
 
@@ -260,6 +309,173 @@ def test_queue_payload_requires_release_decision_and_executor_type():
         assert "Extra inputs are not permitted" in str(exc)
     else:
         raise AssertionError("queue payload should reject legacy files field")
+
+
+def test_queue_payload_accepts_skillless_harness_chat_v2():
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "file_ids": ["file-a"],
+            "input": {"message": "summarize the attachment"},
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v2",
+        }
+    )
+
+    assert payload.execution_kind == "harness_chat"
+    assert payload.skill_id is None
+    assert payload.skill_version is None
+    assert payload.release_decision == {}
+    assert payload.skill_manifests == []
+
+
+def test_queue_payload_keeps_legacy_v1_general_chat_replay_shape():
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-legacy",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "file_ids": [],
+            "input": {"message": "historical replay"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-legacy",
+            "release_decision": release_decision("hash-legacy"),
+            "skill_manifests": [primary_manifest("general-chat", "hash-legacy")],
+            "schema_version": "ai-platform.run-payload.v1",
+        }
+    )
+
+    assert payload.execution_kind == "skill"
+    assert payload.skill_id == "general-chat"
+    assert payload.schema_version == "ai-platform.run-payload.v1"
+
+
+def test_queue_payload_rejects_skill_authority_on_harness_chat():
+    base = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+        "file_ids": [],
+        "input": {"message": "hello"},
+        "executor_type": "claude-agent-worker",
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+    invalid_overrides = (
+        ({"skill_id": "general-chat"}, "harness_chat_skill_id_forbidden"),
+        ({"skill_version": "hash-a"}, "harness_chat_skill_version_forbidden"),
+        (
+            {"release_decision": release_decision("hash-a")},
+            "harness_chat_release_decision_forbidden",
+        ),
+        (
+            {"skill_manifests": [{"skill_id": "general-chat"}]},
+            "harness_chat_skill_manifests_forbidden",
+        ),
+        ({"executor_type": "embedded-poco"}, "harness_chat_executor_invalid"),
+        (
+            {"schema_version": "ai-platform.run-payload.v1"},
+            "harness_chat_payload_schema_version_invalid",
+        ),
+    )
+
+    for override, expected_error in invalid_overrides:
+        try:
+            QueueRunPayload.model_validate({**base, **override})
+        except ValueError as exc:
+            assert expected_error in str(exc)
+        else:
+            raise AssertionError(f"harness payload should reject {override}")
+
+
+def test_run_payload_accepts_skillless_harness_chat_v2():
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=["file-a"],
+        input={"message": "summarize"},
+        schema_version="ai-platform.run-payload.v2",
+    )
+
+    assert payload.execution_kind == "harness_chat"
+    assert payload.skill_id is None
+
+
+def test_run_payload_rejects_skill_identity_on_harness_chat():
+    try:
+        RunPayload(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            agent_id="general-agent",
+            execution_kind="harness_chat",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "hello"},
+            schema_version="ai-platform.run-payload.v2",
+        )
+    except ValueError as exc:
+        assert "harness_chat_skill_id_forbidden" in str(exc)
+    else:
+        raise AssertionError("harness RunPayload must not carry a Skill identity")
+
+
+def test_harness_initial_events_contain_no_skill_fact():
+    events = initial_run_event_specs(
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        skill_version=None,
+        executor_type="claude-agent-worker",
+        file_ids=["file-a"],
+        source="test",
+    )
+
+    assert [event["event_type"] for event in events] == ["queued", "file_bound"]
+    assert all(event["payload"]["execution_kind"] == "harness_chat" for event in events)
+    assert all("skill_id" not in event["payload"] for event in events)
+    assert all("skill_version" not in event["payload"] for event in events)
+
+
+def test_skill_initial_events_keep_exact_skill_fact():
+    events = initial_run_event_specs(
+        agent_id="qa-word-review",
+        execution_kind="skill",
+        skill_id="qa-file-reviewer",
+        skill_version="hash-a",
+        executor_type="claude-agent-worker",
+        file_ids=[],
+        source="test",
+    )
+
+    assert [event["event_type"] for event in events] == ["queued", "skill_selected"]
+    assert all(event["payload"]["skill_id"] == "qa-file-reviewer" for event in events)
+    assert all(event["payload"]["skill_version"] == "hash-a" for event in events)
 
 
 def test_queue_run_payload_rejects_unsupported_schema_version():

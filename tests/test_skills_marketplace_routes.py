@@ -457,7 +457,7 @@ def test_skills_and_marketplace_read_contracts_bound_source_metadata_by_role(mon
         "skill_name": "qa-file-reviewer",
         "expected_version": "hash-a",
         "input_modes": ["docx"],
-        "requires_file": True,
+        "requires_file": False,
         "description": "Review Word documents.",
         "tags": ["document"],
         "files": [],
@@ -527,7 +527,7 @@ def test_skills_and_marketplace_read_contracts_bound_source_metadata_by_role(mon
     assert detail_body["files"] == ["SKILL.md", "references/guide.md"]
     assert detail_body["expected_version"] == "hash-a"
     assert detail_body["input_modes"] == ["docx"]
-    assert detail_body["requires_file"] is True
+    assert detail_body["requires_file"] is False
     assert internal_fields.isdisjoint(detail_body)
 
     file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=admin_headers)
@@ -557,9 +557,9 @@ def test_skills_and_marketplace_read_contracts_bound_source_metadata_by_role(mon
 
 @pytest.mark.parametrize(
     ("input_modes", "requires_file"),
-    [(["chat"], False), (["chat", "docx"], True)],
+    [(["chat"], False), (["chat", "docx"], False), (["docx"], False)],
 )
-def test_public_skill_projection_derives_requires_file_from_docx_input_mode(input_modes, requires_file):
+def test_public_skill_projection_does_not_make_supported_file_input_mandatory(input_modes, requires_file):
     from app.routes import skills_marketplace
 
     row = dict(_catalog_rows()[0])

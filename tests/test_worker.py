@@ -2,7 +2,7 @@ import asyncio
 import json
 import types
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,7 @@ import pytest
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.execution.api import validated_context_file_diagnostic
 from app.executors.base import (
     ArtifactManifest,
     ExecutorResult,
@@ -17,17 +18,22 @@ from app.executors.base import (
     RunPayload,
 )
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
-from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
-    ToolPermissionTerminalizationProgress,
 )
-from app.required_tool_contract import declaration_from_input
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    declaration_from_input,
+)
+from app.runs.api import RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.worker import (
     WorkerOutcome,
@@ -38,13 +44,41 @@ from app.worker import (
     parse_queue_payload,
     process_run_payload,
 )
+from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
+_ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
 
-def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
+@pytest.fixture(autouse=True)
+def admitted_sse_stream(monkeypatch):
+    published = []
+    class Publisher:
+        def __init__(self, tenant_id, run_id, attempt_id, authority_secret):
+            self.run_id = run_id
+
+        async def prepare(self, conn):
+            return None
+
+        async def open(self):
+            return None
+
+        async def confirm(self, conn):
+            return None
+
+        async def publish_assistant_delta(self, delta):
+            published.append(types.SimpleNamespace(event_type="assistant_text_delta", payload={"delta": delta}))
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
+    return published
+
+
+def test_worker_preserves_only_typed_safe_executor_failures():
     private_token = "private-native-token"
     private_path = "/home/private/workspace/native-tool.sock"
     native_error = NativeToolAdmissionError()
@@ -56,14 +90,35 @@ def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     )
     assert worker_module._executor_exception_failure(
         RuntimeError("ordinary executor failure")
-    ) == ("executor_failure", "ordinary executor failure")
+    ) == ("executor_failure", "Executor failed")
+    assert worker_module._executor_exception_failure(
+        SandboxExecutorHttpError(
+            status_code=401,
+            error_code="invalid_executor_credential",
+            detail="invalid_executor_credential",
+        )
+    ) == (
+        "invalid_executor_credential",
+        "Executor authentication failed (HTTP 401)",
+    )
+    hostile_error = SandboxExecutorHttpError(
+        status_code=502,
+        error_code="token_private-secret",
+        detail="<html>private-prompt</html>",
+    )
+    assert worker_module._executor_exception_failure(hostile_error) == (
+        "executor_http_failure",
+        "Executor request failed (HTTP 502)",
+    )
     assert private_token not in str(worker_module._executor_exception_failure(native_error))
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
+    assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
+    assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
 
 
 @pytest.mark.asyncio
 async def test_worker_submit_monitor_preserves_normal_terminal_result():
-    expected = FakeSuccessAdapter()
+    expected = SuccessfulExecutorStub()
     skill_version = "hash-general-chat"
     payload = RunPayload(
         tenant_id="tenant-a",
@@ -485,7 +540,7 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     assert container_provider._native_tool_required(runtime_request)
 
 
-def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
+def test_worker_keeps_bash_available_without_required_completion():
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
@@ -519,8 +574,6 @@ def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
         subjects=subjects,
         admin_bypass=False,
     )
-    declaration = declaration_from_input(payload.input)
-
     missing = worker_module.required_tool_completion_for_run(
         payload=payload,
         run_identity={
@@ -534,42 +587,11 @@ def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
         authorization=authorization,
         executor_payload={},
     )
-    valid = worker_module.required_tool_completion_for_run(
-        payload=payload,
-        run_identity={
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-a",
-        },
-        attempt_id="qat-test-attempt",
-        authorization=authorization,
-        executor_payload={
-            "required_capability_evidence": {
-                "schema_version": "ai-platform.required-capability-evidence.v1",
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "attempt_id": "qat-test-attempt",
-                "tool_call_id": None,
-                "capability_kind": "builtin",
-                "canonical_identity": "Bash",
-                "lifecycle_phase": "completed",
-                "lifecycle_status": "succeeded",
-                "evidence_source": "executor_private_payload",
-                "trust_basis": "attempt_bound_tool_invocation",
-                "public_label": "controlled_execution_capability",
-                "public_status": "succeeded",
-                "declaration_sha256": declaration.declaration_sha256,
-            }
-        },
-    )
-
-    assert missing.reason == "required_tool_completion_evidence_missing"
-    assert valid.allowed is True
+    assert declaration_from_input(payload.input) is None
+    assert authorization.allowed is True
+    assert authorization.reason == "required_tool_not_declared"
+    assert missing.allowed is True
+    assert missing.reason == "required_tool_not_declared"
 
 
 def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
@@ -620,7 +642,7 @@ def snapshot_governance(digest: str = "hash-a") -> dict:
             "ref": "skill_dependency_policy",
             "dependency_count": 1,
         },
-        "does_not_close_b4_or_211": True,
+        "does_not_close_b4_or_deployed_runtime_acceptance": True,
     }
 
 
@@ -673,6 +695,9 @@ def _test_current_principal(
 def default_cancel_not_requested(monkeypatch):
     global _CURRENT_QUEUE_PAYLOAD
     _CURRENT_QUEUE_PAYLOAD = None
+    original_locked_agent_profile_identity_valid = (
+        worker_module._locked_agent_profile_identity_valid
+    )
 
     def capture_queue_payload(raw):
         global _CURRENT_QUEUE_PAYLOAD
@@ -685,8 +710,66 @@ def default_cancel_not_requested(monkeypatch):
             locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
         return _payload_from_locked_run(locked_run, run_identity=run_identity)
 
+    def validate_materialized_locked_agent_profile(agent_profile, locked_run):
+        if locked_run is True:
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        return original_locked_agent_profile_identity_valid(agent_profile, locked_run)
+
+    async def reauthorize_test_profile(
+        _conn,
+        *,
+        principal,
+        agent_id,
+        revision,
+        content_hash,
+    ):
+        queue_payload = _CURRENT_QUEUE_PAYLOAD or {}
+        profile = dict(queue_payload.get("agent_profile") or {})
+        skill_set = list(profile.get("skill_set") or [])
+        primary = skill_set[0] if skill_set else {}
+        return types.SimpleNamespace(
+            private_execution_input=profile,
+            skill={
+                "skill_id": primary.get("skill_id"),
+                "skill_version": primary.get("expected_version"),
+            },
+            skills=tuple(
+                {
+                    "skill_id": item.get("skill_id"),
+                    "skill_version": item.get("expected_version"),
+                }
+                for item in skill_set
+            ),
+            model={
+                "id": queue_payload.get("model_id"),
+                "value": queue_payload.get("model_value"),
+            },
+            mcp_tool_ids=tuple(
+                repository_module.extract_run_mcp_tool_ids(queue_payload.get("input") or {})
+            ),
+        )
+
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
+    monkeypatch.setattr(
+        "app.worker._locked_agent_profile_identity_valid",
+        validate_materialized_locked_agent_profile,
+    )
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize_test_profile,
+    )
+
+    async def materialize_test_skill_manifests(conn, **kwargs):
+        locked_manifests = list(kwargs.get("skill_manifest_refs") or [])
+        if all(isinstance(item.get("files"), list) for item in locked_manifests):
+            return locked_manifests
+        return await _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS(conn, **kwargs)
+
+    monkeypatch.setattr(
+        "app.worker.repositories.materialize_run_skill_manifests",
+        materialize_test_skill_manifests,
+    )
 
     async def resolve_test_current_principal(*, user_id, tenant_id):
         return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
@@ -697,6 +780,15 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def get_run(conn, *, tenant_id, run_id, for_update=False):
+        if _CURRENT_QUEUE_PAYLOAD is None:
+            return None
+        locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        locked_run["status"] = "queued"
+        return locked_run
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
+
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
@@ -706,7 +798,7 @@ def default_cancel_not_requested(monkeypatch):
         return True
 
     async def fail_run(conn, **kwargs):
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -755,11 +847,21 @@ def default_cancel_not_requested(monkeypatch):
 
     async def validate_replay_skill_manifests(*_args, **kwargs):
         manifests = kwargs.get("skill_manifests") or []
-        primary = next(
-            (item for item in manifests if item.get("skill_id") == kwargs.get("skill_id")),
-            {},
-        )
-        return list(primary.get("mcp_tool_ids") or [])
+        selected = kwargs.get("skill_set") or [
+            {
+                "skill_id": kwargs.get("skill_id"),
+                "expected_version": kwargs.get("pinned_version"),
+            }
+        ]
+        selected_ids = {str(item.get("skill_id") or "") for item in selected}
+        tool_ids: list[str] = []
+        for manifest in manifests:
+            if str(manifest.get("skill_id") or "") not in selected_ids:
+                continue
+            for tool_id in manifest.get("mcp_tool_ids") or []:
+                if tool_id not in tool_ids:
+                    tool_ids.append(tool_id)
+        return tool_ids
 
     monkeypatch.setattr(
         "app.worker.repositories.validate_replay_skill_manifests",
@@ -796,6 +898,25 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr(
         "app.worker.repositories.get_context_snapshot_for_worker",
         get_context_snapshot_for_worker,
+        raising=False,
+    )
+
+    async def list_scoped_context_messages(conn, **kwargs):
+        message_ids = ["msg-a", "msg-b"][: int(kwargs.get("limit") or 0)]
+        return [
+            {
+                "id": message_id,
+                "run_id": f"run-prior-{index}",
+                "role": "user" if index % 2 else "assistant",
+                "content": f"context message {index}",
+                "created_at": f"2026-08-17T00:00:{index:02d}Z",
+            }
+            for index, message_id in enumerate(message_ids, start=1)
+        ]
+
+    monkeypatch.setattr(
+        "app.worker.repositories.list_scoped_context_messages",
+        list_scoped_context_messages,
         raising=False,
     )
 
@@ -847,9 +968,11 @@ def default_cancel_not_requested(monkeypatch):
             **kwargs,
         }
 
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease, raising=False)
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
-    monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         ragflow_skill = skill_id == "ragflow-knowledge-search"
@@ -987,6 +1110,130 @@ def default_cancel_not_requested(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
+    monkeypatch,
+):
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "file_ids": [],
+            "input": {
+                "message": "hello",
+                "mcp_tool_ids": ["search-a"],
+                "execution_tier": "sdk_only_writing",
+            },
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v2",
+        }
+    )
+    run_identity = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": "",
+    }
+    sentinel = object()
+    captured = {}
+
+    async def forbid_skill_snapshot(*_args, **_kwargs):
+        raise AssertionError("Harness chat must not resolve Skill snapshots")
+
+    async def fake_reauthorize_mcp(_conn, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        worker_module.repositories,
+        "validate_run_skill_snapshots_for_dispatch",
+        forbid_skill_snapshot,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_reauthorize_mcp_capabilities",
+        fake_reauthorize_mcp,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "get_settings",
+        lambda: types.SimpleNamespace(sandbox_container_provider="opensandbox"),
+    )
+
+    result = await worker_module._reauthorize_worker_capabilities(
+        object(),
+        payload=payload,
+        run_identity=run_identity,
+        attempt_id="attempt-a",
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+        ),
+    )
+
+    assert result is sentinel
+    assert captured["requested_tool_ids"] == ["search-a"]
+    assert [
+        subject["identity"] for subject in captured["tool_policy_subjects"]
+    ] == ["Read", "Glob", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
+    bash_subject = next(
+        subject
+        for subject in captured["tool_policy_subjects"]
+        if subject["identity"] == "Bash"
+    )
+    assert bash_subject["allowed_parameter_keys"] == [
+        "command",
+        "timeout",
+        "description",
+    ]
+    assert bash_subject["required_parameter_keys"] == ["command"]
+    assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
+
+
+def test_locked_harness_run_reconstructs_null_skill_identity():
+    run_identity = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": "",
+    }
+    locked_run = {
+        "input_json": {
+            "input": {"message": "hello"},
+            "file_ids": [],
+            "execution_kind": "harness_chat",
+            "executor_type": "claude-agent-worker",
+            "skill_version": None,
+            "release_decision": {},
+            "skill_manifests": [],
+            "schema_version": "ai-platform.run-payload.v2",
+        }
+    }
+
+    reconstructed = worker_module._payload_from_locked_run(
+        locked_run,
+        run_identity=run_identity,
+    )
+
+    assert reconstructed is not None
+    assert reconstructed.execution_kind == "harness_chat"
+    assert reconstructed.skill_id is None
+
+
+@pytest.mark.asyncio
 async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):
     calls = []
 
@@ -1116,6 +1363,215 @@ def base_payload(**overrides):
     return payload
 
 
+def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "qa-file-reviewer",
+        "required_skill_version": "hash-qa-file-reviewer",
+    }
+    payload = parse_queue_payload(
+        base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
+    )
+
+    assert payload.agent_profile == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [
+            {
+                "skill_id": "qa-file-reviewer",
+                "expected_version": "hash-qa-file-reviewer",
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="agent_profile_agent_id_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_id="other-agent",
+                agent_profile=profile,
+            )
+        )
+    with pytest.raises(ValueError, match="agent_profile_required_skill_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_id="agt_support",
+                agent_profile={**profile, "required_skill_id": "hostile-skill"},
+            )
+        )
+    with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_id="agt_support",
+                agent_profile={**profile, "required_skill_version": "hostile-version"},
+            )
+        )
+    for non_string_version in (123, True, [], {}):
+        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+            parse_queue_payload(
+                base_payload(
+                    _leased=False,
+                    agent_id="agt_support",
+                    agent_profile={**profile, "required_skill_version": non_string_version},
+                )
+            )
+
+
+def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    harness_payload = base_payload(
+        _leased=False,
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        executor_type="claude-agent-worker",
+        schema_version="ai-platform.run-payload.v2",
+        agent_profile=profile,
+    )
+
+    assert parse_queue_payload(harness_payload).agent_profile == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+    }
+    with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
+        parse_queue_payload(
+            {
+                **harness_payload,
+                "agent_profile": {
+                    **profile,
+                    "skill_set": [
+                        {"skill_id": "general-chat", "expected_version": "version-a"},
+                        {"skill_id": "qa-file-reviewer", "expected_version": "version-b"},
+                    ],
+                },
+            }
+        )
+    for hostile_profile, expected_error in (
+        ({**profile, "agent_id": "other-agent"}, "agent_profile_harness_identity_invalid"),
+        (
+            {**profile, "required_skill_id": "other-skill"},
+            "agent_profile_harness_identity_invalid",
+        ),
+        (
+            {**profile, "required_skill_version": ""},
+            "agent_profile_required_skill_version_invalid",
+        ),
+        ({**profile, "content_hash": "A" * 64}, "agent_profile_hash_invalid"),
+        ({**profile, "content_hash": "g" * 64}, "agent_profile_hash_invalid"),
+        ({**profile, "content_hash": "a" * 63 + " "}, "agent_profile_hash_invalid"),
+    ):
+        with pytest.raises(ValueError, match=expected_error):
+            parse_queue_payload({**harness_payload, "agent_profile": hostile_profile})
+    for non_string_version in (123, True, [], {}):
+        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+            parse_queue_payload(
+                {
+                    **harness_payload,
+                    "agent_profile": {
+                        **profile,
+                        "required_skill_version": non_string_version,
+                    },
+                }
+            )
+
+
+def test_run_payload_accepts_only_complete_pinned_harness_profile():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    harness = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "qat-test-attempt",
+        "agent_id": "agt_support",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+        "file_ids": [],
+        "input": {"message": "hello"},
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+
+    assert RunPayload(**harness, agent_profile=profile).agent_profile == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+    }
+    assert RunPayload(**{**harness, "agent_id": "general-agent"}).agent_profile == {}
+    for hostile_profile in (
+        {**profile, "agent_id": "other-agent"},
+        {**profile, "revision": 0},
+        {**profile, "content_hash": "A" * 64},
+        {**profile, "content_hash": "g" * 64},
+        {**profile, "required_skill_id": "other-skill"},
+        {**profile, "required_skill_version": ""},
+    ):
+        with pytest.raises(ValueError, match="agent_profile_"):
+            RunPayload(**harness, agent_profile=hostile_profile)
+    for non_string_version in (123, True, [], {}):
+        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+            RunPayload(
+                **harness,
+                agent_profile={
+                    **profile,
+                    "required_skill_version": non_string_version,
+                },
+            )
+
+
+def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "qa-file-reviewer",
+        "required_skill_version": "hash-qa-file-reviewer",
+    }
+    payload = parse_queue_payload(
+        base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
+    )
+    admission = types.SimpleNamespace(
+        private_execution_input=profile,
+        skill={
+            "skill_id": "qa-file-reviewer",
+            "skill_version": "different-version",
+        },
+        model={"id": payload.model_id, "value": payload.model_value},
+        mcp_tool_ids=tuple(repository_module.extract_run_mcp_tool_ids(payload.input)),
+    )
+
+    assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is False
+
+
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
     captured = {}
 
@@ -1123,7 +1579,10 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
         captured.update(kwargs)
         return types.SimpleNamespace(requires_real_sandbox=False)
 
-    monkeypatch.setattr(worker_module, "decide_execution_boundary", decide)
+    monkeypatch.setattr(
+        "app.execution_boundary.decide_execution_boundary",
+        decide,
+    )
     payload = QueueRunPayload.model_validate(
         {
             key: value
@@ -1154,7 +1613,10 @@ def test_worker_mcp_context_forces_sandbox_without_client_tool_metadata(monkeypa
         captured.update(kwargs)
         return types.SimpleNamespace(requires_real_sandbox=True)
 
-    monkeypatch.setattr(worker_module, "decide_execution_boundary", decide)
+    monkeypatch.setattr(
+        "app.execution_boundary.decide_execution_boundary",
+        decide,
+    )
     payload = QueueRunPayload.model_validate(
         {
             key: value
@@ -1285,6 +1747,7 @@ def locked_run_from_payload(payload):
     validated = QueueRunPayload.model_validate(
         {key: value for key, value in payload.items() if key != "_queue_attempt_id"}
     ).model_dump(mode="json")
+    agent_profile = validated.get("agent_profile") or {}
     return {
         "id": validated["run_id"],
         "tenant_id": validated["tenant_id"],
@@ -1292,11 +1755,16 @@ def locked_run_from_payload(payload):
         "user_id": validated["user_id"],
         "session_id": validated["session_id"],
         "agent_id": validated["agent_id"],
+        "execution_kind": validated["execution_kind"],
         "skill_id": validated["skill_id"],
         "trace_id": f"trace_{validated['run_id']}",
         "principal_roles": [],
         "principal_department_id": "",
         "auth_source": "test",
+        "admitted_agent_profile_revision": agent_profile.get("revision"),
+        "admitted_agent_profile_hash": agent_profile.get("content_hash"),
+        "session_admitted_agent_profile_revision": agent_profile.get("revision"),
+        "session_admitted_agent_profile_hash": agent_profile.get("content_hash"),
         "input_json": {
             key: value
             for key, value in validated.items()
@@ -1308,10 +1776,420 @@ def locked_run_from_payload(payload):
                 "session_id",
                 "run_id",
                 "agent_id",
+                "execution_kind",
                 "skill_id",
             }
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("profile_change", "pin_change", "expected"),
+    [
+        (None, None, True),
+        ("missing", None, False),
+        ("agent", None, False),
+        ("revision", None, False),
+        ("hash", None, False),
+        (None, "missing_revision", False),
+        (None, "missing_hash", False),
+        (None, "revision", False),
+        (None, "hash", False),
+        (None, "session_revision", False),
+        (None, "session_hash", False),
+    ],
+)
+def test_locked_agent_profile_identity_requires_exact_physical_pin(
+    profile_change,
+    pin_change,
+    expected,
+):
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Private profile instruction.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    locked_run = {
+        "agent_id": "agt_support",
+        "admitted_agent_profile_revision": 7,
+        "admitted_agent_profile_hash": "a" * 64,
+        "session_admitted_agent_profile_revision": 7,
+        "session_admitted_agent_profile_hash": "a" * 64,
+    }
+    candidate = dict(profile)
+    if profile_change == "missing":
+        candidate = {}
+    elif profile_change == "agent":
+        candidate["agent_id"] = "other-agent"
+    elif profile_change == "revision":
+        candidate["revision"] = 8
+    elif profile_change == "hash":
+        candidate["content_hash"] = "b" * 64
+    if pin_change == "missing_revision":
+        locked_run["admitted_agent_profile_revision"] = None
+    elif pin_change == "missing_hash":
+        locked_run["admitted_agent_profile_hash"] = None
+    elif pin_change == "revision":
+        locked_run["admitted_agent_profile_revision"] = 8
+    elif pin_change == "hash":
+        locked_run["admitted_agent_profile_hash"] = "b" * 64
+    elif pin_change == "session_revision":
+        locked_run["session_admitted_agent_profile_revision"] = 8
+    elif pin_change == "session_hash":
+        locked_run["session_admitted_agent_profile_hash"] = "b" * 64
+
+    assert worker_module._locked_agent_profile_identity_valid(
+        candidate,
+        locked_run,
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    ("pin_change", "expected"),
+    [
+        (None, True),
+        ("missing_run_revision", False),
+        ("missing_run_hash", False),
+        ("missing_session_revision", False),
+        ("missing_session_hash", False),
+        ("run_revision", False),
+        ("run_hash", False),
+        ("session_revision", False),
+        ("session_hash", False),
+    ],
+)
+def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, expected):
+    locked_run = {
+        "agent_id": "general-agent",
+        "admitted_agent_profile_revision": None,
+        "admitted_agent_profile_hash": None,
+        "session_admitted_agent_profile_revision": None,
+        "session_admitted_agent_profile_hash": None,
+    }
+    field = {
+        "missing_run_revision": "admitted_agent_profile_revision",
+        "missing_run_hash": "admitted_agent_profile_hash",
+        "missing_session_revision": "session_admitted_agent_profile_revision",
+        "missing_session_hash": "session_admitted_agent_profile_hash",
+        "run_revision": "admitted_agent_profile_revision",
+        "run_hash": "admitted_agent_profile_hash",
+        "session_revision": "session_admitted_agent_profile_revision",
+        "session_hash": "session_admitted_agent_profile_hash",
+    }.get(pin_change)
+    if pin_change and pin_change.startswith("missing_"):
+        locked_run.pop(field)
+    elif field is not None:
+        locked_run[field] = 7 if field.endswith("revision") else "a" * 64
+
+    assert worker_module._locked_agent_profile_identity_valid({}, locked_run) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pin_change",
+    [None, "missing_revision", "agent", "revision", "hash", "session_revision", "session_hash"],
+)
+async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, pin_change):
+    calls = []
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Private profile instruction.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    raw = base_payload(
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "hello"},
+        executor_type="claude-agent-worker",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version="ai-platform.run-payload.v2",
+        agent_profile=profile,
+    )
+    locked_run = locked_run_from_payload(raw)
+    if pin_change == "missing_revision":
+        locked_run["admitted_agent_profile_revision"] = None
+    elif pin_change == "agent":
+        locked_run["agent_id"] = "other-agent"
+    elif pin_change == "revision":
+        locked_run["admitted_agent_profile_revision"] = 8
+    elif pin_change == "hash":
+        locked_run["admitted_agent_profile_hash"] = "b" * 64
+    elif pin_change == "session_revision":
+        locked_run["session_admitted_agent_profile_revision"] = 8
+    elif pin_change == "session_hash":
+        locked_run["session_admitted_agent_profile_hash"] = "b" * 64
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture",
+                capabilities={"artifacts": False, "streaming": False, "tools": False},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(_conn, **_kwargs):
+        return locked_run
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        raw,
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    if pin_change is None:
+        assert outcome.status == "succeeded"
+        assert outcome.error_code is None
+        adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
+        assert adapter_payload.agent_profile == {
+            "agent_id": "agt_support",
+            "revision": 7,
+            "content_hash": "a" * 64,
+            "instructions": "Private profile instruction.",
+            "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+        }
+        public_calls = [call for call in calls if call[0] != "adapter"]
+        assert profile["instructions"] not in repr(public_calls)
+    else:
+        assert outcome.status == "failed"
+        assert outcome.error_code in {"queue_payload_identity_mismatch", "capability_not_authorized"}
+        assert not any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("authority_change", "expected_reason", "expected_kind", "expected_policy"),
+    [
+        ("revoked", "profile_not_authorized", "agent_profile", "agent_profile_authority"),
+        ("instructions", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        ("required_skill", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        ("model", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        ("mcp", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
+        (
+            "principal",
+            CURRENT_PRINCIPAL_DENIAL_REASON,
+            "principal_authority",
+            "capability_distribution",
+        ),
+    ],
+)
+async def test_worker_reauthorizes_pinned_profile_before_adapter(
+    monkeypatch,
+    authority_change,
+    expected_reason,
+    expected_kind,
+    expected_policy,
+):
+    calls = []
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Private profile instruction.",
+        "required_skill_id": "general-chat",
+        "required_skill_version": "version-a",
+    }
+    raw = base_payload(
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "hello", "mcp_tool_ids": ["tool-a"]},
+        executor_type="claude-agent-worker",
+        model_id="model-a",
+        model_value="model-a",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version="ai-platform.run-payload.v2",
+        agent_profile=profile,
+    )
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("Profile denial must happen before adapter dispatch")
+
+    async def mark_run_running(_conn, **_kwargs):
+        return locked_run_from_payload(raw)
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fail_run(_conn, **kwargs):
+        calls.append(("fail", kwargs))
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    async def reauthorize(_conn, **kwargs):
+        calls.append(("reauthorize", kwargs))
+        assert authority_change != "principal"
+        if authority_change == "revoked":
+            return None
+        authorized = dict(profile)
+        model = {"id": "model-a", "value": "model-a"}
+        mcp_tool_ids = ("tool-a",)
+        if authority_change == "instructions":
+            authorized["instructions"] = "Current immutable instruction."
+        elif authority_change == "required_skill":
+            authorized["required_skill_version"] = "version-b"
+        elif authority_change == "model":
+            model = {"id": "model-b", "value": "model-b"}
+        elif authority_change == "mcp":
+            mcp_tool_ids = ("tool-b",)
+        return types.SimpleNamespace(
+            private_execution_input=authorized,
+            skill={"skill_id": "general-chat"},
+            model=model,
+            mcp_tool_ids=mcp_tool_ids,
+        )
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize,
+    )
+    if authority_change == "principal":
+        async def deny_current_principal(**_kwargs):
+            raise PrincipalAuthorityDenied()
+
+        monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
+
+    outcome = await process_run_payload(
+        raw,
+        AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    if authority_change == "principal":
+        assert not any(item[0] == "reauthorize" for item in calls)
+    else:
+        assert calls[0][0] == "reauthorize"
+    event = next(item[1] for item in calls if item[0] == "event")
+    assert event["payload"]["capability_kind"] == expected_kind
+    assert event["payload"]["policy"] == expected_policy
+    assert event["payload"]["reason"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_mark_run_running_projects_distinct_run_and_session_profile_pins():
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        async def execute(self, sql, params):
+            assert params == ("tenant-a", "run-a")
+            normalized = " ".join(sql.split())
+            assert "runs.admitted_agent_profile_revision" in normalized
+            assert "runs.admitted_agent_profile_hash" in normalized
+            assert (
+                "sessions.admitted_agent_profile_revision as "
+                "session_admitted_agent_profile_revision"
+            ) in normalized
+            assert (
+                "sessions.admitted_agent_profile_hash as session_admitted_agent_profile_hash"
+            ) in normalized
+            return Cursor()
+
+    assert (
+        await repository_module.mark_run_running(
+            Connection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_queued_state_after_current_principal_http(monkeypatch):
+    calls = []
+    transaction_depth = 0
+    get_run_count = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_enter")
+        try:
+            yield object()
+        finally:
+            calls.append("transaction_exit")
+            transaction_depth -= 1
+
+    async def get_run(_conn, **_kwargs):
+        nonlocal get_run_count
+        get_run_count += 1
+        calls.append(f"get_run_{get_run_count}")
+        run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        run["status"] = "queued" if get_run_count == 1 else "running"
+        return run
+
+    async def resolve_current_principal(*, user_id, tenant_id):
+        assert transaction_depth == 0
+        calls.append("current_principal_http")
+        return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
+
+    async def mark_run_running(_conn, **_kwargs):
+        assert transaction_depth == 1
+        calls.append("mark_run_running")
+        return None
+
+    async def append_event(_conn, **_kwargs):
+        calls.append("skip_event")
+        return "event-a"
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+
+    outcome = await process_run_payload(base_payload())
+
+    assert outcome == WorkerOutcome("skipped", "run-a")
+    assert calls == [
+        "transaction_enter",
+        "get_run_1",
+        "transaction_exit",
+        "current_principal_http",
+        "transaction_enter",
+        "mark_run_running",
+        "get_run_2",
+        "skip_event",
+        "transaction_exit",
+    ]
 
 
 def test_multi_agent_result_summary_counts_pending_and_cancelled_steps_like_sse_snapshot():
@@ -1414,7 +2292,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
         "used_skills": [],
     }
 
-    class DiagnosticSuccessAdapter(FakeSuccessAdapter):
+    class DiagnosticSuccessAdapter(SuccessfulExecutorStub):
         async def submit_run(self, payload, event_sink=None):
             result = await super().submit_run(payload, event_sink=event_sink)
             return replace(
@@ -1428,7 +2306,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
-        return True
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -1502,7 +2380,7 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "failed"
     assert ("fail", "tool_permission_pending", "A pending tool-permission request blocks successful completion.") in calls
@@ -1663,7 +2541,7 @@ async def test_worker_enforces_capability_artifact_contract_for_real_checkpoint_
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("repository_terminal", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -1746,7 +2624,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
         return False
 
     async def fail_run(conn, **kwargs):
-        return ToolPermissionTerminalizationProgress(completed=False, status=None, did_transition=False)
+        return RunTerminalizationProgress(completed=False, status=None, did_transition=False)
 
     async def classify_success_commit_block(conn, *, tenant_id, run_id):
         return "stale_terminal_state"
@@ -1769,7 +2647,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_terminal_state"
@@ -1845,7 +2723,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     injector = asyncio.create_task(insert_permission_after_initial_check())
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
     await injector
 
@@ -1891,7 +2769,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         conn.pending.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("accepted cancellation must not be reported as tool_permission_pending")
@@ -1922,7 +2800,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome == WorkerOutcome("cancelled", "run-a")
     assert ("cancel", {"message": "任务已取消"}) in committed
@@ -2064,7 +2942,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -2074,7 +2952,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
             skill_id="general-chat",
             agent_id="general-agent",
         ),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
         worker_id="worker-a",
     )
 
@@ -2200,7 +3078,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -2242,7 +3120,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -2256,7 +3134,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
 
@@ -2282,7 +3160,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -2300,12 +3178,13 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
-    assert outcome.status == "failed"
+    assert outcome == WorkerOutcome("failed", "run-a", "executor_failure", "Executor failed")
+    assert ("fail", "run-a", "executor_failure", "Executor failed") in calls
     assert ("lease_create", "run-a") in calls
     release_call = next(item[1] for item in calls if item[0] == "lease_release")
     assert release_call["tenant_id"] == "tenant-a"
@@ -2335,7 +3214,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -2352,7 +3231,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -2391,7 +3270,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
@@ -2409,10 +3288,10 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
     assert outcome.status == "failed"
     release_call = next(item[1] for item in calls if item[0] == "lease_release")
@@ -2455,7 +3334,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
     monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_terminal_state"
@@ -2497,7 +3376,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -2516,7 +3395,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": StreamingAdapter()}))
@@ -2593,7 +3472,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("cancel-requested runtime failures must prefer cancelled over failed")
@@ -2635,7 +3514,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -2679,7 +3558,7 @@ async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_reques
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("accepted cancel must not be overwritten by executor_failure")
@@ -2782,11 +3661,11 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
 
     async def cancel_run(conn, **kwargs):
         calls.append(("cancel", kwargs["run_id"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
         return {
@@ -2825,7 +3704,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -2899,11 +3778,11 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     with pytest.raises(RuntimeError, match="terminal write failed"):
-        await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+        await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     complete_call = next(item for item in calls if item[0] == "complete")
     release_call = next(item for item in calls if item[0] == "lease_release")
@@ -2960,7 +3839,7 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "succeeded"
@@ -3035,7 +3914,7 @@ async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "succeeded"
@@ -3069,7 +3948,7 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -3083,7 +3962,7 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", input=child_input),
-        AdapterRegistry({"fake": FakeFailureAdapter()}),
+        AdapterRegistry({"fake": FailingExecutorStub()}),
     )
 
     assert outcome.status == "failed"
@@ -3142,7 +4021,7 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -3216,7 +4095,7 @@ async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatc
             agent_id="general-agent",
             input=child_input,
         ),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "succeeded"
@@ -3254,7 +4133,7 @@ async def test_worker_reconciles_multi_agent_child_after_executor_exception(monk
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -3303,7 +4182,7 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -3317,7 +4196,7 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", executor_type="missing", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "failed"
@@ -3370,7 +4249,7 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", conn, error_code))
-        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
+        return RunTerminalizationProgress(True, "failed", True, True)
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
@@ -3384,7 +4263,7 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", executor_type="missing", input=child_input),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "failed"
@@ -3398,6 +4277,30 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 @pytest.mark.asyncio
 async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     captured = {}
+    full_manifest = primary_manifest("qa-file-reviewer", "hash-primary")
+    manifest_ref = repository_module.skill_manifest_refs([full_manifest])[0]
+
+    class MaterializationCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "materialization_sha256": manifest_ref[
+                        "materialization_sha256"
+                    ],
+                    "manifest_json": full_manifest,
+                }
+            ]
+
+    class MaterializationConnection:
+        async def execute(self, sql, params):
+            assert "from run_skill_materializations" in sql
+            assert params == ("tenant-a", "run-a")
+            return MaterializationCursor()
+
+    @asynccontextmanager
+    async def materialization_transaction():
+        yield MaterializationConnection()
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -3421,7 +4324,7 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     async def complete_run(conn, **kwargs):
         return True
 
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.transaction", materialization_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -3431,14 +4334,14 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
         base_payload(
             executor_type="claude-agent-worker",
             skill_version="hash-primary",
-            skill_manifests=[{"skill_id": "qa-file-reviewer", "content_hash": "hash-primary"}],
+            skill_manifests=[manifest_ref],
         ),
         AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
     )
 
     assert outcome.status == "succeeded"
     assert captured["payload"].skill_version == "hash-primary"
-    assert captured["payload"].skill_manifests == [{"skill_id": "qa-file-reviewer", "content_hash": "hash-primary"}]
+    assert captured["payload"].skill_manifests == [full_manifest]
 
 
 @pytest.mark.asyncio
@@ -4158,6 +5061,8 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
     assert outcome.status == "succeeded"
     context_pack = getattr(captured["payload"], "context_pack", None)
     assert isinstance(context_pack, dict)
+    assert context_pack["conversation_context"]["selected_message_count"] == 2
+    assert context_pack["conversation_context"]["selected_turn_count"] == 1
     assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
     assert context_pack["source"] == "runs_api"
     assert context_pack["referenced_materials"] == {
@@ -4252,7 +5157,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("identity-mismatched queue payload must not refresh context snapshot")
@@ -4264,7 +5169,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -4307,7 +5212,7 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("missing DB identity must not refresh context snapshot")
@@ -4358,7 +5263,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
@@ -4406,6 +5311,10 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "user_id": "user-a",
             "session_id": "session-a",
             "agent_id": "general-agent",
+            "admitted_agent_profile_revision": None,
+            "admitted_agent_profile_hash": None,
+            "session_admitted_agent_profile_revision": None,
+            "session_admitted_agent_profile_hash": None,
             "skill_id": "general-chat",
             "trace_id": "trace_run_a",
             "input_json": {
@@ -4499,13 +5408,13 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -4946,11 +5855,37 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypatch):
+async def test_worker_persists_platform_controlled_runner_as_actually_used(monkeypatch):
     snapshots = []
 
     class ControlledRunnerSkillAdapter:
         async def submit_run(self, payload, event_sink=None):
+            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind="skill",
+                canonical_identity="qa-file-reviewer",
+            )
+            binding = {
+                field: getattr(payload, field)
+                for field in (
+                    "tenant_id",
+                    "workspace_id",
+                    "user_id",
+                    "session_id",
+                    "run_id",
+                    "attempt_id",
+                )
+            }
+            capability_evidence = [
+                asdict(
+                    RequiredCapabilityEvidence.from_controlled_runner(
+                        declaration=declaration,
+                        binding=binding,
+                        tool_call_id="controlled-skill-call",
+                        lifecycle_phase=phase,
+                    )
+                )
+                for phase in ("invocation_requested", "completed")
+            ]
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="test-adapter/1",
@@ -4964,8 +5899,10 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
                 },
                 artifacts=[reviewed_docx_artifact()],
                 executor_payload={
-                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer", "unstaged-hostile-skill"],
                     "used_skills_source": "platform_controlled_runner",
+                    "staged_skills": ["qa-file-reviewer", "minimax-docx"],
+                    "capability_evidence": capability_evidence,
                     "inferred_used_skills": ["qa-file-reviewer", "minimax-docx"],
                     "skill_manifests": [
                         {
@@ -4992,6 +5929,13 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
                 },
             )
 
+    controlled_adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        controlled_adapter,
+        "submit_run",
+        ControlledRunnerSkillAdapter().submit_run,
+    )
+
     async def mark_run_running(conn, *, tenant_id, run_id):
         return True
 
@@ -5013,6 +5957,15 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
 
     outcome = await process_run_payload(
         base_payload(
+            agent_id="agt_support",
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "required_skill_id": "qa-file-reviewer",
+                "required_skill_version": "hash-reviewer",
+            },
             skill_manifests=[
                 {
                     **primary_manifest("qa-file-reviewer", "hash-reviewer"),
@@ -5024,7 +5977,7 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
                 },
             ]
         ),
-        AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}),
+        AdapterRegistry({"fake": controlled_adapter}),
     )
 
     assert outcome.status == "succeeded"
@@ -5036,6 +5989,181 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
     assert snapshots[1]["used"] is False
     assert snapshots[1]["used_skills_source"] == "inferred"
     assert snapshots[1]["inferred_used"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    ["executor_native", "inferred", "platform_controlled_runner"],
+)
+async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contract(monkeypatch, source):
+    failures = []
+
+    class NonHookAgentAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            executor_payload = {}
+            if source == "platform_controlled_runner":
+                declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                    capability_kind="skill",
+                    canonical_identity="qa-file-reviewer",
+                )
+                binding = {
+                    field: getattr(payload, field)
+                    for field in (
+                        "tenant_id",
+                        "workspace_id",
+                        "user_id",
+                        "session_id",
+                        "run_id",
+                        "attempt_id",
+                    )
+                }
+                binding["attempt_id"] = "stale-attempt"
+                executor_payload = {
+                    "staged_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": source,
+                    "capability_evidence": [
+                        asdict(
+                            RequiredCapabilityEvidence.from_controlled_runner(
+                                declaration=declaration,
+                                binding=binding,
+                                tool_call_id="stale-controlled-call",
+                                lifecycle_phase=phase,
+                            )
+                        )
+                        for phase in ("invocation_requested", "completed")
+                    ],
+                }
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={
+                    "message": "executor claimed success",
+                    "staged_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": source,
+                },
+                executor_payload=executor_payload,
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        failures.append(kwargs)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    selected_adapter = NonHookAgentAdapter()
+    if source == "platform_controlled_runner":
+        trusted_adapter = ClaudeAgentWorkerAdapter()
+        monkeypatch.setattr(
+            trusted_adapter,
+            "submit_run",
+            selected_adapter.submit_run,
+        )
+        selected_adapter = trusted_adapter
+
+    outcome = await process_run_payload(
+        base_payload(
+            agent_id="agt_support",
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "required_skill_id": "qa-file-reviewer",
+                "required_skill_version": "hash-qa-file-reviewer",
+            }
+        ),
+        AdapterRegistry({"fake": selected_adapter}),
+    )
+
+    assert outcome.status == "failed", outcome.error_message
+    assert outcome.error_code == "required_artifact_missing"
+    assert failures[0]["error_code"] == "required_artifact_missing"
+    assert "capability_state" not in failures[0]["result_json"]
+    serialized = str(failures[0]["result_json"])
+    assert "used_skills_source" not in serialized
+    assert source not in serialized
+
+
+@pytest.mark.asyncio
+async def test_optional_agent_skill_claim_does_not_complete_platform_terminal_contracts(monkeypatch):
+    failures = []
+    events = []
+
+    class ExactHookWithoutRequiredArtifactAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "executor claimed success"},
+                executor_payload={
+                    "staged_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": "executor_hook",
+                    "sdk_used": True,
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        events.append(kwargs["event_type"])
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        failures.append(kwargs)
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            agent_id="agt_support",
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "required_skill_id": "qa-file-reviewer",
+                "required_skill_version": "hash-qa-file-reviewer",
+            }
+        ),
+        AdapterRegistry({"fake": ExactHookWithoutRequiredArtifactAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_artifact_missing"
+    assert "capability_state" not in failures[0]["result_json"]
+    assert "capability_actually_invoked" not in events
+    assert "capability_completed" not in events
+    assert "artifact_ready" not in events
 
 
 @pytest.mark.asyncio
@@ -5315,7 +6443,7 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     assert created[0]["manifest_json"]["artifact_type"] == "reviewed_docx"
     assert created[0]["manifest_json"]["source_file_id"] == "file-a"
     assert "local_path" not in created[0]["manifest_json"]
-    artifact_event = next(item for item in events if item["event_type"] == "artifact_created")
+    artifact_event = next(item for item in events if item["event_type"] == "artifact_ready")
     assert artifact_event["payload"]["artifact_id"] == created[0]["artifact_id"]
     assert artifact_event["payload"]["artifact_type"] == "reviewed_docx"
     assert artifact_event["payload"]["download_url"] == f"/api/ai/artifacts/{created[0]['artifact_id']}/download"
@@ -5345,19 +6473,184 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
     assert outcome.status == "failed"
     assert outcome.error_code == "fake_failure"
     assert outcome.error_message == "fake run failed for run-a"
     assert any(item[0] == "fail" and item[1] == "fake_failure" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_context_file_diagnostic_only_in_hidden_event(
+    monkeypatch,
+    caplog,
+):
+    calls = []
+    diagnostic = {
+        "schema_version": "ai-platform.context-file-failure.v1",
+        "diagnostic_id": "0123456789abcdef",
+        "reason_code": "context_file_pdf_password_required",
+        "phase": "parser",
+        "file_kind": "pdf",
+        "attachment_index": 2,
+        "exception_chain": ["ContextFileContentError"],
+    }
+
+    class ContextFileFailureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={},
+                result={
+                    "message": "The PDF requires a password before it can be processed.",
+                    "error_code": "context_file_pdf_password_required",
+                },
+                executor_payload={"context_file_failure": diagnostic},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-context-file-error"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message, result_json))
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    caplog.set_level("ERROR", logger="app.worker")
+
+    outcome = await process_run_payload(
+        base_payload(),
+        AdapterRegistry({"fake": ContextFileFailureAdapter()}),
+    )
+
+    assert outcome.error_code == "context_file_pdf_password_required"
+    fail_call = next(item for item in calls if item[0] == "fail")
+    assert fail_call[3]["error_code"] == "context_file_pdf_password_required"
+    assert "context_file_failure" not in fail_call[3]
+    hidden_event = next(
+        item[1]
+        for item in calls
+        if item[0] == "event" and item[1]["event_type"] == "error"
+    )
+    assert hidden_event["visible_to_user"] is False
+    assert hidden_event["error_code"] == "context_file_pdf_password_required"
+    assert hidden_event["payload"]["context_file_failure"] == diagnostic
+    log_record = next(
+        record
+        for record in caplog.records
+        if record.message == "Context file preprocessing failed"
+    )
+    assert log_record.reason_code == "context_file_pdf_password_required"
+    assert log_record.attachment_index == 2
+    assert "password" not in log_record.getMessage().casefold()
+
+
+def test_worker_rejects_untrusted_context_file_diagnostic_payload():
+    result = ExecutorResult(
+        status="failed",
+        adapter_version="adapter/1",
+        executor_type="fake",
+        executor_version="fake/1",
+        capabilities={},
+        result={"message": "failed", "error_code": "context_file_preprocessing_failed"},
+        executor_payload={
+            "context_file_failure": {
+                "schema_version": "ai-platform.context-file-failure.v1",
+                "diagnostic_id": "0123456789abcdef",
+                "reason_code": "private_reason:/secret/path",
+                "phase": "parser",
+                "exception_chain": ["RuntimeError"],
+            }
+        },
+    )
+
+    assert validated_context_file_diagnostic(result.executor_payload) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_terminal_status", ["failed", "completed", "succeeded"])
+async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
+    monkeypatch,
+    runtime_terminal_status,
+):
+    calls = []
+    private_error = "https://executor.test/run?token=private-token<html>private-prompt</html>"
+
+    class MaliciousSandboxFailureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="executor/1",
+                capabilities={},
+                result={
+                    "error_code": private_error,
+                    "sdk_error": private_error,
+                    "message": private_error,
+                    "url": private_error,
+                    "path": "/private/workspace",
+                    "nested": {"prompt": "private-prompt"},
+                },
+                executor_payload={
+                    "sandbox_runtime_used": True,
+                    "runtime_terminal_status": runtime_terminal_status,
+                    "sdk_error": private_error,
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-malicious-sandbox-failure"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message, result_json))
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": MaliciousSandboxFailureAdapter()}),
+    )
+
+    assert outcome == WorkerOutcome(
+        "failed",
+        "run-a",
+        "executor_reported_failure",
+        "Executor reported failure",
+    )
+    fail_call = next(item for item in calls if item[0] == "fail")
+    assert fail_call[1:3] == ("executor_reported_failure", "Executor reported failure")
+    assert fail_call[3]["error_code"] == "executor_reported_failure"
+    assert fail_call[3]["sdk_error"] == "executor_reported_failure"
+    assert set(fail_call[3]) >= {"error_code", "sdk_error", "message"}
+    assert not {"url", "path", "nested"} & set(fail_call[3])
+    assert private_error not in str(calls)
 
 
 @pytest.mark.asyncio
@@ -5412,7 +6705,7 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message, result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5462,7 +6755,7 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
         worker_id="worker-test-1",
     )
 
@@ -5491,7 +6784,7 @@ async def test_worker_rejects_bad_queue_payload_without_touching_database(monkey
 
     outcome = await process_run_payload(
         {"run_id": "../bad", "_queue_attempt_id": "qat-test-attempt"},
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "dead_letter"
@@ -5518,11 +6811,12 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_queue_payload"
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
     ]
@@ -5552,7 +6846,7 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -5588,7 +6882,7 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancel_requested")
+        return RunTerminalizationProgress(completed=True, status="cancel_requested")
 
     async def append_event(_conn, **kwargs):
         calls.append(("event", kwargs["event_type"]))
@@ -5640,7 +6934,7 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -5690,7 +6984,7 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", result_json))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="cancelled",
             did_transition=True,
@@ -5765,7 +7059,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id))
-        return ToolPermissionTerminalizationProgress(
+        return RunTerminalizationProgress(
             completed=True,
             status="cancelled",
             did_transition=True,
@@ -5815,7 +7109,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         "app.worker.repositories.get_context_snapshot_for_worker",
         get_context_snapshot_for_worker,
     )
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
@@ -5878,7 +7172,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -5889,7 +7183,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
 
-    outcome = await process_run_payload(base_payload(executor_type="missing"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(base_payload(executor_type="missing"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
     assert outcome.status == "failed"
     assert outcome.error_code == "unknown_executor_type"
@@ -5905,7 +7199,7 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -5936,7 +7230,7 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 
         def get(self, executor_type):
             calls.append(("get", executor_type))
-            return FakeSuccessAdapter()
+            return SuccessfulExecutorStub()
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -5954,7 +7248,7 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6001,12 +7295,13 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
 
     outcome = await process_run_payload(
         base_payload(executor_type="missing"),
-        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
 
     assert outcome.status == "skipped"
     assert not any(item[0] == "fail" for item in calls)
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
@@ -6024,7 +7319,7 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload or {}))
@@ -6091,6 +7386,7 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
     assert outcome.status == "skipped"
     assert not any(item[0] in {"adapter", "fail"} for item in calls)
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
@@ -6276,7 +7572,7 @@ async def test_worker_records_multi_agent_blocked_step_events(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         failed_result.update(result_json or {})
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6557,7 +7853,7 @@ async def test_worker_includes_multi_agent_step_summary_in_failed_result(monkeyp
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         failed_result.update(result_json or {})
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -6625,11 +7921,6 @@ def test_executor_result_schema_validation_blocks_unstable_adapter_output():
 
     with pytest.raises(ValueError, match="Unsupported executor status"):
         result.validate()
-
-
-def test_default_adapter_registry_does_not_expose_embedded_poco_kernel():
-    with pytest.raises(KeyError, match="Unknown executor_type: embedded-poco-kernel"):
-        AdapterRegistry().get("embedded-poco-kernel")
 
 
 def test_explicit_empty_adapter_registry_does_not_fall_back_to_defaults():
@@ -6818,10 +8109,10 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
     assert outcome.status == "succeeded"
     event_types = [item["event_type"] for item in events]
     assert "worker_started" in event_types
-    assert "artifact_created" in event_types
+    assert "artifact_ready" in event_types
     assert "assistant_message_created" in event_types
     assert "run_succeeded" in event_types
-    user_visible_types = {"worker_started", "artifact_created", "assistant_message_created", "run_succeeded"}
+    user_visible_types = {"worker_started", "artifact_ready", "assistant_message_created", "run_succeeded"}
     assert all(
         item["payload"].get("visible_to_user") is True
         for item in events
@@ -6895,65 +8186,7 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
 
     assert outcome.status == "succeeded"
     assistant_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert len(assistant_deltas) == 1
-    assert assistant_deltas[0]["stage"] == "answer"
-    assert assistant_deltas[0]["message"] == ""
-    assert assistant_deltas[0]["payload"] == {
-        "delta": "你好",
-        "source": "worker_answer_delta_v1",
-        "visible_to_user": True,
-        "severity": "info",
-    }
-
-
-@pytest.mark.asyncio
-async def test_worker_processes_embedded_poco_kernel_and_persists_stream_events(monkeypatch):
-    from app.executors.embedded_poco import EmbeddedPocoAdapter
-
-    events = []
-    messages = []
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        events.append(kwargs)
-        return f"evt_{len(events)}"
-
-    async def complete_run(conn, **kwargs):
-        events.append({"event_type": "complete_run", "result_json": kwargs["result_json"]})
-        return True
-
-    async def append_message(conn, **kwargs):
-        messages.append(kwargs)
-        return "msg-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-
-    outcome = await process_run_payload(
-        base_payload(
-            agent_id="general-agent",
-            skill_id="general-chat",
-            file_ids=[],
-            input={"message": "hello"},
-            executor_type="embedded-poco-kernel",
-        ),
-        registry=AdapterRegistry({"embedded-poco-kernel": EmbeddedPocoAdapter()}),
-        worker_id="worker-embedded",
-    )
-
-    assert outcome.status == "succeeded"
-    event_types = [event["event_type"] for event in events]
-    assert "run_started" in event_types
-    assert "assistant_delta" in event_types
-    assert "run_completed" in event_types
-    assert "assistant_message_created" in event_types
-    assert messages[0]["role"] == "assistant"
-    assert messages[0]["content"] == "hello"
+    assert assistant_deltas == []
 
 
 @pytest.mark.asyncio
@@ -7008,6 +8241,7 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
 )
 async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
     monkeypatch,
+    admitted_sse_stream,
     public_chunks,
     public_answer,
 ):
@@ -7061,8 +8295,9 @@ async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
 
     assert outcome.status == "succeeded"
     persisted_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert [event["payload"]["delta"] for event in persisted_deltas] == public_chunks
-    assert [event["stage"] for event in persisted_deltas] == ["answer"] * len(public_chunks)
+    assert persisted_deltas == []
+    streamed = [item.payload["delta"] for item in admitted_sse_stream if item.event_type == "assistant_text_delta"]
+    assert streamed == public_chunks
     completed = next(event["result_json"] for event in events if event["event_type"] == "complete_run")
     assert completed["message"] == public_answer
     assert len(messages) == 1
@@ -7096,9 +8331,9 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
         return True
 
     async def fail_run(_conn, **_kwargs):
-        return ToolPermissionTerminalizationProgress(False, "failed")
+        return RunTerminalizationProgress(False, "failed")
 
-    final = ToolPermissionTerminalizationProgress(True, "failed", True, True)
+    final = RunTerminalizationProgress(True, "failed", True, True)
 
     async def drain(**_kwargs):
         return final
@@ -7151,7 +8386,7 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload or {}))
@@ -7261,6 +8496,10 @@ def _install_task6_worker_fakes(
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": agent_id,
+        "admitted_agent_profile_revision": None,
+        "admitted_agent_profile_hash": None,
+        "session_admitted_agent_profile_revision": None,
+        "session_admitted_agent_profile_hash": None,
         "skill_id": skill_id,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),
@@ -7354,7 +8593,7 @@ def _install_task6_worker_fakes(
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs))
@@ -7400,7 +8639,7 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     raw = base_payload(
@@ -7419,7 +8658,7 @@ def _task6_assert_no_executor_calls(calls):
 
 
 @pytest.mark.asyncio
-async def test_worker_required_bash_undeclared_by_locked_manifest_fails_before_adapter(monkeypatch):
+async def test_worker_bash_text_does_not_create_required_capability(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"message": "请执行 Bash 命令 pwd"},
@@ -7428,20 +8667,16 @@ async def test_worker_required_bash_undeclared_by_locked_manifest_fails_before_a
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_tool_unavailable"
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
+    assert outcome.status == "succeeded"
+    assert any(call[0] == "adapter" for call in calls)
+    assert not any(
+        call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
         for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
-    assert denied_event["payload"]["capability_id"] == "Bash"
-    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
 
 
 @pytest.mark.asyncio
-async def test_worker_admin_required_declared_bash_uses_independent_ordinary_scope(monkeypatch):
+async def test_worker_admin_bash_text_does_not_require_completion_evidence(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"message": "请执行 Bash 命令 pwd"},
@@ -7455,15 +8690,14 @@ async def test_worker_admin_required_declared_bash_uses_independent_ordinary_sco
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_tool_completion_evidence_missing"
+    assert outcome.status == "succeeded"
     assert any(call[0] == "registry_get" for call in calls)
     assert any(call[0] == "adapter" for call in calls)
 
 
 @pytest.mark.parametrize("restriction", ["department", "hidden", "disabled"])
 @pytest.mark.asyncio
-async def test_worker_admin_required_declared_bash_denies_bypass_only_scope_before_adapter(
+async def test_worker_admin_bash_text_does_not_replay_retired_required_scope(
     monkeypatch,
     restriction,
 ):
@@ -7485,15 +8719,12 @@ async def test_worker_admin_required_declared_bash_denies_bypass_only_scope_befo
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_tool_unavailable"
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
+    assert outcome.status == "succeeded"
+    assert any(call[0] == "adapter" for call in calls)
+    assert not any(
+        call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
         for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
-    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
 
 
 @pytest.mark.asyncio

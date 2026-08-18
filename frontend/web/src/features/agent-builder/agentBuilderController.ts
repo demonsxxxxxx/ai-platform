@@ -1,4 +1,7 @@
-import { agentProfileApi } from "../../services/api/agentProfile";
+import {
+  agentProfileApi,
+  type AgentProfileTrialRunResponse,
+} from "../../services/api/agentProfile";
 import { ApiRequestError } from "../../services/api/fetch";
 import type {
   AgentProfileAdminProjection,
@@ -24,6 +27,13 @@ export interface AgentBuilderProfileApi {
     agentId?: string,
   ) => Promise<AgentProfileMutationResponse>;
   publish: (agentId: string, expectedRevision: number) => Promise<AgentProfileMutationResponse>;
+  unpublish?: (agentId: string, expectedRevision: number) => Promise<AgentProfileMutationResponse>;
+  runTest?: (
+    agentId: string,
+    expectedRevision: number,
+    message: string,
+    submissionId: string,
+  ) => Promise<AgentProfileTrialRunResponse>;
 }
 
 export interface AgentBuilderSafeError {
@@ -36,8 +46,19 @@ export type AgentBuilderMutationState =
   | { phase: "idle" }
   | { phase: "saving" }
   | { phase: "publishing" }
-  | { phase: "success"; action: "save" | "publish"; revision: number }
-  | { phase: "error"; action: "save" | "publish"; error: AgentBuilderSafeError };
+  | { phase: "unpublishing" }
+  | { phase: "testing" }
+  | {
+      phase: "success";
+      action: "save" | "publish" | "unpublish" | "test";
+      revision: number;
+      trialRun?: AgentProfileTrialRunResponse;
+    }
+  | {
+      phase: "error";
+      action: "save" | "publish" | "unpublish" | "test";
+      error: AgentBuilderSafeError;
+    };
 
 export interface AgentBuilderControllerState {
   listPhase: "idle" | "loading" | "ready" | "error";
@@ -51,12 +72,19 @@ export interface AgentBuilderControllerState {
 
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 
-function safeErrorCopy(action: "load" | "save" | "publish", status?: number, code?: string) {
+function safeErrorCopy(
+  action: "load" | "save" | "publish" | "unpublish" | "test",
+  status?: number,
+  code?: string,
+) {
   if (code === "agent_profile_revision_stale" || code === "agent_profile_create_revision_invalid") {
     return "服务端 revision 已变化，请刷新列表后重新编辑。";
   }
   if (code === "agent_profile_revision_invalid" || code === "agent_id_invalid") {
-    return "服务端拒绝了当前智能体版本标识，请刷新列表后重试。";
+    return "服务端拒绝了当前专家版本标识，请刷新目录后重试。";
+  }
+  if (code === "agent_profile_revision_integrity_mismatch") {
+    return "专家版本完整性校验失败，服务端已阻止当前操作；请刷新目录并重新保存为新版本，若仍失败请联系管理员。";
   }
   if (code === "agent_profile_capability_not_available") {
     return "所选 Skill 或 MCP 工具已不可用，请刷新目录后重新选择。";
@@ -65,19 +93,21 @@ function safeErrorCopy(action: "load" | "save" | "publish", status?: number, cod
     return "所选模型已不可用，请刷新目录后重新选择。";
   }
   if (code === "not_ai_admin" || status === 403) {
-    return "当前账号没有管理智能体的权限。";
+    return "当前账号没有管理专家的权限。";
   }
   if (status === 401) return "登录状态已失效，请重新登录后重试。";
   if (status === 409) return "服务端版本发生冲突，请刷新列表后重试。";
   if (status === 422) return "配置未通过服务端校验，请检查各项后重试。";
-  if (action === "load") return "暂时无法加载服务端智能体列表，请稍后重试。";
-  if (action === "save") return "暂时无法保存智能体草稿，请稍后重试。";
-  return "暂时无法发布智能体草稿，请稍后重试。";
+  if (action === "load") return "暂时无法加载服务端专家目录，请稍后重试。";
+  if (action === "save") return "暂时无法保存专家草稿，请稍后重试。";
+  if (action === "publish") return "暂时无法发布专家草稿，请稍后重试。";
+  if (action === "unpublish") return "暂时无法下架当前专家，请稍后重试。";
+  return "暂时无法创建受控测试运行，请稍后重试。";
 }
 
 /** Project only a typed HTTP status and bounded code; never surface raw detail. */
 export function projectAgentBuilderError(
-  action: "load" | "save" | "publish",
+  action: "load" | "save" | "publish" | "unpublish" | "test",
   error: unknown,
 ): AgentBuilderSafeError {
   if (!(error instanceof ApiRequestError)) {
@@ -104,6 +134,13 @@ function cloneProfile(profile: AgentProfileAdminProjection): AgentProfileAdminPr
     ...profile,
     selected_skill: { ...profile.selected_skill },
     mcp_tool_ids: [...profile.mcp_tool_ids],
+    starter_prompts: [...profile.starter_prompts],
+    recommended_tasks: [...profile.recommended_tasks],
+    supported_input_types: [...profile.supported_input_types],
+    expected_outputs: [...profile.expected_outputs],
+    allowed_department_ids: [...profile.allowed_department_ids],
+    allowed_roles: [...profile.allowed_roles],
+    allowed_user_ids: [...profile.allowed_user_ids],
   };
 }
 
@@ -159,7 +196,9 @@ export class AgentBuilderController {
 
   private hasActiveMutation(): boolean {
     return this.stateValue.mutation.phase === "saving" ||
-      this.stateValue.mutation.phase === "publishing";
+      this.stateValue.mutation.phase === "publishing" ||
+      this.stateValue.mutation.phase === "unpublishing" ||
+      this.stateValue.mutation.phase === "testing";
   }
 
   /** Prevent pending asynchronous work from changing the current editor. */
@@ -303,7 +342,7 @@ export class AgentBuilderController {
         },
       });
     }
-    if (this.stateValue.mutation.phase === "saving" || this.stateValue.mutation.phase === "publishing") {
+    if (this.hasActiveMutation()) {
       return this.stateValue;
     }
     const generation = ++this.mutationGeneration;
@@ -361,7 +400,7 @@ export class AgentBuilderController {
         },
       });
     }
-    if (this.stateValue.mutation.phase === "saving" || this.stateValue.mutation.phase === "publishing") {
+    if (this.hasActiveMutation()) {
       return this.stateValue;
     }
     const generation = ++this.mutationGeneration;
@@ -393,6 +432,95 @@ export class AgentBuilderController {
           phase: "error",
           action: "publish",
           error: projectAgentBuilderError("publish", error),
+        },
+      });
+    }
+  }
+
+  /** Withdraw one exact current publication while preserving immutable history. */
+  async unpublishActiveProfile(
+    publishedRevision = this.stateValue.activeEditor?.publishedRevision ?? null,
+  ): Promise<AgentBuilderControllerState> {
+    const editor = this.stateValue.activeEditor;
+    if (
+      this.hasActiveMutation() ||
+      !this.api.unpublish ||
+      !editor?.agentId ||
+      !publishedRevision ||
+      isAgentProfileEditorDirty(editor)
+    ) {
+      return this.stateValue;
+    }
+    const generation = ++this.mutationGeneration;
+    this.commit({ ...this.stateValue, mutation: { phase: "unpublishing" } });
+    try {
+      const response = await this.api.unpublish(editor.agentId, publishedRevision);
+      if (generation !== this.mutationGeneration) return this.stateValue;
+      const profile = cloneProfile(response.agent_profile);
+      return this.commit({
+        ...this.stateValue,
+        profiles: upsertProfile(this.stateValue.profiles, profile),
+        activeEditor: hydrateAgentProfileEditor(profile),
+        mutation: {
+          phase: "success",
+          action: "unpublish",
+          revision: profile.revision,
+        },
+      });
+    } catch (error) {
+      if (generation !== this.mutationGeneration) return this.stateValue;
+      return this.commit({
+        ...this.stateValue,
+        mutation: {
+          phase: "error",
+          action: "unpublish",
+          error: projectAgentBuilderError("unpublish", error),
+        },
+      });
+    }
+  }
+
+  /** Execute a published revision through the real Agent App submission chain. */
+  async runActiveProfileTest(message: string): Promise<AgentBuilderControllerState> {
+    const editor = this.stateValue.activeEditor;
+    if (
+      this.hasActiveMutation() ||
+      !this.api.runTest ||
+      !editor?.agentId ||
+      !editor.revision ||
+      editor.status !== "published" ||
+      isAgentProfileEditorDirty(editor) ||
+      !message.trim()
+    ) {
+      return this.stateValue;
+    }
+    const generation = ++this.mutationGeneration;
+    this.commit({ ...this.stateValue, mutation: { phase: "testing" } });
+    try {
+      const trialRun = await this.api.runTest(
+        editor.agentId,
+        editor.revision,
+        message.trim(),
+        crypto.randomUUID(),
+      );
+      if (generation !== this.mutationGeneration) return this.stateValue;
+      return this.commit({
+        ...this.stateValue,
+        mutation: {
+          phase: "success",
+          action: "test",
+          revision: editor.revision,
+          trialRun,
+        },
+      });
+    } catch (error) {
+      if (generation !== this.mutationGeneration) return this.stateValue;
+      return this.commit({
+        ...this.stateValue,
+        mutation: {
+          phase: "error",
+          action: "test",
+          error: projectAgentBuilderError("test", error),
         },
       });
     }

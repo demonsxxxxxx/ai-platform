@@ -94,7 +94,7 @@ def test_wraps_skill_dependency_runtime_acceptance_under_g6_gate():
     runtime_acceptance = {
         "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
         "status": "verified_runtime_acceptance",
-        "target": "211_api_admin_runtime",
+        "target": "controlled_host_api_admin_runtime",
         "runtime_acceptance_requires_real_admin_runtime_payload": False,
         "does_not_close_runtime_acceptance": False,
         "runtime_payload_verified": True,
@@ -353,6 +353,43 @@ def test_redacts_host_paths_from_wrapped_command():
     assert "--runtime-check-payload frc=<redacted-path>" in command
 
 
+def test_redacts_secret_assignments_and_flags_from_wrapped_command():
+    verifier_output = {
+        "schema_version": "ai-platform.poc-gate.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "checks": {"lambchat_frontend": {"status": 200}},
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="redacted-command-secrets",
+        verifier="tools/verify_poc_gate.py",
+        artifact_kind="211_runtime_smoke",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-16T22:45:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command=(
+            "API_KEY=<redacted> python3 tools/verify_poc_gate.py "
+            "--callback-token secret-value --authorization=Bearer-secret"
+        ),
+        review_status="reviewed",
+    )
+
+    command = entry["evidence_ref"]["command"]
+    assert "API_KEY" not in command
+    assert "callback-token" not in command
+    assert "authorization" not in command.lower()
+    assert "secret-value" not in command
+    assert "Bearer-secret" not in command
+    assert command.count("<redacted-secret-arg>") == 3
+    assert "<redacted-secret>" in command
+
+
 def test_redacts_host_paths_from_source_ref_image_labels():
     labels = image_labels()
     labels.update(
@@ -524,7 +561,7 @@ def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
         "redaction_scan_status": "passed",
     }
     runtime_payload = {
-        "schema_version": "ai-platform.executor-context-pack-211.v1",
+        "schema_version": "ai-platform.executor-context-pack-probe.v2",
         "run_id": "run-live",
         "public_context_summary": {
             "input_keys": ["attachments", "message"],
@@ -540,8 +577,8 @@ def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
 
     entry = build_release_evidence_entry(
         evidence_id="2026-06-17-211-office-context-executor-context-pack-runtime-acceptance",
-        verifier="scripts/verify_executor_context_pack_211.py",
-        artifact_kind="executor_context_pack_211_acceptance",
+        verifier="scripts/verify_executor_context_pack.py",
+        artifact_kind="executor_context_pack_runtime_source_probe",
         verifier_output=verifier_output,
         commit_sha=COMMIT,
         runtime_subject_commit_sha=COMMIT,
@@ -550,19 +587,19 @@ def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
         image_id=IMAGE_ID,
         image_labels=image_labels(),
         source_snapshot=source_snapshot(),
-        command="python3 scripts/verify_executor_context_pack_211.py --run-id run-live --require-live-run-payload --json",
+        command="python3 scripts/verify_executor_context_pack.py --run-id run-live --require-observed-worker-dispatch --json",
         gate="G6/G9/#22 Office Context Pack Architecture",
-        runtime_check_payloads={"executor_context_pack_211_acceptance": runtime_payload},
+        runtime_check_payloads={"executor_context_pack_runtime_source_probe": runtime_payload},
         review_status="reviewed",
     )
 
     runtime_checks = entry["evidence_ref"]["runtime_checks"]
     serialized = json.dumps(entry, ensure_ascii=False)
     assert entry["gate"] == "G6/G9/#22 Office Context Pack Architecture"
-    assert entry["artifact_kind"] == "executor_context_pack_211_acceptance"
+    assert entry["artifact_kind"] == "executor_context_pack_runtime_source_probe"
     assert entry["evidence_ref"]["result"] == "ok:true"
     assert runtime_checks["verifier_checks"] == verifier_output["checks"]
-    assert runtime_checks["executor_context_pack_211_acceptance"]["run_id"] == "run-live"
+    assert runtime_checks["executor_context_pack_runtime_source_probe"]["run_id"] == "run-live"
     assert "raw_storage_key" not in serialized
     assert "executor_private_payload" not in serialized
     assert "sandbox_workdir" not in serialized
@@ -575,8 +612,8 @@ def test_wraps_b1_memory_context_smoke_payload_for_readiness_consumption():
         "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
         "ok": True,
         "redaction_scan_status": "passed",
-        "target": "211_api_memory_context_workflow",
-        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "target": "controlled_host_api_memory_context_workflow",
+        "acceptance_gap": "controlled_host_memory_enabled_document_workflow_smoke",
         "does_not_close_b1_gate": True,
         "remaining_gate_boundaries": [
             "issue review and closure evidence",
@@ -632,7 +669,7 @@ def test_wraps_b1_memory_context_smoke_payload_for_readiness_consumption():
     entry = build_release_evidence_entry(
         evidence_id="2026-06-30-211-b1-memory-context-workflow-smoke-f67986a",
         verifier="tools/verify_b1_memory_context_workflow.py",
-        artifact_kind="211_memory_enabled_document_workflow_smoke",
+        artifact_kind="controlled_host_memory_enabled_document_workflow_smoke",
         gate="B1 memory/context usable",
         verifier_output=verifier_output,
         commit_sha=COMMIT,
@@ -644,18 +681,18 @@ def test_wraps_b1_memory_context_smoke_payload_for_readiness_consumption():
         source_snapshot=source_snapshot(),
         command="python3 tools/verify_b1_memory_context_workflow.py --base-url http://127.0.0.1:8020",
         runtime_check_payloads={
-            "211_memory_enabled_document_workflow_smoke": verifier_output,
+            "controlled_host_memory_enabled_document_workflow_smoke": verifier_output,
         },
         review_status="reviewed",
     )
 
     runtime_payload = entry["evidence_ref"]["runtime_checks"][
-        "211_memory_enabled_document_workflow_smoke"
+        "controlled_host_memory_enabled_document_workflow_smoke"
     ]
     assert runtime_payload["schema_version"] == "ai-platform.b1-memory-context-workflow-smoke.v1"
     assert runtime_payload["ok"] is True
-    assert runtime_payload["target"] == "211_api_memory_context_workflow"
-    assert runtime_payload["acceptance_gap"] == "211_memory_enabled_document_workflow_smoke"
+    assert runtime_payload["target"] == "controlled_host_api_memory_context_workflow"
+    assert runtime_payload["acceptance_gap"] == "controlled_host_memory_enabled_document_workflow_smoke"
     assert runtime_payload["memory_record_count"] == 1
     assert runtime_payload["checks"] == {
         "context_snapshot_public_provenance": True,
@@ -696,8 +733,8 @@ def test_requires_real_source_snapshot_for_release_evidence_entry():
     with pytest.raises(ValueError, match="source_snapshot_required"):
         build_release_evidence_entry(
             evidence_id="missing-source-snapshot",
-            verifier="scripts/verify_executor_context_pack_211.py",
-            artifact_kind="executor_context_pack_211_acceptance",
+            verifier="scripts/verify_executor_context_pack.py",
+            artifact_kind="executor_context_pack_runtime_source_probe",
             verifier_output=verifier_output,
             commit_sha=COMMIT,
             runtime_subject_commit_sha=COMMIT,
@@ -706,7 +743,7 @@ def test_requires_real_source_snapshot_for_release_evidence_entry():
             image_id=IMAGE_ID,
             image_labels=image_labels(),
             source_snapshot=None,
-            command="python3 scripts/verify_executor_context_pack_211.py --run-id run-live --json",
+            command="python3 scripts/verify_executor_context_pack.py --run-id run-live --json",
             gate="G6/G9/#22 Office Context Pack Architecture",
             review_status="reviewed",
         )
@@ -741,7 +778,7 @@ def test_wrap_cli_accepts_executor_context_runtime_payload_file(tmp_path):
     runtime_payload_path.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.executor-context-pack-211.v1",
+                "schema_version": "ai-platform.executor-context-pack-probe.v2",
                 "run_id": "run-live",
                 "public_context_summary": {
                     "input_keys": ["attachments", "message"],
@@ -767,9 +804,9 @@ def test_wrap_cli_accepts_executor_context_runtime_payload_file(tmp_path):
             "--verifier-output",
             str(verifier_output_path),
             "--verifier",
-            "scripts/verify_executor_context_pack_211.py",
+            "scripts/verify_executor_context_pack.py",
             "--artifact-kind",
-            "executor_context_pack_211_acceptance",
+            "executor_context_pack_runtime_source_probe",
             "--evidence-id",
             "2026-06-17-211-office-context-executor-context-pack-runtime-acceptance",
             "--commit-sha",
@@ -787,11 +824,11 @@ def test_wrap_cli_accepts_executor_context_runtime_payload_file(tmp_path):
             "--source-snapshot-json",
             str(snapshot_path),
             "--command",
-            "python3 scripts/verify_executor_context_pack_211.py --run-id run-live --require-live-run-payload --json",
+            "python3 scripts/verify_executor_context_pack.py --run-id run-live --require-observed-worker-dispatch --json",
             "--gate",
             "G6/G9/#22 Office Context Pack Architecture",
             "--runtime-check-payload",
-            f"executor_context_pack_211_acceptance={runtime_payload_path}",
+            f"executor_context_pack_runtime_source_probe={runtime_payload_path}",
             "--review-status",
             "reviewed",
             "--output",
@@ -807,7 +844,7 @@ def test_wrap_cli_accepts_executor_context_runtime_payload_file(tmp_path):
     serialized = json.dumps(entry, ensure_ascii=False)
     assert entry["gate"] == "G6/G9/#22 Office Context Pack Architecture"
     assert runtime_checks["verifier_checks"][0]["passed"] is True
-    assert runtime_checks["executor_context_pack_211_acceptance"]["run_id"] == "run-live"
+    assert runtime_checks["executor_context_pack_runtime_source_probe"]["run_id"] == "run-live"
     assert "raw_storage_key" not in serialized
     assert "executor_private_payload" not in serialized
     assert "sandbox_workdir" not in serialized

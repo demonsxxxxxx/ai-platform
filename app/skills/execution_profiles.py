@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
+from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
 from app.skills.lifecycle import (
     SKILL_VERSION_LEGACY_ACTIVE,
     SKILL_VERSION_RELEASED,
@@ -24,7 +25,6 @@ CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
 OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE = "opensandbox_governed"
 OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
-_IMPLICIT_GENERAL_CHAT_SKILL_ID = "general-chat"
 _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
 _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
     "baoyu-translate": ("Write",),
@@ -160,7 +160,7 @@ def resolve_skill_execution_profile(
     normalized_status = normalize_skill_version_status(lifecycle_status)
     if (
         source_kind == "builtin"
-        and skill_id != _IMPLICIT_GENERAL_CHAT_SKILL_ID
+        and skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
         and normalized_status in _TRUSTED_BUILTIN_STATUSES
     ):
         identities = _known_tool_identities(

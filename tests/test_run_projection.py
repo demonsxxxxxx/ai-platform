@@ -4,9 +4,12 @@ import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
+from app.context.api import CONTEXT_FILE_ERROR_CODES
 from app.run_projection import (
+    PublicChatAnswerStreamProjector,
     artifact_card,
     progress_for_status,
+    public_chat_answer_text,
     public_chat_terminal_projection,
     public_terminal_projection,
     run_event_response,
@@ -250,6 +253,62 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert admin["detail_code"] == "required_capability_unavailable"
     assert ordinary["message"] == admin["message"]
     assert "Bash" not in str(ordinary)
+
+
+def test_context_file_size_terminal_projection_is_specific_and_safe():
+    projection = public_terminal_projection("failed", "context_file_too_large")
+
+    assert projection["detail_code"] == "context_file_too_large"
+    assert projection["error_code"] == "context_file_too_large"
+    assert projection["message"] == "文件超过 32 MB 处理上限。请选择更小的文件后重试。"
+    assert projection["event_payload"] == {}
+
+
+@pytest.mark.parametrize(
+    ("error_code", "detail_code", "message_fragment"),
+    [
+        (
+            "context_file_pdf_password_required",
+            "context_file_pdf_password_required",
+            "需要密码",
+        ),
+        (
+            "context_file_pdf_active_content_unsupported",
+            "context_file_unsafe_content",
+            "活动内容",
+        ),
+        (
+            "context_file_pdf_parse_failed",
+            "context_file_invalid",
+            "无法解析",
+        ),
+        (
+            "context_file_identity_mismatch",
+            "context_file_identity_mismatch",
+            "完整性校验失败",
+        ),
+    ],
+)
+def test_context_file_terminal_projection_is_actionable_and_private_safe(
+    error_code,
+    detail_code,
+    message_fragment,
+):
+    projection = public_terminal_projection("failed", error_code)
+
+    assert projection["detail_code"] == detail_code
+    assert message_fragment in projection["message"]
+    assert projection["event_payload"] == {}
+    assert "attachment_index" not in str(projection)
+    assert "exception_chain" not in str(projection)
+
+
+@pytest.mark.parametrize("error_code", sorted(CONTEXT_FILE_ERROR_CODES))
+def test_all_context_file_failure_codes_have_actionable_public_projection(error_code):
+    projection = public_terminal_projection("failed", error_code)
+
+    assert projection["detail_code"] != "run_failed"
+    assert projection["event_payload"] == {}
 
 
 def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
@@ -560,3 +619,108 @@ def test_run_projection_returns_only_the_public_execution_event_v1_shape():
     )
     assert raw["schema_version"] != "ai-platform.public-execution-event.v1"
     assert raw.get("kind") not in {"execution_step", "execution_progress", "execution_step_completed"}
+
+
+def test_public_chat_answer_text_retains_answer_when_capabilities_differ():
+    run = {
+        "id": "run-a",
+        "skill_id": "general-chat",
+        "agent_id": "qa-word-review",
+        "status": "succeeded",
+    }
+    content = public_chat_answer_text(
+        run,
+        "使用了 general-chat 完成审阅，样本 q 数据已归档。",
+    )
+
+    assert content == "使用了 general-agent 完成审阅，样本 q 数据已归档。"
+    assert "general-chat" not in content
+    assert "qa-word-review" not in content
+
+
+def test_successful_terminal_projection_without_answer_is_result_unavailable():
+    projection = public_chat_terminal_projection(
+        {
+            "id": "run-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "result_json": {"message": ""},
+        }
+    )
+
+    assert projection is not None
+    assert projection["event_type"] == "final_detail"
+    assert projection["payload"]["detail_kind"] == "result_unavailable"
+    assert projection["payload"]["detail_code"] == "result_unavailable"
+    assert projection["payload"]["message"] == "本次执行未能生成可展示的回复内容。"
+    assert projection["severity"] == "info"
+    assert "任务完成" not in str(projection)
+
+
+def test_live_delta_and_terminal_final_converge_to_same_public_text():
+    run = {
+        "id": "run-a",
+        "agent_id": "qa-word-review",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+    }
+    full_answer = "general-chat 已处理该文档，qa-word-review 审核通过。"
+    delta_fragment = "general-chat 已处理"
+    delta_tail = "该文档，qa-word-review 审核通过。"
+
+    final = public_chat_terminal_projection(
+        {**run, "result_json": {"message": full_answer}}
+    )
+    assert final is not None
+    assert final["event_type"] == "message:chunk"
+    assert final["payload"]["projection_kind"] == "assistant_final"
+
+    assembled = (
+        public_chat_answer_text(run, delta_fragment)
+        + public_chat_answer_text(run, delta_tail)
+    )
+    assert assembled == final["payload"]["content"]
+    assert "general-chat" not in final["payload"]["content"]
+    assert "qa-word-review" not in final["payload"]["content"]
+    assert "general-agent" in final["payload"]["content"]
+    assert "document-review" in final["payload"]["content"]
+
+
+def test_stream_projector_withholds_identifier_until_split_token_is_complete():
+    run = {
+        "id": "run-a",
+        "agent_id": "qa-word-review",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    projector = PublicChatAnswerStreamProjector(run)
+
+    chunks = [
+        projector.push("已开始处理，general-"),
+        projector.push("chat 已完成，qa-word-"),
+        projector.push("review 审核通过。"),
+    ]
+    streamed = "".join(chunks)
+
+    assert streamed == "已开始处理，general-agent 已完成，document-review 审核通过。"
+    assert "general-chat" not in streamed
+    assert "qa-word-review" not in streamed
+    assert projector.flush() == ""
+
+
+def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
+    run = {
+        "id": "run-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    projector = PublicChatAnswerStreamProjector(run)
+
+    safe_prefix = projector.push("已生成安全摘要。 /va")
+    blocked_suffix = projector.push("r/private/result.txt")
+
+    assert safe_prefix == ""
+    assert blocked_suffix == ""
+    assert projector.flush() == ""

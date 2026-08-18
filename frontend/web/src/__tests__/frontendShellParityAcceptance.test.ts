@@ -149,7 +149,10 @@ test("roles route remains direct-addressable without loading legacy role managem
     app.match(
       /path="\/roles"[\s\S]*?<RolesPage \/>[\s\S]*?<\/ProtectedRoute>/,
     )?.[0] ?? "";
-  assert.match(rolesRoute, /<ProtectedRoute requireAdmin redirectTo="\/chat">/);
+  assert.match(
+    rolesRoute,
+    /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>/,
+  );
   assert.doesNotMatch(rolesRoute, /Permission\.ROLE_MANAGE/);
   assert.doesNotMatch(rolesRoute, /fallbackComponent=/);
   assert.doesNotMatch(rolesRoute, /<WorkbenchForbiddenPage/);
@@ -211,7 +214,11 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
-  assert.match(sidebar, /useSessionList\(scrollEl\)/);
+  assert.match(
+    sidebar,
+    /useSessionList\([\s\S]{0,100}sessionSource === undefined && !navigationOnly/,
+  );
+  assert.match(sidebar, /navigationOnly/);
   assert.doesNotMatch(sidebar, /ProjectItem|showProjectSection|sidebar\.projects/);
   assert.doesNotMatch(sidebar, /FolderPlus|sidebar\.newProject|onOpenNewProjectModal|NewProjectModal/);
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
@@ -437,7 +444,8 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
   );
 
   assert.match(skillsHub, /data-skills-catalog-workbench/);
-  assert.match(skillsHub, /data-skills-catalog-status/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-status/);
+  assert.doesNotMatch(skillsHub, /data-skills-hub-state-detail/);
   assert.match(skillsHub, /data-skills-catalog-main/);
   assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
   assert.doesNotMatch(skillsHub, /data-skills-catalog-nav/);
@@ -628,7 +636,6 @@ test("model catalog route is a governed public-projection workbench page", () =>
     "utf8",
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
-  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.match(modelCatalog, /data-model-catalog-shell/);
@@ -639,11 +646,9 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /className=\{workbenchSurface\.page\}/);
   assert.doesNotMatch(modelCatalog, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.ok(JSON.parse(zhLocale).models);
-  assert.ok(JSON.parse(enLocale).models);
   for (const source of [
     modelCatalog,
     JSON.stringify(JSON.parse(zhLocale).models),
-    JSON.stringify(JSON.parse(enLocale).models),
   ]) {
     assert.doesNotMatch(source, /管理投影补齐|等待后端补齐|admin projections are backed|backend coverage/);
   }
@@ -796,13 +801,11 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.match(authTypes, /NOTIFICATION_ADMIN = "notification:admin"/);
 });
 
-test("safe projection locale copy no longer reports backed workbench pages as unopened backend gaps", () => {
+test("safe projection Chinese copy no longer reports backed workbench pages as unopened backend gaps", () => {
   const zh = JSON.parse(readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"));
-  const en = JSON.parse(readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"));
 
   for (const [locale, workbench] of [
     ["zh", zh.workbench.phaseTwo],
-    ["en", en.workbench.phaseTwo],
   ] as const) {
     for (const page of ["users", "settings", "feedback", "notifications"]) {
       const copy = JSON.stringify(workbench[page]);
@@ -875,8 +878,9 @@ test("mcp workbench route exposes the same frontend governance state machine as 
   assert.match(mcpPanel, /data-required-permission=\{mcpGovernance\.requiredPermission\}/);
   assert.match(mcpPanel, /data-auth-projection-has-permission/);
   assert.match(mcpPanel, /WorkbenchStateSurface/);
-  assert.match(mcpPanel, /data-fail-closed-surface="mcp-lifecycle"/);
-  assert.match(mcpPanel, /data-fail-closed-surface="mcp-credentials"/);
+  assert.doesNotMatch(mcpPanel, /data-fail-closed-surface="mcp-lifecycle"/);
+  assert.doesNotMatch(mcpPanel, /data-fail-closed-surface="mcp-credentials"/);
+  assert.doesNotMatch(mcpPanel, /data-mcp-summary-status/);
   assert.match(mcpState, /requiredPermission: "mcp:read"/);
   assert.match(mcpState, /resolveFrontendGovernanceState/);
   assert.match(mcpState, /isPermissionError\(loadError\)/);
@@ -937,7 +941,9 @@ test("skills hub keeps management admin-only and serves a bounded ordinary catal
 
   assert.match(skillsHub, /resolveSkillsHubGovernance/);
   assert.match(skillsHub, /isAiAdminUser\(user\)/);
-  assert.match(skillsHub, /return <AvailableSkillsPanel \/>;/);
+  assert.match(skillsHub, /<SkillsPanel[\s\S]*allAuthorizedCatalog/);
+  assert.match(skillsHub, /showDistributionEditor=\{isAdmin\}/);
+  assert.doesNotMatch(skillsHub, /AvailableSkillsPanel/);
   assert.doesNotMatch(skillsHub, /useSettingsContext/);
   assert.doesNotMatch(skillsHub, /settingsError/);
   assert.doesNotMatch(skillsHub, /settingsStateDegraded/);
@@ -949,7 +955,7 @@ test("skills hub keeps management admin-only and serves a bounded ordinary catal
   assert.match(skillsHub, /catalogProjectionErrorByTab/);
   assert.match(skillsHub, /catalogPermissionDenied: catalogPermissionDeniedByTab\[requestedTab\]/);
   assert.match(skillsHub, /projectionError: catalogProjectionErrorByTab\[requestedTab\]/);
-  assert.match(skillsHub, /governedUnavailable=\{hubGovernance\.governedUnavailable\}/);
+  assert.match(skillsHub, /governedUnavailable=\{isAdmin && hubGovernance\.governedUnavailable\}/);
   assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-auth-projection-has-permission=\{hubGovernance\.authProjectionHasPermission\}/);
   assert.match(resolver, /catalogPermissionDenied\?: boolean/);
@@ -1001,13 +1007,11 @@ test("marketplace catalog frontend projection preserves server read state", () =
     "utf8",
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
-  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.match(marketplaceApi, /catalog_read_resolved/);
   assert.match(useMarketplace, /setCatalogReadResolved\(data\.catalog_read_resolved\)/);
   assert.match(marketplaceTest, /catalog_read_resolved:\s*true/);
   assert.doesNotMatch(zhLocale, /市场直接写入暂未开放/);
-  assert.doesNotMatch(enLocale, /Direct marketplace writes are not available yet/);
 });
 
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {

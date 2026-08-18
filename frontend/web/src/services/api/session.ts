@@ -167,20 +167,6 @@ export function buildMessageForkUrl(
   return `${API_BASE}/api/sessions/${sessionId}/messages/${messageId}/fork`;
 }
 
-export function buildMessageCheckpointUrl(
-  sessionId: string,
-  messageId: string,
-): string {
-  return `${API_BASE}/api/sessions/${sessionId}/messages/${messageId}/checkpoints`;
-}
-
-export function buildCheckpointForkUrl(
-  sessionId: string,
-  checkpointId: string,
-): string {
-  return `${API_BASE}/api/sessions/${sessionId}/checkpoints/${checkpointId}/fork`;
-}
-
 function getBrowserTimezone(): string | undefined {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return typeof timezone === "string" && timezone.trim() ? timezone : undefined;
@@ -327,6 +313,37 @@ export function buildSubmitChatUrl(agentId = DEFAULT_CHAT_AGENT_ID): string {
   return `${API_BASE}/api/chat/stream?agent_id=${encodeURIComponent(agentId)}`;
 }
 
+/** Build the selector-free Agent App submission surface for one pinned conversation. */
+export function buildAgentAppRunUrl(agentId: string, sessionId: string): string {
+  return `${API_BASE}/api/ai/agent-apps/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(sessionId)}/runs`;
+}
+
+export function buildAgentAppRunBody({
+  message,
+  attachments,
+  submissionId,
+  userTimezone,
+}: {
+  message: string;
+  attachments?: MessageAttachment[];
+  submissionId: string;
+  userTimezone?: string;
+}): Record<string, unknown> {
+  const fileIds = [
+    ...new Set(
+      (attachments ?? [])
+        .map((attachment) => attachment.key.trim())
+        .filter((key) => key.length > 0),
+    ),
+  ];
+  return {
+    message,
+    submission_id: submissionId,
+    file_ids: fileIds,
+    ...(userTimezone ? { user_timezone: userTimezone } : {}),
+  };
+}
+
 export function buildChatSubmissionUrl(submissionId: string): string {
   return `${API_BASE}/api/chat/submissions/${encodeURIComponent(submissionId)}`;
 }
@@ -448,27 +465,6 @@ export const sessionApi = {
   },
 
   /**
-   * Update session status
-   */
-  async updateStatus(sessionId: string, status: "active" | "archived") {
-    return authFetch(
-      `${API_BASE}/api/sessions/${sessionId}/status?status=${status}`,
-      {
-        method: "PATCH",
-      },
-    );
-  },
-
-  /**
-   * Clear messages for a session
-   */
-  async clearMessages(sessionId: string) {
-    return authFetch(`${API_BASE}/api/sessions/${sessionId}/clear-messages`, {
-      method: "POST",
-    });
-  },
-
-  /**
    * Generate title for session using LLM
    */
   async generateTitle(
@@ -571,6 +567,23 @@ export const sessionApi = {
     selectedAgentProfile?: SelectedAgentProfileRequest | null,
     mcpContextId?: string,
   ): Promise<ChatStreamResponse> {
+    if (sessionId && selectedAgentProfile) {
+      if (!submissionId) throw new Error("agent_app_submission_id_required");
+      return authFetch(
+        buildAgentAppRunUrl(selectedAgentProfile.agent_id, sessionId),
+        {
+          method: "POST",
+          body: JSON.stringify(
+            buildAgentAppRunBody({
+              message,
+              attachments,
+              submissionId,
+              userTimezone: getBrowserTimezone(),
+            }),
+          ),
+        },
+      );
+    }
     const body = buildSubmitChatBody({
       message,
       sessionId,
@@ -632,30 +645,4 @@ export const sessionApi = {
     });
   },
 
-  async createCheckpoint(
-    sessionId: string,
-    messageId: string,
-    name?: string,
-  ): Promise<{
-    checkpoint: {
-      id: string;
-      name: string;
-      message_id: string;
-      created_at?: string;
-    };
-  }> {
-    return authFetch(buildMessageCheckpointUrl(sessionId, messageId), {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    });
-  },
-
-  async forkCheckpoint(
-    sessionId: string,
-    checkpointId: string,
-  ): Promise<{ session: BackendSession; source_session_id: string }> {
-    return authFetch(buildCheckpointForkUrl(sessionId, checkpointId), {
-      method: "POST",
-    });
-  },
 };

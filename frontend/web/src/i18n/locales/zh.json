@@ -17,7 +17,7 @@
   },
   "adminMarketplace": {
     "confirmDelete": "删除技能「{{name}}」？",
-    "confirmDeleteMessage": "此操作会将该技能移出当前租户的活跃使用范围；历史版本和运行记录将保留。",
+    "confirmDeleteMessage": "此操作会停止该技能的活跃使用；历史版本和运行记录将保留。",
     "createSkill": "创建技能",
     "createSuccess": "技能创建成功",
     "createdBy": "由 {{who}} 创建",
@@ -46,8 +46,8 @@
   "agent": {
     "selectMode": "选择模式",
     "selectModeDesc": "切换助手模式",
-    "searchPlaceholder": "搜索智能体",
-    "noMatchingAgents": "没有匹配的智能体"
+    "searchPlaceholder": "搜索专家",
+    "noMatchingAgents": "没有匹配的专家"
   },
   "frontendStates": {
     "logged-out": {
@@ -131,7 +131,7 @@
     "error": "运行回放加载失败",
     "errorFallback": "回放接口未返回可用数据。",
     "fields": {
-      "agentId": "助手",
+      "agentId": "专家",
       "progress": "进度",
       "runId": "运行",
       "sessionId": "会话",
@@ -140,9 +140,9 @@
     },
     "loading": "正在加载运行回放...",
     "menuLabel": "运行回放",
-    "multiAgent": "多 Agent 步骤",
+    "multiAgent": "协作步骤",
     "noArtifacts": "暂无产物",
-    "noSteps": "暂无多 Agent 步骤",
+    "noSteps": "暂无协作步骤",
     "noTimeline": "暂无时间线",
     "preview": "预览",
     "retry": "重试",
@@ -287,6 +287,9 @@
     "fileNotFound": "文件不存在",
     "fileReadFailed": "读取文件失败",
     "fileTooLarge": "文件大小超过 {{max}}MB 限制",
+    "contextFileTooLarge": "文件超过 32 MB 处理上限，请选择更小的文件后重试。",
+    "queuePayloadInvalid": "任务参数校验失败，任务尚未提交。请刷新后重试；如仍失败，请联系管理员。",
+    "chatSubmissionInternalError": "任务因内部服务错误未能提交。请刷新后重试；如仍失败，请向管理员提供诊断编号。",
     "fileUploadNoPermission": "没有上传 {{category}} 文件的权限",
     "fileUrlFailed": "生成文件链接失败",
     "instanceNameRequired": "实例名称为必填项",
@@ -534,6 +537,8 @@
     "queued": "排队中 (第 {{position}} 位)...",
     "rateLimited": "请求过于频繁，请稍后再试",
     "requestFailed": "加载会话失败",
+    "historyLoadFailed": "加载会话失败",
+    "sendFailed": "消息发送失败",
     "activeRunLimitExceeded": "当前账户已有 3 个运行中的任务。请等待任务结束或取消旧任务后再发送。",
     "sendNotAcceptedRetry": "消息未发送，请重试。",
     "executionTimeline": {
@@ -572,6 +577,7 @@
         "capabilityNotAuthorized": "能力未获授权",
         "capabilitySelected": "能力已选择",
         "contextSnapshotCreated": "上下文已准备",
+        "contextFileTooLarge": "文件超过处理上限",
         "dependentServiceUnavailable": "依赖服务不可用",
         "executionServiceUnavailable": "执行服务不可用",
         "executionUpdate": "执行状态更新",
@@ -603,6 +609,7 @@
       }
     },
     "runTerminal": {
+      "contextFileTooLarge": "文件超过 32 MB 处理上限，请选择更小的文件后重试。",
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",
@@ -634,7 +641,7 @@
     "todo": {
       "progress": "{{completed}}/{{total}} 已完成"
     },
-    "unknownAgent": "未知助手",
+    "unknownAgent": "未知专家",
     "unknownError": "未知错误",
     "user": "用户",
     "waitingForUpload": "请等待文件上传完成",
@@ -1063,7 +1070,7 @@
     "active": "已激活",
     "clearFilters": "清除筛选",
     "confirmDelete": "删除「{{name}}」？",
-    "confirmDeleteMessage": "此操作会将该技能移出当前租户的活跃使用范围；历史版本和运行记录将保留。",
+    "confirmDeleteMessage": "此操作会停止该技能的活跃使用；历史版本和运行记录将保留。",
     "confirmInstall": "安装技能",
     "confirmInstallMessage": "确定要安装此技能吗？",
     "confirmUpdate": "更新技能",
@@ -1261,9 +1268,9 @@
       "adminGovernanceDescription": "策略库存、全局活跃记录和保留期清理只对具备管理员角色的账号开放。",
       "adminHidden": "当前角色不可查看管理员记忆库存。后端管理员接口保持 fail-closed。",
       "adminProjection": "管理员运行投影",
-      "agent": "智能体",
-      "agentPublicId": "智能体公开 ID",
-      "allAgents": "全部智能体",
+      "agent": "专家",
+      "agentPublicId": "专家公开 ID",
+      "allAgents": "全部专家",
       "allowSessionWrites": "允许会话记忆写入",
       "allowSessionWritesHint": "跨会话长期记忆继续保持 fail-closed。",
       "cleanupDeleted": "保留期清理已删除 {{count}} 条记录",
@@ -1284,7 +1291,7 @@
       "noStoredPolicies": "当前筛选条件下没有已存储策略。",
       "policyMeta": "{{days}} 天保留 · {{source}} · {{date}}",
       "policyProjection": "策略投影",
-      "policyProjectionDescription": "读取当前用户、工作区和 Agent 的公开记忆策略，不暴露跨用户记录。",
+      "policyProjectionDescription": "读取当前用户、工作区和专家的公开记忆策略，不暴露跨用户记录。",
       "policyUpdated": "记忆策略已更新",
       "publicProjectionOnly": "仅公开投影",
       "reason": "原因",
@@ -1447,7 +1454,7 @@
     "plaza": {
       "capabilities": {
         "auditTrail": {
-          "description": "角色与部门 Agent 变更保留审计、追踪和回滚状态。",
+          "description": "角色与部门专家变更保留审计、追踪和回滚状态。",
           "title": "审计追踪"
         },
         "departmentScope": {
@@ -1469,7 +1476,7 @@
         "approve": "批准",
         "queueing": "提交中",
         "reject": "拒绝",
-        "requestDepartment": "申请部门 Agent",
+        "requestDepartment": "申请部门专家",
         "requestLocked": "当前账号不能提交申请",
         "requestRole": "申请角色",
         "rollback": "回滚"
@@ -1493,7 +1500,7 @@
       "operationFailed": "角色治理操作失败",
       "requestReasons": {
         "approve": "管理员从角色治理工作台批准该申请。",
-        "department": "申请加入 {{department}} 部门 Agent 可用范围。",
+        "department": "申请加入 {{department}} 部门专家可用范围。",
         "reject": "管理员从角色治理工作台拒绝该申请。",
         "role": "申请 {{role}} 角色以使用对应工作台能力。",
         "rollback": "从角色治理工作台提交回滚请求。"
@@ -1526,7 +1533,7 @@
         },
         "title": "角色治理已可访问"
       },
-      "subtitle": "查看角色、部门 Agent 和审批能力的治理状态。",
+      "subtitle": "查看角色、部门专家和审批能力的治理状态。",
       "title": "角色治理"
     },
     "roleName": "角色名称",
@@ -1559,7 +1566,7 @@
       "title": "公司导航"
     },
     "chat": {
-      "description": "与 AI 智能体进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和受治理的上下文来源。",
+      "description": "与 AI 专家进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和受治理的上下文来源。",
       "title": "AI 对话"
     },
     "feedback": {
@@ -1571,15 +1578,15 @@
       "title": "文件工作台"
     },
     "marketplace": {
-      "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 智能体功能。",
+      "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 专家功能。",
       "title": "技能市场"
     },
     "mcp": {
-      "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 智能体能力。",
+      "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 专家能力。",
       "title": "MCP 服务器管理"
     },
     "memory": {
-      "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 智能体长期理解。",
+      "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 专家长期理解。",
       "title": "AI 记忆空间"
     },
     "models": {
@@ -1611,7 +1618,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "访问令牌过期时间（小时）",
     "ADMIN_CONTACT_EMAIL": "在关于对话框中显示给用户的管理员联系邮箱",
     "ADMIN_CONTACT_URL": "管理员联系/支持 URL（如帮助台、反馈表单），显示在关于对话框中",
-    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 http://10.56.0.211:18001）。在反向代理导致 request.base_url 不正确时需要配置。",
+    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 https://ai-platform.example.internal）。在反向代理导致 request.base_url 不正确时需要配置。",
     "AUDIO_TRANSCRIPTION_API_KEY": "音频转写服务的 API 密钥。支持 OpenAI 兼容端点，例如 OpenAI、SiliconFlow。",
     "AUDIO_TRANSCRIPTION_BASE_URL": "音频转写服务的 Base URL，例如 https://api.openai.com/v1 或 https://api.siliconflow.cn/v1。留空则使用默认 OpenAI 端点。",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe 工具使用的默认转写模型，例如 gpt-4o-mini-transcribe 或 FunAudioLLM/SenseVoiceSmall。",
@@ -1631,7 +1638,7 @@
     "DAYTONA_SERVER_URL": "Daytona 服务器 URL",
     "DAYTONA_TIMEOUT": "Daytona 命令超时时间（秒）",
     "DEBUG": "启用调试模式",
-    "DEFAULT_AGENT": "新会话的默认 Agent 类型",
+    "DEFAULT_AGENT": "新会话的默认专家类型",
     "DEFAULT_MODEL_ID": "管理员设置的新会话和后台任务默认模型配置。留空使用第一个启用模型。",
     "DEFAULT_USER_ROLE": "新注册用户的默认角色",
     "DEFERRED_TOOL_SEARCH_LIMIT": "工具搜索返回的最大结果数",
@@ -1682,11 +1689,11 @@
     "NATIVE_MEMORY_API_BASE": "记忆 LLM 操作的 API 基础 URL。留空使用第一个可用模型的 API 地址。",
     "NATIVE_MEMORY_API_KEY": "记忆 LLM 操作的 API 密钥。留空使用第一个可用模型的密钥。",
     "NATIVE_MEMORY_APPEND_MAX_DETAILS": "项目/参考记忆上保留的最大追加详情条目数，超出后修剪旧条目。",
-    "NATIVE_MEMORY_AUTO_COMPACT_ENABLED": "启用后台记忆压缩 agent。",
-    "NATIVE_MEMORY_AUTO_COMPACT_INTERVAL_SECONDS": "记忆压缩 agent 扫描超阈值用户的间隔秒数。",
+    "NATIVE_MEMORY_AUTO_COMPACT_ENABLED": "启用后台记忆压缩任务。",
+    "NATIVE_MEMORY_AUTO_COMPACT_INTERVAL_SECONDS": "记忆压缩任务扫描超阈值用户的间隔秒数。",
     "NATIVE_MEMORY_AUTO_COMPACT_MIN_INTERVAL_SECONDS": "同一用户两次压缩尝试之间的最小间隔秒数。",
     "NATIVE_MEMORY_AUTO_COMPACT_THRESHOLD": "每个用户触发自动压缩的记忆数量阈值。",
-    "NATIVE_MEMORY_COMPACTION_MODEL_ID": "后台记忆压缩 agent 使用的管理员模型配置。留空使用默认模型。",
+    "NATIVE_MEMORY_COMPACTION_MODEL_ID": "后台记忆压缩任务使用的管理员模型配置。留空使用默认模型。",
     "NATIVE_MEMORY_EMBEDDING_API_BASE": "向量搜索的 Embedding API 基础 URL（OpenAI 兼容）。留空使用纯文本模式。",
     "NATIVE_MEMORY_EMBEDDING_API_KEY": "Embedding API 密钥（OpenAI 兼容端点）",
     "NATIVE_MEMORY_EMBEDDING_MODEL": "Embedding 模型名称（如 text-embedding-3-small）",
@@ -1762,7 +1769,7 @@
     "WELCOME_SUGGESTION_TEXT": "文本"
   },
   "share": {
-    "agent": "智能体",
+    "agent": "专家",
     "authenticated": "需要登录",
     "authenticatedDesc": "只有登录用户可以查看",
     "conversationHistory": "对话历史",
@@ -1911,8 +1918,87 @@
       "title": "可用技能",
       "unavailable": "暂时无法加载可用技能"
     },
-    "batchDeleteFailed": "部分技能删除失败",
-    "batchDeleteSuccess": "已删除 {{count}} 个技能",
+    "governance": {
+      "departmentSelector": {
+        "directory": "公司部门目录",
+        "duplicate": "名称重复",
+        "duplicateReason": "部门名称重复，暂不能选择",
+        "empty": "没有匹配的部门",
+        "limitReached": "已达到 128 个部门的选择上限。",
+        "limitReason": "已达到 128 个部门的选择上限",
+        "maxDepartments": "最多选择 128 个部门",
+        "remove": "移除 {{name}}",
+        "removeShort": "移除",
+        "removeUnresolved": "移除未确认部门 {{name}}",
+        "search": "搜索部门",
+        "searchPlaceholder": "搜索部门名称或路径",
+        "select": "选择部门",
+        "selectAllowed": "选择允许部门",
+        "selectionHelp": "可从公司部门目录中选择最多 128 个部门。",
+        "unresolvedWarning": "未确认部门会保留显示；请移除它们，或等待公司部门目录恢复后再保存。"
+      },
+      "departments": {
+        "all": "全部部门",
+        "allowed": "允许部门",
+        "hint": "从公司部门目录中选择；选择全部部门时不限制部门范围。",
+        "restricted": "指定部门",
+        "scope": "部门范围"
+      },
+      "description": "配置该 Skill 对哪些用户、部门和角色可见；实际使用时仍会再次校验权限。",
+      "errors": {
+        "conflict": "当前无法修改该可见范围，请刷新后确认状态。",
+        "directoryNotAuthoritative": "当前部门范围尚未通过公司部门目录确认，不能保存。",
+        "directoryUnavailable": "公司部门目录暂时不可用；恢复前不能提交范围变更。",
+        "forbidden": "当前账号无权管理 Skill 可见范围。",
+        "notFound": "该 Skill 或其可见范围记录已不存在，请刷新后重试。",
+        "saveFailed": "暂时无法保存 Skill 可见范围，请稍后重试。"
+      },
+      "loading": "正在加载 Skill 可见范围和公司部门目录",
+      "refresh": "刷新 Skill 可见范围",
+      "refreshShort": "刷新",
+      "release": {
+        "current": "正式版本 {{version}}",
+        "latest": "最新版本包 {{version}}",
+        "noPackage": "尚无版本包",
+        "none": "尚无正式版本",
+        "title": "发布版本"
+      },
+      "roles": {
+        "allowed": "允许角色",
+        "hint": "可限制为指定公司角色；留空表示所有角色均可使用。"
+      },
+      "save": "保存可见范围",
+      "saved": "已保存",
+      "selectPrompt": "请从 Skill 目录选择一项查看详情。",
+      "status": {
+        "active": "启用",
+        "disabled": "停用",
+        "label": "状态"
+      },
+      "title": "Skill 可见范围",
+      "visibility": {
+        "activeHidden": "启用但隐藏",
+        "activeVisible": "启用且可见",
+        "allDepartments": "全部部门",
+        "departmentCount": "{{count}} 个部门",
+        "disabled": "已停用",
+        "title": "用户可见范围"
+      },
+      "visibleToUsers": "对普通用户可见"
+    },
+    "archiveAction": "确认归档",
+    "archivePolicyDescription": "归档会停止新的任务使用，并从当前目录移除；历史版本、运行记录和审计证据继续保留。",
+    "managementDescription": "在一个页面内管理 Skill 的版本、运行状态和用户可见范围。",
+    "managementEyebrow": "能力治理",
+    "managementTitle": "Skill 管理",
+    "metrics": {
+      "enabled": "已启用",
+      "total": "当前目录",
+      "visible": "用户可见"
+    },
+    "batchDeleteFailed": "部分 Skill 归档失败",
+    "batchDeletePartial": "已归档 {{deleted}} 个 Skill，另有 {{failed}} 个归档失败。",
+    "batchDeleteSuccess": "已归档 {{count}} 个 Skill",
     "batchDisableSuccess": "已禁用 {{count}} 个技能",
     "batchEnableSuccess": "已启用 {{count}} 个技能",
     "batchSelected": "已选择",
@@ -1923,7 +2009,7 @@
       "unsupportedHint": "此文件类型暂不支持在线预览，请下载后查看"
     },
     "card": {
-      "delete": "删除",
+      "delete": "归档",
       "disable": "禁用",
       "disabled": "已禁用",
       "edit": "编辑",
@@ -1936,13 +2022,13 @@
     },
     "managementTable": {
       "actions": "操作",
-      "delete": "删除",
-      "deleteSkill": "删除 {{name}}",
+      "delete": "归档",
+      "deleteSkill": "归档 {{name}}",
       "disable": "停用",
       "disableSkill": "停用 {{name}}",
       "disabled": "已停用",
-      "distributed": "租户分发中",
-      "distributionDisabled": "租户分发已停用",
+      "distributed": "目录中可用",
+      "distributionDisabled": "目录中已停用",
       "edit": "编辑",
       "editSkill": "编辑 {{name}}",
       "enable": "启用",
@@ -1950,25 +2036,34 @@
       "enableSkill": "启用 {{name}}",
       "exportSkill": "导出 {{name}}",
       "fileCount": "{{count}} 个文件",
+      "hidden": "对普通用户隐藏",
       "listLabel": "Skill 管理列表",
-      "notInDirectory": "未进入租户目录",
+      "notInDirectory": "未进入目录",
+      "notPublished": "尚未发布",
       "package": "版本包",
+      "packageOnly": "版本包待发布",
       "readOnly": "只读",
       "runtimeStatus": "运行状态",
       "selectSkill": "选择 {{name}}",
+      "selectedDetail": "当前 Skill 详情",
+      "selectDetailPrompt": "请从目录选择一项查看详情。",
+      "selectionAfterDelete": "已归档 {{deleted}}，列表和详情已切换到 {{name}}。",
+      "selectionAfterDeleteEmpty": "已归档 {{deleted}}，当前没有可选择的 Skill。",
+      "selectionChanged": "左侧列表和右侧详情已同步切换到 {{name}}。",
+      "selectionCurrent": "左侧列表和右侧详情当前均为 {{name}}。",
       "skill": "技能",
       "tags": "标签",
-      "tenantDistribution": "租户分发",
+      "catalogStatus": "目录状态",
       "updatedAt": "更新时间"
     },
-    "confirmDelete": "删除技能",
-    "confirmDeleteMessage": "此操作会将该技能移出当前租户的活跃使用范围；历史版本和运行记录将保留。",
+    "confirmDelete": "归档 Skill「{{name}}」",
+    "confirmDeleteMessage": "归档会停止该 Skill 的活跃使用并从当前目录移除；历史版本、运行记录和审计证据将继续保留。",
     "createFailed": "创建技能失败",
     "createFirst": "创建您的第一个技能",
     "createNew": "创建新技能",
     "createSuccess": "技能创建成功",
-    "deleteFailed": "删除技能失败",
-    "deleteSuccess": "技能删除成功",
+    "deleteFailed": "Skill 归档失败",
+    "deleteSuccess": "Skill 已归档并从当前目录移除",
     "demoteFailed": "降级技能失败",
     "demoteSuccess": "技能已降级为用户技能",
     "dropZoneActive": "松开以上传",
@@ -2056,6 +2151,9 @@
     "sourceMarketplace": "市场",
     "subtitle": "创建和管理自定义技能，增强 AI 助手能力",
     "title": "技能管理",
+    "loadFailed": "技能目录加载失败，请重试。",
+    "toggleFailed": "技能启停失败，请重试。",
+    "paginationSummary": "共 {{total}} 个 Skill · 第 {{page}} / {{pages}} 页",
     "updateFailed": "更新技能失败",
     "updateSuccess": "技能更新成功",
     "upload": "上传",
@@ -2084,7 +2182,7 @@
     "selectSkillToRelease": "选择一个要发布的 Skill",
     "adminReleaseZipHint": "请选择一个全新或已存在的 Skill。管理员发布会创建不可变目录版本，绝不会改动个人覆盖层。",
     "adminReleaseExistingSkill": "已有 Skill",
-    "adminZipImportHint": "管理员上传会创建全局 Skill、写入版本包，并立即发布到当前租户的稳定通道。",
+    "adminZipImportHint": "管理员上传会创建公共 Skill、写入版本包，并发布到稳定通道。",
     "adminZipNoNewSkill": "这个 ZIP 中没有全新的 Skill；已存在的公共目录 Skill 不能通过管理员上传发布。",
     "newSkillAdminUpload": "新 Skill",
     "publicCatalogSkill": "公共目录",
@@ -2244,8 +2342,8 @@
   },
   "composerCommand": {
     "agent": {
-      "description": "选择平台批准的智能体或应用模式。",
-      "label": "智能体"
+      "description": "选择平台批准的专家或应用模式。",
+      "label": "专家"
     },
     "file": {
       "description": "从输入框引用允许使用的文件和产物。",

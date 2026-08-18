@@ -3,7 +3,6 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MessagePart } from "../../../../types";
-import i18n, { PRODUCT_LANGUAGE } from "../../../../i18n/index.ts";
 import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
@@ -23,7 +22,7 @@ test("keeps streaming text object identity stable without using mutable content 
   assert.doesNotMatch(secondKey, /first token|second token/);
 });
 
-test("renders public execution kind and status from frontend i18n instead of backend copy", async () => {
+test("renders public execution kind and status from the Chinese catalog instead of backend copy", async () => {
   const step: Extract<MessagePart, { type: "execution_step" }> = {
     type: "execution_step",
     sequence: 6,
@@ -33,28 +32,18 @@ test("renders public execution kind and status from frontend i18n instead of bac
     status: "completed",
     safe_file_name: null,
   };
-  await i18n.changeLanguage("zh");
-  const zhMarkup = renderToStaticMarkup(
+  const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, { part: step, isLast: true }),
   );
-  await i18n.changeLanguage("en");
-  const enMarkup = renderToStaticMarkup(
-    createElement(MessagePartRenderer, { part: step, isLast: true }),
-  );
-  await i18n.changeLanguage(PRODUCT_LANGUAGE);
 
-  assert.match(zhMarkup, /处理/);
-    assert.match(zhMarkup, /已完成/);
-  assert.match(enMarkup, /Processing/);
-  assert.match(enMarkup, /Completed/);
-  for (const markup of [zhMarkup, enMarkup]) {
-    assert.match(markup, /role="status"/);
-    assert.match(markup, /4\/4/);
-    assert.match(markup, /data-public-execution-process/);
-    assert.doesNotMatch(markup, /Backend says/);
-    assert.doesNotMatch(markup, /rounded-lg|border-/);
-    assert.doesNotMatch(markup, /tool|execute/i);
-  }
+  assert.match(markup, /处理/);
+  assert.match(markup, /已完成/);
+  assert.match(markup, /role="status"/);
+  assert.match(markup, /4\/4/);
+  assert.match(markup, /data-public-execution-process/);
+  assert.doesNotMatch(markup, /Backend says/);
+  assert.doesNotMatch(markup, /rounded-lg|border-/);
+  assert.doesNotMatch(markup, /tool|execute/i);
 
   const [startedKey] = createMessagePartRenderKeys("message-a", [
     {
@@ -68,7 +57,6 @@ test("renders public execution kind and status from frontend i18n instead of bac
 });
 
 test("renders binary lifecycle as a status row without a progress bar", async () => {
-  await i18n.changeLanguage("en");
   const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, {
       isLast: true,
@@ -83,10 +71,8 @@ test("renders binary lifecycle as a status row without a progress bar", async ()
       } satisfies Extract<MessagePart, { type: "execution_step" }>,
     }),
   );
-  await i18n.changeLanguage(PRODUCT_LANGUAGE);
-
-  assert.match(markup, /Analysis/);
-  assert.match(markup, /Running/);
+  assert.match(markup, /分析/);
+  assert.match(markup, /进行中/);
   assert.doesNotMatch(markup, /role="progressbar"|0\/1|0%/);
   assert.doesNotMatch(markup, /Backend|backend-stage-copy|step-binary/);
 });
@@ -100,24 +86,14 @@ test("renders run status from allowlisted event type instead of backend message 
     message: "Backend says run started",
     severity: "info",
   };
-  await i18n.changeLanguage("zh");
-  const zhMarkup = renderToStaticMarkup(
+  const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, { part, isLast: true }),
   );
-  await i18n.changeLanguage("en");
-  const enMarkup = renderToStaticMarkup(
-    createElement(MessagePartRenderer, { part, isLast: true }),
-  );
-  await i18n.changeLanguage(PRODUCT_LANGUAGE);
 
-  assert.match(zhMarkup, /执行已开始/);
-  assert.match(zhMarkup, /进行中/);
-  assert.match(enMarkup, /Execution started/);
-  assert.match(enMarkup, /Running/);
-  assert.doesNotMatch(zhMarkup, /Backend|backend execution stage/);
-  assert.doesNotMatch(enMarkup, /Backend|backend execution stage/);
+  assert.match(markup, /执行已开始/);
+  assert.match(markup, /进行中/);
+  assert.doesNotMatch(markup, /Backend|backend execution stage/);
 
-  await i18n.changeLanguage("en");
   const unknownMarkup = renderToStaticMarkup(
     createElement(MessagePartRenderer, {
       part: {
@@ -129,10 +105,27 @@ test("renders run status from allowlisted event type instead of backend message 
       isLast: true,
     }),
   );
-  await i18n.changeLanguage(PRODUCT_LANGUAGE);
-  assert.match(unknownMarkup, /Execution update/);
+  assert.match(unknownMarkup, /执行状态更新/);
   assert.doesNotMatch(
     unknownMarkup,
     /private|token-bearing|stdout|C:\\private/i,
   );
+});
+
+test("renders a specific safe file-size failure instead of a generic failure", async () => {
+  const part: Extract<MessagePart, { type: "run_status" }> = {
+    type: "run_status",
+    event_id: "evt-file-too-large",
+    event_type: "context_file_too_large",
+    stage: "private storage stage",
+    message: "private token-bearing backend detail",
+    severity: "error",
+  };
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, { part, isLast: true }),
+  );
+
+  assert.match(markup, /文件超过处理上限/);
+  assert.match(markup, /文件超过 32 MB 处理上限/);
+  assert.doesNotMatch(markup, /private|token-bearing|storage stage/);
 });

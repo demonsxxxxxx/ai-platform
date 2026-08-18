@@ -420,14 +420,23 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
             ? "agt_support"
             : "general-agent",
       title: isAgentSession ? "支持助手" : "普通会话",
+      purpose: "conversation",
       agent_conversation: isAgentSession
         ? {
             agent_id: "agt_support",
             revision: 7,
             name: "支持助手",
             description: "处理已授权的支持请求。",
+            welcome_message: "欢迎使用支持助手。",
+            starter_prompts: ["帮我处理支持请求"],
+            capability_summary: "在授权范围内处理企业支持请求。",
+            recommended_tasks: ["支持请求分流"],
+            supported_input_types: ["text", "file"],
+            expected_outputs: ["处理建议"],
+            permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
             avatar_ref: "builtin:assistant",
             category: "support" as const,
+            published_at: "2026-08-04T01:00:00Z",
           }
         : null,
     };
@@ -571,6 +580,7 @@ test("an ordinary failed file-Skill session preserves generic continuation autho
     workspace_id: "default",
     agent_id: "general-agent",
     title: "普通会话",
+    purpose: "conversation",
     agent_conversation: null,
   });
   sessionApi.getEvents = async (_sessionId, options) => {
@@ -676,6 +686,7 @@ test("required session projection failures remain fail-closed with bounded diagn
         workspace_id: "default",
         agent_id: "general-agent",
         title: "普通会话",
+        purpose: "conversation",
         agent_conversation: null,
       };
     };
@@ -744,6 +755,7 @@ test("event history failure keeps verified generic authority for explicit retry"
     workspace_id: "default",
     agent_id: "general-agent",
     title: "普通会话",
+    purpose: "conversation",
     agent_conversation: null,
   });
   sessionApi.getEvents = async () => {
@@ -832,6 +844,7 @@ test("optional feedback failure leaves the session authority usable", async () =
     workspace_id: "default",
     agent_id: "general-agent",
     title: "普通会话",
+    purpose: "conversation",
     agent_conversation: null,
   });
   sessionApi.getEvents = async () => ({ events: [] });
@@ -906,6 +919,7 @@ test("an authoritative identity mismatch remains fail-closed", async () => {
     workspace_id: "default",
     agent_id: "general-agent",
     title: "冲突会话",
+    purpose: "conversation",
     agent_conversation: null,
   });
   sessionApi.submitChat = (async () => {

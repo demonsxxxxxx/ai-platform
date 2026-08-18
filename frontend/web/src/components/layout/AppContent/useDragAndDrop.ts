@@ -3,7 +3,7 @@ import { useFileUpload } from "../../../hooks/useFileUpload";
 import type { MessageAttachment } from "../../../types";
 import { shouldHandleGlobalFileDrop } from "./globalFileDropGuards";
 
-export function useDragAndDrop() {
+export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
   const [isPageDragging, setIsPageDragging] = useState(false);
   const [pageDragAttachments, setPageDragAttachments] = useState<
     MessageAttachment[]
@@ -12,7 +12,9 @@ export function useDragAndDrop() {
   const { uploadFiles, validateCount } = useFileUpload({
     attachments: pageDragAttachments,
     onAttachmentsChange: setPageDragAttachments,
+    acceptedFileTypes,
   });
+  const uploadsEnabled = acceptedFileTypes === undefined || acceptedFileTypes.length > 0;
 
   const dragCounterRef = useRef(0);
 
@@ -23,6 +25,7 @@ export function useDragAndDrop() {
     };
 
     const handleDragEnter = (e: DragEvent) => {
+      if (!uploadsEnabled) return;
       if (e.dataTransfer?.types.includes("Files")) {
         if (!shouldHandleGlobalFileDrop(e)) {
           resetDragState();
@@ -50,6 +53,7 @@ export function useDragAndDrop() {
     };
 
     const handleDrop = (e: DragEvent) => {
+      if (!uploadsEnabled) return;
       if (!shouldHandleGlobalFileDrop(e)) {
         resetDragState();
         return;
@@ -68,6 +72,7 @@ export function useDragAndDrop() {
     };
 
     const handleDragOver = (e: DragEvent) => {
+      if (!uploadsEnabled) return;
       if (e.dataTransfer?.types.includes("Files")) {
         if (!shouldHandleGlobalFileDrop(e)) {
           resetDragState();
@@ -88,7 +93,7 @@ export function useDragAndDrop() {
       document.removeEventListener("drop", handleDrop);
       document.removeEventListener("dragover", handleDragOver);
     };
-  }, [uploadFiles, validateCount]);
+  }, [uploadFiles, uploadsEnabled, validateCount]);
 
   return {
     isPageDragging,

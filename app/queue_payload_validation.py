@@ -10,16 +10,20 @@ def _safe_error_token(value: object, fallback: str, max_length: int = 120) -> st
     return token[:max_length]
 
 
-def queue_payload_invalid_detail(exc: ValueError) -> str | dict[str, Any]:
+def queue_payload_invalid_detail(exc: ValueError) -> dict[str, Any]:
+    base = {
+        "code": "queue_payload_invalid",
+        "submission_disposition": "rejected_before_persist",
+    }
     errors_fn = getattr(exc, "errors", None)
     if not callable(errors_fn):
-        return "queue_payload_invalid"
+        return base
     try:
         raw_errors = errors_fn()
     except Exception:
-        return "queue_payload_invalid"
+        return base
     if not isinstance(raw_errors, list):
-        return "queue_payload_invalid"
+        return base
 
     errors: list[dict[str, Any]] = []
     for item in raw_errors[:8]:
@@ -48,5 +52,5 @@ def queue_payload_invalid_detail(exc: ValueError) -> str | dict[str, Any]:
         )
 
     if not errors:
-        return "queue_payload_invalid"
-    return {"code": "queue_payload_invalid", "errors": errors}
+        return base
+    return {**base, "errors": errors}

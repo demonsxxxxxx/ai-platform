@@ -1,0 +1,531 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/demonsxxxxxx/ai-platform/schemas/architecture-policy.v1.schema.json",
+  "title": "ai-platform architecture governance policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "owner",
+    "reason",
+    "source_contract",
+    "app_root",
+    "target_packages",
+    "bounded_contexts",
+    "layers",
+    "public_cross_domain_modules",
+    "public_kernel_modules",
+    "approved_root_modules",
+    "forbidden_module_names",
+    "forbidden_delivery_tokens",
+    "frozen_hot_files",
+    "compatibility_facades",
+    "migration_bridges",
+    "legacy_api_cutovers",
+    "production_registries",
+    "governed_symbols",
+    "exception_contract"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ai-platform.architecture-policy.v1"
+    },
+    "owner": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "reason": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "source_contract": {
+      "$ref": "#/$defs/repositoryPath"
+    },
+    "app_root": {
+      "const": "app"
+    },
+    "target_packages": {
+      "$ref": "#/$defs/uniqueNames"
+    },
+    "bounded_contexts": {
+      "$ref": "#/$defs/uniqueNames"
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "application", "infrastructure", "transport"],
+      "properties": {
+        "domain": {
+          "$ref": "#/$defs/layerPolicy"
+        },
+        "application": {
+          "$ref": "#/$defs/layerPolicy"
+        },
+        "infrastructure": {
+          "$ref": "#/$defs/layerPolicy"
+        },
+        "transport": {
+          "$ref": "#/$defs/layerPolicy"
+        }
+      }
+    },
+    "public_cross_domain_modules": {
+      "$ref": "#/$defs/uniqueNames"
+    },
+    "public_kernel_modules": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "approved_root_modules": {
+      "$ref": "#/$defs/uniquePaths"
+    },
+    "forbidden_module_names": {
+      "$ref": "#/$defs/uniqueNames"
+    },
+    "forbidden_delivery_tokens": {
+      "$ref": "#/$defs/uniqueNames"
+    },
+    "frozen_hot_files": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/hotFile"
+      }
+    },
+    "compatibility_facades": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/facade"
+      }
+    },
+    "migration_bridges": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/migrationBridge"
+      }
+    },
+    "legacy_api_cutovers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/legacyApiCutover"
+      }
+    },
+    "production_registries": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/registry"
+      }
+    },
+    "governed_symbols": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/governedSymbol"
+      }
+    },
+    "exception_contract": {
+      "$ref": "#/$defs/exceptionContract"
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "uniqueNames": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "uniquePaths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/repositoryPath"
+      }
+    },
+    "layerPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "reason",
+        "may_import_own_layers",
+        "may_import_platform",
+        "allow_third_party",
+        "allowed_third_party_prefixes"
+      ],
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "may_import_own_layers": {
+          "$ref": "#/$defs/uniqueNames"
+        },
+        "may_import_platform": {
+          "type": "boolean"
+        },
+        "allow_third_party": {
+          "type": "boolean"
+        },
+        "allowed_third_party_prefixes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        }
+      }
+    },
+    "hotFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "max_lines", "owner", "reason"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "max_lines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "facade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "canonical_prefix", "max_lines", "shape", "owner", "reason"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "canonical_prefix": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "max_lines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shape": {
+          "enum": ["imports_only"]
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "migrationBridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_path",
+        "target_module",
+        "module_alias",
+        "symbols",
+        "owner",
+        "reason",
+        "removal_condition"
+      ],
+      "properties": {
+        "source_path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "target_module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "module_alias": {
+          "type": "string",
+          "pattern": "^_?[a-z][a-z0-9_]*$"
+        },
+        "symbols": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
+          }
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "removal_condition": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "legacyApiCutover": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_path",
+        "public_module",
+        "canonical_module",
+        "module_alias",
+        "removed_imports",
+        "rewrites",
+        "owner",
+        "reason",
+        "removal_condition"
+      ],
+      "properties": {
+        "source_path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "public_module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "canonical_module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "module_alias": {
+          "type": "string",
+          "pattern": "^_?[a-z][a-z0-9_]*$"
+        },
+        "removed_imports": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/legacyRemovedImport"
+          }
+        },
+        "rewrites": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/legacyApiRewrite"
+          }
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "removal_condition": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "legacyApiRewrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["old_symbol", "new_symbol"],
+      "properties": {
+        "old_symbol": {
+          "type": "string",
+          "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "new_symbol": {
+          "type": "string",
+          "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
+        }
+      }
+    },
+    "legacyRemovedImport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "name"],
+      "properties": {
+        "module": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
+        }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "factory_function",
+        "allowed_keys",
+        "adapter_constructors",
+        "selector_owners",
+        "test_double_terms",
+        "owner",
+        "reason"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "factory_function": {
+          "type": "string",
+          "pattern": "^_?[a-z][a-z0-9_]*$"
+        },
+        "allowed_keys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "adapter_constructors": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/adapterConstructor"
+          }
+        },
+        "selector_owners": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/selectorOwner"
+          }
+        },
+        "test_double_terms": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "adapterConstructor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "name"],
+      "properties": {
+        "module": {
+          "type": "string",
+          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        }
+      }
+    },
+    "selectorOwner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "symbol"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        }
+      }
+    },
+    "governedSymbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "owner", "reason"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "exceptionContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "schema_version",
+        "max_days",
+        "non_exemptible_codes",
+        "owner",
+        "reason"
+      ],
+      "properties": {
+        "path": {
+          "const": ".architecture-governance-exception.json"
+        },
+        "schema_version": {
+          "const": "ai-platform.architecture-governance-exception.v1"
+        },
+        "max_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90
+        },
+        "non_exemptible_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    }
+  }
+}

@@ -7,6 +7,7 @@ import type {
 import {
   projectAgentConversationSession,
   projectAgentProfilePublicProjection,
+  validateAgentProfileAdminProjection,
   type AgentConversationSessionProjection,
   type AgentProfileCategory,
   type SelectedAgentProfileRequest,
@@ -31,6 +32,14 @@ export interface AgentConversationPage {
 export interface AgentConversationListOptions {
   cursor?: string;
   limit?: number;
+}
+
+export interface AgentProfileTrialRunResponse {
+  session_id: string;
+  run_id: string;
+  status: "queued" | "accepted_pending_enqueue";
+  submission_id: string;
+  purpose: "builder_test";
 }
 
 /** Build the current-principal published catalog URL. */
@@ -78,6 +87,29 @@ function projectConversationListResponse(value: unknown): AgentConversationPage 
   };
 }
 
+function projectAdminListResponse(value: unknown): { agent_profiles: AgentProfileAdminProjection[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid_agent_profile_admin_catalog");
+  }
+  const profiles = (value as { agent_profiles?: unknown }).agent_profiles;
+  if (!Array.isArray(profiles)) throw new Error("invalid_agent_profile_admin_catalog");
+  return { agent_profiles: profiles.map(validateAgentProfileAdminProjection) };
+}
+
+function projectMutationResponse(value: unknown): AgentProfileMutationResponse {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid_agent_profile_mutation_response");
+  }
+  const record = value as { agent_profile?: unknown; audit_id?: unknown };
+  if (typeof record.audit_id !== "string" || !record.audit_id) {
+    throw new Error("invalid_agent_profile_mutation_response");
+  }
+  return {
+    agent_profile: validateAgentProfileAdminProjection(record.agent_profile),
+    audit_id: record.audit_id,
+  };
+}
+
 export function buildAgentConversationListUrl(
   selection: SelectedAgentProfileRequest,
   options: AgentConversationListOptions = {},
@@ -114,27 +146,39 @@ export const agentProfileApi = {
     return projectConversationListResponse(response);
   },
 
-  async createConversation(selection: SelectedAgentProfileRequest): Promise<AgentConversationSessionProjection> {
+  async createConversation(
+    selection: SelectedAgentProfileRequest,
+    operationId: string,
+  ): Promise<AgentConversationSessionProjection> {
     const selected_agent_profile = {
       agent_id: selection.agent_id,
       expected_revision: selection.expected_revision,
     };
     const response = await authFetch<unknown>(`${API_BASE}/api/ai/agent-conversations`, {
       method: "POST",
-      body: JSON.stringify({ selected_agent_profile }),
+      body: JSON.stringify({ selected_agent_profile, operation_id: operationId }),
     });
     return projectAgentConversationSession(response);
   },
 
-  listAdmin(): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
-    return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`);
+  async listAdmin(): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
+    const response = await authFetch<unknown>(`${API_BASE}/api/ai/admin/agent-profiles`);
+    return projectAdminListResponse(response);
   },
 
-  saveDraft(
+  async listHistory(agentId: string): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
+    const response = await authFetch<unknown>(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/history`,
+      { cache: "no-store" },
+    );
+    return projectAdminListResponse(response);
+  },
+
+  async saveDraft(
     draft: AgentProfileDraftRequest,
     agentId?: string,
   ): Promise<AgentProfileMutationResponse> {
-    return authFetch(
+    const response = await authFetch<unknown>(
       agentId
         ? `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}`
         : `${API_BASE}/api/ai/admin/agent-profiles`,
@@ -143,14 +187,46 @@ export const agentProfileApi = {
         body: JSON.stringify(draft),
       },
     );
+    return projectMutationResponse(response);
   },
 
-  publish(agentId: string, expectedRevision: number): Promise<AgentProfileMutationResponse> {
-    return authFetch(
+  async publish(agentId: string, expectedRevision: number): Promise<AgentProfileMutationResponse> {
+    const response = await authFetch<unknown>(
       `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/publish`,
       {
         method: "POST",
         body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+    return projectMutationResponse(response);
+  },
+
+  async unpublish(agentId: string, expectedRevision: number): Promise<AgentProfileMutationResponse> {
+    const response = await authFetch<unknown>(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/unpublish`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+    return projectMutationResponse(response);
+  },
+
+  runTest(
+    agentId: string,
+    expectedRevision: number,
+    message: string,
+    submissionId: string,
+  ): Promise<AgentProfileTrialRunResponse> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/test-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: expectedRevision,
+          message,
+          submission_id: submissionId,
+        }),
       },
     );
   },

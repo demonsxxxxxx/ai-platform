@@ -101,6 +101,21 @@ test("MCP directory is ready when backend returns visible servers", () => {
   assert.equal(state.credentialsAvailability.state, "enabled");
 });
 
+test("MCP admin sees an empty backed directory as enabled", () => {
+  const state = resolveMcpGovernanceState({
+    isAuthenticated: true,
+    canReadMcp: false,
+    canManageMcp: true,
+    servers: [],
+    total: 0,
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.directoryAvailability.state, "enabled");
+  assert.equal(state.lifecycleAvailability.state, "enabled");
+  assert.equal(state.credentialsAvailability.state, "enabled");
+});
+
 test("MCP directory keeps lifecycle admin-only for ordinary users", () => {
   const state = resolveMcpGovernanceState({
     isAuthenticated: true,

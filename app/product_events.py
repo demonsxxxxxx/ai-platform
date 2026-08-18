@@ -1,5 +1,10 @@
 from typing import Any
 
+from app.control_plane_contracts import (
+    RUN_EXECUTION_KIND_SKILL,
+    RUN_CONTRACT_VERSION,
+)
+
 
 def intent_event_specs(decision: dict[str, Any]) -> list[dict[str, Any]]:
     events = [
@@ -36,36 +41,46 @@ def intent_event_specs(decision: dict[str, Any]) -> list[dict[str, Any]]:
 def initial_run_event_specs(
     *,
     agent_id: str,
-    skill_id: str,
-    skill_version: str,
+    skill_id: str | None,
+    skill_version: str | None,
     executor_type: str,
     file_ids: list[str],
     source: str,
+    execution_kind: str = RUN_EXECUTION_KIND_SKILL,
 ) -> list[dict[str, Any]]:
     base_payload = {
         "agent_id": agent_id,
-        "skill_id": skill_id,
-        "skill_version": skill_version,
+        "execution_kind": execution_kind,
         "executor_type": executor_type,
-        "contract_version": "ai-platform.run.v1",
+        "contract_version": RUN_CONTRACT_VERSION,
         "source": source,
         "severity": "info",
         "visible_to_user": True,
     }
+    if execution_kind == RUN_EXECUTION_KIND_SKILL:
+        base_payload.update(
+            {
+                "skill_id": skill_id,
+                "skill_version": skill_version,
+            }
+        )
     events: list[dict[str, Any]] = [
         {
             "event_type": "queued",
             "stage": "queue",
             "message": "任务已进入队列",
             "payload": base_payload,
-        },
-        {
-            "event_type": "skill_selected",
-            "stage": "planning",
-            "message": "已选择后台能力",
-            "payload": base_payload,
-        },
+        }
     ]
+    if execution_kind == RUN_EXECUTION_KIND_SKILL:
+        events.append(
+            {
+                "event_type": "skill_selected",
+                "stage": "planning",
+                "message": "已选择后台能力",
+                "payload": base_payload,
+            }
+        )
     if file_ids:
         events.append(
             {

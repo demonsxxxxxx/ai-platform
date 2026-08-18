@@ -26,13 +26,12 @@ from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAu
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.skills import catalog
 from app.skills.catalog import (
-    AVAILABLE,
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     load_runtime_authorized_skill_catalog,
     resolve_authorized_skill_catalog,
 )
-from app.skills.pinning import build_skill_version_manifest_pin
+from app.skills.pinning import build_skill_manifest_ref, build_skill_version_manifest_pin
 from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
 from app.worker import (
     _builtin_capability_subjects,
@@ -145,6 +144,7 @@ async def _resolve(
     binding: AuthorizedSkillCatalogBinding | None = None,
     roles: list[str] | None = None,
     pinned_manifests: list[dict[str, Any]] | None = None,
+    skill_set: list[dict[str, Any]] | None = None,
 ):
     observed: dict[str, Any] = {}
 
@@ -165,6 +165,7 @@ async def _resolve(
         roles=roles or ["employee"],
         permissions=["skill:read"],
         pinned_manifests=pinned_manifests,
+        skill_set=skill_set,
     )
     return resolution, observed
 
@@ -312,6 +313,53 @@ async def test_catalog_truncation_is_deterministic_bounded_and_explicit(monkeypa
     assert len(json.dumps(first.snapshot.prompt_payload()).encode("utf-8")) <= (
         catalog.MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_truncation_preserves_every_agent_skill_set_root(monkeypatch):
+    monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 2)
+    rows = [_skill_row(skill_id) for skill_id in ("skill-a", "skill-y", "skill-z")]
+    rows_by_id = {str(row["skill_id"]): row for row in rows}
+    skill_set = [
+        {"skill_id": "skill-z", "expected_version": rows_by_id["skill-z"]["version"]},
+        {"skill_id": "skill-y", "expected_version": rows_by_id["skill-y"]["version"]},
+    ]
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=[_distribution(str(row["skill_id"])) for row in rows],
+        binding=_binding(selected_skill_id="skill-z"),
+        pinned_manifests=[
+            _manifest_from_row(rows_by_id["skill-z"]),
+            _manifest_from_row(rows_by_id["skill-y"]),
+        ],
+        skill_set=skill_set,
+    )
+
+    assert resolution.snapshot.available_skill_ids == ("skill-z", "skill-y")
+    assert resolution.snapshot.truncated is True
+    assert resolution.snapshot.omitted_count == 1
+    assert resolution.snapshot.materialized_skill_ids == ("skill-z", "skill-y")
+
+
+@pytest.mark.asyncio
+async def test_catalog_fails_closed_when_agent_skill_set_exceeds_catalog_bound(monkeypatch):
+    monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 1)
+    rows = [_skill_row(skill_id) for skill_id in ("skill-y", "skill-z")]
+
+    with pytest.raises(AuthorizedSkillCatalogError, match="required_set_too_large"):
+        await _resolve(
+            monkeypatch,
+            rows=rows,
+            distributions=[_distribution(str(row["skill_id"])) for row in rows],
+            binding=_binding(selected_skill_id="skill-z"),
+            pinned_manifests=[_manifest_from_row(row) for row in rows],
+            skill_set=[
+                {"skill_id": str(row["skill_id"]), "expected_version": row["version"]}
+                for row in reversed(rows)
+            ],
+        )
 
 
 @pytest.mark.asyncio
@@ -541,11 +589,12 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
             source="company-user-info-current",
         )
 
+    principal = await current_principal(user_id="user-a", tenant_id="tenant-a")
     authorization = await _reauthorize_worker_capabilities(
         object(),
         payload=payload,
         run_identity=run_identity,
-        current_principal_resolver=current_principal,
+        current_principal=principal,
     )
 
     assert authorization.denial is None
@@ -585,6 +634,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
 
 def _worker_dispatch_fixture(execution_input: dict[str, Any]):
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
+    primary_manifest_ref = build_skill_manifest_ref(primary_manifest)
     primary_version = str(primary_manifest["version"])
     payload = QueueRunPayload(
         tenant_id="tenant-a",
@@ -602,7 +652,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
             "selected_version": primary_version,
             "selected_track": "manifest_pin",
         },
-        skill_manifests=[primary_manifest],
+        skill_manifests=[primary_manifest_ref],
         input=execution_input,
     )
     stored = payload.model_dump(mode="python")
@@ -613,6 +663,10 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": "general-agent",
+        "admitted_agent_profile_revision": None,
+        "admitted_agent_profile_hash": None,
+        "session_admitted_agent_profile_revision": None,
+        "session_admitted_agent_profile_hash": None,
         "skill_id": "general-chat",
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
@@ -637,10 +691,10 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
     }
     raw = payload.model_dump(mode="python")
     raw[QUEUE_ATTEMPT_ID_FIELD] = "attempt-a"
-    return raw, locked_run
+    return raw, locked_run, primary_manifest
 
 
-def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
+def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls):
     @asynccontextmanager
     async def transaction():
         yield object()
@@ -648,6 +702,10 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
     async def mark_run_running(_conn, **kwargs):
         calls.append(("lock", kwargs))
         return locked_run
+
+    async def get_run(_conn, **kwargs):
+        calls.append(("preflight", kwargs))
+        return {**locked_run, "status": "queued"}
 
     async def fail_run(_conn, **kwargs):
         calls.append(("fail", kwargs))
@@ -661,15 +719,28 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
         calls.append(("audit", kwargs))
         return "audit-a"
 
+    async def materialize_run_skill_manifests(_conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "skill_manifest_refs": [build_skill_manifest_ref(primary_manifest)],
+        }
+        return [primary_manifest]
+
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs))
         return None
 
     monkeypatch.setattr("app.worker.transaction", transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.worker.repositories.materialize_run_skill_manifests",
+        materialize_run_skill_manifests,
+    )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
 
@@ -699,9 +770,9 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch,
     execution_input,
 ):
-    raw, locked_run = _worker_dispatch_fixture(execution_input)
+    raw, locked_run, primary_manifest = _worker_dispatch_fixture(execution_input)
     calls: list[tuple[str, Any]] = []
-    _install_dispatch_failure_fakes(monkeypatch, locked_run, calls)
+    _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls)
 
     async def unavailable_current_principal(**_kwargs):
         calls.append(("current_principal", None))
@@ -754,9 +825,11 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
     distribution,
     expected_reason,
 ):
-    raw, locked_run = _worker_dispatch_fixture({"copied_from_run_id": "source-run"})
+    raw, locked_run, primary_manifest = _worker_dispatch_fixture(
+        {"copied_from_run_id": "source-run"}
+    )
     calls: list[tuple[str, Any]] = []
-    _install_dispatch_failure_fakes(monkeypatch, locked_run, calls)
+    _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls)
 
     async def current_principal(**_kwargs):
         return AuthPrincipal(
@@ -1063,6 +1136,10 @@ def _sdk_settings():
     )
 
 
+async def _acknowledge_capability_evidence(_evidence):
+    return True
+
+
 def _skill_policy_subject(skill_ids: list[str]) -> dict[str, Any]:
     return {
         "identity": "Skill",
@@ -1127,14 +1204,21 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
 
     async def query(prompt, options):
         captured["prompt_messages"] = [item async for item in prompt]
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "skill-c"},
-                "tool_use_id": "tool-use-c",
-            }
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "skill-c"},
+            "tool_use_id": "tool-use-c",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-use-c",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
+            "tool-use-c",
+            {},
         )
         yield ResultMessage()
 
@@ -1162,6 +1246,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
+        on_capability_evidence=_acknowledge_capability_evidence,
     )
 
     assert captured["skills"] == skill_ids
@@ -1222,17 +1307,26 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
             "Skill",
             {"skill": "minimax-docx"},
         )
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        for skill_id in (
+        for index, skill_id in enumerate((
             "ctd-32s73-stability-template-fill",
             "reference-fact-extraction",
-        ):
-            await hook(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "tool_name": "Skill",
-                    "tool_input": {"skill": skill_id},
-                }
+        )):
+            tool_use_id = f"skill-tool-{index}"
+            skill_input = {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": skill_id},
+                "tool_use_id": tool_use_id,
+            }
+            await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+                skill_input,
+                tool_use_id,
+                {},
+            )
+            await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+                {**skill_input, "hook_event_name": "PostToolUse"},
+                tool_use_id,
+                {},
             )
         yield ResultMessage()
 
@@ -1263,6 +1357,7 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
+        on_capability_evidence=_acknowledge_capability_evidence,
         public_skill_metadata={
             "ctd-32s73-stability-template-fill": {
                 "name": "CTD stability template fill",

@@ -166,7 +166,7 @@ self.addEventListener("push", (event) => {
     icon: payload.icon || "/icons/icon-192.png",
     badge: payload.badge || "/icons/icon-192.png",
     data: {
-      url: payload.url || "/chat",
+      url: payload.url || "/agent-market",
     },
   };
 
@@ -177,7 +177,7 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
   const targetUrl = new URL(
-    event.notification.data?.url || "/chat",
+    event.notification.data?.url || "/agent-market",
     self.location.origin,
   );
 

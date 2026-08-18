@@ -109,8 +109,15 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         audits.append(kwargs)
         return "aud-terminal"
 
+    async def ensure_run_terminal_intent(_conn, **_kwargs):
+        return None
+
     monkeypatch.setattr(repositories, "append_event", append_event)
     monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.streaming.redis.ensure_run_terminal_intent",
+        ensure_run_terminal_intent,
+    )
     conn = DelayedPermissionDrainConnection()
 
     first = await terminalization.terminalize_retired_platform_multi_agent_run(

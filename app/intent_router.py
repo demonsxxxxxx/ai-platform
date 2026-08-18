@@ -1,9 +1,8 @@
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Literal
 
 from app.capabilities import get_capability
-from app.required_tool_contract import parse_required_tool_declaration
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ExecutionPolarity = Literal["affirmative", "non_execution", "unspecified"]
@@ -205,11 +204,6 @@ def fallback_to_general_chat(
     )
 
 
-def _with_required_tool(decision: IntentDecision, declaration: object) -> IntentDecision:
-    payload = declaration.to_payload() if declaration is not None else None
-    return replace(decision, required_tool=payload)
-
-
 def route_intent(
     message: str,
     files: list[FileSummary],
@@ -218,14 +212,10 @@ def route_intent(
     execution_polarity: ExecutionPolarity | None = None,
 ) -> IntentDecision:
     polarity = execution_polarity or classify_execution_polarity(message)
-    required_tool = parse_required_tool_declaration(message)
     if polarity == "non_execution":
         return fallback_to_general_chat(execution_polarity=polarity)
     if confirmed_capability_id:
-        return _with_required_tool(
-            confirm_capability(confirmed_capability_id),
-            required_tool,
-        )
+        return confirm_capability(confirmed_capability_id)
 
     text = (message or "").lower()
     has_docx = _has_docx(files)
@@ -247,52 +237,40 @@ def route_intent(
     )
 
     if has_docx and any(token in text for token in review_tokens):
-        return _with_required_tool(
-            _selected(
-                "document_review",
-                "document_review",
-                0.92,
-                "检测到 Word 文件和审核意图",
-                execution_polarity=polarity,
-            ),
-            required_tool,
+        return _selected(
+            "document_review",
+            "document_review",
+            0.92,
+            "检测到 Word 文件和审核意图",
+            execution_polarity=polarity,
         )
     if has_docx and any(token in text for token in translate_tokens):
-        return _with_required_tool(
-            _selected(
-                "document_translation",
-                "document_translation",
-                0.92,
-                "检测到 Word 文件和翻译意图",
-                execution_polarity=polarity,
-            ),
-            required_tool,
+        return _selected(
+            "document_translation",
+            "document_translation",
+            0.92,
+            "检测到 Word 文件和翻译意图",
+            execution_polarity=polarity,
         )
     if (
         polarity == "affirmative"
         and not has_docx
         and any(token in text for token in knowledge_tokens)
     ):
-        return _with_required_tool(
-            _selected(
-                "knowledge_answer",
-                "knowledge_answer",
-                0.82,
-                "检测到知识库或 SOP 问答意图",
-                execution_polarity=polarity,
-            ),
-            required_tool,
+        return _selected(
+            "knowledge_answer",
+            "knowledge_answer",
+            0.82,
+            "检测到知识库或 SOP 问答意图",
+            execution_polarity=polarity,
         )
     if not has_docx and _looks_like_long_task(text):
-        return _with_required_tool(
-            _selected(
-                "long_task",
-                "general_chat",
-                0.78,
-                "检测到需要多步骤执行的复杂任务",
-                execution_polarity=polarity,
-            ),
-            required_tool,
+        return _selected(
+            "long_task",
+            "general_chat",
+            0.78,
+            "检测到需要多步骤执行的复杂任务",
+            execution_polarity=polarity,
         )
     if has_docx:
         return IntentDecision(
@@ -310,13 +288,10 @@ def route_intent(
                 _suggestion("general_chat", "普通分析"),
             ],
         )
-    return _with_required_tool(
-        _selected(
-            "general_chat",
-            "general_chat",
-            0.74,
-            "未检测到文件型或知识库专属意图",
-            execution_polarity=polarity,
-        ),
-        required_tool,
+    return _selected(
+        "general_chat",
+        "general_chat",
+        0.74,
+        "未检测到文件型或知识库专属意图",
+        execution_polarity=polarity,
     )

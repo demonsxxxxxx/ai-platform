@@ -4,10 +4,42 @@ import test from "node:test";
 
 import React from "react";
 
-import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
+import { Permission } from "../../../types/auth.ts";
+import {
+  AGENT_PROFILE_CATEGORIES,
+  AGENT_PROFILE_CATEGORY_LABELS,
+  type AgentProfilePublicProjection,
+} from "../../../types/agentProfile.ts";
+
+const enterpriseProfileFields = {
+  welcome_message: "欢迎使用企业专家。",
+  starter_prompts: ["帮我处理企业任务"] as string[],
+  capability_summary: "在授权范围内处理企业任务。",
+  recommended_tasks: ["企业任务处理"] as string[],
+  supported_input_types: ["text", "file"] as ["text", "file"],
+  expected_outputs: ["处理建议"] as string[],
+  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
+  published_at: "2026-08-04T01:00:00Z",
+};
 
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
+
+test("Agent Profile category labels cover the canonical category contract", () => {
+  assert.deepEqual(
+    AGENT_PROFILE_CATEGORIES.map((category) => [
+      category,
+      AGENT_PROFILE_CATEGORY_LABELS[category],
+    ]),
+    [
+      ["general", "通用专家"],
+      ["support", "支持服务"],
+      ["writing", "内容写作"],
+      ["research", "研究分析"],
+      ["operations", "运营效率"],
+    ],
+  );
+});
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -50,6 +82,17 @@ function dispatchEventFromTarget(target: TestEventTarget, event: Record<string, 
     current.getListeners(String(event.type))?.forEach((listener) => listener(event));
     if (event.cancelBubble || event.bubbles !== true) break;
     current = current instanceof TestNode ? current.parentNode : null;
+  }
+}
+
+class TestLockManager {
+  async request<T>(
+    _name: string,
+    options: { mode: "exclusive" },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    assert.equal(options.mode, "exclusive");
+    return callback();
   }
 }
 
@@ -166,6 +209,19 @@ class TestElement extends TestNode {
 
   hasAttribute(name: string) {
     return this.attributes.has(name);
+  }
+
+  closest(selector: string): TestElement | null {
+    const match = selector.match(/^([a-z]+)?(?:\[([^=\]]+)(?:="([^"]*)")?\])?$/i);
+    const tagMatches = !match?.[1] || this.nodeName === match[1].toUpperCase();
+    const attributeMatches =
+      !match?.[2] ||
+      (this.hasAttribute(match[2]) &&
+        (match[3] === undefined || this.getAttribute(match[2]) === match[3]));
+    if (match && tagMatches && attributeMatches) return this;
+    return this.parentNode instanceof TestElement
+      ? this.parentNode.closest(selector)
+      : null;
   }
 
   getBoundingClientRect() {
@@ -411,12 +467,16 @@ function installDom() {
     },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
   });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { userAgent: "node", locks: new TestLockManager() },
+  });
   return { document, window: windowTarget };
 }
 
-async function prepareShellHarness() {
+async function prepareShellHarness({ authenticated = false } = {}) {
   await import("../../../i18n/index.ts");
-  const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
+  const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
   const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
   const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
   const { authApi } = await import("../../../services/api/auth.ts");
@@ -433,9 +493,22 @@ async function prepareShellHarness() {
     getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async () => undefined;
-  authApi.getCurrentUser = async () => {
-    throw new Error("logged out test session");
-  };
+  authApi.getCurrentUser = authenticated
+    ? async () => ({
+        id: "user-a",
+        tenant_id: "tenant-a",
+        username: "user-a",
+        email: "user-a@example.test",
+        roles: [],
+        permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE],
+        is_admin: false,
+        is_active: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      })
+    : async () => {
+        throw new Error("logged out test session");
+      };
   authApi.updateMetadata = async () => {
     throw new Error("no backend in mounted route test");
   };
@@ -455,15 +528,22 @@ async function prepareShellHarness() {
   modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
 
+  function AuthenticatedGate({ children }: { children: React.ReactNode }) {
+    return useAuth().hasPermission(Permission.CHAT_WRITE) ? children : null;
+  }
+
   return {
     wrap(children: React.ReactNode) {
+      const shellChildren = authenticated
+        ? React.createElement(AuthenticatedGate, null, children)
+        : children;
       return React.createElement(
         ThemeProvider,
         null,
         React.createElement(
           AuthProvider,
           null,
-          React.createElement(SettingsProvider, null, children),
+          React.createElement(SettingsProvider, null, shellChildren),
         ),
       );
     },
@@ -488,6 +568,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   const shellHarness = await prepareShellHarness();
   const profiles: Array<AgentProfilePublicProjection & Record<string, unknown>> = [
     {
+      ...enterpriseProfileFields,
       agent_id: "agt_support",
       expected_revision: 4,
       name: "支持助手",
@@ -496,6 +577,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       category: "support",
     },
     {
+      ...enterpriseProfileFields,
       agent_id: "agt_finance",
       expected_revision: 2,
       name: "财务助手",
@@ -536,7 +618,9 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       workspace_id: "default",
       agent_id: "agt_finance",
       title: "财务助手",
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: "agt_finance",
         revision: 2,
         name: "财务助手",
@@ -548,7 +632,8 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   };
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
   function WorkspaceProbe() {
@@ -602,7 +687,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const categoryGroup = container.querySelector("[data-agent-market-filter]");
     assert.ok(categoryGroup);
     assert.equal(categoryGroup.getAttribute("role"), "group");
-    assert.equal(categoryGroup.getAttribute("aria-label"), "智能体分类");
+    assert.equal(categoryGroup.getAttribute("aria-label"), "专家分类");
     assert.equal(categoryGroup.querySelectorAll('[role="tab"]').length, 0);
     const categoryButtons = categoryGroup.querySelectorAll("button");
     assert.equal(
@@ -635,7 +720,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
 
     const primaryAction = container
       .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "进入 财务助手 专属工作区");
+      .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始任务");
     assert.ok(primaryAction, "filtered published card should open its dedicated workspace");
     assert.equal(primaryAction.nodeName, "BUTTON", "native button semantics preserve keyboard activation");
     assert.equal(primaryAction.getAttribute("type"), "button");
@@ -668,12 +753,15 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_finance/2");
+    assert.equal(
+      currentPath,
+      "/agent-market/agt_finance/2?q=%E8%B4%A2%E5%8A%A1&category=operations",
+    );
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
     assert.match(container.textContent, /版本 2/);
-    assert.match(container.textContent, /使用方式/);
+    assert.match(container.textContent, /适合处理/);
     assert.doesNotMatch(
       container.textContent,
       /PRIVATE_PROMPT|private-model|private-mcp|private-skill|private-version/,
@@ -702,15 +790,17 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   }
 });
 
-test("a bare Agent workspace creates the exact pinned conversation only after explicit start", async () => {
+test("Marketplace Start and workspace Start New Task each submit on the first action", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
-  const shellHarness = await prepareShellHarness();
+  const shellHarness = await prepareShellHarness({ authenticated: true });
   const profile = {
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 4,
     name: "支持助手",
@@ -718,24 +808,33 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
     avatar_ref: "builtin:assistant",
     category: "support",
   } as const;
+  const originalListPublished = agentProfileApi.listPublished;
   const originalGetPublished = agentProfileApi.getPublished;
   const originalListConversations = agentProfileApi.listConversations;
   const originalCreateConversation = agentProfileApi.createConversation;
+  const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  const originalSubmitChat = sessionApi.submitChat;
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({
     sessions: [],
     next_cursor: null,
   });
-  const selections: unknown[] = [];
-  agentProfileApi.createConversation = async (selection) => {
-    selections.push(selection);
+  const selections: Array<{ selection: unknown; operationId: string }> = [];
+  agentProfileApi.createConversation = async (selection, operationId) => {
+    const sessionId = `session-support-${selections.length + 1}`;
+    selections.push({ selection, operationId });
     return {
-      session_id: "session-support",
+      session_id: sessionId,
       workspace_id: "default",
       agent_id: profile.agent_id,
       title: profile.name,
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: profile.agent_id,
         revision: profile.expected_revision,
         name: profile.name,
@@ -745,12 +844,22 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
       },
     };
   };
-  sessionApi.getAuthoritative = async () => ({
-    session_id: "session-support",
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: profile.agent_id,
+    created_at: "2026-08-17T00:00:00Z",
+    updated_at: "2026-08-17T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
     workspace_id: "default",
     agent_id: profile.agent_id,
     title: profile.name,
+    purpose: "conversation",
     agent_conversation: {
+      ...enterpriseProfileFields,
       agent_id: profile.agent_id,
       revision: profile.expected_revision,
       name: profile.name,
@@ -759,20 +868,68 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
       category: profile.category,
     },
   });
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.markRead = async () => {};
+  const submissions: unknown[][] = [];
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    return {
+      session_id: args[1],
+      run_id: null,
+      status: "needs_confirmation" as const,
+      suggestions: [],
+    };
+  }) as typeof sessionApi.submitChat;
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
 
   const container = dom.document.createElement("div");
   const root = ReactDOM.createRoot(container as never);
+  const reliableSessionStorage = dom.window.sessionStorage;
+  async function waitUntil(predicate: () => boolean) {
+    for (let attempt = 0; attempt < 40 && !predicate(); attempt += 1) {
+      await React.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+  async function submitStarterPrompt(expectedCount: number, expectedSessionId: string) {
+    const starterPrompt = container
+      .querySelectorAll("button")
+      .find((button) => button.textContent.includes("帮我处理企业任务"));
+    assert.ok(starterPrompt);
+    assert.equal(starterPrompt.hasAttribute("disabled"), false);
+    await React.act(async () => {
+      starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(
+      () => selections.length === expectedCount && submissions.length === expectedCount,
+    );
+
+    assert.equal(selections.length, expectedCount);
+    assert.equal(
+      submissions.length,
+      expectedCount,
+      `the first action must reach submitChat; rendered UI: ${container.textContent}`,
+    );
+    assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
+    assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
+    assert.deepEqual(submissions[expectedCount - 1]?.[10], {
+      agent_id: profile.agent_id,
+      expected_revision: profile.expected_revision,
+    });
+  }
+
   try {
     await React.act(async () => {
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4/chat"] },
+          { initialEntries: ["/agent-market"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -782,6 +939,10 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
                 Routes,
                 null,
                 React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
                   path: "/agent-market/:agentId/:revision/chat/:sessionId?",
                   element: React.createElement(AgentWorkspaceRoute),
                 }),
@@ -790,32 +951,67 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
           ),
         ),
       );
-      for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
+    await waitUntil(() => container.querySelector("[data-agent-market-card]") !== null);
+
+    assert.equal(currentPath, "/agent-market");
+    const marketStart = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始任务");
+    assert.ok(marketStart);
+    await React.act(async () => {
+      marketStart.dispatchEvent({ type: "click", bubbles: true });
+    });
+    await waitUntil(() => container.querySelector("[data-agent-chat-opening]") !== null);
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
-    assert.ok(container.querySelector("[data-agent-workspace-welcome]"));
-    assert.match(container.textContent, /企业已发布/);
-    assert.match(container.textContent, /企业受控能力/);
-    assert.equal(container.querySelector("textarea"), null);
+    assert.match(container.textContent, /欢迎使用企业专家/);
+    assert.ok(container.querySelector("[data-agent-starter-prompts]"));
+    assert.ok(container.querySelector("textarea"));
 
-    const start = container.querySelector("[data-agent-workspace-start]");
-    assert.ok(start);
+    await submitStarterPrompt(1, "session-support-1");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-1");
+
+    const startNewTask = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "开始新任务");
+    assert.ok(startNewTask);
     await React.act(async () => {
-      start.dispatchEvent({ type: "click", bubbles: true });
-      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+      startNewTask.dispatchEvent({ type: "click", bubbles: true });
     });
+    await waitUntil(
+      () =>
+        currentPath === "/agent-market/agt_support/4/chat" &&
+        container.querySelector("[data-agent-starter-prompts]") !== null,
+    );
 
-    assert.deepEqual(selections, [
-      { agent_id: "agt_support", expected_revision: 4 },
-    ]);
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(selections.length, 1, "Start New Task must remain creation-free");
+    assert.equal(submissions.length, 1);
+
+    await submitStarterPrompt(2, "session-support-2");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-2");
+    assert.deepEqual(
+      selections.map(({ selection }) => selection),
+      [
+        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+      ],
+    );
+    const operationIds = selections.map(({ operationId }) => operationId);
+    assert.equal(new Set(operationIds).size, 2);
   } finally {
+    dom.window.sessionStorage = reliableSessionStorage;
+    agentProfileApi.listPublished = originalListPublished;
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.submitChat = originalSubmitChat;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
@@ -830,6 +1026,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
   const { sessionApi } = await import("../../../services/api/session.ts");
   const shellHarness = await prepareShellHarness();
   const currentProfile = {
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 5,
     name: "支持助手 V5",
@@ -838,6 +1035,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     category: "support",
   } as const;
   const historicalIdentity = {
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     revision: 4,
     name: "支持助手 V4",
@@ -861,6 +1059,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
           workspace_id: "default",
           agent_id: "agt_support",
           title: "V4 历史会话",
+          purpose: "conversation",
           created_at: "2026-08-03T01:00:00Z",
           updated_at: "2026-08-04T01:00:00Z",
           agent_conversation: historicalIdentity,
@@ -878,6 +1077,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     workspace_id: "default",
     agent_id: "agt_support",
     title: "V4 历史会话",
+    purpose: "conversation",
     agent_conversation: historicalIdentity,
   });
   let currentPath = "";
@@ -921,6 +1121,120 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     assert.deepEqual(conversationSelections, []);
     assert.match(container.textContent, /支持助手 V4/);
     assert.doesNotMatch(container.textContent, /支持助手 V5/);
+    const composer = container.querySelector("textarea");
+    assert.ok(composer, "the superseded revision keeps its transcript composer frame");
+    assert.equal(composer.hasAttribute("disabled"), true);
+    assert.equal(composer.getAttribute("placeholder"), "该历史会话为只读状态");
+  } finally {
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.listConversations = originalListConversations;
+    agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("a withdrawn Agent keeps its owned pinned conversation visible and read-only", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const shellHarness = await prepareShellHarness();
+  const historicalIdentity = {
+    ...enterpriseProfileFields,
+    agent_id: "agt_support",
+    revision: 4,
+    name: "已下架支持助手 V4",
+    description: "创建会话时固定的版本。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  } as const;
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalListConversations = agentProfileApi.listConversations;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const historySelections: unknown[] = [];
+  const conversationSelections: unknown[] = [];
+  agentProfileApi.getPublished = async () => {
+    throw Object.assign(new Error("agent withdrawn"), { status: 404 });
+  };
+  agentProfileApi.listConversations = async (selection) => {
+    historySelections.push(selection);
+    return {
+      sessions: [
+        {
+          session_id: "session-v4",
+          workspace_id: "default",
+          agent_id: "agt_support",
+          title: "V4 历史会话",
+          purpose: "conversation",
+          created_at: "2026-08-03T01:00:00Z",
+          updated_at: "2026-08-04T01:00:00Z",
+          agent_conversation: historicalIdentity,
+        },
+      ],
+      next_cursor: null,
+    };
+  };
+  agentProfileApi.createConversation = async (selection) => {
+    conversationSelections.push(selection);
+    throw new Error("withdrawn Agent must not create another conversation");
+  };
+  sessionApi.getAuthoritative = async () => ({
+    session_id: "session-v4",
+    workspace_id: "default",
+    agent_id: "agt_support",
+    title: "V4 历史会话",
+    purpose: "conversation",
+    agent_conversation: historicalIdentity,
+  });
+  let currentPath = "";
+  function LocationProbe() {
+    currentPath = useLocation().pathname;
+    return null;
+  }
+
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/agent-market/agt_support/4/chat/session-v4"] },
+          shellHarness.wrap(
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  element: React.createElement(AgentWorkspaceRoute),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-v4");
+    assert.deepEqual(historySelections, [
+      { agent_id: "agt_support", expected_revision: 4 },
+    ]);
+    assert.deepEqual(conversationSelections, []);
+    assert.match(container.textContent, /已下架支持助手 V4/);
+    const composer = container.querySelector("textarea");
+    assert.ok(composer, "the historical transcript keeps its composer frame");
+    assert.equal(composer.hasAttribute("disabled"), true);
+    assert.equal(composer.getAttribute("placeholder"), "该历史会话为只读状态");
   } finally {
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
@@ -940,6 +1254,7 @@ test("a shared detail URL restores the exact current published revision", async 
   const shellHarness = await prepareShellHarness();
   const originalGetPublished = agentProfileApi.getPublished;
   agentProfileApi.getPublished = async () => ({
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 4,
     name: "支持助手",
@@ -1005,6 +1320,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
   const shellHarness = await prepareShellHarness();
   const originalGetPublished = agentProfileApi.getPublished;
   agentProfileApi.getPublished = async () => ({
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 5,
     name: "支持助手",
@@ -1014,7 +1330,8 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
   });
   let currentPath = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
     return null;
   }
   const container = dom.document.createElement("div");
@@ -1024,7 +1341,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4"] },
+          { initialEntries: ["/agent-market/agt_support/4?q=合同&category=support"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -1051,7 +1368,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market");
+    assert.equal(decodeURI(currentPath), "/agent-market?q=合同&category=support");
     assert.ok(container.querySelector("[data-agent-market]"));
     assert.equal(container.querySelector("[data-agent-market-detail]"), null);
     assert.equal(container.querySelector("[data-canonical-chat]"), null);
@@ -1072,6 +1389,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
   const { sessionApi } = await import("../../../services/api/session.ts");
   const shellHarness = await prepareShellHarness();
   const agentA = {
+    ...enterpriseProfileFields,
     agent_id: "agt_a",
     expected_revision: 1,
     name: "Agent A",
@@ -1080,6 +1398,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     category: "support",
   } as const;
   const agentB = {
+    ...enterpriseProfileFields,
     agent_id: "agt_b",
     expected_revision: 2,
     name: "Agent B",
@@ -1121,9 +1440,11 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
           workspace_id: "default",
           agent_id: agent.agent_id,
           title: `${agent.name} sidebar session`,
+          purpose: "conversation",
           created_at: "2026-07-30T00:00:00Z",
           updated_at: "2026-07-30T00:00:00Z",
           agent_conversation: {
+            ...enterpriseProfileFields,
             agent_id: agent.agent_id,
             revision: agent.expected_revision,
             name: agent.name,
@@ -1179,7 +1500,9 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       workspace_id: "default",
       agent_id: agent.agent_id,
       title: agent.name,
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: agent.agent_id,
         revision: agent.expected_revision,
         name: agent.name,
@@ -1322,7 +1645,9 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       workspace_id: "default",
       agent_id: agentB.agent_id,
       title: agentB.name,
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: agentB.agent_id,
         revision: agentB.expected_revision,
         name: agentB.name,

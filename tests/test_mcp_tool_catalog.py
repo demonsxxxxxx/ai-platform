@@ -377,8 +377,8 @@ async def test_credentialed_or_invalid_requests_stay_unavailable_without_discove
     [
         ("https://8.8.8.8/tools", True),
         ("http://8.8.8.8/tools", False),
-        ("http://10.56.0.211/tools", True),
-        ("https://10.56.0.211/tools", True),
+        ("http://10.42.0.12/tools", True),
+        ("https://10.42.0.12/tools", True),
         ("http://127.0.0.1/tools", False),
         ("http://169.254.169.254/latest/meta-data", False),
         ("https://[::1]/tools", False),
@@ -407,7 +407,7 @@ async def test_discovery_target_policy_rejects_localhost_and_mixed_dns_answers(m
         await catalog._validated_discovery_endpoint("https://localhost/tools")
 
     async def mixed_answer(hostname, port):
-        return await _resolved("10.56.0.211", "8.8.8.8")
+        return await _resolved("10.42.0.12", "8.8.8.8")
 
     monkeypatch.setattr(catalog, "_resolve_discovery_addresses", mixed_answer)
     with pytest.raises(McpToolDiscoveryError, match="invalid_endpoint"):

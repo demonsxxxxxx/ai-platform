@@ -5,7 +5,14 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from app.auth import AuthPrincipal, is_ai_admin, require_principal, sign_principal_session, verify_principal_session
+from app.auth import (
+    AuthPrincipal,
+    authority_checked_at_now,
+    is_ai_admin,
+    require_principal,
+    sign_principal_session,
+    verify_principal_session,
+)
 from app.main import create_app
 
 
@@ -61,6 +68,7 @@ def auth_settings(**overrides):
         "ai_session_max_age_seconds": 28800,
         "ai_session_cookie_name": "ai_platform_session",
         "ai_session_cookie_secure": False,
+        "company_authority_freshness_seconds": 900,
         "default_tenant_id": "default",
     }
     values.update(overrides)
@@ -194,6 +202,8 @@ def test_signed_session_roundtrip_preserves_principal(monkeypatch):
             roles=["user"],
             permissions=["agent:use"],
             source="company-login",
+            authority_source="company-user-info",
+            authority_checked_at=authority_checked_at_now(),
         )
     )
     principal = verify_principal_session(token)
@@ -207,7 +217,16 @@ def test_signed_session_roundtrip_preserves_principal(monkeypatch):
 
 def test_require_principal_accepts_signed_session_bearer(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
-    token = sign_principal_session(AuthPrincipal("W001", "Zhang San", "default", source="company-login"))
+    token = sign_principal_session(
+        AuthPrincipal(
+            "W001",
+            "Zhang San",
+            "default",
+            source="company-login",
+            authority_source="company-user-info",
+            authority_checked_at=authority_checked_at_now(),
+        )
+    )
     app = FastAPI()
 
     @app.get("/probe")
@@ -292,6 +311,22 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
     client = browser_client()
+
+    async def run_admission_probe(principal: AuthPrincipal = Depends(require_principal)):
+        return {
+            "department_id": principal.department_id,
+            "roles": principal.roles,
+            "permissions": principal.permissions,
+            "authz_policy_version": principal.authz_policy_version,
+            "authority_source": principal.authority_source,
+            "authority_checked_at": principal.authority_checked_at,
+        }
+
+    client.app.add_api_route(
+        "/api/ai/test/run-admission",
+        run_admission_probe,
+        methods=["POST"],
+    )
     response = client.post("/api/ai/auth/login", json={"user_name": "user001", "password": "pw"})
 
     assert response.status_code == 200
@@ -301,9 +336,15 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     assert body["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
 
     me_response = client.get("/api/ai/auth/me")
+    admission_response = client.post("/api/ai/test/run-admission")
 
     assert me_response.status_code == 200
+    assert admission_response.status_code == 200
     assert me_response.json()["permissions"] == body["permissions"]
+    assert admission_response.json()["permissions"] == body["permissions"]
+    for field in ("authz_policy_version", "authority_source", "authority_checked_at"):
+        assert me_response.json()[field] == body[field]
+        assert admission_response.json()[field] == body[field]
 
 
 def test_company_login_projects_principal_denial_as_existing_safe_failure(monkeypatch):
@@ -416,7 +457,7 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
 
 
 def test_company_login_trusted_department_reaches_session_and_skill_projection(monkeypatch):
-    settings = _install_company_department_login_fakes(
+    _install_company_department_login_fakes(
         monkeypatch,
         {"roles": ["user"], "department": " QA "},
         qa_department_id="QA",
@@ -439,7 +480,7 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
 
 
 def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
-    settings = _install_company_department_login_fakes(
+    _install_company_department_login_fakes(
         monkeypatch,
         {"roles": ["user"], "department": " QA "},
     )
@@ -473,7 +514,7 @@ def test_company_login_ignores_unsupported_alias_metadata_when_top_level_departm
     alias_metadata,
 ):
     user_info = {"roles": ["user"], "department": " QA ", **alias_metadata}
-    settings = _install_company_department_login_fakes(
+    _install_company_department_login_fakes(
         monkeypatch,
         user_info,
         qa_department_id="QA",
@@ -524,7 +565,7 @@ def test_company_login_rejects_client_department_field(monkeypatch):
     ],
 )
 def test_company_login_invalid_or_ambiguous_department_fails_closed(monkeypatch, user_info):
-    settings = _install_company_department_login_fakes(monkeypatch, user_info)
+    _install_company_department_login_fakes(monkeypatch, user_info)
     client = browser_client()
 
     login_response = client.post(
@@ -732,7 +773,17 @@ def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
 
 def test_auth_me_returns_bearer_principal(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
-    token = sign_principal_session(AuthPrincipal("W002", "Normal User", "default", roles=["user"], source="company-login"))
+    token = sign_principal_session(
+        AuthPrincipal(
+            "W002",
+            "Normal User",
+            "default",
+            roles=["user"],
+            source="company-login",
+            authority_source="company-user-info",
+            authority_checked_at=authority_checked_at_now(),
+        )
+    )
 
     response = TestClient(create_app()).get(
         "/api/ai/auth/me",

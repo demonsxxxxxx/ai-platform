@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  configureLaunchpadCatalog,
   filterLaunchpadGroups,
   launchpadGroups,
   launchpadTabs,
@@ -46,13 +47,12 @@ test("launchpad catalog contains only company navigation and AI app entries", ()
 
 test("lingxi platform is an external jump instead of an embedded catalog category", () => {
   const lingxi = launchpadTabs.find((tab) => tab.key === "lingxi") as
-    | { url?: string }
+    | { runtimeUrlKey?: string; unavailableReason?: string; url?: string }
     | undefined;
 
-  assert.equal(
-    lingxi?.url,
-    "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
-  );
+  assert.equal(lingxi?.runtimeUrlKey, "lingxi");
+  assert.equal(lingxi?.url, undefined);
+  assert.equal(lingxi?.unavailableReason, "运行时地址未配置");
   assert.equal(launchpadGroups.some((group) => group.tab === "lingxi"), false);
 });
 
@@ -72,27 +72,79 @@ test("search filters by app name, description, and group name", () => {
   );
 });
 
-test("destination resolver opens top-level urls and maps known nonGMPlims systems", () => {
+test("runtime-managed destinations fail closed when browser config is unavailable", () => {
   const wordTranslate = launchpadGroups
     .flatMap((group) => group.entries)
     .find((entry) => entry.name === "Word文档翻译");
-  assert.equal(resolveLaunchpadDestination(wordTranslate!)?.kind, "url");
+  assert.deepEqual(resolveLaunchpadDestination(wordTranslate!), {
+    kind: "unavailable",
+    reason: "运行时地址未配置",
+  });
 
   const wordReview = launchpadGroups
     .flatMap((group) => group.entries)
     .find((entry) => entry.name === "Word文档审核");
   assert.deepEqual(resolveLaunchpadDestination(wordReview!), {
-    kind: "url",
-    href: "http://10.56.0.25:8189/#/AI/WordReview",
+    kind: "unavailable",
+    reason: "运行时地址未配置",
   });
 
   const ragflow = launchpadGroups
     .flatMap((group) => group.entries)
     .find((entry) => entry.name === "SOP问询助手");
   assert.deepEqual(resolveLaunchpadDestination(ragflow!), {
-    kind: "url",
-    href: "http://10.56.0.25:8189/#/AI/RAGFlowSOP",
+    kind: "unavailable",
+    reason: "运行时地址未配置",
   });
+
+  assert.doesNotMatch(
+    JSON.stringify({ launchpadTabs, launchpadGroups }),
+    /https?:\/\/10\.56\./,
+  );
+});
+
+test("runtime browser config materializes only the explicitly projected destinations", () => {
+  const configured = configureLaunchpadCatalog({
+    lingxi: "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
+    sop_assistant: "https://apps.example.test/#/AI/RAGFlowSOP",
+    word_translate: null,
+    word_review: "https://apps.example.test/#/AI/WordReview",
+  });
+  const lingxi = configured.tabs.find((tab) => tab.key === "lingxi");
+  const entries = configured.groups.flatMap((group) => group.entries);
+
+  assert.equal(
+    lingxi?.url,
+    "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
+  );
+  assert.equal(lingxi?.unavailableReason, undefined);
+  assert.deepEqual(
+    resolveLaunchpadDestination(
+      entries.find((entry) => entry.name === "SOP问询助手")!,
+    ),
+    { kind: "url", href: "https://apps.example.test/#/AI/RAGFlowSOP" },
+  );
+  assert.deepEqual(
+    resolveLaunchpadDestination(
+      entries.find((entry) => entry.name === "Word文档翻译")!,
+    ),
+    { kind: "unavailable", reason: "运行时地址未配置" },
+  );
+
+  const unavailable = configureLaunchpadCatalog(
+    {
+      lingxi: null,
+      sop_assistant: null,
+      word_translate: null,
+      word_review: null,
+    },
+    "运行时配置不可用",
+  );
+  assert.equal(
+    unavailable.tabs.find((tab) => tab.key === "lingxi")
+      ?.unavailableReason,
+    "运行时配置不可用",
+  );
 });
 
 test("lingxi application labels are no longer copied into the company catalog", () => {

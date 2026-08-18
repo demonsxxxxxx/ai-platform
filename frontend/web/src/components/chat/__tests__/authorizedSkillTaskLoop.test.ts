@@ -72,7 +72,6 @@ test("task-specific selected Skill chip shows only public task details", () => {
 
 test("ordinary Skill copy hides release internals and describes tenant-scoped removal", () => {
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.equal(zh.skills.available.title, "可用技能");
   assert.equal(zh.skillSelector.viewSkills, "查看技能");
@@ -81,24 +80,15 @@ test("ordinary Skill copy hides release internals and describes tenant-scoped re
     zh.skillSelector.staleSelection,
     "所选技能已更新，请重新选择后再提交。",
   );
-  assert.equal(en.skills.available.title, "Available skills");
-  assert.equal(en.skillSelector.viewSkills, "View Skills");
-  assert.equal(en.skillSelector.taskReconfirm, "This Skill was updated. Select it again.");
-  assert.equal(
-    en.skillSelector.staleSelection,
-    "This Skill was updated. Select it again before submitting.",
-  );
 
-  for (const locale of [zh, en]) {
-    for (const namespace of [
-      locale.skills,
-      locale.marketplace,
-      locale.adminMarketplace,
-    ]) {
-      assert.match(namespace.confirmDeleteMessage, /active use|活跃使用/);
-      assert.match(namespace.confirmDeleteMessage, /Historical|历史/);
-      assert.doesNotMatch(namespace.confirmDeleteMessage, /permanent|永久|cannot be undone|不可撤销/i);
-    }
+  for (const namespace of [
+    zh.skills,
+    zh.marketplace,
+    zh.adminMarketplace,
+  ]) {
+    assert.match(namespace.confirmDeleteMessage, /活跃使用/);
+    assert.match(namespace.confirmDeleteMessage, /历史/);
+    assert.doesNotMatch(namespace.confirmDeleteMessage, /永久|不可撤销/);
   }
 });
 

@@ -57,10 +57,14 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/release_evidence_export_acceptance.py",
     "app/release_evidence_readiness.py",
     "app/release_evidence_runtime_acceptance.py",
+    "tools/capacity/__init__.py",
+    "tools/capacity/bounded_load.py",
+    "tools/capacity_bounded_load_harness.py",
     "tools/foundation_alpha_readiness.py",
     "tools/frontend_release_traceability.py",
     "tools/release_evidence_export_acceptance.py",
     "tools/release_evidence_readiness.py",
+    "tools/release_evidence_runtime_acceptance.py",
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_poc_gate.py",
     "tools/verify_b1_memory_context_workflow.py",
@@ -79,7 +83,7 @@ _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [
     "foundation_runtime_concurrency_evidence",
     "runtime_admin_dashboard_acceptance_for_governance",
     "g9_runtime_export_and_retention_acceptance",
-    "alert_delivery_and_trace_export_211_acceptance",
+    "alert_delivery_and_trace_export_controlled_host_acceptance",
     "ordinary_user_acceptance_for_quarantined_legacy_routes",
 ]
 _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS = {
@@ -400,7 +404,7 @@ def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
         and payload.get("gate") == STAGE_NAME
-        and payload.get("artifact_kind") == "211_runtime_smoke"
+        and payload.get("artifact_kind") == "controlled_host_runtime_smoke"
     )
 
 
@@ -607,40 +611,6 @@ def _discover_release_evidence_pair(commit_sha: str) -> tuple[Path, Path] | None
         return None
     smoke_path, _ = max(smoke_entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
     auth_path, _ = max(auth_entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
-    return smoke_path, auth_path
-
-
-def _discover_latest_release_evidence_pair() -> tuple[Path, Path] | None:
-    candidates: list[tuple[tuple[str, str], Path, Path]] = []
-    if not _EVIDENCE_BASE_ROOT.is_dir():
-        return None
-
-    for commit_root in sorted(_EVIDENCE_BASE_ROOT.iterdir()):
-        if not commit_root.is_dir():
-            continue
-        pair = _discover_release_evidence_pair(commit_root.name)
-        if pair is None:
-            continue
-        smoke_path, auth_path = pair
-        try:
-            smoke_payload = _load_json(smoke_path)
-            auth_payload = _load_json(auth_path)
-        except (OSError, json.JSONDecodeError):
-            continue
-        candidates.append(
-            (
-                max(
-                    _release_evidence_sort_key(smoke_path, smoke_payload),
-                    _release_evidence_sort_key(auth_path, auth_payload),
-                ),
-                smoke_path,
-                auth_path,
-            )
-        )
-
-    if not candidates:
-        return None
-    _, smoke_path, auth_path = max(candidates, key=lambda item: item[0])
     return smoke_path, auth_path
 
 
@@ -890,14 +860,6 @@ def _discover_verified_foundation_runtime_concurrency_evidence_for_source(
     return None
 
 
-def _discover_latest_foundation_runtime_concurrency_evidence() -> Path | None:
-    entries = _iter_foundation_runtime_concurrency_evidence()
-    if entries:
-        path, _ = max(entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
-        return path
-    return None
-
-
 def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path]:
     if source_tree_commit != "unknown":
         current_pair = _discover_release_evidence_pair(source_tree_commit)
@@ -921,9 +883,6 @@ def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path
     configured_runtime_pair = _discover_release_evidence_pair(RUNTIME_SUBJECT_COMMIT_SHA)
     if configured_runtime_pair is not None:
         return configured_runtime_pair
-    latest_pair = _discover_latest_release_evidence_pair()
-    if latest_pair is not None:
-        return latest_pair
     return _SMOKE_EVIDENCE, _AUTH_RBAC_EVIDENCE
 
 
@@ -1701,7 +1660,7 @@ def _observability_dependency_unavailable_summary(exc: ModuleNotFoundError) -> d
 
 def _top_level_status(runtime_relation_status: str, runtime_matches_source_tree: bool) -> str:
     if runtime_matches_source_tree:
-        return "211_verified_followups_open"
+        return "deployed_runtime_verified_followups_open"
     return f"{runtime_relation_status}_followups_open"
 
 
@@ -1793,7 +1752,7 @@ def _operator_context(
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
         poc_loop_status = "context_snapshot_public_summary_followup_required"
     next_recommended_slices = [
-        "alert_delivery_and_trace_export_211_acceptance",
+        "alert_delivery_and_trace_export_controlled_host_acceptance",
         "g9_runtime_export_and_retention_acceptance",
         "packaged_frontend_image_release_acceptance",
         "broader_auth_session_rbac_tenant_redaction_regression",
@@ -1808,7 +1767,7 @@ def _operator_context(
         next_recommended_slices = [
             item
             for item in next_recommended_slices
-            if item != "alert_delivery_and_trace_export_211_acceptance"
+            if item != "alert_delivery_and_trace_export_controlled_host_acceptance"
         ]
     if frontend_packaged_runtime_smoke_verified:
         next_recommended_slices = [
@@ -2106,11 +2065,22 @@ def _frontend_packaged_runtime_smoke_summary(payload: dict[str, Any] | None) -> 
     readiness = build_frontend_packaged_runtime_smoke_readiness(evidence)
     closed_items = readiness.get("closed_evidence_items")
     closed_items = closed_items if isinstance(closed_items, list) else []
+    runtime_host = evidence.get("runtime_host")
+    host_specific_item = (
+        f"{runtime_host.strip().lower().replace('-', '_')}_packaged_frontend_runtime_smoke"
+        if isinstance(runtime_host, str) and runtime_host.strip()
+        else None
+    )
+    verified = (
+        runtime_host == "controlled-host"
+        and host_specific_item in closed_items
+        and "packaged_frontend_runtime_smoke" in closed_items
+    )
     return {
         "status": readiness.get("status"),
-        "runtime_host": evidence.get("runtime_host"),
+        "runtime_host": runtime_host,
         "closed_evidence_items": [item for item in closed_items if isinstance(item, str)],
-        "verified": "211_packaged_frontend_runtime_smoke" in closed_items,
+        "verified": verified,
     }
 
 
@@ -2197,10 +2167,6 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         foundation_runtime_concurrency_evidence_path = (
             _discover_latest_verified_foundation_runtime_concurrency_evidence()
         )
-    if foundation_runtime_concurrency_evidence_path is None:
-        foundation_runtime_concurrency_evidence_path = (
-            _discover_latest_foundation_runtime_concurrency_evidence()
-        )
     foundation_runtime_concurrency_payload = (
         _load_json(foundation_runtime_concurrency_evidence_path)
         if foundation_runtime_concurrency_evidence_path is not None
@@ -2275,12 +2241,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     g9_open_followups = [
         "g9_runtime_export_and_retention_acceptance",
-        "alert_delivery_and_trace_export_211_acceptance",
+        "alert_delivery_and_trace_export_controlled_host_acceptance",
     ]
     if release_evidence_runtime_acceptance_verified:
         g9_open_followups.remove("g9_runtime_export_and_retention_acceptance")
     if alert_trace_export_runtime_acceptance_verified:
-        g9_open_followups.remove("alert_delivery_and_trace_export_211_acceptance")
+        g9_open_followups.remove("alert_delivery_and_trace_export_controlled_host_acceptance")
 
     frontend_open_followups = []
     if (
@@ -2520,7 +2486,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 else set()
             ),
         ),
-        "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",
+        "evidence_policy": "source_docs_tests_controlled_host_smoke_and_release_evidence_required_before_stage_closure",
     }
 
 

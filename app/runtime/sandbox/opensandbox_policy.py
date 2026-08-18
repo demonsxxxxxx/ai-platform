@@ -15,7 +15,18 @@ from app.runtime.sandbox.contracts import (
 )
 
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
+SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
+INTERNAL_TEST_OPENSANDBOX_PROFILE = "official-opensandbox-direct-v1"
+_ORPHAN_SCOPE_KEYS = (
+    "tenant_id",
+    "workspace_id",
+    "user_id",
+    "session_id",
+    "run_id",
+    "attempt_id",
+    "sandbox_mode",
+)
 
 _GOVERNED_EGRESS_PROOF_LABEL = "ai-platform.governed_egress.proof"
 _GOVERNED_BRIDGE_PATHS = {
@@ -60,9 +71,10 @@ def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
     except ValueError:
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
     host = parsed.hostname or ""
+    pinned_https = parsed.scheme == "https" and bool(_DNS_HOSTNAME.fullmatch(host))
+    loopback_http = parsed.scheme == "http" and host == "127.0.0.1" and port == 18043
     if (
-        parsed.scheme != "https"
-        or not _DNS_HOSTNAME.fullmatch(host)
+        not (pinned_https or loopback_http)
         or host != host.lower()
         or parsed.username
         or parsed.password
@@ -75,7 +87,7 @@ def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
         or host in {"api.sandbox.internal", "host.docker.internal"}
     ):
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
-    canonical = urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
+    canonical = urlunsplit((parsed.scheme, f"{host}:{port}", expected_path, "", ""))
     if raw != canonical:
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
     return canonical
@@ -99,7 +111,7 @@ def governed_opensandbox_egress_bases(settings: Any) -> ExecutorEgressBases:
         ),
     )
     origins = {
-        (urlsplit(value).hostname, urlsplit(value).port)
+        (urlsplit(value).scheme, urlsplit(value).hostname, urlsplit(value).port)
         for value in (
             bases.callback_base_url,
             bases.openai_base_url,
@@ -147,10 +159,19 @@ def validate_opensandbox_image_reference(
 def requested_opensandbox_image(
     settings: Any,
     *,
-    allow_local_image_id: bool = False,
+    allow_local_image_id: bool | None = None,
 ) -> tuple[str, str]:
     """Return only a validated configured image reference and matching digest."""
 
+    if allow_local_image_id is None:
+        allow_local_image_id = (
+            str(getattr(settings, "deployment_environment", "") or "") == "test"
+            and str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower()
+            == "opensandbox"
+            and str(getattr(settings, "sandbox_security_profile", "") or "")
+            == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+            and str(getattr(settings, "opensandbox_expected_network_mode", "") or "") == "bridge"
+        )
     image = str(getattr(settings, "opensandbox_executor_image", "") or "")
     if not image:
         image = str(getattr(settings, "sandbox_executor_image", "") or "")
@@ -288,6 +309,7 @@ def governed_opensandbox_lease_labels(
                 capability.endpoint.encode("utf-8")
             ).hexdigest(),
             "ai-platform.external_egress.runtime_identity": capability.runtime_identity,
+            "ai-platform.external_egress.network_mode": capability.network_mode,
             "ai-platform.runtime_subject": capability.runtime_subject,
             "ai-platform.external_egress.gateway_policy_subject": capability.gateway_policy_subject,
             "ai-platform.external_egress.callback_boundary_subject": capability.callback_boundary_subject,
@@ -313,3 +335,74 @@ def governed_opensandbox_lease_labels(
     labels.update(executor_identity_labels)
     labels.update(skill_mount_labels)
     return labels
+
+
+def internal_test_opensandbox_lease_labels(
+    request: Any,
+    settings: Any,
+    *,
+    executor_identity_labels: Mapping[str, str],
+    skill_mount_labels: Mapping[str, str],
+) -> dict[str, str]:
+    """Build explicit non-production metadata for direct official OpenSandbox acceptance."""
+
+    requested_image, requested_digest = requested_opensandbox_image(settings)
+    labels = runtime_scope_labels(request)
+    labels.update(
+        {
+            "ai-platform.provider_backend": "opensandbox",
+            SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+            "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
+            "ai-platform.internal_test.network_mode": str(
+                getattr(settings, "opensandbox_expected_network_mode", "") or ""
+            ),
+            "ai-platform.internal_test.runtime_identity": "runsc",
+            "ai-platform.internal_test.risk": "bridge-non-production",
+            "ai-platform.executor.requested_image": requested_image,
+            "ai-platform.executor.requested_image_digest": requested_digest,
+            "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
+        }
+    )
+    labels.update(executor_identity_labels)
+    labels.update(skill_mount_labels)
+    return labels
+
+
+def internal_test_orphan_cleanup_metadata_filter(filters: Mapping[str, str]) -> dict[str, str] | None:
+    """Return an exact direct-mode inventory filter only for one complete runtime scope."""
+
+    if filters.get("security_profile") != SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        return None
+    if any(not str(filters.get(key) or "").strip() for key in _ORPHAN_SCOPE_KEYS):
+        return None
+    metadata = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.provider_backend": "opensandbox",
+        SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+    }
+    metadata.update({f"ai-platform.{key}": str(filters[key]) for key in _ORPHAN_SCOPE_KEYS})
+    return metadata
+
+
+def internal_test_orphan_cleanup_expected_labels(
+    filters: Mapping[str, str],
+    settings: Any,
+) -> dict[str, str] | None:
+    """Return all immutable direct-mode evidence required before orphan deletion."""
+
+    metadata = internal_test_orphan_cleanup_metadata_filter(filters)
+    if metadata is None:
+        return None
+    requested_image, requested_digest = requested_opensandbox_image(settings)
+    metadata.update(
+        {
+            "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
+            "ai-platform.internal_test.network_mode": "bridge",
+            "ai-platform.internal_test.runtime_identity": "runsc",
+            "ai-platform.internal_test.risk": "bridge-non-production",
+            "ai-platform.executor.requested_image": requested_image,
+            "ai-platform.executor.requested_image_digest": requested_digest,
+            "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
+        }
+    )
+    return metadata

@@ -153,6 +153,55 @@ def decide_execution_boundary(
     )
 
 
+def decide_payload_execution_boundary(
+    *,
+    executor_type: str,
+    input_payload: Mapping[str, Any],
+    context_snapshot: Mapping[str, Any],
+    mcp_requires_sandbox: bool,
+) -> ExecutionBoundaryDecision:
+    execution_tier = context_snapshot.get("execution_tier")
+    return decide_execution_boundary(
+        executor_type=executor_type,
+        execution_mode=str(input_payload.get("execution_mode") or ""),
+        execution_tier=(
+            execution_tier.strip() if isinstance(execution_tier, str) else ""
+        ),
+        mcp_requires_sandbox=mcp_requires_sandbox,
+    )
+
+
+def decide_worker_execution_boundary(
+    payload: Any,
+    *,
+    context_snapshot: Mapping[str, Any] | None = None,
+) -> ExecutionBoundaryDecision:
+    from app import repositories
+
+    return decide_payload_execution_boundary(
+        executor_type=payload.executor_type,
+        input_payload=payload.input,
+        context_snapshot=(
+            payload.context_snapshot if context_snapshot is None else context_snapshot
+        ),
+        mcp_requires_sandbox=bool(
+            getattr(payload, "mcp_context_id", None)
+            or repositories.extract_run_mcp_tool_ids(payload.input)
+        ),
+    )
+
+
+def ordinary_worker_run_uses_runtime_sandbox(
+    payload: Any,
+    *,
+    context_snapshot: Mapping[str, Any],
+) -> bool:
+    return decide_worker_execution_boundary(
+        payload,
+        context_snapshot=context_snapshot,
+    ).requires_real_sandbox
+
+
 def _governed_egress_subject_digest(value: object) -> str:
     """Return a bounded irreversible subject projection for a durable proof."""
     normalized = str(value or "").strip()

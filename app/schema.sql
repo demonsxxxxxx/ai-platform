@@ -1,3 +1,21 @@
+create table if not exists schema_migrations (
+  version text primary key,
+  checksum_sha256 text not null,
+  applied_at timestamptz not null default now()
+);
+
+create table if not exists schema_index_migrations (
+  index_name text primary key,
+  target_version text not null,
+  checksum_sha256 text not null,
+  state text not null check (state in ('building', 'ready', 'failed')),
+  attempts integer not null default 0,
+  last_error_code text,
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists tenants (
   id text primary key,
   name text not null,
@@ -397,14 +415,25 @@ create table if not exists agent_profile_revisions (
   revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
+  welcome_message text not null default '',
+  starter_prompts jsonb not null default '[]'::jsonb,
+  capability_summary text not null default '',
+  recommended_tasks jsonb not null default '[]'::jsonb,
+  supported_input_types jsonb not null default '["text"]'::jsonb,
+  supported_file_types jsonb not null default '[]'::jsonb,
+  expected_outputs jsonb not null default '[]'::jsonb,
+  permissions_and_data_access_notice text not null default '',
   instructions text not null,
   model_id text not null,
   skill_id text not null references skills(id),
   skill_version text not null,
+  skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_asset_id text,
+  avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   visibility text not null,
@@ -472,6 +501,8 @@ create table if not exists sessions (
   agent_id text not null,
   title text not null default '',
   status text not null default 'active',
+  purpose text not null default 'conversation'
+    check (purpose in ('conversation', 'builder_test')),
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   next_run_generation bigint not null default 0,
@@ -491,13 +522,17 @@ create table if not exists runs (
   session_id text not null references sessions(id),
   user_id text references users(id),
   agent_id text not null,
-  skill_id text not null references skills(id),
+  execution_kind text not null default 'skill',
+  skill_id text references skills(id),
   trace_id text not null default '',
   schema_version text not null default 'ai-platform.run.v1',
   executor_schema_version text not null default 'ai-platform.executor-result.v1',
   principal_roles jsonb not null default '[]'::jsonb,
   principal_department_id text not null default '',
   auth_source text,
+  authz_policy_version integer not null default 1,
+  authority_source text not null default '',
+  authority_checked_at timestamptz,
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   status text not null,
@@ -529,7 +564,11 @@ create table if not exists runs (
     references agents(tenant_id, id),
   constraint fk_runs_agent_profile_pin foreign key (
     tenant_id, agent_id, admitted_agent_profile_revision
-  ) references agent_profile_revisions(tenant_id, agent_id, revision)
+  ) references agent_profile_revisions(tenant_id, agent_id, revision),
+  constraint chk_runs_execution_skill_identity check (
+    (execution_kind = 'harness_chat' and skill_id is null)
+    or (execution_kind = 'skill' and skill_id is not null)
+  )
 );
 
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
@@ -538,14 +577,47 @@ create index if not exists idx_runs_status on runs(status);
 create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
 
 alter table runs add column if not exists trace_id text not null default '';
+alter table runs add column if not exists execution_kind text not null default 'skill';
+do $$
+begin
+  if exists (
+    select 1
+    from pg_attribute
+    where attrelid = 'runs'::regclass
+      and attname = 'skill_id'
+      and attnotnull
+  ) then
+    alter table runs alter column skill_id drop not null;
+  end if;
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'runs'::regclass
+      and conname = 'chk_runs_execution_skill_identity'
+  ) then
+    alter table runs add constraint chk_runs_execution_skill_identity check (
+      (execution_kind = 'harness_chat' and skill_id is null)
+      or (execution_kind = 'skill' and skill_id is not null)
+    );
+  end if;
+end
+$$;
 alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
 alter table runs add column if not exists executor_schema_version text not null default 'ai-platform.executor-result.v1';
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
 alter table runs add column if not exists mcp_context_id text;
+alter table runs add column if not exists authz_policy_version integer not null default 1;
+alter table runs add column if not exists authority_source text not null default '';
+alter table runs add column if not exists authority_checked_at timestamptz;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
+alter table sessions add column if not exists purpose text not null default 'conversation';
+alter table sessions drop constraint if exists chk_sessions_purpose;
+alter table sessions drop constraint if exists sessions_purpose_check;
+alter table sessions add constraint chk_sessions_purpose
+  check (purpose in ('conversation', 'builder_test'));
 create index if not exists idx_sessions_agent_conversation_history
   on sessions(
     tenant_id,
@@ -563,11 +635,22 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists avatar_asset_id text;
+alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
+alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
 alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb;
+alter table agent_profile_revisions add column if not exists welcome_message text not null default '';
+alter table agent_profile_revisions add column if not exists starter_prompts jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
+alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
+alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';
 alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;
 alter table agent_profiles add column if not exists published_status text;
 
@@ -628,6 +711,41 @@ where allowed_roles is null or jsonb_typeof(allowed_roles) <> 'array';
 update agent_profile_revisions
 set allowed_user_ids = '[]'::jsonb
 where allowed_user_ids is null or jsonb_typeof(allowed_user_ids) <> 'array';
+
+-- Legacy single-Skill revisions become one-member Agent Skill Sets. The first
+-- item remains shadowed in skill_id/skill_version for rollback compatibility.
+update agent_profile_revisions
+set skill_set = jsonb_build_array(
+  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
+)
+where legacy_compatibility_write
+  and (
+    jsonb_typeof(skill_set) <> 'array'
+    or jsonb_array_length(skill_set) = 0
+  );
+
+update agent_profile_revisions
+set skill_set = jsonb_build_array(
+  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
+)
+where legacy_compatibility_write
+  and (
+  exists (
+    select 1
+    from jsonb_array_elements(skill_set) item
+    where jsonb_typeof(item) <> 'object'
+       or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+       or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  )
+   or exists (
+    select 1
+    from jsonb_array_elements(skill_set) item
+    group by item->>'skill_id'
+    having count(*) > 1
+  )
+   or skill_set->0->>'skill_id' is distinct from skill_id
+   or skill_set->0->>'expected_version' is distinct from skill_version
+  );
 
 -- No metadata defaults: omission is how the compatibility trigger recognizes
 -- an old writer and inherits the existing ACL without broadening it.
@@ -935,6 +1053,29 @@ declare
   next_revision bigint;
   legacy_publication_allowed boolean := false;
 begin
+  if new.revision_status is null
+     and (jsonb_typeof(new.skill_set) <> 'array' or jsonb_array_length(new.skill_set) = 0) then
+    new.skill_set := jsonb_build_array(
+      jsonb_build_object('skill_id', new.skill_id, 'expected_version', new.skill_version)
+    );
+  end if;
+  if exists (
+      select 1
+      from jsonb_array_elements(new.skill_set) item
+      where jsonb_typeof(item) <> 'object'
+         or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+         or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+    )
+     or exists (
+      select 1
+      from jsonb_array_elements(new.skill_set) item
+      group by item->>'skill_id'
+      having count(*) > 1
+    )
+     or new.skill_set->0->>'skill_id' is distinct from new.skill_id
+     or new.skill_set->0->>'expected_version' is distinct from new.skill_version then
+    raise exception 'agent_profile_skill_set_invalid' using errcode = '23514';
+  end if;
   if new.revision_status is not null then
     return new;
   end if;
@@ -1399,6 +1540,21 @@ alter table run_skill_snapshots add column if not exists inferred_used boolean n
 
 create index if not exists idx_run_skill_snapshots_run on run_skill_snapshots(tenant_id, run_id);
 
+create table if not exists run_skill_materializations (
+  tenant_id text not null references tenants(id),
+  run_id text not null references runs(id),
+  skill_id text not null references skills(id),
+  materialization_sha256 text not null check (materialization_sha256 ~ '^[0-9a-f]{64}$'),
+  manifest_json jsonb not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, run_id, skill_id),
+  foreign key (tenant_id, run_id, skill_id)
+    references run_skill_snapshots(tenant_id, run_id, skill_id) on delete cascade
+);
+
+create index if not exists idx_run_skill_materializations_run
+  on run_skill_materializations(tenant_id, run_id);
+
 create table if not exists messages (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -1812,10 +1968,18 @@ create table if not exists run_event_batches (
   attempt_id text not null, batch_id text not null,
   event_ids_json jsonb not null default '[]'::jsonb,
   first_sequence bigint, through_sequence bigint,
+  payload_digest text not null default '', projection_version text not null default 'legacy-run-event-v1',
+  item_count integer not null default 0 check (item_count >= 0), first_source_sequence integer, through_source_sequence integer,
   callback_received_at timestamptz not null default now(),
   durable_committed_at timestamptz,
   unique (tenant_id, run_id, attempt_id, batch_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+alter table run_event_batches add column if not exists payload_digest text not null default '';
+alter table run_event_batches add column if not exists projection_version text not null default 'legacy-run-event-v1';
+alter table run_event_batches add column if not exists item_count integer not null default 0;
+alter table run_event_batches add column if not exists first_source_sequence integer;
+alter table run_event_batches add column if not exists through_source_sequence integer;
 
 create table if not exists run_event_terminal_drains (
   tenant_id text not null,
@@ -1824,6 +1988,56 @@ create table if not exists run_event_terminal_drains (
   batch_id text not null,
   primary key (tenant_id, run_id, attempt_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+create table if not exists sse_stream_authorities (
+  tenant_id text not null, run_id text not null, attempt_id text not null,
+  design_id text not null, projection_version text not null, tenant_scope text not null,
+  stream_incarnation bigint not null check (stream_incarnation > 0), state text not null default 'admission_pending' check (state in ('admission_pending', 'confirmed', 'degraded', 'terminal')),
+  open_event_id text not null, open_payload_bytes text not null, open_payload_digest text not null,
+  authorization_epoch bigint not null default 1 check (authorization_epoch > 0), revocation_state text not null default 'active' check (revocation_state in ('active', 'committed', 'effective')),
+  admission_created_at timestamptz not null default clock_timestamp(), admission_confirmed_at timestamptz, degraded_at timestamptz,
+  revocation_committed_at timestamptz, revocation_effective_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  primary key (tenant_id, run_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create unique index if not exists uq_sse_stream_authority_attempt_incarnation
+  on sse_stream_authorities(tenant_id, run_id, attempt_id, stream_incarnation);
+
+create table if not exists sse_authority_leases (
+  id text primary key, tenant_id text not null, run_id text not null,
+  api_instance_id text not null, connection_id text not null, authorization_epoch bigint not null check (authorization_epoch > 0),
+  lease_not_after timestamptz not null, closed_at timestamptz, close_reason text,
+  created_at timestamptz not null default clock_timestamp(), updated_at timestamptz not null default clock_timestamp(),
+  unique (tenant_id, run_id, api_instance_id, connection_id),
+  foreign key (tenant_id, run_id) references sse_stream_authorities(tenant_id, run_id)
+);
+
+create index if not exists idx_sse_authority_leases_expiry
+  on sse_authority_leases(tenant_id, run_id, authorization_epoch, lease_not_after)
+  where closed_at is null;
+
+create table if not exists sse_terminal_publication_intents (
+  id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
+  stream_incarnation bigint not null check (stream_incarnation > 0), schema_version text not null, projection_version text not null,
+  terminal_event_id text not null, end_event_id text not null,
+  terminal_payload_bytes text not null, terminal_payload_digest text not null, terminal_payload_size integer not null check (terminal_payload_size >= 0),
+  end_payload_bytes text not null, end_payload_digest text not null, end_payload_size integer not null check (end_payload_size >= 0),
+  emitted_at text not null,
+  state text not null default 'pending' check (state in ('pending', 'published', 'superseded')),
+  created_at timestamptz not null default clock_timestamp(), published_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  unique (tenant_id, run_id, attempt_id),
+  foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+alter table sse_terminal_publication_intents add column if not exists emitted_at text;
+update sse_terminal_publication_intents
+set emitted_at = to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+where emitted_at is null;
+alter table sse_terminal_publication_intents alter column emitted_at set not null;
+
+create index if not exists idx_sse_terminal_intents_pending
+  on sse_terminal_publication_intents(state, created_at)
+  where state = 'pending';
 
 do $$
 declare
@@ -1980,8 +2194,18 @@ create table if not exists files (
   size_bytes bigint not null,
   storage_key text not null unique,
   sha256 text not null,
+  lifecycle_state text not null default 'active',
+  delete_requested_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table files add column if not exists lifecycle_state text not null default 'active';
+alter table files add column if not exists delete_requested_at timestamptz;
+alter table files add column if not exists deleted_at timestamptz;
+alter table files drop constraint if exists chk_files_lifecycle_state;
+alter table files add constraint chk_files_lifecycle_state
+  check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
 
 create table if not exists artifacts (
   id text primary key,
@@ -1997,6 +2221,9 @@ create table if not exists artifacts (
   manifest_json jsonb not null default '{}'::jsonb,
   retention_policy text not null default 'standard_90d',
   expires_at timestamptz,
+  lifecycle_state text not null default 'active',
+  delete_requested_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -2004,6 +2231,80 @@ alter table artifacts add column if not exists trace_id text not null default ''
 alter table artifacts add column if not exists manifest_version text not null default 'ai-platform.artifact-manifest.v1';
 alter table artifacts add column if not exists retention_policy text not null default 'standard_90d';
 alter table artifacts add column if not exists expires_at timestamptz;
+alter table artifacts add column if not exists lifecycle_state text not null default 'active';
+alter table artifacts add column if not exists delete_requested_at timestamptz;
+alter table artifacts add column if not exists deleted_at timestamptz;
+alter table artifacts drop constraint if exists chk_artifacts_lifecycle_state;
+alter table artifacts add constraint chk_artifacts_lifecycle_state
+  check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
+
+create table if not exists object_deletion_outbox (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  target_type text not null default 'artifact',
+  artifact_id text references artifacts(id),
+  file_id text references files(id),
+  storage_key text not null,
+  state text not null default 'pending',
+  attempts integer not null default 0,
+  lease_generation bigint not null default 0,
+  available_at timestamptz not null default now(),
+  leased_at timestamptz,
+  receipt_at timestamptz,
+  dead_letter_at timestamptz,
+  reconcile_required boolean not null default false,
+  last_error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, artifact_id)
+);
+alter table object_deletion_outbox add column if not exists target_type text not null default 'artifact';
+alter table object_deletion_outbox add column if not exists file_id text references files(id);
+alter table object_deletion_outbox add column if not exists lease_generation bigint not null default 0;
+alter table object_deletion_outbox alter column artifact_id drop not null;
+alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_file_id_fkey;
+alter table object_deletion_outbox add constraint object_deletion_outbox_file_id_fkey
+  foreign key (file_id) references files(id);
+alter table object_deletion_outbox add column if not exists dead_letter_at timestamptz;
+alter table object_deletion_outbox add column if not exists reconcile_required boolean not null default false;
+alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_state_check;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_state;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target_state;
+update object_deletion_outbox
+set state = case state
+  when 'pending' then 'file_pending'
+  when 'processing' then 'file_processing'
+  when 'failed' then 'file_failed'
+  when 'dead_letter' then 'file_dead_letter'
+  when 'deleted' then 'file_deleted'
+  else state
+end
+where target_type = 'file'
+  and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted');
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
+  check (state in (
+    'pending', 'processing', 'failed', 'dead_letter', 'deleted',
+    'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+  ));
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target;
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target
+  check (
+    (target_type = 'artifact' and artifact_id is not null and file_id is null)
+    or (target_type = 'file' and artifact_id is null and file_id is not null)
+  );
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target_state
+  check (
+    (
+      target_type = 'artifact'
+      and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted')
+    )
+    or (
+      target_type = 'file'
+      and state in (
+        'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+      )
+    )
+  );
 
 create table if not exists audit_logs (
   id text primary key,
@@ -2024,7 +2325,6 @@ create index if not exists idx_audit_logs_tool_policy_history
   on audit_logs(tenant_id, target_type, action, target_id, created_at desc, id desc);
 create index if not exists idx_audit_logs_tool_policy_history_latest
   on audit_logs(tenant_id, target_type, action, created_at desc, id desc);
-
 insert into tenants(id, name)
 values ('default', 'Default Tenant')
 on conflict (id) do nothing;
@@ -2038,7 +2338,6 @@ values
   ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
   ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
-  ('general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker.', '["chat"]'::jsonb, '["answer"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
@@ -2051,7 +2350,6 @@ on conflict (id) do update set
 
 insert into skill_versions(id, skill_id, version, content_hash, description, source_json, dependency_ids, status, created_by)
 values
-  ('skv_seed_general_chat_0_1_0', 'general-chat', '0.1.0', '0.1.0', 'Schema-seeded baseline for General Chat Agent.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
   ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_baoyu_translate_0_1_0', 'baoyu-translate', '0.1.0', '0.1.0', 'Schema-seeded baseline for Baoyu Translate.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
@@ -2060,7 +2358,6 @@ on conflict (skill_id, version) do nothing;
 
 insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
 values
-  ('default', 'general-chat', 'active', true),
   ('default', 'qa-file-reviewer', 'active', true),
   ('default', 'baoyu-translate', 'active', true),
   ('default', 'ragflow-knowledge-search', 'active', true)
@@ -2104,7 +2401,7 @@ insert into agents(id, tenant_id, name, agent_type, description, default_skill_i
 values
   ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
   ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
-  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat agent backed by ai-platform sessions and Claude Agent SDK worker.', 'general-chat', 'active'),
+  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat backed by the governed Harness without a Skill identity.', null, 'active'),
   ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
   ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
   ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')

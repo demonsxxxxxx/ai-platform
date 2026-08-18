@@ -5,6 +5,7 @@ from __future__ import annotations
 from psycopg import AsyncConnection
 
 from app import repositories
+from app.runs.api import RunTerminalizationProgress
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON,
@@ -16,7 +17,7 @@ async def terminalize_retired_platform_multi_agent_run(
     *,
     tenant_id: str,
     run_id: str,
-) -> repositories.ToolPermissionTerminalizationProgress:
+) -> RunTerminalizationProgress:
     """Stage a retired-control failure through the durable terminalization lifecycle."""
 
     error_message = "Platform multi-agent orchestration is no longer supported."

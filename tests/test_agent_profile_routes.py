@@ -5,11 +5,21 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import AgentProfilePublicProjection
+from app.models import AgentProfilePublicProjection, ChatStreamResponse
 
 
 def auth_settings():
     return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
+
+
+def auth_headers(*, roles: str = "user") -> dict[str, str]:
+    return {
+        "x-ai-user-id": "user-a",
+        "x-ai-user-name": "User A",
+        "x-ai-tenant-id": "default",
+        "x-ai-roles": roles,
+        "x-ai-gateway-secret": "test-secret",
+    }
 
 
 @asynccontextmanager
@@ -78,9 +88,225 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "expected_revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text", "file"],
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
+        "published_at": None,
         "avatar_ref": "builtin:assistant",
+        "avatar_seed": "",
         "category": "support",
     }
+
+
+def test_dedicated_agent_run_restores_session_and_delegates_without_client_selectors(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def get_session(_conn, *, tenant_id, user_id, session_id):
+        observed["session_read"] = (tenant_id, user_id, session_id)
+        return {"workspace_id": "finance", "agent_id": "agt_support"}
+
+    async def chat_stream(request, *, agent_id, principal):
+        observed["chat_request"] = request.model_dump(mode="python")
+        observed["chat_agent"] = agent_id
+        observed["chat_user"] = principal.user_id
+        return ChatStreamResponse(
+            session_id=request.session_id,
+            run_id="run-agent",
+            status="queued",
+            submission_id=str(request.submission_id),
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles.repositories.get_authorized_session_projection",
+        get_session,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/agent-apps/agt_support/conversations/ses_support/runs",
+        headers=auth_headers(),
+        json={
+            "message": "Review this request",
+            "submission_id": "11111111-1111-4111-8111-111111111111",
+            "file_ids": ["file-a"],
+            "user_timezone": "Asia/Shanghai",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run-agent"
+    assert observed["session_read"] == ("default", "user-a", "ses_support")
+    assert observed["chat_agent"] == "agt_support"
+    assert observed["chat_user"] == "user-a"
+    chat_request = observed["chat_request"]
+    assert chat_request["workspace_id"] == "finance"
+    assert chat_request["session_id"] == "ses_support"
+    assert chat_request["selected_agent_profile"] is None
+    assert chat_request["selected_skill"] is None
+    assert chat_request["selected_mcp_tool_ids"] is None
+    assert "model_id" not in chat_request
+
+
+@pytest.mark.parametrize(
+    ("path_suffix", "extra_headers", "body_extra", "expected_status"),
+    [
+        ("?model_id=private-model", {}, {}, 400),
+        ("", {"x-skill-id": "private-skill"}, {}, 400),
+        ("", {}, {"selected_mcp_tool_ids": ["private-tool"]}, 422),
+        ("", {}, {"agent_id": "agt_other"}, 422),
+    ],
+)
+def test_dedicated_agent_run_rejects_every_override_before_storage_or_dispatch(
+    monkeypatch,
+    path_suffix,
+    extra_headers,
+    body_extra,
+    expected_status,
+):
+    calls: list[str] = []
+
+    async def forbidden_session_read(*_args, **_kwargs):
+        calls.append("session")
+        return {"workspace_id": "default", "agent_id": "agt_support"}
+
+    async def forbidden_chat(*_args, **_kwargs):
+        calls.append("chat")
+        raise AssertionError("override must be rejected before dispatch")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles.repositories.get_authorized_session_projection",
+        forbidden_session_read,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", forbidden_chat)
+    client = TestClient(create_app())
+    body = {
+        "message": "Review this request",
+        "submission_id": "11111111-1111-4111-8111-111111111111",
+        **body_extra,
+    }
+
+    response = client.post(
+        f"/api/ai/agent-apps/agt_support/conversations/ses_support/runs{path_suffix}",
+        headers={**auth_headers(), **extra_headers},
+        json=body,
+    )
+
+    assert response.status_code == expected_status
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("session", "expected_status", "expected_detail"),
+    [
+        (None, 404, "agent_conversation_not_found"),
+        ({"workspace_id": "default", "agent_id": "agt_other"}, 409, "agent_profile_session_mismatch"),
+    ],
+)
+def test_dedicated_agent_run_fails_closed_on_ownership_or_agent_mismatch(
+    monkeypatch,
+    session,
+    expected_status,
+    expected_detail,
+):
+    dispatched = False
+
+    async def get_session(*_args, **_kwargs):
+        return session
+
+    async def forbidden_chat(*_args, **_kwargs):
+        nonlocal dispatched
+        dispatched = True
+        raise AssertionError("invalid session must not dispatch")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles.repositories.get_authorized_session_projection",
+        get_session,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", forbidden_chat)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/agent-apps/agt_support/conversations/ses_support/runs",
+        headers=auth_headers(),
+        json={
+            "message": "Review this request",
+            "submission_id": "11111111-1111-4111-8111-111111111111",
+        },
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == expected_detail
+    assert dispatched is False
+
+
+def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonical_run(monkeypatch):
+    observed: dict[str, list[object]] = {"conversations": [], "runs": []}
+
+    async def create_conversation(_conn, **kwargs):
+        observed["conversations"].append(kwargs)
+
+    async def submit_run(**kwargs):
+        observed["runs"].append(kwargs)
+        return ChatStreamResponse(
+            session_id=kwargs["session_id"],
+            run_id="run-test",
+            status="queued",
+            submission_id=str(kwargs["request"].submission_id),
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        create_conversation,
+    )
+    monkeypatch.setattr("app.routes.agent_profiles._submit_dedicated_agent_run", submit_run)
+    client = TestClient(create_app())
+    body = {
+        "expected_revision": 7,
+        "message": "Run the enterprise test",
+        "submission_id": "22222222-2222-4222-8222-222222222222",
+    }
+
+    first = client.post(
+        "/api/ai/admin/agent-profiles/agt_support/test-runs",
+        headers=auth_headers(roles="admin"),
+        json=body,
+    )
+    second = client.post(
+        "/api/ai/admin/agent-profiles/agt_support/test-runs",
+        headers=auth_headers(roles="admin"),
+        json=body,
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["purpose"] == "builder_test"
+    assert first.json()["session_id"] == second.json()["session_id"]
+    assert first.json()["run_id"] == second.json()["run_id"] == "run-test"
+    expected_session_id = "ses_test_22222222222242228222222222222222"
+    assert [call["session_id"] for call in observed["conversations"]] == [
+        expected_session_id,
+        expected_session_id,
+    ]
+    for call in observed["conversations"]:
+        assert call["purpose"] == "builder_test"
+        assert call["selection"].agent_id == "agt_support"
+        assert call["selection"].expected_revision == 7
+    assert [call["session_id"] for call in observed["runs"]] == [
+        expected_session_id,
+        expected_session_id,
+    ]
 
 
 async def test_resolve_agent_skill_uses_global_skill_lifecycle_status():
