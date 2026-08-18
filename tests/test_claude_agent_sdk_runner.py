@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from app.executors.claude.capability_policy import _parameters_match_subject
 from app.executors.claude_agent_sdk_runner import (
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
@@ -12,6 +13,33 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
+
+
+def test_mcp_schema_additional_properties_controls_parameter_key_fence():
+    base_subject = {
+        "mcp_tool_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+        },
+        "required_parameter_keys": [],
+    }
+
+    assert _parameters_match_subject(
+        base_subject,
+        "mcp__inventory__search",
+        {"query": "value", "page": 2},
+    )
+    assert not _parameters_match_subject(
+        {
+            **base_subject,
+            "mcp_tool_schema": {
+                **base_subject["mcp_tool_schema"],
+                "additionalProperties": False,
+            },
+        },
+        "mcp__inventory__search",
+        {"query": "value", "page": 2},
+    )
 
 
 def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
@@ -1330,21 +1358,22 @@ async def test_dynamic_runtime_registers_one_relay_per_selected_mcp_server(monke
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[inventory, project],
-        mcp_relay_url="https://platform.example/api/ai/mcp/relay",
-        mcp_broker_capability="mcpbrk:mcpctx-test:attempt-token",
+        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.error is None
     assert set(captured["mcp_servers"]) == {"inventory-mcp", "project-mcp"}
-    assert captured["mcp_servers"]["inventory-mcp"]["url"].endswith(
-        "/api/ai/mcp/relay/inventory-mcp"
+    assert captured["mcp_servers"]["inventory-mcp"]["url"] == _relay_endpoint(
+        "inventory-mcp"
     )
-    assert captured["mcp_servers"]["project-mcp"]["url"].endswith(
-        "/api/ai/mcp/relay/project-mcp"
+    assert captured["mcp_servers"]["project-mcp"]["url"] == _relay_endpoint(
+        "project-mcp"
     )
     assert all(
         config["headers"] == {
-            "X-MCP-Broker-Capability": "mcpbrk:mcpctx-test:attempt-token"
+            "X-MCP-Broker-Capability": _MCP_RUNTIME_KWARGS[
+                "mcp_broker_capability"
+            ]
         }
         for config in captured["mcp_servers"].values()
     )

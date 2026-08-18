@@ -112,6 +112,45 @@ def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
     assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
 
 
+@pytest.mark.asyncio
+async def test_mcp_relay_target_rejects_conflicting_registered_endpoints():
+    conflict = SingleRowConnection(
+        {
+            "credential_envelope": "sealed",
+            "metadata_json": {},
+            "registered_endpoints": [
+                "https://first.example/mcp",
+                "https://second.example/mcp",
+            ],
+            "active_tool_names": ["search"],
+        }
+    )
+
+    with pytest.raises(RepositoryConflictError, match="mcp_server_endpoint_conflict"):
+        await repositories.get_mcp_relay_target(
+            conflict,
+            tenant_id="default",
+            server_name="inventory",
+        )
+
+    stable = SingleRowConnection(
+        {
+            "credential_envelope": "sealed",
+            "metadata_json": {},
+            "registered_endpoints": ["https://inventory.example/mcp"],
+            "active_tool_names": ["search"],
+        }
+    )
+    target = await repositories.get_mcp_relay_target(
+        stable,
+        tenant_id="default",
+        server_name="inventory",
+    )
+    assert target is not None
+    assert target["registered_endpoint"] == "https://inventory.example/mcp"
+    assert "max(mcp_tools.endpoint)" not in stable.sql
+
+
 @pytest.fixture(autouse=True)
 def _isolate_legacy_repository_fakes_from_sse_terminal_extension(monkeypatch):
     async def no_terminal_intent(*_args, **_kwargs):
@@ -2044,7 +2083,13 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     )
     assert "execution_kind, skill_id" in insert_sql
     assert insert_params[6:8] == ("harness_chat", None)
-    persisted_input = json.loads(insert_params[19])
+    persisted_input = json.loads(
+        next(
+            value
+            for value in insert_params
+            if isinstance(value, str) and value.startswith("{")
+        )
+    )
     assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
     assert persisted_input["skill_manifests"] == []
 

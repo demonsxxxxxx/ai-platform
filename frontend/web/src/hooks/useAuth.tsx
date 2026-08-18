@@ -243,6 +243,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // transition, before any principal hydration can start awaiting.
     publishAuthIncarnationForCurrentMarker(owner);
     clearAuthScopedCaches();
+    clearMcpGatewayJwt();
     setToken(null);
     setUser(null);
     setDynamicPermissions([]);
@@ -250,7 +251,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isCurrentAuthOperation, publishAuthIncarnationForCurrentMarker]);
 
   const applyLoggedOut = useCallback((owner: AuthOperationOwner): boolean => {
-    clearMcpGatewayJwt();
     return clearAuthPresentation(owner, true);
   }, [clearAuthPresentation]);
 

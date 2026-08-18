@@ -682,6 +682,7 @@ test("cross-tab marker replacement clears principal and caches before hydrating 
   });
   try {
     assert.equal(mounted.auth.user?.id, "admin-a");
+    storage.set("mcp_gateway_jwt", "jwt-for-admin-a");
     await mounted.React.act(async () => {
       storage.set("ai_platform_session_present", "marker-b");
       windowTarget.dispatchEvent(
@@ -702,6 +703,7 @@ test("cross-tab marker replacement clears principal and caches before hydrating 
     assert.deepEqual(mounted.auth.permissions, []);
     assert.equal(cacheClears, 1);
     assert.equal(storage.get("ai_platform_session_present"), "marker-b");
+    assert.equal(storage.has("mcp_gateway_jwt"), false);
     assert.equal(replacementSignal?.aborted, false);
 
     replacement.resolve(authUser("admin-b", "tenant-b"));

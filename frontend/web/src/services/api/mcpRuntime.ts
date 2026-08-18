@@ -14,6 +14,13 @@ export interface McpRuntimeContextResponse {
   expires_at: string;
 }
 
+const MCP_JWT_REJECTION_CODES = new Set([
+  "mcp_gateway_unauthorized",
+  "mcp_jwt_missing",
+  "mcp_jwt_invalid",
+  "mcp_jwt_expired_or_missing",
+]);
+
 function projectRuntimeContext(value: unknown): McpRuntimeContextResponse {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid_mcp_runtime_context_response");
@@ -44,28 +51,41 @@ function requiredMcpJwt(): string {
   );
 }
 
-export async function createMcpRuntimeContext(): Promise<McpRuntimeContextResponse> {
+export async function createMcpRuntimeContext(
+  options: { signal?: AbortSignal } = {},
+): Promise<McpRuntimeContextResponse> {
   const jwt = requiredMcpJwt();
 
   const response = await cookieSessionFetch(`${API_BASE}/api/ai/mcp/runtime-contexts`, {
     method: "POST",
     cache: "no-store",
     redirect: "error",
+    signal: options.signal,
     headers: {
       "JWT-Authorization": `Bearer ${jwt}`,
     },
   });
-  if (response.status === 401) clearMcpGatewayJwt();
-  if (!response.ok) throw await apiRequestErrorFromResponse(response);
+  if (!response.ok) {
+    const error = await apiRequestErrorFromResponse(response);
+    if (
+      response.status === 401 &&
+      typeof error.code === "string" &&
+      MCP_JWT_REJECTION_CODES.has(error.code)
+    ) {
+      clearMcpGatewayJwt();
+    }
+    throw error;
+  }
   return projectRuntimeContext(await response.json().catch(() => null));
 }
 
 export async function prepareMcpRuntimeContext(options: {
   selectedMcpToolIds?: string[];
   profileSelected?: boolean;
+  signal?: AbortSignal;
 }): Promise<string | undefined> {
   const explicitlyRequired =
     (options.selectedMcpToolIds?.length ?? 0) > 0 || options.profileSelected === true;
   if (!explicitlyRequired) return undefined;
-  return (await createMcpRuntimeContext()).mcp_context_id;
+  return (await createMcpRuntimeContext({ signal: options.signal })).mcp_context_id;
 }

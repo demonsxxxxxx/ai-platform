@@ -375,6 +375,11 @@ class Settings(BaseSettings):
                     "private_upstream_url_required_in_production:"
                     + ",".join(missing_private_upstreams)
                 )
+            if not (
+                self.mcp_context_encryption_keys_json.strip()
+                or self.mcp_context_encryption_key.strip()
+            ):
+                raise ValueError("mcp_context_encryption_key_required_in_production")
         return self
 
 

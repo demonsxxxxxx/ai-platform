@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -29,6 +30,7 @@ from app.mcp.catalog import (
 from app.mcp.runtime import (
     HostMcpRelay,
     McpRelayError,
+    McpRelayAuthFailureLimiter,
     McpRuntimeContextError,
     get_mcp_runtime_context_manager,
     normalize_static_mcp_headers,
@@ -39,10 +41,12 @@ from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
 MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer()
 MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
+MCP_RELAY_AUTH_FAILURE_LIMITER = McpRelayAuthFailureLimiter()
 
 
 def _mcp_runtime_http_error(exc: McpRuntimeContextError) -> HTTPException:
@@ -797,7 +801,17 @@ async def relay_mcp_jsonrpc(
 ) -> dict[str, Any] | Response:
     """Relay sandbox JSON-RPC to one capability-bound registered MCP."""
 
+    source_fingerprint = hashlib.sha256(
+        str(request.client.host if request.client is not None else "unknown").encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    capability_fingerprint = hashlib.sha256((capability or "").encode("utf-8")).hexdigest()
     try:
+        await MCP_RELAY_AUTH_FAILURE_LIMITER.ensure_allowed(
+            source_fingerprint=source_fingerprint,
+            capability_fingerprint=capability_fingerprint,
+        )
         relay = HostMcpRelay(context_manager=MCP_RUNTIME_CONTEXT_MANAGER)
         result = await relay.forward(
             capability_token=capability or "",
@@ -805,7 +819,24 @@ async def relay_mcp_jsonrpc(
             payload=payload,
             incoming_headers=request.headers,
         )
-    except McpRelayError as exc:
+    except McpRuntimeContextError as exc:
+        if exc.status_code in {401, 403}:
+            try:
+                failure_count = await MCP_RELAY_AUTH_FAILURE_LIMITER.record_failure(
+                    source_fingerprint=source_fingerprint,
+                    capability_fingerprint=capability_fingerprint,
+                )
+            except McpRuntimeContextError as limiter_exc:
+                raise _mcp_runtime_http_error(limiter_exc) from limiter_exc
+            logger.warning(
+                "mcp_relay_auth_failure",
+                extra={
+                    "mcp_source_sha256": source_fingerprint,
+                    "mcp_capability_sha256": capability_fingerprint,
+                    "mcp_error_code": exc.code,
+                    "mcp_failure_count": failure_count,
+                },
+            )
         raise _mcp_runtime_http_error(exc) from exc
     response.headers["Cache-Control"] = "no-store"
     if result is None:

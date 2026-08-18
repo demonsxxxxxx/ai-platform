@@ -88,6 +88,27 @@ test("runtime context 401 clears only the MCP credential", async () => {
   }
 });
 
+test("unrelated 401 does not clear the MCP credential", async () => {
+  const originalFetch = globalThis.fetch;
+  installStorage();
+  setMcpGatewayJwt("still-valid.jwt");
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ detail: "session_expired" }), {
+      status: 401,
+    })) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      createMcpRuntimeContext(),
+      (error: unknown) => error instanceof ApiRequestError && error.status === 401,
+    );
+    assert.equal(getMcpGatewayJwt(), "still-valid.jwt");
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearMcpGatewayJwt();
+  }
+});
+
 test("chat preparation requires JWT context for every selected platform MCP", async () => {
   const originalFetch = globalThis.fetch;
   const values = installStorage();

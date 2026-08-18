@@ -145,8 +145,7 @@ function isMcpCredentialRejection(error: unknown): boolean {
     (error.code === "mcp_server_unauthorized" ||
       error.code === "mcp_jwt_missing" ||
       error.code === "mcp_jwt_invalid" ||
-      error.code === "mcp_jwt_expired_or_missing" ||
-      error.code === "mcp_context_expired")
+      error.code === "mcp_jwt_expired_or_missing")
   );
 }
 
@@ -2086,6 +2085,24 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           selectedMcpToolIds,
           profileSelected: selectedAgentProfileForRequest !== null,
         });
+        if (
+          submissionTokenRef.current !== submissionToken ||
+          submissionAuthIncarnationFenceRef.current !== null ||
+          authScopeRef.current !== submissionOwner ||
+          !isCurrentRequestSession()
+        ) {
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          if (submissionTokenRef.current === submissionToken) {
+            isSendingRef.current = false;
+          }
+          return { status: "failed" };
+        }
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
           requestSessionId ?? undefined,

@@ -3339,7 +3339,12 @@ async def get_mcp_relay_target(
     cursor = await conn.execute(
         """
         select credentials.credential_envelope, credentials.metadata_json,
-          max(mcp_tools.endpoint) as registered_endpoint,
+          coalesce(
+            array_agg(distinct mcp_tools.endpoint) filter (
+              where mcp_tools.endpoint is not null and mcp_tools.endpoint <> ''
+            ),
+            array[]::text[]
+          ) as registered_endpoints,
           coalesce(
             array_agg(distinct (mcp_tools.allowed_tools ->> 0)) filter (
               where mcp_tools.status = 'active'
@@ -3370,7 +3375,18 @@ async def get_mcp_relay_target(
         (tenant_id, server_name),
     )
     row = await cursor.fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    result = dict(row)
+    registered_endpoints = {
+        str(endpoint)
+        for endpoint in result.pop("registered_endpoints", [])
+        if isinstance(endpoint, str) and endpoint
+    }
+    if len(registered_endpoints) > 1:
+        raise RepositoryConflictError("mcp_server_endpoint_conflict")
+    result["registered_endpoint"] = next(iter(registered_endpoints), None)
+    return result
 
 
 async def list_admin_tool_policies(
@@ -9254,6 +9270,8 @@ async def copy_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    new_run_id: str | None = None,
+    mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
     if source is None:
@@ -9261,10 +9279,14 @@ async def copy_run_as_new_task(
     source_input = source["input_json"] if isinstance(source.get("input_json"), dict) else {}
     source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
     source_context_id = source.get("mcp_context_id") or source_input.get("mcp_context_id")
-    if source_context_id or (
-        isinstance(source_execution_input, dict)
-        and extract_run_mcp_tool_ids(source_execution_input)
-    ):
+    source_requires_mcp_context = bool(
+        source_context_id
+        or (
+            isinstance(source_execution_input, dict)
+            and extract_run_mcp_tool_ids(source_execution_input)
+        )
+    )
+    if source_requires_mcp_context and not mcp_context_id:
         # A Broker context is bound to the source Run/Attempt. Retry/resume
         # must obtain a fresh context and preflight it before a child exists;
         # never create a child that silently loses the required capability.
@@ -9384,7 +9406,10 @@ async def copy_run_as_new_task(
         )
     else:
         raise RepositoryConflictError("run_execution_skill_identity_mismatch")
-    new_run_id = new_id("run")
+    effective_mcp_context_id = (
+        mcp_context_id if source_requires_mcp_context else None
+    )
+    new_run_id = new_run_id or new_id("run")
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
     completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
         conn,
@@ -9422,11 +9447,9 @@ async def copy_run_as_new_task(
         ),
     )
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
+    copied_input_json["mcp_context_id"] = effective_mcp_context_id
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
-    # An MCP context is bound to the source Run and must never be copied to a
-    # new retry/resume Run. The client must obtain a fresh context first.
-    copied_input_json["mcp_context_id"] = None
     _require_json_size(copied_input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
     session_generation = await allocate_session_run_generation(
         conn,
@@ -9444,9 +9467,10 @@ async def copy_run_as_new_task(
           principal_roles, principal_department_id, auth_source,
           authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
-          status, input_json, queued_at, copied_from_run_id, session_generation
+          mcp_context_id, status, input_json, queued_at, copied_from_run_id,
+          session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -9468,6 +9492,7 @@ async def copy_run_as_new_task(
             inherited_authority_checked_at,
             admitted_profile_revision,
             admitted_profile_hash,
+            effective_mcp_context_id,
             dumps_json(copied_input_json),
             run_id,
             session_generation,
@@ -9525,6 +9550,8 @@ async def retry_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    new_run_id: str | None = None,
+    mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
@@ -9540,11 +9567,18 @@ async def retry_run_as_new_task(
     )
     if active_retry is not None:
         raise RepositoryConflictError("retry_already_active")
+    copy_kwargs: dict[str, Any] = {}
+    if new_run_id is not None or mcp_context_id is not None:
+        copy_kwargs = {
+            "new_run_id": new_run_id,
+            "mcp_context_id": mcp_context_id,
+        }
     copied = await copy_run_as_new_task(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
+        **copy_kwargs,
     )
     if copied is None:
         return None
@@ -9590,6 +9624,8 @@ async def resume_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    new_run_id: str | None = None,
+    mcp_context_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Create a queued resume child run from a non-active source with reusable output."""
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
@@ -9613,11 +9649,18 @@ async def resume_run_as_new_task(
     )
     if active_resume is not None:
         raise RepositoryConflictError("resume_already_active")
+    copy_kwargs: dict[str, Any] = {}
+    if new_run_id is not None or mcp_context_id is not None:
+        copy_kwargs = {
+            "new_run_id": new_run_id,
+            "mcp_context_id": mcp_context_id,
+        }
     copied = await copy_run_as_new_task(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
+        **copy_kwargs,
     )
     if copied is None:
         return None

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import json
+from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
@@ -246,6 +247,96 @@ RUN_CONTROL_OPERATION_ID = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
 
 def run_control_url(run_id: str, action: str, operation_id: str = RUN_CONTROL_OPERATION_ID) -> str:
     return f"/api/ai/runs/{run_id}/{action}?operation_id={operation_id}"
+
+
+@pytest.mark.asyncio
+async def test_retry_with_fresh_mcp_context_preflights_and_persists_exact_child_binding(
+    monkeypatch,
+):
+    from app.routes import runs as runs_routes
+
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def source_run(*_args, **_kwargs):
+        return {
+            "id": "run-source",
+            "mcp_context_id": "mcpctx-source",
+            "input_json": {
+                "input": {"message": "retry", "mcp_tool_ids": ["inventory-search"]},
+                "mcp_context_id": "mcpctx-source",
+            },
+        }
+
+    async def preflight(**kwargs):
+        observed["preflight"] = kwargs
+        return object()
+
+    async def retry(_conn, **kwargs):
+        observed["retry"] = kwargs
+        return {
+            "run_id": kwargs["new_run_id"],
+            "session_id": "session-a",
+            "status": "queued",
+            "mcp_context_id": kwargs["mcp_context_id"],
+        }
+
+    async def prepare(_conn, **kwargs):
+        observed["prepared"] = kwargs["copied"]
+        return {"run_id": kwargs["copied"]["run_id"]}
+
+    async def admit(*_args, **_kwargs):
+        return QueueAdmissionMetadata(
+            queue_position=1,
+            queue_admission_ordinal=1,
+            message_id="queue-message",
+        )
+
+    async def insight(*_args, **_kwargs):
+        return None
+
+    class Manager:
+        async def invalidate_context(self, context_id):
+            observed["invalidated"] = context_id
+
+    manager = Manager()
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, "get_authorized_run", source_run)
+    monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "get_mcp_runtime_context_manager", lambda: manager)
+    monkeypatch.setattr(runs_routes.repositories, "retry_run_as_new_task", retry)
+    monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr(runs_routes, "_ensure_run_control_queue_admission", admit)
+    monkeypatch.setattr(runs_routes, "queue_insight_for_status", insight)
+
+    result = await runs_routes._mutate_run_control_child(
+        run_id="run-source",
+        action="retry",
+        operation_id=UUID(RUN_CONTROL_OPERATION_ID),
+        principal=AuthPrincipal(
+            tenant_id="default",
+            user_id="user-a",
+            display_name="User A",
+            source="company-login",
+        ),
+        mcp_context_id="mcpctx-fresh",
+    )
+
+    preflight_call = observed["preflight"]
+    retry_call = observed["retry"]
+    assert preflight_call["context_id"] == "mcpctx-fresh"
+    assert preflight_call["run_id"] == retry_call["new_run_id"] == result.run_id
+    assert preflight_call["selected_tool_names"] == ("inventory-search",)
+    assert retry_call["mcp_context_id"] == "mcpctx-fresh"
+    assert observed["prepared"]["mcp_context_id"] == "mcpctx-fresh"
+    assert "invalidated" not in observed
 
 
 def admin_headers():

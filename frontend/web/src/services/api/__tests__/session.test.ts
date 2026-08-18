@@ -20,6 +20,22 @@ import {
   resolveChatSessionAgentId,
   sessionApi,
 } from "../session.ts";
+import {
+  clearMcpGatewayJwt,
+  setMcpGatewayJwt,
+} from "../../../utils/mcpGatewayAuth.ts";
+
+function installStorage(): void {
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+}
 
 const defaultEnterpriseProjection = {
   welcome_message: "",
@@ -231,6 +247,71 @@ test("run-control mutations use the shared cookie-session transport and forward 
   }
 });
 
+test("MCP retry obtains a fresh context and reuses the exact operation id", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const calls: Array<{
+    url: string;
+    body?: string | null;
+    signal?: AbortSignal | null;
+    jwt?: string | null;
+  }> = [];
+  installStorage();
+  setMcpGatewayJwt("company.jwt");
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      body: typeof init?.body === "string" ? init.body : null,
+      signal: init?.signal,
+      jwt: new Headers(init?.headers).get("JWT-Authorization"),
+    });
+    if (calls.length === 1) {
+      return new Response(
+        JSON.stringify({ detail: "mcp_context_required_for_retry" }),
+        { status: 409 },
+      );
+    }
+    if (calls.length === 2) {
+      return new Response(
+        JSON.stringify({
+          mcp_context_id: "mcpctx-fresh",
+          expires_at: "2026-08-18T12:00:00Z",
+        }),
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        run_id: "run-child",
+        session_id: "session-a",
+        status: "queued",
+      }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const operationId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+    const result = await sessionApi.retryRun("run-parent", operationId, {
+      signal: controller.signal,
+    });
+
+    assert.equal(result.run_id, "run-child");
+    assert.equal(calls[0]?.url, calls[2]?.url);
+    assert.equal(calls[0]?.body, null);
+    assert.equal(
+      calls[1]?.url,
+      "/api/ai/mcp/runtime-contexts",
+    );
+    assert.equal(calls[1]?.jwt, "Bearer company.jwt");
+    assert.deepEqual(JSON.parse(calls[2]?.body ?? "{}"), {
+      mcp_context_id: "mcpctx-fresh",
+    });
+    assert.ok(calls.every((call) => call.signal === controller.signal));
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearMcpGatewayJwt();
+  }
+});
+
 test("includes trace_id when looking up a specific run by trace", () => {
   assert.equal(
     buildSessionRunsUrl("session-1", { trace_id: "trace-123" }),
@@ -425,12 +506,14 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       attachments: [attachment, attachment],
       submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       userTimezone: "Asia/Shanghai",
+      mcpContextId: "mcpctx-profile",
     }),
     {
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
       user_timezone: "Asia/Shanghai",
+      mcp_context_id: "mcpctx-profile",
     },
   );
 });
@@ -489,6 +572,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
       "general-agent",
       ["client-mcp"],
       { agent_id: "agt_support", expected_revision: 7 },
+      "mcpctx-profile",
     );
 
     assert.equal(
@@ -498,6 +582,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.message, "Review this");
     assert.equal(calls[0]?.body.submission_id, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls[0]?.body.file_ids, []);
+    assert.equal(calls[0]?.body.mcp_context_id, "mcpctx-profile");
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",

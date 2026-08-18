@@ -2768,7 +2768,11 @@ async def process_run_payload(
             run_payload.input.get("_runtime_tool_policy_subjects")
         )
         if mcp_targets and not payload.mcp_context_id:
-            raise RuntimeError("mcp_context_required")
+            context_error = McpRuntimeContextError(
+                "mcp_context_required",
+                status_code=409,
+            )
+            raise RuntimeError(context_error.code) from context_error
         if payload.mcp_context_id:
             try:
                 capability = await get_mcp_runtime_context_manager().claim_attempt_lease(

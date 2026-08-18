@@ -274,9 +274,12 @@ def _parameters_match_subject(
     schema_authoritative = isinstance(schema, dict)
     schema_properties = schema.get("properties") if isinstance(schema, dict) else None
     if isinstance(schema_properties, dict):
-        allowed_keys = {
-            str(key) for key in schema_properties if isinstance(key, str) and key
-        }
+        if schema.get("additionalProperties") is False:
+            allowed_keys = {
+                str(key) for key in schema_properties if isinstance(key, str) and key
+            }
+        else:
+            allowed_keys = set(tool_input)
     elif isinstance(schema, dict) and schema.get("additionalProperties") is False:
         allowed_keys = set()
     elif isinstance(schema, dict):

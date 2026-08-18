@@ -319,10 +319,25 @@ def test_production_requires_explicit_private_upstream_urls():
         trusted_principal_secret="gateway-secret",
         existing_auth_base_url="https://auth.internal.example",
         existing_user_info_base_url="https://directory.internal.example",
+        mcp_context_encryption_key="test-only-mcp-key",
     )
 
     assert settings.existing_auth_base_url == "https://auth.internal.example"
     assert settings.existing_user_info_base_url == "https://directory.internal.example"
+
+
+def test_production_requires_mcp_context_encryption_key():
+    with pytest.raises(
+        ValidationError,
+        match="mcp_context_encryption_key_required_in_production",
+    ):
+        Settings(
+            _env_file=None,
+            deployment_environment="production",
+            trusted_principal_secret="gateway-secret",
+            existing_auth_base_url="https://auth.internal.example",
+            existing_user_info_base_url="https://directory.internal.example",
+        )
 
 
 def test_default_tenant_is_fixed_deployment_scope():

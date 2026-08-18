@@ -7,7 +7,6 @@ import zh from "./locales/zh.json";
 export const PRODUCT_LANGUAGE = "zh";
 
 i18n.use(initReactI18next).init({
-  showSupportNotice: false,
   resources: {
     zh: { translation: zh },
   },

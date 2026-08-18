@@ -58,6 +58,22 @@ _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
 
+class _RuntimeManagerStub:
+    def __init__(self, token, *, on_claim=None, on_release=None):
+        self.token = token
+        self.on_claim = on_claim
+        self.on_release = on_release
+
+    async def claim_attempt_lease(self, **kwargs):
+        if self.on_claim is not None:
+            self.on_claim(kwargs)
+        return types.SimpleNamespace(token=self.token)
+
+    async def release_attempt_lease(self, **kwargs):
+        if self.on_release is not None:
+            self.on_release(kwargs)
+
+
 @pytest.fixture(autouse=True)
 def admitted_sse_stream(monkeypatch):
     published = []
@@ -120,6 +136,17 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
     assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
     assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
+    context_error = worker_module.McpRuntimeContextError(
+        "mcp_context_required",
+        status_code=409,
+    )
+    try:
+        raise RuntimeError(context_error.code) from context_error
+    except RuntimeError as wrapped_context_error:
+        assert worker_module._executor_exception_failure(wrapped_context_error) == (
+            "mcp_context_required",
+            "MCP runtime context is unavailable",
+        )
 
 
 @pytest.mark.asyncio
@@ -2401,14 +2428,6 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
     raw["mcp_context_id"] = "mcpctx-async-dispatch"
     runtime_calls = []
 
-    class RuntimeManager:
-        async def claim_attempt_lease(self, **kwargs):
-            runtime_calls.append(("claim", kwargs))
-            return types.SimpleNamespace(token="mcpbrk:async:dispatch")
-
-        async def release_attempt_lease(self, **kwargs):
-            runtime_calls.append(("release", kwargs))
-
     class AcceptedAdapter:
         name = "fake"
 
@@ -2443,7 +2462,11 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
     monkeypatch.setattr(
         worker_module,
         "get_mcp_runtime_context_manager",
-        RuntimeManager,
+        lambda: _RuntimeManagerStub(
+            "mcpbrk:async:dispatch",
+            on_claim=lambda kwargs: runtime_calls.append(("claim", kwargs)),
+            on_release=lambda kwargs: runtime_calls.append(("release", kwargs)),
+        ),
     )
 
     outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
@@ -9085,15 +9108,15 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     claimed = {}
     released = {}
 
-    class RuntimeManager:
-        async def claim_attempt_lease(self, **kwargs):
-            claimed.update(kwargs)
-            return types.SimpleNamespace(token="mcpbrk:worker:tools")
-
-        async def release_attempt_lease(self, **kwargs):
-            released.update(kwargs)
-
-    monkeypatch.setattr(worker_module, "get_mcp_runtime_context_manager", RuntimeManager)
+    monkeypatch.setattr(
+        worker_module,
+        "get_mcp_runtime_context_manager",
+        lambda: _RuntimeManagerStub(
+            "mcpbrk:worker:tools",
+            on_claim=claimed.update,
+            on_release=released.update,
+        ),
+    )
 
     outcome = await process_run_payload(raw, registry=registry)
 
@@ -9403,14 +9426,11 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
     raw["mcp_context_id"] = "mcpctx-worker-admin-bypass"
     state["locked_run"]["mcp_context_id"] = "mcpctx-worker-admin-bypass"
 
-    class RuntimeManager:
-        async def claim_attempt_lease(self, **_kwargs):
-            return types.SimpleNamespace(token="mcpbrk:worker:admin-bypass")
-
-        async def release_attempt_lease(self, **_kwargs):
-            return None
-
-    monkeypatch.setattr(worker_module, "get_mcp_runtime_context_manager", RuntimeManager)
+    monkeypatch.setattr(
+        worker_module,
+        "get_mcp_runtime_context_manager",
+        lambda: _RuntimeManagerStub("mcpbrk:worker:admin-bypass"),
+    )
 
     outcome = await process_run_payload(raw, registry=registry)
 
@@ -9549,14 +9569,11 @@ async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_
     raw["mcp_context_id"] = "mcpctx-worker-risk"
     state["locked_run"]["mcp_context_id"] = "mcpctx-worker-risk"
 
-    class RuntimeManager:
-        async def claim_attempt_lease(self, **_kwargs):
-            return types.SimpleNamespace(token="mcpbrk:worker:risk")
-
-        async def release_attempt_lease(self, **_kwargs):
-            return None
-
-    monkeypatch.setattr(worker_module, "get_mcp_runtime_context_manager", RuntimeManager)
+    monkeypatch.setattr(
+        worker_module,
+        "get_mcp_runtime_context_manager",
+        lambda: _RuntimeManagerStub("mcpbrk:worker:risk"),
+    )
 
     outcome = await process_run_payload(raw, registry=registry)
 

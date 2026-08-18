@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.auth import AuthPrincipal
@@ -30,6 +31,9 @@ MCP_MAX_SCHEMA_BYTES = 256 * 1024
 MCP_CONTEXT_KEY_PREFIX = "ai-platform:mcp:runtime-context:v1:"
 MCP_CONTEXT_LOCK_PREFIX = "ai-platform:mcp:runtime-context-lock:v1:"
 MCP_CONTEXT_LOCK_TTL_SECONDS = 120
+MCP_RELAY_AUTH_FAILURE_KEY_PREFIX = "ai-platform:mcp:relay-auth-failure:v1:"
+MCP_RELAY_AUTH_FAILURE_LIMIT = 10
+MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS = 60
 MCP_CAPABILITY_HEADER = "X-MCP-Broker-Capability"
 MCP_JWT_AUTHORIZATION_HEADER = "JWT-Authorization"
 _MCP_CONTEXT_AAD_PREFIX = b"ai-platform:mcp-runtime-context:v1:"
@@ -147,6 +151,16 @@ class McpRelayTarget:
     endpoint: str
     static_headers: dict[str, str] = field(repr=False)
     active_tool_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class McpValidatedTarget:
+    """A registered endpoint pinned to the exact address validated for dispatch."""
+
+    endpoint: str
+    connect_url: str
+    host_header: str
+    sni_hostname: str
 
 
 class RuntimeContextStore(Protocol):
@@ -305,6 +319,76 @@ class RedisRuntimeContextStore:
             key,
             token,
         )
+
+
+class McpRelayAuthFailureLimiter:
+    """Bound repeated relay authorization failures by source and capability."""
+
+    def __init__(self, *, redis: RedisClientHandle | None = None) -> None:
+        self._redis = redis
+
+    def _client(self) -> RedisClientHandle:
+        return self._redis or get_redis_client()
+
+    @staticmethod
+    def _keys(source_fingerprint: str, capability_fingerprint: str) -> tuple[str, str]:
+        return (
+            f"{MCP_RELAY_AUTH_FAILURE_KEY_PREFIX}source:{source_fingerprint}",
+            f"{MCP_RELAY_AUTH_FAILURE_KEY_PREFIX}capability:{capability_fingerprint}",
+        )
+
+    async def ensure_allowed(
+        self,
+        *,
+        source_fingerprint: str,
+        capability_fingerprint: str,
+    ) -> None:
+        try:
+            values = await self._client().mget(
+                *self._keys(source_fingerprint, capability_fingerprint)
+            )
+            counts = [int(value or 0) for value in values]
+        except Exception as exc:  # noqa: BLE001 - Redis failures must fail closed.
+            raise McpRuntimeContextError(
+                "mcp_relay_limiter_unavailable",
+                status_code=503,
+            ) from exc
+        if any(count >= MCP_RELAY_AUTH_FAILURE_LIMIT for count in counts):
+            raise McpRuntimeContextError(
+                "mcp_relay_rate_limited",
+                status_code=429,
+            )
+
+    async def record_failure(
+        self,
+        *,
+        source_fingerprint: str,
+        capability_fingerprint: str,
+    ) -> int:
+        source_key, capability_key = self._keys(
+            source_fingerprint,
+            capability_fingerprint,
+        )
+        try:
+            result = await self._client().eval(
+                "local maximum = 0 "
+                "for index, key in ipairs(KEYS) do "
+                "local count = redis.call('incr', key) "
+                "if count == 1 then redis.call('expire', key, ARGV[1]) end "
+                "if count > maximum then maximum = count end "
+                "end "
+                "return maximum",
+                2,
+                source_key,
+                capability_key,
+                MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS,
+            )
+            return int(result or 0)
+        except Exception as exc:  # noqa: BLE001 - Redis failures must fail closed.
+            raise McpRuntimeContextError(
+                "mcp_relay_limiter_unavailable",
+                status_code=503,
+            ) from exc
 
 
 def _b64url_encode(value: bytes) -> str:
@@ -592,14 +676,22 @@ def _record_from_payload(payload: object) -> _RuntimeContextRecord:
     )
 
 
+def _context_aad(key_id: str, context_id: str) -> bytes:
+    return (
+        _MCP_CONTEXT_AAD_PREFIX
+        + key_id.encode("utf-8")
+        + b":"
+        + assert_safe_id(context_id, "mcp_context_id").encode("utf-8")
+    )
+
+
 def _seal(record: _RuntimeContextRecord) -> str:
     current_id, keyring = _configured_keyring()
     nonce = secrets.token_bytes(12)
-    aad = _MCP_CONTEXT_AAD_PREFIX + current_id.encode("utf-8")
     ciphertext = AESGCM(keyring[current_id]).encrypt(
         nonce,
         json.dumps(_record_payload(record), ensure_ascii=True, separators=(",", ":")).encode("utf-8"),
-        aad,
+        _context_aad(current_id, record.context_id),
     )
     return json.dumps(
         {
@@ -612,7 +704,7 @@ def _seal(record: _RuntimeContextRecord) -> str:
     )
 
 
-def _open(value: str) -> _RuntimeContextRecord:
+def _open(value: str, *, context_id: str) -> _RuntimeContextRecord:
     try:
         envelope = json.loads(value)
         key_id = str(envelope["key_id"])
@@ -622,12 +714,22 @@ def _open(value: str) -> _RuntimeContextRecord:
         plaintext = AESGCM(keyring[key_id]).decrypt(
             nonce,
             ciphertext,
-            _MCP_CONTEXT_AAD_PREFIX + key_id.encode("utf-8"),
+            _context_aad(key_id, context_id),
         )
-        return _record_from_payload(json.loads(plaintext.decode("utf-8")))
+        record = _record_from_payload(json.loads(plaintext.decode("utf-8")))
+        if record.context_id != context_id:
+            raise McpRuntimeContextError("mcp_context_corrupt", status_code=503)
+        return record
     except McpRuntimeContextError:
         raise
-    except (KeyError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+    except (
+        InvalidTag,
+        KeyError,
+        ValueError,
+        TypeError,
+        UnicodeError,
+        json.JSONDecodeError,
+    ) as exc:
         raise McpRuntimeContextError("mcp_context_corrupt", status_code=503) from exc
 
 
@@ -710,10 +812,10 @@ class McpRuntimeContextManager:
         value = await self.store.get(_context_key(context_id))
         if value is None:
             raise McpRuntimeContextError("mcp_context_not_found", status_code=401)
-        record = _open(value)
+        record = _open(value, context_id=context_id)
         deadline = record.expires_at if record.bound_run_id else record.bind_expires_at
         if deadline <= self._now() or record.jwt_exp <= self._now():
-            await self.store.delete(_context_key(record.context_id))
+            await self.store.delete(_context_key(context_id))
             raise McpRuntimeContextError("mcp_context_expired", status_code=401)
         return value, record
 
@@ -957,17 +1059,50 @@ def _registered_mcp_target(raw: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
 
 
-async def validate_registered_mcp_target(raw: str) -> str:
-    """Apply the catalog DNS policy again immediately before runtime dispatch."""
+async def validate_registered_mcp_target(raw: str) -> McpValidatedTarget:
+    """Validate once and pin dispatch to one address from the accepted DNS set."""
 
-    from app.mcp.catalog import McpToolDiscoveryError, _validated_discovery_endpoint
+    from app.mcp.catalog import (
+        McpToolDiscoveryError,
+        _address_is_permitted,
+        _is_rfc1918,
+        _resolve_discovery_addresses,
+    )
 
     normalized = _registered_mcp_target(raw)
+    parsed = urlsplit(normalized)
+    hostname = str(parsed.hostname or "")
     try:
-        await _validated_discovery_endpoint(normalized)
+        addresses = await _resolve_discovery_addresses(
+            hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+        )
     except McpToolDiscoveryError as exc:
         raise McpRelayError("mcp_server_target_invalid", status_code=503) from exc
-    return normalized
+    if not all(_address_is_permitted(address, scheme=parsed.scheme) for address in addresses):
+        raise McpRelayError("mcp_server_target_invalid", status_code=503)
+    if not (
+        all(_is_rfc1918(address) for address in addresses)
+        or (parsed.scheme == "https" and all(address.is_global for address in addresses))
+    ):
+        raise McpRelayError("mcp_server_target_invalid", status_code=503)
+    selected = min(addresses, key=lambda address: (address.version, int(address)))
+    connect_hostname = (
+        f"[{selected.compressed}]"
+        if isinstance(selected, ipaddress.IPv6Address)
+        else selected.compressed
+    )
+    connect_netloc = connect_hostname
+    if parsed.port is not None:
+        connect_netloc = f"{connect_netloc}:{parsed.port}"
+    return McpValidatedTarget(
+        endpoint=normalized,
+        connect_url=urlunsplit(
+            (parsed.scheme, connect_netloc, parsed.path or "/", "", "")
+        ),
+        host_header=parsed.netloc,
+        sni_hostname=hostname,
+    )
 
 
 def _schema_bytes(tool: Mapping[str, Any]) -> int:
@@ -991,10 +1126,22 @@ def bounded_tool_view(
     if not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools):
         raise McpRelayError("mcp_tools_schema_invalid", status_code=502)
     normalized = [dict(tool) for tool in tools]
+    normalized_names = [str(tool.get("name") or "") for tool in normalized]
+    if (
+        any(not name for name in normalized_names)
+        or len(normalized_names) != len(set(normalized_names))
+    ):
+        raise McpRelayError("mcp_tools_schema_invalid", status_code=502)
     if selected_tool_names is not None:
         selected = set(str(item) for item in selected_tool_names)
-        normalized = [tool for tool in normalized if str(tool.get("name") or "") in selected]
-        if len(normalized) != len(selected):
+        if len(selected) != len(selected_tool_names) or "" in selected:
+            raise McpRelayError("mcp_tool_selection_invalid", status_code=409)
+        normalized = [
+            tool
+            for tool, name in zip(normalized, normalized_names, strict=True)
+            if name in selected
+        ]
+        if {str(tool["name"]) for tool in normalized} != selected:
             raise McpRelayError("mcp_tool_selection_invalid", status_code=409)
     schema_bytes = sum(_schema_bytes(tool) for tool in normalized)
     if len(normalized) > MCP_MAX_TOOLS_PER_RUN or schema_bytes > MCP_MAX_SCHEMA_BYTES:
@@ -1010,12 +1157,15 @@ async def resolve_registered_mcp_target(tenant_id: str, server_id: str) -> McpRe
 
     safe_tenant_id = assert_safe_id(tenant_id, "tenant_id")
     safe_server_id = assert_safe_id(server_id, "mcp_server_id")
-    async with transaction() as conn:
-        row = await repositories.get_mcp_relay_target(
-            conn,
-            tenant_id=safe_tenant_id,
-            server_name=safe_server_id,
-        )
+    try:
+        async with transaction() as conn:
+            row = await repositories.get_mcp_relay_target(
+                conn,
+                tenant_id=safe_tenant_id,
+                server_name=safe_server_id,
+            )
+    except repositories.RepositoryConflictError as exc:
+        raise McpRelayError("mcp_server_target_invalid", status_code=503) from exc
     if row is None:
         raise McpRelayError("mcp_server_not_available", status_code=403)
     envelope = str(row.get("credential_envelope") or "")
@@ -1052,7 +1202,10 @@ class HostMcpRelay:
         *,
         context_manager: McpRuntimeContextManager,
         target_resolver: Callable[[str, str], Awaitable[McpRelayTarget]] | None = None,
-        target_validator: Callable[[str], Awaitable[str]] | None = None,
+        target_validator: Callable[
+            [str], Awaitable[str | McpValidatedTarget]
+        ]
+        | None = None,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.context_manager = context_manager
@@ -1112,12 +1265,21 @@ class HostMcpRelay:
         incoming_headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         timeout = float(getattr(get_settings(), "mcp_relay_timeout_seconds", 30.0))
-        endpoint = await self.target_validator(target.endpoint)
+        validated_target = await self.target_validator(target.endpoint)
+        endpoint = (
+            validated_target.connect_url
+            if isinstance(validated_target, McpValidatedTarget)
+            else validated_target
+        )
         headers = self._headers(
             incoming_headers,
             jwt=jwt,
             static_headers=target.static_headers,
         )
+        extensions: dict[str, Any] | None = None
+        if isinstance(validated_target, McpValidatedTarget):
+            headers["Host"] = validated_target.host_header
+            extensions = {"sni_hostname": validated_target.sni_hostname}
         client = (
             self.client_factory(timeout=timeout, follow_redirects=False)
             if self.client_factory is not None
@@ -1126,7 +1288,35 @@ class HostMcpRelay:
         try:
             async with client:
                 try:
-                    response = await client.post(endpoint, json=payload, headers=headers)
+                    async with client.stream(
+                        "POST",
+                        endpoint,
+                        json=payload,
+                        headers=headers,
+                        extensions=extensions,
+                    ) as streamed_response:
+                        content = bytearray()
+                        max_bytes = int(
+                            getattr(
+                                get_settings(),
+                                "mcp_relay_max_response_bytes",
+                                1024 * 1024,
+                            )
+                        )
+                        async for chunk in streamed_response.aiter_bytes():
+                            content.extend(chunk)
+                            if len(content) > max_bytes:
+                                raise McpRelayError(
+                                    "mcp_server_response_too_large",
+                                    status_code=502,
+                                )
+                        response = httpx.Response(
+                            streamed_response.status_code,
+                            headers=streamed_response.headers,
+                            content=bytes(content),
+                            request=streamed_response.request,
+                            extensions=streamed_response.extensions,
+                        )
                 except httpx.HTTPError as exc:
                     raise McpRelayError("mcp_server_unavailable", status_code=503) from exc
         finally:
@@ -1231,10 +1421,14 @@ class HostMcpRelay:
                 response,
                 max_bytes=max_bytes,
             )
+            current_names = [str(tool.get("name") or "") for tool in current_tools]
+            if (
+                any(not name for name in current_names)
+                or len(current_names) != len(set(current_names))
+            ):
+                raise McpRelayError("mcp_tools_schema_invalid", status_code=502)
             current_by_name = {
-                str(tool.get("name") or ""): dict(tool)
-                for tool in current_tools
-                if str(tool.get("name") or "")
+                str(tool["name"]): dict(tool) for tool in current_tools
             }
             if not set(allowed_tool_names).issubset(set(current_by_name)):
                 raise McpRelayError("mcp_tool_revoked", status_code=403)

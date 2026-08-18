@@ -387,6 +387,7 @@ class AgentAppRunRequest(BaseModel):
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
+    mcp_context_id: str | None = None
 
     @field_validator("file_ids")
     @classmethod
@@ -395,6 +396,24 @@ class AgentAppRunRequest(BaseModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("file_ids contains duplicates")
         return normalized
+
+    @field_validator("mcp_context_id")
+    @classmethod
+    def validate_mcp_context_id(cls, value: str | None):
+        return assert_safe_id(value, "mcp_context_id") if value else value
+
+
+class RunControlMutationRequest(BaseModel):
+    """Optional fresh MCP context supplied only when replay requires it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mcp_context_id: str | None = None
+
+    @field_validator("mcp_context_id")
+    @classmethod
+    def validate_mcp_context_id(cls, value: str | None):
+        return assert_safe_id(value, "mcp_context_id") if value else value
 
 
 class AgentProfilePublicProjection(BaseModel):

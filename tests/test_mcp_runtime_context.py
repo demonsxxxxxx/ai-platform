@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi import Response
+from fastapi import HTTPException, Request, Response
 
 from app.auth import AuthPrincipal
 from app.mcp.runtime import (
@@ -18,6 +18,7 @@ from app.mcp.runtime import (
     McpRuntimeContextError,
     McpRuntimeContextManager,
     McpToolSelectionRequired,
+    McpValidatedTarget,
     bounded_tool_view,
     mcp_targets_from_policy_subjects,
     normalize_static_mcp_headers,
@@ -51,7 +52,12 @@ def _principal(*, user_id: str = "user-a", tenant_id: str = "tenant-a") -> AuthP
     )
 
 
-def _settings(monkeypatch, *, now: int = 1_700_000_000) -> int:
+def _settings(
+    monkeypatch,
+    *,
+    now: int = 1_700_000_000,
+    max_response_bytes: int = 1024 * 1024,
+) -> int:
     key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii").rstrip("=")
     monkeypatch.setattr(
         "app.mcp.runtime.get_settings",
@@ -60,7 +66,7 @@ def _settings(monkeypatch, *, now: int = 1_700_000_000) -> int:
             mcp_context_current_key_id="current",
             mcp_context_ttl_seconds=300,
             mcp_context_lease_seconds=1800,
-            mcp_relay_max_response_bytes=1024 * 1024,
+            mcp_relay_max_response_bytes=max_response_bytes,
         ),
     )
     return now
@@ -80,13 +86,21 @@ class _Client:
     async def post(self, *args, **kwargs):
         return await self.client.post(*args, **kwargs)
 
+    def stream(self, *args, **kwargs):
+        return self.client.stream(*args, **kwargs)
+
 
 async def _accept_test_target(endpoint: str) -> str:
     return endpoint
 
 
-async def _manager_with_capability(monkeypatch, *, targets=None):
-    now = _settings(monkeypatch)
+async def _manager_with_capability(
+    monkeypatch,
+    *,
+    targets=None,
+    max_response_bytes: int = 1024 * 1024,
+):
+    now = _settings(monkeypatch, max_response_bytes=max_response_bytes)
     store = InMemoryRuntimeContextStore(clock=lambda: now)
     manager = McpRuntimeContextManager(store=store, clock=lambda: now)
     token = _jwt(exp=now + 900)
@@ -126,6 +140,25 @@ async def test_runtime_context_is_sealed_and_capability_contains_only_server_too
     resolved = await manager.resolve_capability(capability.token)
     assert resolved.jwt == token
     assert resolved.capability.targets == capability.targets
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_ciphertext_cannot_be_relocated_to_another_context_key(
+    monkeypatch,
+):
+    now, _, store, manager, context, _ = await _manager_with_capability(monkeypatch)
+    source_key = f"ai-platform:mcp:runtime-context:v1:{context['mcp_context_id']}"
+    raw = await store.get(source_key)
+    assert raw is not None
+    relocated_context_id = "mcpctx_relocated"
+    await store.set(
+        f"ai-platform:mcp:runtime-context:v1:{relocated_context_id}",
+        raw,
+        ttl_seconds=300,
+    )
+
+    with pytest.raises(McpRuntimeContextError, match="mcp_context_corrupt"):
+        await manager._read(relocated_context_id)
 
 
 @pytest.mark.asyncio
@@ -210,6 +243,30 @@ async def test_runtime_target_rechecks_dns_policy_before_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runtime_target_pins_the_validated_address_and_preserves_tls_identity(
+    monkeypatch,
+):
+    async def public_dns(_hostname: str, _port: int):
+        return (ipaddress.ip_address("8.8.8.8"),)
+
+    monkeypatch.setattr(
+        "app.mcp.catalog._resolve_discovery_addresses",
+        public_dns,
+    )
+
+    target = await validate_registered_mcp_target(
+        "https://mcp.example:8443/tools"
+    )
+
+    assert target == McpValidatedTarget(
+        endpoint="https://mcp.example:8443/tools",
+        connect_url="https://8.8.8.8:8443/tools",
+        host_header="mcp.example:8443",
+        sni_hostname="mcp.example",
+    )
+
+
+@pytest.mark.asyncio
 async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(monkeypatch):
     now, token, _, manager, _, capability = await _manager_with_capability(
         monkeypatch,
@@ -237,10 +294,19 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
             active_tool_names=("search",),
         )
 
+    async def pin_target(endpoint: str) -> McpValidatedTarget:
+        assert endpoint == "https://inventory.example/mcp"
+        return McpValidatedTarget(
+            endpoint=endpoint,
+            connect_url="https://10.20.30.40/mcp",
+            host_header="inventory.example",
+            sni_hostname="inventory.example",
+        )
+
     relay = HostMcpRelay(
         context_manager=manager,
         target_resolver=resolve,
-        target_validator=_accept_test_target,
+        target_validator=pin_target,
         client_factory=lambda **kwargs: _Client(handler, **kwargs),
     )
     result = await relay.forward(
@@ -261,7 +327,9 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
     assert seen[0].headers["X-API-Key"] == "static-secret"
     assert seen[0].headers["Mcp-Session-Id"] == "session-1"
     assert "Cookie" not in seen[0].headers
-    assert seen[0].url == httpx.URL("https://inventory.example/mcp")
+    assert seen[0].url == httpx.URL("https://10.20.30.40/mcp")
+    assert seen[0].headers["Host"] == "inventory.example"
+    assert seen[0].extensions["sni_hostname"] == "inventory.example"
 
     with pytest.raises(McpRelayError, match="mcp_server_not_selected"):
         await relay.forward(
@@ -281,7 +349,6 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
             },
         )
     assert len(seen) == 1
-    assert now == 1_700_000_000
 
 
 @pytest.mark.asyncio
@@ -330,6 +397,38 @@ async def test_relay_blocks_redirect_and_401_invalidates_context(monkeypatch):
         await manager.resolve_capability(capability.token)
 
 
+@pytest.mark.asyncio
+async def test_relay_stops_reading_when_streamed_response_exceeds_limit(monkeypatch):
+    _, _, _, manager, _, capability = await _manager_with_capability(
+        monkeypatch,
+        max_response_bytes=1024,
+    )
+
+    async def resolve(_tenant_id: str, _server_id: str) -> McpRelayTarget:
+        return McpRelayTarget(
+            endpoint="https://inventory.example/mcp",
+            static_headers={},
+            active_tool_names=("search",),
+        )
+
+    async def oversized_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 1025)
+
+    relay = HostMcpRelay(
+        context_manager=manager,
+        target_resolver=resolve,
+        target_validator=_accept_test_target,
+        client_factory=lambda **kwargs: _Client(oversized_handler, **kwargs),
+    )
+
+    with pytest.raises(McpRelayError, match="mcp_server_response_too_large"):
+        await relay.forward(
+            capability_token=capability.token,
+            server_id="inventory-mcp",
+            payload={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+
+
 def test_tool_view_requires_explicit_selection_without_truncating_schema():
     tools = [
         {"name": f"tool-{index}", "inputSchema": {"type": "object", "index": index}}
@@ -338,6 +437,25 @@ def test_tool_view_requires_explicit_selection_without_truncating_schema():
     with pytest.raises(McpToolSelectionRequired, match="mcp_tool_selection_required"):
         bounded_tool_view(tools)
     assert bounded_tool_view(tools, selected_tool_names=("tool-40",)) == [tools[-1]]
+
+
+def test_tool_view_rejects_duplicate_catalog_names_and_incomplete_selection():
+    duplicate = [
+        {"name": "search", "inputSchema": {}},
+        {"name": "search", "inputSchema": {}},
+    ]
+    with pytest.raises(McpRelayError, match="mcp_tools_schema_invalid"):
+        bounded_tool_view(duplicate)
+    with pytest.raises(McpRelayError, match="mcp_tool_selection_invalid"):
+        bounded_tool_view(
+            [{"name": "search", "inputSchema": {}}],
+            selected_tool_names=("search", "missing"),
+        )
+    with pytest.raises(McpRelayError, match="mcp_tool_selection_invalid"):
+        bounded_tool_view(
+            [{"name": "search", "inputSchema": {}}],
+            selected_tool_names=("search", "search"),
+        )
 
 
 def test_targets_are_derived_only_from_authorized_policy_subjects():
@@ -378,7 +496,14 @@ def test_platform_request_contract_has_no_gateway_specific_selector():
 def test_runtime_config_and_callback_have_no_fixed_gateway_dependency():
     target = build_trusted_callback_target("http://localhost:8000")
     assert target.mcp_relay_url == f"http://localhost:8000{MCP_RELAY_CALLBACK_PATH}"
-    compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
+    compose_path = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "ai-platform"
+        / "docker-compose.yml"
+    )
+    compose = compose_path.read_text(encoding="utf-8")
+    compose_lines = compose.splitlines()
     assert "MCP_GATEWAY_URL" not in compose
     required = (
         "MCP_CONTEXT_ENCRYPTION_KEYS_JSON",
@@ -386,7 +511,15 @@ def test_runtime_config_and_callback_have_no_fixed_gateway_dependency():
         "MCP_CONTEXT_TTL_SECONDS",
         "MCP_CONTEXT_LEASE_SECONDS",
     )
-    assert all(compose.count(key) >= 2 for key in required)
+    assert all(
+        sum(
+            1
+            for line in compose_lines
+            if line.lstrip().startswith(f"{key}:")
+        )
+        == 2
+        for key in required
+    )
 
 
 @pytest.mark.asyncio
@@ -501,3 +634,133 @@ async def test_runtime_context_route_reads_only_jwt_authorization_and_sets_no_st
     assert result["mcp_context_id"].startswith("mcpctx_")
     assert response.headers["cache-control"] == "no-store"
     assert datetime.fromisoformat(result["expires_at"].replace("Z", "+00:00")).tzinfo
+
+
+@pytest.mark.asyncio
+async def test_relay_route_throttles_and_audits_safe_authorization_fingerprints(
+    monkeypatch,
+):
+    calls: list[tuple[str, str, str | None]] = []
+
+    class Limiter:
+        async def ensure_allowed(self, *, source_fingerprint, capability_fingerprint):
+            calls.append(("check", source_fingerprint, capability_fingerprint))
+
+        async def record_failure(self, *, source_fingerprint, capability_fingerprint):
+            calls.append(("failure", source_fingerprint, capability_fingerprint))
+            return 1
+
+    class Relay:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def forward(self, **_kwargs):
+            raise McpRelayError("mcp_capability_invalid", status_code=401)
+
+    monkeypatch.setattr(mcp_routes, "MCP_RELAY_AUTH_FAILURE_LIMITER", Limiter())
+    monkeypatch.setattr(mcp_routes, "HostMcpRelay", Relay)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/ai/mcp/relay/inventory",
+            "headers": [],
+            "client": ("10.0.0.7", 12345),
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mcp_routes.relay_mcp_jsonrpc(
+            server_id="inventory",
+            request=request,
+            response=Response(),
+            payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            capability="mcpbrk:private-token",
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 401
+    assert [item[0] for item in calls] == ["check", "failure"]
+    assert all(len(item[1]) == 64 and len(item[2] or "") == 64 for item in calls)
+    assert "10.0.0.7" not in repr(calls)
+    assert "private-token" not in repr(calls)
+
+
+@pytest.mark.asyncio
+async def test_relay_route_maps_non_relay_runtime_errors_to_safe_http_errors(monkeypatch):
+    class Limiter:
+        async def ensure_allowed(self, **_kwargs):
+            return None
+
+        async def record_failure(self, **_kwargs):
+            raise AssertionError("503 runtime failures are not auth failures")
+
+    class Relay:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def forward(self, **_kwargs):
+            raise McpRuntimeContextError("mcp_context_corrupt", status_code=503)
+
+    monkeypatch.setattr(mcp_routes, "MCP_RELAY_AUTH_FAILURE_LIMITER", Limiter())
+    monkeypatch.setattr(mcp_routes, "HostMcpRelay", Relay)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/ai/mcp/relay/inventory",
+            "headers": [],
+            "client": ("10.0.0.7", 12345),
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mcp_routes.relay_mcp_jsonrpc(
+            server_id="inventory",
+            request=request,
+            response=Response(),
+            payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            capability="mcpbrk:private-token",
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 503
+    assert getattr(exc_info.value, "detail", None) == "mcp_context_corrupt"
+
+
+@pytest.mark.asyncio
+async def test_relay_route_stops_before_dispatch_when_auth_failures_are_limited(
+    monkeypatch,
+):
+    class Limiter:
+        async def ensure_allowed(self, **_kwargs):
+            raise McpRuntimeContextError(
+                "mcp_relay_rate_limited",
+                status_code=429,
+            )
+
+    class ForbiddenRelay:
+        def __init__(self, **_kwargs):
+            raise AssertionError("rate-limited requests must not reach dispatch")
+
+    monkeypatch.setattr(mcp_routes, "MCP_RELAY_AUTH_FAILURE_LIMITER", Limiter())
+    monkeypatch.setattr(mcp_routes, "HostMcpRelay", ForbiddenRelay)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/ai/mcp/relay/inventory",
+            "headers": [],
+            "client": ("10.0.0.7", 12345),
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mcp_routes.relay_mcp_jsonrpc(
+            server_id="inventory",
+            request=request,
+            response=Response(),
+            payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            capability="mcpbrk:private-token",
+        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail == "mcp_relay_rate_limited"
