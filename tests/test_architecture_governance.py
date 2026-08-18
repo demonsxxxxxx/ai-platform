@@ -2987,6 +2987,28 @@ def test_exact_exception_exempts_only_the_bound_hot_file_growth(
     assert evaluation.exception["status"] == "applied"
 
 
+def test_inherited_exception_is_inactive_and_cannot_exempt_new_findings(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/worker.py", "BASELINE = True\nSECURITY_FIX = True\n")
+    scope_head = _commit(repo, "exception scope")
+    payload = _exception_payload(authority, authority, _exception_scope(repo, authority, scope_head))
+    _write(repo, ".architecture-governance-exception.json", json.dumps(payload, indent=2))
+    exception_base = _commit(repo, "bind architecture exception")
+    assert _evaluate(repo, authority, authority, exception_base).status == "pass"
+
+    _write(repo, "app/worker.py", "BASELINE = True\nSECURITY_FIX = True\nMORE_GROWTH = True\n")
+    head = _commit(repo, "grow inherited hot file again")
+
+    evaluation = _evaluate(repo, exception_base, exception_base, head)
+
+    assert evaluation.status == "violation"
+    assert [item.code for item in evaluation.findings] == ["frozen_hot_file_growth"]
+    assert evaluation.exempted_findings == ()
+    assert evaluation.exception["status"] == "inherited_inactive"
+
+
 def test_exception_rejects_ambiguous_same_code_and_path_findings(
     governance_repo: tuple[Path, str],
 ) -> None:

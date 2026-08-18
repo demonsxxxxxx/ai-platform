@@ -619,9 +619,13 @@ packages/layers, allowed public cross-domain modules, approved root modules,
 governed symbol owners, canonical registry module/key/settings-selector owners,
 and frozen hot files. A candidate-only
 `.architecture-governance-exception.json` binds an exception to exact base/head,
-paths, owner, reason, and removal condition. The gate itself MUST be introduced
-in a later PR so the candidate that defines it cannot certify its own
-correctness.
+paths, owner, reason, and removal condition. The checker applies an exception
+only when the candidate adds or changes that file. An exception inherited
+unchanged from the base is inactive: it cannot exempt new findings and cannot
+lock later candidates after its original merge. Candidates SHOULD delete an
+inherited inactive exception when they are otherwise performing an authority-only
+cleanup. The gate itself MUST be introduced in a later PR so the candidate that
+defines it cannot certify its own correctness.
 
 The immutable authority rule has one fail-closed recovery case. If the exact
 base policy cannot validate only because `approved_root_modules` no longer

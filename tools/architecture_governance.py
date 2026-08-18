@@ -795,6 +795,12 @@ class ArchitectureEvaluator:
         raw = self._git.text(head, exception_path, required=False)
         if raw is None:
             return list(findings), [], {"path": exception_path, "status": "absent"}
+        base_raw = self._git.text(base, exception_path, required=False)
+        if raw == base_raw:
+            return list(findings), [], {
+                "path": exception_path,
+                "status": "inherited_inactive",
+            }
         payload = _load_json_object(raw, path=exception_path, error_code="invalid_exception")
         _validate_exception(
             payload,
