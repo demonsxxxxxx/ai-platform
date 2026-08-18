@@ -488,7 +488,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
     monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
     monkeypatch.setattr(
-        "app.routes.chat.discard_unbound_mcp_runtime_context",
+        "app.routes.chat.mcp.discard_unbound_mcp_runtime_context",
         discard_context,
     )
 
@@ -545,6 +545,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         return "msg-polarity"
 
     async def enqueue(payload):
+        calls["queue_payload"] = payload
         calls["queue_input"] = payload["input"]
         return 1
 
@@ -568,13 +569,13 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr(repository_module, "append_event", noop)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
-    monkeypatch.setattr("app.routes.chat.bind_run_mcp_context", bind_context)
+    monkeypatch.setattr("app.routes.chat.mcp.bind_run_mcp_context", bind_context)
 
     async def preflight_stub(**kwargs):
         preflight_calls.append(kwargs)
         return None
 
-    monkeypatch.setattr("app.routes.chat.preflight_mcp_admission", preflight_stub)
+    monkeypatch.setattr("app.routes.chat.mcp.preflight_mcp_admission", preflight_stub)
 
     request_kwargs = {"message": message}
     if selected_tools is not None:
@@ -592,6 +593,10 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     expected_tools = selected_tools if expected_authorizations else None
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+    assert "mcp_context_id" not in calls["queue_payload"]
+    assert calls["queue_input"].get("mcp_context_id") == (
+        context_id if expected_tools else None
+    )
     assert "mcp_tool_names" not in calls["run_input"]
     assert "mcp_tool_names" not in calls["queue_input"]
     assert len(preflight_calls) == 1
@@ -864,7 +869,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
     )
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
     monkeypatch.setattr(
-        "app.routes.chat.discard_unbound_mcp_runtime_context",
+        "app.routes.chat.mcp.discard_unbound_mcp_runtime_context",
         discard_context,
     )
 
@@ -1683,7 +1688,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
-    monkeypatch.setattr("app.routes.chat.invalidate_mcp_runtime_context", invalidate)
+    monkeypatch.setattr("app.routes.chat.mcp.invalidate_mcp_runtime_context", invalidate)
 
     with pytest.raises(HTTPException) as exc_info:
         await _admit_chat_submission(
@@ -4631,10 +4636,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.preflight_mcp_admission", preflight)
-    monkeypatch.setattr("app.routes.chat.bind_run_mcp_context", bind_mcp_context)
+    monkeypatch.setattr("app.routes.chat.mcp.preflight_mcp_admission", preflight)
+    monkeypatch.setattr("app.routes.chat.mcp.bind_run_mcp_context", bind_mcp_context)
     monkeypatch.setattr(
-        "app.routes.chat.invalidate_mcp_runtime_context",
+        "app.routes.chat.mcp.invalidate_mcp_runtime_context",
         invalidate_mcp_context,
     )
     monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)

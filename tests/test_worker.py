@@ -1266,6 +1266,42 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
     assert reconstructed.skill_id is None
 
 
+def test_locked_run_replaces_caller_context_with_authoritative_run_context():
+    run_identity = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "execution_kind": "harness_chat",
+        "skill_id": "",
+    }
+    locked_run = {
+        "mcp_context_id": "mcpctx-authoritative",
+        "input_json": {
+            "input": {"mcp_context_id": "mcpctx-caller"},
+            "executor_type": "claude-agent-worker",
+            "schema_version": "ai-platform.run-payload.v2",
+        },
+    }
+
+    reconstructed = worker_module._payload_from_locked_run(
+        locked_run,
+        run_identity=run_identity,
+    )
+
+    assert reconstructed is not None
+    assert reconstructed.input["mcp_context_id"] == "mcpctx-authoritative"
+    locked_run.pop("mcp_context_id")
+    reconstructed_without_binding = worker_module._payload_from_locked_run(
+        locked_run,
+        run_identity=run_identity,
+    )
+    assert reconstructed_without_binding is not None
+    assert "mcp_context_id" not in reconstructed_without_binding.input
+
+
 @pytest.mark.asyncio
 async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):
     calls = []
@@ -1869,8 +1905,7 @@ def test_worker_mcp_context_forces_sandbox_without_client_tool_metadata(monkeypa
         {
             key: value
             for key, value in base_payload(
-                input={"mode": "chat"},
-                mcp_context_id="mcpctx-runtime",
+                input={"mode": "chat", "mcp_context_id": "mcpctx-runtime"},
             ).items()
             if key != "_queue_attempt_id"
         }
@@ -2000,6 +2035,7 @@ def locked_run_from_payload(payload):
         {key: value for key, value in payload.items() if key != "_queue_attempt_id"}
     ).model_dump(mode="json")
     agent_profile = validated.get("agent_profile") or {}
+    mcp_context_id = validated["input"].pop("mcp_context_id", None)
     return {
         "id": validated["run_id"],
         "tenant_id": validated["tenant_id"],
@@ -2017,6 +2053,7 @@ def locked_run_from_payload(payload):
         "admitted_agent_profile_hash": agent_profile.get("content_hash"),
         "session_admitted_agent_profile_revision": agent_profile.get("revision"),
         "session_admitted_agent_profile_hash": agent_profile.get("content_hash"),
+        "mcp_context_id": mcp_context_id,
         "input_json": {
             key: value
             for key, value in validated.items()
@@ -2644,7 +2681,7 @@ async def test_sandbox_reconciliation_payload_excludes_prompt_and_private_contex
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):
     calls = []
     raw = base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
-    raw["mcp_context_id"] = "mcpctx-async-dispatch"
+    raw["input"]["mcp_context_id"] = "mcpctx-async-dispatch"
     runtime_calls = []
 
     class AcceptedAdapter:
@@ -9322,7 +9359,7 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
             ("mcp_server", "server-step"): _task6_distribution("mcp_server", "server-step"),
         }
     )
-    raw["mcp_context_id"] = "mcpctx-worker-tools"
+    raw["input"]["mcp_context_id"] = "mcpctx-worker-tools"
     state["locked_run"]["mcp_context_id"] = "mcpctx-worker-tools"
     claimed = {}
     released = {}
@@ -9642,7 +9679,7 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         "server-admin",
         visible_to_user=False,
     )
-    raw["mcp_context_id"] = "mcpctx-worker-admin-bypass"
+    raw["input"]["mcp_context_id"] = "mcpctx-worker-admin-bypass"
     state["locked_run"]["mcp_context_id"] = "mcpctx-worker-admin-bypass"
 
     monkeypatch.setattr(
@@ -9785,7 +9822,7 @@ async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_
     state["skill"]["executor_type"] = "claude-agent-worker"
     state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
     raw["executor_type"] = "claude-agent-worker"
-    raw["mcp_context_id"] = "mcpctx-worker-risk"
+    raw["input"]["mcp_context_id"] = "mcpctx-worker-risk"
     state["locked_run"]["mcp_context_id"] = "mcpctx-worker-risk"
 
     monkeypatch.setattr(

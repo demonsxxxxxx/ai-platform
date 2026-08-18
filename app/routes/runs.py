@@ -3,7 +3,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import UUID4
+from pydantic import UUID4, BaseModel, ConfigDict
 
 from app import repositories
 from app.agent_profiles import reauthorize_pinned_run_for_replay
@@ -16,9 +16,9 @@ from app.db import transaction
 from app.models import (
     CreateRunRequest,
     CreateRunResponse,
+    McpContextId,
     QueueRunPayload,
     RunControlMutationResponse,
-    RunControlMutationRequest,
     RunControlOperationResponse,
     RunControlResponse,
     RunResponse,
@@ -61,6 +61,7 @@ from app.mcp.api import (
     get_mcp_runtime_context_manager,
     invalidate_mcp_runtime_context,
     preflight_mcp_admission,
+    queue_input_with_mcp_context,
 )
 from app.run_projection import (
     artifact_card,
@@ -105,6 +106,13 @@ from app.skills.pinning import (
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
+
+
+class RunControlMutationRequest(BaseModel):
+    """Optional fresh MCP context supplied only when replay requires it."""
+
+    model_config = ConfigDict(extra="forbid")
+    mcp_context_id: McpContextId | None = None
 
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
@@ -800,7 +808,10 @@ async def prepare_copied_run_for_queue(
         }
     )
     if isinstance(copied.get("mcp_context_id"), str):
-        queue_snapshot["mcp_context_id"] = copied["mcp_context_id"]
+        queue_snapshot["input"] = queue_input_with_mcp_context(
+            queue_snapshot["input"],
+            copied["mcp_context_id"],
+        )
     queue_payload = _validate_queue_payload_for_enqueue(
         {
             "tenant_id": effective_principal.tenant_id,
@@ -815,8 +826,7 @@ async def prepare_copied_run_for_queue(
         }
     )
     validated_snapshot = repositories.copied_run_execution_snapshot(queue_payload)
-    if isinstance(queue_payload.get("mcp_context_id"), str):
-        validated_snapshot["mcp_context_id"] = queue_payload["mcp_context_id"]
+    validated_snapshot["input"].pop("mcp_context_id", None)
     await repositories.update_run_input_execution_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -1002,12 +1012,14 @@ async def create_run(
                 "execution_kind": execution_kind,
                 "skill_id": resolved_skill_id,
                 "file_ids": primary_file_ids,
-                "input": run_input,
+                "input": queue_input_with_mcp_context(
+                    run_input,
+                    effective_mcp_context_id,
+                ),
                 "executor_type": executor_type,
                 "skill_version": skill_version,
                 "release_decision": release_decision_payload,
                 "skill_manifests": skill_manifest_transport,
-                "mcp_context_id": effective_mcp_context_id,
                 **(
                     {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT

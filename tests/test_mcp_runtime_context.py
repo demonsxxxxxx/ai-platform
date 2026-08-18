@@ -717,6 +717,10 @@ def test_platform_request_contract_has_no_gateway_specific_selector():
     )
     assert request.selected_mcp_tool_ids == ["mcpt-inventory-query"]
     with pytest.raises(ValueError):
+        ChatStreamRequest(message="use MCP", mcp_context_id="../invalid")
+    with pytest.raises(ValueError):
+        CreateRunRequest(agent_id="general-agent", mcp_context_id="invalid context")
+    with pytest.raises(ValueError):
         CreateRunRequest.model_validate(
             {
                 "agent_id": "general-agent",

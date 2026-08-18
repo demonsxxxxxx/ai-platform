@@ -398,7 +398,7 @@ async def test_copy_with_fresh_mcp_context_preflights_and_binds_child(
     monkeypatch,
     bind_failure,
 ):
-    from app.models import RunControlMutationRequest
+    from app.routes.runs import RunControlMutationRequest
     from app.routes import runs as runs_routes
 
     observed: dict[str, object] = {}

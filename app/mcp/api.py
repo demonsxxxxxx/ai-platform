@@ -19,6 +19,7 @@ from app.mcp.domain.headers import (
     MCP_JWT_AUTHORIZATION_HEADER,
     normalize_static_mcp_headers,
 )
+from app.mcp.domain.identifiers import assert_safe_mcp_id
 from app.mcp.domain.targets import (
     mcp_targets_from_policy_subjects,
     normalize_mcp_targets,
@@ -35,6 +36,28 @@ def get_mcp_runtime_context_manager() -> RuntimeContextManagerProxy:
 
 def get_mcp_relay_auth_failure_limiter() -> RelayAuthFailureLimiterProxy:
     return _FAILURE_LIMITER_PROXY
+
+
+def queue_input_with_mcp_context(
+    input_payload: dict[str, Any],
+    context_id: str | None,
+) -> dict[str, Any]:
+    """Bind only the trusted runtime-context ID into a queue-visible input."""
+
+    result = dict(input_payload)
+    result.pop("mcp_context_id", None)
+    if context_id:
+        result["mcp_context_id"] = assert_safe_mcp_id(context_id, "mcp_context_id")
+    return result
+
+
+def persisted_mcp_context_id(run: object) -> str | None:
+    if not isinstance(run, dict):
+        return None
+    input_json = run.get("input_json")
+    persisted = input_json.get("mcp_context_id") if isinstance(input_json, dict) else None
+    context_id = run.get("mcp_context_id") or persisted
+    return str(context_id) if isinstance(context_id, str) and context_id else None
 
 
 def create_host_mcp_relay(*, context_manager: Any | None = None) -> Any:
@@ -132,7 +155,9 @@ __all__ = [
     "normalize_mcp_targets",
     "normalize_static_mcp_headers",
     "open_mcp_server_credentials",
+    "persisted_mcp_context_id",
     "preflight_mcp_admission",
+    "queue_input_with_mcp_context",
     "record_mcp_server_credential",
     "seal_mcp_server_credentials",
 ]
