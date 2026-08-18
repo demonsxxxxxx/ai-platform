@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -47,6 +48,10 @@ TEMPORARY_ROOT_PREFIX = "apr-"
 WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET = 240
 WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH = 163
 WINDOWS_DIRECTORY_PATH_HEADROOM = 16
+WINDOWS_ERROR_DIRECTORY_NOT_EMPTY = 145
+WINDOWS_DIRECTORY_REMOVE_RETRY_LIMIT = 4
+WINDOWS_DIRECTORY_REMOVE_RETRY_WINDOW_SECONDS = 1.0
+WINDOWS_DIRECTORY_REMOVE_RETRY_INITIAL_DELAY_SECONDS = 0.05
 IS_WINDOWS = os.name == "nt"
 
 FAILURE_TAXONOMY = {
@@ -1264,7 +1269,39 @@ def _remove_cleanup_link_rendered(path: str, details: os.stat_result) -> None:
         os.unlink(path)
 
 
-def _remove_windows_cleanup_tree(path: str) -> None:
+@dataclass
+class _WindowsDirectoryRemovalRetry:
+    attempts: int = 0
+    deadline: float | None = None
+
+    def wait(self, error: OSError) -> bool:
+        if (
+            getattr(error, "winerror", None) != WINDOWS_ERROR_DIRECTORY_NOT_EMPTY
+            or self.attempts >= WINDOWS_DIRECTORY_REMOVE_RETRY_LIMIT
+        ):
+            return False
+        now = time.monotonic()
+        if self.deadline is None:
+            self.deadline = now + WINDOWS_DIRECTORY_REMOVE_RETRY_WINDOW_SECONDS
+        remaining = self.deadline - now
+        if remaining <= 0:
+            return False
+        delay = min(
+            WINDOWS_DIRECTORY_REMOVE_RETRY_INITIAL_DELAY_SECONDS * (2**self.attempts),
+            remaining,
+        )
+        self.attempts += 1
+        time.sleep(delay)
+        return True
+
+
+def _remove_windows_cleanup_tree(
+    path: str,
+    *,
+    retry: _WindowsDirectoryRemovalRetry | None = None,
+) -> None:
+    if retry is None:
+        retry = _WindowsDirectoryRemovalRetry()
     try:
         details = os.lstat(path)
     except FileNotFoundError:
@@ -1277,9 +1314,14 @@ def _remove_windows_cleanup_tree(path: str) -> None:
     if is_directory:
         with os.scandir(path) as entries:
             for entry in entries:
-                _remove_windows_cleanup_tree(entry.path)
+                _remove_windows_cleanup_tree(entry.path, retry=retry)
         _clear_windows_read_only(path, attributes)
-        os.rmdir(path)
+        try:
+            os.rmdir(path)
+        except OSError as error:
+            if not retry.wait(error):
+                raise
+            _remove_windows_cleanup_tree(path, retry=retry)
         return
     _clear_windows_read_only(path, attributes)
     os.unlink(path)
