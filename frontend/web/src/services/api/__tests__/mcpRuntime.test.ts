@@ -113,6 +113,44 @@ test("runtime context discard is an opaque principal-scoped DELETE", async () =>
   }
 });
 
+test("runtime context discard aborts a stalled request after one second", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let capturedSignal: AbortSignal | null = null;
+  let abortObserved = false;
+  let timeoutMs: number | undefined;
+
+  globalThis.setTimeout = ((callback: TimerHandler, timeout?: number) => {
+    timeoutMs = timeout;
+    queueMicrotask(() => {
+      if (typeof callback === "function") callback();
+    });
+    return 1 as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+  globalThis.fetch = (async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      capturedSignal = init?.signal ?? null;
+      const abort = () => {
+        abortObserved = capturedSignal?.aborted === true;
+        reject(new Error("discard aborted"));
+      };
+      if (capturedSignal?.aborted) abort();
+      else capturedSignal?.addEventListener("abort", abort, { once: true });
+    })) as typeof fetch;
+
+  try {
+    await discardMcpRuntimeContext("mcpctx-stalled");
+    assert.equal(timeoutMs, 1_000);
+    assert.equal(abortObserved, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test("unrelated 401 does not clear the MCP credential", async () => {
   const originalFetch = globalThis.fetch;
   installStorage();

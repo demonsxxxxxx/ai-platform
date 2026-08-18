@@ -9435,6 +9435,51 @@ async def test_worker_invalidates_mcp_context_after_cancelled_terminal_commit(mo
 
 
 @pytest.mark.asyncio
+async def test_worker_preserves_mcp_context_when_early_terminal_commit_fails(monkeypatch):
+    raw, _, state, calls = _install_task6_worker_fakes(monkeypatch)
+    raw["executor_type"] = "missing-executor"
+    raw["input"]["mcp_context_id"] = "mcpctx-commit-retry"
+    state["locked_run"]["input_json"]["executor_type"] = "missing-executor"
+    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-commit-retry"
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def commit_failing_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        yield object()
+        if transaction_count == 2:
+            raise RuntimeError("terminal commit failed")
+
+    async def finalize_parent(*_args, **_kwargs):
+        calls.append(("parent_finalize", {}))
+
+    async def publish_terminal(*_args, **_kwargs):
+        calls.append(("terminal_publish", {}))
+
+    async def invalidate_context(context_id):
+        calls.append(("mcp_invalidate", context_id))
+
+    monkeypatch.setattr(worker_module, "transaction", commit_failing_transaction)
+    monkeypatch.setattr(
+        worker_module,
+        "_finalize_multi_agent_parent_after_child_commit",
+        finalize_parent,
+    )
+    monkeypatch.setattr(worker_module, "publish_pending_run_terminal", publish_terminal)
+    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
+
+    with pytest.raises(RuntimeError, match="terminal commit failed"):
+        await process_run_payload(raw, registry=AdapterRegistry({}))
+
+    assert any(call[0] == "fail" for call in calls)
+    assert not any(
+        call[0] in {"parent_finalize", "terminal_publish", "mcp_invalidate"}
+        for call in calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,

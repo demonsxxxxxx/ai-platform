@@ -2322,6 +2322,11 @@ async def process_run_payload(
                     trace_id=trace_id,
                     worker_id=worker_id,
                 )
+    except BaseException:
+        # Deferred terminal side effects are valid only after transaction exit
+        # proves that the child terminal write committed.
+        terminal_after_transaction = None
+        raise
     finally:
         if terminal_after_transaction is not None:
             try:

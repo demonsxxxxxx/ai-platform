@@ -97,6 +97,14 @@ test("auth changes during MCP context creation prevent chat submission", async (
   const contextStarted = new Promise<void>((resolve) => {
     markContextStarted = resolve;
   });
+  let resolveDiscard!: (response: Response) => void;
+  const discardResponse = new Promise<Response>((resolve) => {
+    resolveDiscard = resolve;
+  });
+  let markDiscardStarted!: () => void;
+  const discardStarted = new Promise<void>((resolve) => {
+    markDiscardStarted = resolve;
+  });
   let submissions = 0;
   let pendingSubmission: Promise<unknown> | null = null;
   const requests: Array<{ url: string; init?: RequestInit }> = [];
@@ -105,6 +113,10 @@ test("auth changes during MCP context creation prevent chat submission", async (
     dom.window.localStorage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, "company.jwt");
     globalThis.fetch = (async (input, init) => {
       requests.push({ url: String(input), init });
+      if (init?.method === "DELETE") {
+        markDiscardStarted();
+        return discardResponse;
+      }
       markContextStarted();
       return contextResponse;
     }) as typeof fetch;
@@ -118,17 +130,24 @@ test("auth changes during MCP context creation prevent chat submission", async (
       await contextStarted;
     });
     await harness.dispatchAuthIncarnation("replacement-incarnation");
-    resolveContext(
-      new Response(
-        JSON.stringify({
-          mcp_context_id: "mcpctx-stale-owner",
-          expires_at: "2099-01-01T00:00:00Z",
-        }),
-      ),
-    );
+    await harness.act(async () => {
+      resolveContext(
+        new Response(
+          JSON.stringify({
+            mcp_context_id: "mcpctx-stale-owner",
+            expires_at: "2099-01-01T00:00:00Z",
+          }),
+        ),
+      );
+      await discardStarted;
+    });
+
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(submissions, 0);
 
     let outcome: unknown;
     await harness.act(async () => {
+      resolveDiscard(new Response(null, { status: 204 }));
       outcome = await pendingSubmission;
     });
 
