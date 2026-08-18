@@ -13,6 +13,10 @@ from app import repositories
 from app.db import transaction
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
+from app.mcp.api import (
+    invalidate_terminal_mcp_runtime_context,
+    persisted_mcp_context_id,
+)
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -291,7 +295,9 @@ async def reconcile_pending_executor_terminals_once(
                 )
             if run is None:
                 raise ValueError("executor_reconciliation_run_missing")
-            if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
+            run_status = str(run.get("status") or "")
+            terminal_mcp_context_id = persisted_mcp_context_id(run)
+            if run_status in _TERMINAL_RUN_STATUSES:
                 context, _terminal_result, run_payload = _context_and_payload(lease_row)
                 request = _reconciliation_request(lease_row, run_payload)
                 workspace = SandboxWorkspaceManager().prepare(request)
@@ -317,6 +323,10 @@ async def reconcile_pending_executor_terminals_once(
                 provider=provider,
                 lease=lease,
                 claim_token=claim_token,
+            )
+            await invalidate_terminal_mcp_runtime_context(
+                terminal_mcp_context_id,
+                status=run_status,
             )
         except asyncio.CancelledError:
             async with transaction() as conn:

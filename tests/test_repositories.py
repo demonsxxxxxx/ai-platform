@@ -8903,6 +8903,7 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
                 "id": "run-a",
                 "status": "running",
                 "trace_id": "trace-a",
+                "mcp_context_id": "mcpctx-cancel",
                 "cancel_requested_newly": False,
             }
             if admin:
@@ -8938,6 +8939,7 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     assert result == {
         "run_id": "run-a",
         "status": "failed",
+        "_mcp_context_id": "mcpctx-cancel",
         "_permission_terminalization_progress": RunTerminalizationProgress(
             True, "failed", True, True
         ),

@@ -199,8 +199,8 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
     async def list_runs(conn, *, limit):
         calls.append(("list", limit))
         return [
-            {"tenant_id": "tenant-a", "run_id": "run-a"},
-            {"tenant_id": "tenant-b", "run_id": "run-b"},
+            {"tenant_id": "tenant-a", "run_id": "run-a", "mcp_context_id": "mcpctx-a"},
+            {"tenant_id": "tenant-b", "run_id": "run-b", "mcp_context_id": "mcpctx-b"},
         ]
 
     async def drain(**kwargs):
@@ -218,6 +218,9 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         calls.append(("parent_recovery", limit))
         return []
 
+    async def invalidate(context_id, *, status):
+        calls.append(("invalidate", context_id, status))
+
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr(
         "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
@@ -227,12 +230,14 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_parent_runs_requiring_finalization", parent_recovery_candidates)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+    monkeypatch.setattr("app.worker_main.invalidate_terminal_mcp_runtime_context", invalidate)
 
     rows = await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
 
     assert calls == [
         ("list", 2),
         ("drain", "tenant-a", "run-a", 4),
+        ("invalidate", "mcpctx-a", "failed"),
         ("drain", "tenant-b", "run-b", 4),
         ("recovery", 2),
         ("parent_recovery", 2),
@@ -433,6 +438,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         "cancel_requested_at": "2026-07-21T11:07:58Z",
         "stale_before": "2026-07-21T11:00:00Z",
         "cancel_requested_before": "2026-07-21T11:07:58Z",
+        "mcp_context_id": "mcpctx-stale-cancel",
     }
 
     async def list_candidates(_conn, *, stale_after_seconds, cancel_requested_after_seconds, limit):
@@ -460,6 +466,9 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"]))
 
+    async def invalidate(context_id, *, status):
+        calls.append(("invalidate", context_id, status))
+
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr(
         "app.worker_main.reconcile_stale_runs_for_worker",
@@ -471,6 +480,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker_main.invalidate_terminal_mcp_runtime_context", invalidate)
 
     results = await worker_main.reconcile_stale_runs_for_worker(Settings())
 
@@ -481,6 +491,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     assert ("stage", "run-cancel", "running", "cancelled") in calls
     assert ("drain", "tenant-a", "run-cancel") in calls
     assert ("reconcile", "tenant-a", "run-cancel") in calls
+    assert ("invalidate", "mcpctx-stale-cancel", "cancelled") in calls
     assert ("release", "token") in calls
 
 
@@ -510,6 +521,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
             "status": "running",
             "cancel_requested_at": None,
             "stale_before": "2026-07-21T11:00:00Z",
+            "mcp_context_id": "mcpctx-stale-failed",
         },
         {
             "tenant_id": "tenant-a",
@@ -519,6 +531,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
             "status": "queued",
             "cancel_requested_at": None,
             "stale_before": "2026-07-21T11:00:00Z",
+            "mcp_context_id": "mcpctx-owner-race",
         },
     ]
 
@@ -545,6 +558,9 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["run_id"]))
 
+    async def invalidate(context_id, *, status):
+        calls.append(("invalidate", context_id, status))
+
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr(
         "app.worker_main.reconcile_stale_runs_for_worker",
@@ -556,6 +572,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
     monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker_main.invalidate_terminal_mcp_runtime_context", invalidate)
 
     results = await worker_main.reconcile_stale_runs_for_worker(Settings())
 
@@ -567,6 +584,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
         ("stage", "run-failed", "failed", "stale_run_interrupted"),
         ("drain", "run-failed"),
         ("reconcile", "run-failed"),
+        ("invalidate", "mcpctx-stale-failed", "failed"),
         ("release",),
     ]
 
@@ -1381,6 +1399,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
             "session_id": "session-a",
             "agent_id": "agent-a",
             "skill_id": "skill-a",
+            "mcp_context_id": "mcpctx-escaped",
             **run_state,
         }
 
@@ -1404,6 +1423,9 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].status))
 
+    async def invalidate(context_id, *, status):
+        calls.append(("mcp_invalidate", context_id, status))
+
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
         return LeaseMutationOutcome("acked")
@@ -1419,6 +1441,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker_main.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker_main.invalidate_terminal_mcp_runtime_context", invalidate)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
     monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
 
@@ -1434,6 +1457,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     assert ("lock", "tenant-a", "run-a", True) in calls
     assert ("ack", "raw-run", "msg-a") in calls
     assert ("dead_letter",) not in calls
+    assert ("mcp_invalidate", "mcpctx-escaped", expected_status) in calls
     if terminal_call is None:
         assert not any(call[0] in {"fail", "cancel", "reconcile"} for call in calls)
     else:
@@ -1502,6 +1526,7 @@ async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_lo
             "agent_id": "agent-a",
             "skill_id": "skill-a",
             "status": "running",
+            "mcp_context_id": "mcpctx-rollback",
         }
 
     async def fail_run(*_args, **_kwargs):
@@ -1712,11 +1737,15 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
         calls.append(("terminal_write",))
         return RunTerminalizationProgress(True, "failed", True, True)
 
+    async def invalidate(context_id, *, status):
+        calls.append(("mcp_invalidate", context_id, status))
+
     monkeypatch.setattr(worker_main, "parse_leased_queue_envelope", lambda _value: SimpleNamespace(payload=payload))
     monkeypatch.setattr(worker_main, "transaction", Transaction)
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
     monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
     monkeypatch.setattr(worker_main.repositories, "fail_run", fail_run)
+    monkeypatch.setattr(worker_main, "invalidate_terminal_mcp_runtime_context", invalidate)
 
     with pytest.raises(worker_main._EscapedTerminalizationOwnershipLost):
         await worker_main._terminalize_escaped_process_exception(message, "worker-a", RuntimeError("boom"))

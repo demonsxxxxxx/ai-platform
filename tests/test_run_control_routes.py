@@ -5984,11 +5984,13 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     """Both cancellation routes consume initial and drained typed progress without duplicate reconciliation."""
 
     reconciled = []
+    invalidated = []
 
     async def fake_request_cancel(_conn, **_kwargs):
         return {
             "run_id": "run_active",
             "status": "cancel_requested",
+            "_mcp_context_id": "mcpctx-cancel",
             "_permission_terminalization_progress": initial_progress,
         }
 
@@ -6003,11 +6005,16 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     async def remove_queued_run(**_kwargs):
         return 0
 
+    async def invalidate(context_id, *, status):
+        if status in {"succeeded", "failed", "cancelled"}:
+            invalidated.append((context_id, status))
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)
     monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
     monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr(f"{module_path}.invalidate_terminal_mcp_runtime_context", invalidate)
     monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
 
     response = TestClient(create_app()).post(path, headers=admin_headers() if is_admin else headers())
@@ -6015,6 +6022,62 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     assert response.status_code == 200
     assert response.json()["status"] == expected_status
     assert reconciled == ([('default', 'run_active', 'cancelled')] if expected_calls else [])
+    assert invalidated == (
+        [("mcpctx-cancel", "cancelled")] if expected_status == "cancelled" else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("module_path", "cancel_name", "path", "is_admin"),
+    [
+        ("app.routes.runs", "request_run_cancel", "/api/ai/runs/run_active/cancel", False),
+        (
+            "app.routes.admin_runs",
+            "request_admin_run_cancel",
+            "/api/ai/admin/runs/run_active/cancel",
+            True,
+        ),
+    ],
+    ids=["owner", "admin"],
+)
+def test_cancel_routes_preserve_mcp_context_when_terminal_commit_fails(
+    monkeypatch,
+    module_path,
+    cancel_name,
+    path,
+    is_admin,
+):
+    invalidated = []
+
+    class CommitFailingTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                raise RuntimeError("cancel commit failed")
+            return False
+
+    async def fake_request_cancel(_conn, **_kwargs):
+        return {
+            "run_id": "run_active",
+            "status": "cancelled",
+            "_mcp_context_id": "mcpctx-cancel",
+        }
+
+    async def invalidate(context_id, *, status):
+        invalidated.append((context_id, status))
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(f"{module_path}.transaction", CommitFailingTransaction)
+    monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
+    monkeypatch.setattr(f"{module_path}.invalidate_terminal_mcp_runtime_context", invalidate)
+
+    client = TestClient(create_app())
+    with pytest.raises(RuntimeError, match="cancel commit failed"):
+        client.post(path, headers=admin_headers() if is_admin else headers())
+
+    assert invalidated == []
 
 
 

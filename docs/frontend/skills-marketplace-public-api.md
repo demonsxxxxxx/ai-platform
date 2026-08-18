@@ -133,11 +133,24 @@ discovery without raw credentials, server headers, runtime paths, or unmanaged
 tool execution controls.
 
 Server lifecycle writes require a platform-admin principal. They persist only
-tenant-scoped registry metadata, redacted endpoint shape, allowed roles,
-department enablement, quotas, credential state, credential metadata such as
-header names or env key names, and a credential fingerprint. Raw URL query
-secrets, header values, commands, and credential values are not returned in API
-responses and are not written to audit payloads.
+tenant-scoped registry metadata, allowed roles, department enablement, quotas,
+credential state, and a credential fingerprint. MCP endpoint and static header
+envelopes are encrypted at rest; endpoint details, header names and values,
+commands, and credential values are not returned in API responses or written to
+audit payloads.
+
+Per-Run MCP authorization uses these runtime routes:
+
+- `POST /api/ai/mcp/runtime-contexts`
+- `DELETE /api/ai/mcp/runtime-contexts/{context_id}`
+- `POST /api/ai/mcp/relay/{server_id}`
+
+Context creation accepts the current browser-held JWT only through
+`JWT-Authorization` and returns an opaque, short-lived context ID. The JWT is
+kept out of normal Run, session, and audit projections. Context deletion is
+principal-scoped and idempotent. The relay route is an internal capability
+boundary used by selected MCP servers; browser callers do not receive the
+downstream endpoint, static headers, JWT, or broker capability.
 
 Explicitly fail-closed follow-up routes:
 

@@ -60,6 +60,7 @@ from app.mcp.api import (
     bind_run_mcp_context,
     get_mcp_runtime_context_manager,
     invalidate_mcp_runtime_context,
+    invalidate_terminal_mcp_runtime_context,
     preflight_mcp_admission,
     queue_input_with_mcp_context,
 )
@@ -1847,7 +1848,14 @@ async def cancel_run(
             user_id=principal.user_id,
             run_id=run_id,
         )
+    terminal_mcp_context_id = (
+        result.pop("_mcp_context_id", None) if result is not None else None
+    )
     if result is not None:
+        await invalidate_terminal_mcp_runtime_context(
+            terminal_mcp_context_id,
+            status=result["status"],
+        )
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
             await reconcile_terminalized_permission_run(
@@ -1868,6 +1876,10 @@ async def cancel_run(
                 "cancelled",
             }:
                 result["status"] = progressed_status
+        await invalidate_terminal_mcp_runtime_context(
+            terminal_mcp_context_id,
+            status=result["status"],
+        )
         await reconcile_terminalized_permission_run(
             tenant_id=principal.tenant_id,
             run_id=run_id,

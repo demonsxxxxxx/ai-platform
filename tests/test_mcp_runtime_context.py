@@ -15,6 +15,7 @@ from cryptography.x509.oid import NameOID
 from fastapi import HTTPException, Request, Response
 
 from app.auth import AuthPrincipal
+from app.mcp import api as mcp_api
 from app.mcp.domain.targets import mcp_targets_from_policy_subjects
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.runtime import (
@@ -61,6 +62,27 @@ def _principal(*, user_id: str = "user-a", tenant_id: str = "tenant-a") -> AuthP
         tenant_id=tenant_id,
         source="company-login",
     )
+
+
+@pytest.mark.asyncio
+async def test_terminal_context_cleanup_ignores_non_terminal_run_status(monkeypatch):
+    invalidated = []
+
+    async def invalidate(context_id):
+        invalidated.append(context_id)
+
+    monkeypatch.setattr(mcp_api, "invalidate_mcp_runtime_context", invalidate)
+
+    await mcp_api.invalidate_terminal_mcp_runtime_context(
+        "mcpctx-active",
+        status="running",
+    )
+    await mcp_api.invalidate_terminal_mcp_runtime_context(
+        "mcpctx-terminal",
+        status="failed",
+    )
+
+    assert invalidated == ["mcpctx-terminal"]
 
 
 def _settings(

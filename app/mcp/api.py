@@ -28,6 +28,7 @@ from app.mcp.domain.targets import (
 
 _CONTEXT_MANAGER_PROXY = RuntimeContextManagerProxy()
 _FAILURE_LIMITER_PROXY = RelayAuthFailureLimiterProxy()
+_TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 def get_mcp_runtime_context_manager() -> RuntimeContextManagerProxy:
@@ -93,6 +94,18 @@ async def invalidate_mcp_runtime_context(context_id: str | None) -> None:
         pass
 
 
+async def invalidate_terminal_mcp_runtime_context(
+    context_id: str | None,
+    *,
+    status: object,
+) -> None:
+    """Release a Run context only after its terminal status is committed."""
+
+    if str(status or "") not in _TERMINAL_RUN_STATUSES:
+        return
+    await invalidate_mcp_runtime_context(context_id)
+
+
 async def discard_unbound_mcp_runtime_context(
     context_id: str | None,
     principal: Any,
@@ -150,6 +163,7 @@ __all__ = [
     "get_mcp_relay_auth_failure_limiter",
     "get_mcp_runtime_context_manager",
     "invalidate_mcp_runtime_context",
+    "invalidate_terminal_mcp_runtime_context",
     "migrate_legacy_mcp_credentials",
     "mcp_targets_from_policy_subjects",
     "normalize_mcp_targets",

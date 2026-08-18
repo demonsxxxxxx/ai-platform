@@ -248,6 +248,68 @@ async def test_reconciler_owns_workspace_terminalization_and_release(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_reconciler_cleans_committed_terminal_run_mcp_context_after_release(monkeypatch):
+    calls = []
+
+    async def claim(_conn, **_kwargs):
+        return [_lease_row()]
+
+    async def get_run(_conn, **_kwargs):
+        return {
+            "id": "run-a",
+            "status": "failed",
+            "mcp_context_id": "mcpctx-reconciler",
+        }
+
+    async def release(_lease_row, **_kwargs):
+        calls.append("release")
+
+    async def invalidate(context_id, *, status):
+        calls.append(("invalidate", context_id, status))
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        claim,
+    )
+    monkeypatch.setattr("app.executor_reconciler.repositories.get_run", get_run)
+    monkeypatch.setattr(
+        "app.executor_reconciler._context_and_payload",
+        lambda _row: ({}, {}, object()),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler._reconciliation_request",
+        lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.SandboxWorkspaceManager.prepare",
+        lambda *_args: type("Workspace", (), {"workspace_host_path": "C:/workspace"})(),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.container_lease_from_persisted_row",
+        lambda _row: type(
+            "Lease",
+            (),
+            {"model_copy": lambda self, **_kwargs: self},
+        )(),
+    )
+    monkeypatch.setattr("app.executor_reconciler.create_container_provider", lambda: object())
+    monkeypatch.setattr("app.executor_reconciler._release_reconciled_lease", release)
+    monkeypatch.setattr(
+        "app.executor_reconciler.invalidate_terminal_mcp_runtime_context",
+        invalidate,
+    )
+
+    processed = await reconcile_pending_executor_terminals_once(worker_id="worker-a")
+
+    assert processed == 1
+    assert calls == [
+        "release",
+        ("invalidate", "mcpctx-reconciler", "failed"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reconciler_requeues_receipt_after_transient_failure(monkeypatch):
     retried = []
 

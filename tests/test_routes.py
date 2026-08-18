@@ -2294,7 +2294,10 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
             "agent_id": "general-agent",
             "skill_id": "general-chat",
             "status": "succeeded",
-            "input_json": {},
+            "input_json": {
+                "message": "run with MCP",
+                "mcp_context_id": "mcpctx-private",
+            },
             "result_json": {"message": "done"},
             "error_code": None,
             "error_message": None,
@@ -2333,6 +2336,8 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
     assert payload["skill_id"] is None
     assert "executor_schema_version" not in payload or payload["executor_schema_version"] is None
     assert payload["capability_id"] == "general_chat"
+    assert payload["input"] == {"message": "run with MCP"}
+    assert "mcp_context_id" not in payload["input"]
 
 
 @pytest.mark.asyncio
