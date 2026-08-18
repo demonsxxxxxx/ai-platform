@@ -1,0 +1,21 @@
+{
+  "schema_version": "ai-platform.architecture-governance-exception.v1",
+  "candidate": {
+    "authority_ref": "7e879e074ea4a2298214c154af1157b05bf2bfd3",
+    "base_ref": "7e879e074ea4a2298214c154af1157b05bf2bfd3",
+    "head_scope_sha256": "8cd325c3e98e363c5d35a0ad9070a859fe1d544a0230163fc443d77026ba6f55"
+  },
+  "expires_on": "2026-08-25",
+  "owner": "execution",
+  "reason": "Restore terminal convergence for completed asynchronous sandbox runs whose persisted unbound agent profile is represented as an empty object.",
+  "removal_condition": "Remove when executor terminal payload reconstruction is extracted from the frozen worker module.",
+  "paths": [
+    "app/worker.py"
+  ],
+  "violations": [
+    {
+      "code": "frozen_hot_file_growth",
+      "path": "app/worker.py"
+    }
+  ]
+}
