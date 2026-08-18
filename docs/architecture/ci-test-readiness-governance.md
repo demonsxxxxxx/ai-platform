@@ -106,6 +106,16 @@ Required pytest integration lanes write JUnit XML and run
 `tools/require_zero_junit_skips.py` against that exact report. A missing,
 malformed, empty, or skipped report fails the lane.
 
+Packaged image jobs remain required aggregation inputs on every pull request,
+but the expensive build, vulnerability scan, provenance, and startup steps run
+only when the exact base/head diff changes an input copied by that image, the
+owning workflow, or its Linux image contract. An unaffected pull request reports
+`not_affected` from the successful image job; it does not skip the job. Pushes to
+`main` and manual workflow dispatches always build both immutable images so every
+release commit retains image, source-marker, and admission evidence. The shared
+`tools/ci_image_scope.py` path inventory is executable contract authority and is
+covered by the backend release-governance shard.
+
 ## 5. Runtime readiness boundary
 
 Code in `app/` may expose readiness only when it observes the running process or

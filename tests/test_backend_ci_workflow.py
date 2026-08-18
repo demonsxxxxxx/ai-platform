@@ -82,6 +82,7 @@ BACKEND_TEST_SHARDS = {
     "release-governance": (
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
+        "tests/test_ci_image_scope.py",
         "tests/test_pre_push_readiness.py",
         "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
@@ -159,7 +160,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     }
     assert actual_shards == BACKEND_TEST_SHARDS
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 38
+    assert len(all_selectors) == len(set(all_selectors)) == 39
     assert tests_job.count("image: redis:7.4-alpine") == 1
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job
@@ -943,17 +944,38 @@ def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
     assert 'test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"' in head_checkout
 
 
-def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contract():
+def test_backend_image_job_builds_only_affected_pull_request_candidates_and_checks_runtime():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     image_job = workflow.split("  backend-image:", 1)[1].split("  required:", 1)[0]
     startup_step = image_job.split("- name: Verify backend image startup", 1)[1]
 
     assert "paths:" not in workflow
-    assert "if:" not in image_job
     assert "needs: backend-validation" in image_job
     assert "timeout-minutes: 30" in image_job
+    assert "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}" in image_job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
+    assert "fetch-depth: 0" in image_job
     assert "persist-credentials: false" in image_job
+    assert "- name: Determine backend image impact" in image_job
+    assert "id: image-scope" in image_job
+    assert "python tools/ci_image_scope.py" in image_job
+    assert '--event-name "$GITHUB_EVENT_NAME"' in image_job
+    assert '--role backend' in image_job
+    assert '--base-ref "$IMAGE_BASE_COMMIT"' in image_job
+    assert '--head-ref "$IMAGE_SOURCE_COMMIT"' in image_job
+    assert "- name: Report backend image validation not affected" in image_job
+    assert "if: steps.image-scope.outputs.build != 'true'" in image_job
+    assert "reason=packaged_inputs_unchanged" in image_job
+    assert "base_commit=%s head_commit=%s" in image_job
+    for step_name in [
+        "Resolve image source repository",
+        "Build backend image",
+        "Block fixable backend image vulnerabilities",
+        "Verify backend image runtime contract",
+        "Verify backend image startup",
+    ]:
+        step = image_job.split(f"- name: {step_name}", 1)[1].split("\n      - name:", 1)[0]
+        assert "if: steps.image-scope.outputs.build == 'true'" in step
     assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in image_job
     assert "- name: Resolve image source repository" in image_job
     assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in image_job
@@ -990,6 +1012,9 @@ def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contrac
     assert "exit 1" in startup_step
     assert "docker push" not in image_job
     assert "docker compose" not in image_job.lower()
+    required_job = workflow.split("  required:", 1)[1]
+    assert "IMAGE_RESULT: ${{ needs.backend-image.result }}" in required_job
+    assert "IMAGE_DISPOSITION" not in required_job
 
 
 def test_backend_required_contract_preserves_high_risk_design_triggers():
