@@ -48,7 +48,7 @@ async def _resolve_current_principal_before_dispatch(
     run_loader: Callable[..., Awaitable[dict[str, Any] | None]],
     principal_resolver: Callable[..., Awaitable[AuthPrincipal]],
 ) -> AuthPrincipal | None:
-    """Resolve current authority without holding the dispatch transaction open."""
+    """Resolve current authority after binding the payload to an active run."""
 
     async with transaction_factory() as conn:
         queued_run = await run_loader(
@@ -56,7 +56,10 @@ async def _resolve_current_principal_before_dispatch(
             tenant_id=payload.tenant_id,
             run_id=payload.run_id,
         )
-    if queued_run is None or str(queued_run.get("status") or "") != "queued":
+    if queued_run is None or str(queued_run.get("status") or "") not in {
+        "queued",
+        "running",
+    }:
         return None
     run_identity = _locked_run_identity(payload, queued_run)
     if _identity_mismatch_fields(payload, run_identity):

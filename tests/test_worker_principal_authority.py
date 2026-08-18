@@ -21,7 +21,10 @@ def _payload() -> QueueRunPayload:
 
 
 @pytest.mark.asyncio
-async def test_current_principal_resolution_releases_preflight_transaction_before_http():
+@pytest.mark.parametrize("run_status", ["queued", "running"])
+async def test_current_principal_resolution_releases_preflight_transaction_before_http(
+    run_status,
+):
     payload = _payload()
     transaction_depth = 0
     calls = []
@@ -39,7 +42,11 @@ async def test_current_principal_resolution_releases_preflight_transaction_befor
 
     async def get_run(_conn, **_kwargs):
         assert transaction_depth == 1
-        return {**payload.model_dump(mode="json"), "id": payload.run_id, "status": "queued"}
+        return {
+            **payload.model_dump(mode="json"),
+            "id": payload.run_id,
+            "status": run_status,
+        }
 
     async def resolve_current_principal(*, user_id, tenant_id):
         assert transaction_depth == 0
@@ -63,3 +70,32 @@ async def test_current_principal_resolution_releases_preflight_transaction_befor
     assert principal is not None
     assert principal.user_id == "user-a"
     assert calls == ["transaction_enter", "transaction_exit", "current_principal_http"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_status", ["succeeded", "failed", "cancelled"])
+async def test_current_principal_resolution_rejects_terminal_runs(run_status):
+    payload = _payload()
+
+    @asynccontextmanager
+    async def recording_transaction():
+        yield object()
+
+    async def get_run(_conn, **_kwargs):
+        return {
+            **payload.model_dump(mode="json"),
+            "id": payload.run_id,
+            "status": run_status,
+        }
+
+    async def unexpected_principal_resolution(**_kwargs):
+        raise AssertionError("terminal runs must not resolve current authority")
+
+    principal = await _resolve_current_principal_before_dispatch(
+        payload,
+        transaction_factory=recording_transaction,
+        run_loader=get_run,
+        principal_resolver=unexpected_principal_resolution,
+    )
+
+    assert principal is None

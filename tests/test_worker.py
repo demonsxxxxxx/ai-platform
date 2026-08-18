@@ -1590,6 +1590,131 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
     assert captured[0].agent_profile == expected_profile
 
 
+@pytest.mark.asyncio
+async def test_bound_agent_executor_reconciliation_uses_session_pins_and_terminalizes(
+    monkeypatch,
+):
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": [
+            {"skill_id": "general-chat", "expected_version": "version-a"}
+        ],
+    }
+    persisted = base_payload(
+        _leased=False,
+        agent_id="agt_support",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "hello"},
+        executor_type="claude-agent-worker",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        agent_profile=profile,
+    )
+    locked_run = locked_run_from_payload(persisted)
+    locked_run["status"] = "running"
+    get_run_calls = []
+    terminal_calls = []
+
+    async def get_run(
+        _conn,
+        *,
+        tenant_id,
+        run_id,
+        for_update=False,
+    ):
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        get_run_calls.append(for_update)
+        return dict(locked_run)
+
+    async def append_event(_conn, **kwargs):
+        terminal_calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def complete_run(_conn, **kwargs):
+        terminal_calls.append(("complete", kwargs["run_id"]))
+        return True
+
+    async def has_reconciliation_claim(_conn, **kwargs):
+        assert kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
+        return True
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        has_reconciliation_claim,
+    )
+
+    queue_payload = QueueRunPayload.model_validate(persisted)
+    run_payload = RunPayload(
+        tenant_id=queue_payload.tenant_id,
+        workspace_id=queue_payload.workspace_id,
+        user_id=queue_payload.user_id,
+        session_id=queue_payload.session_id,
+        run_id=queue_payload.run_id,
+        attempt_id="attempt-a",
+        agent_id=queue_payload.agent_id,
+        execution_kind=queue_payload.execution_kind,
+        skill_id=queue_payload.skill_id,
+        file_ids=queue_payload.file_ids,
+        input=queue_payload.input,
+        trace_id="trace-a",
+        skill_version=queue_payload.skill_version or "",
+        release_decision=queue_payload.release_decision,
+        skill_manifests=queue_payload.skill_manifests,
+        context_snapshot_id=queue_payload.context_snapshot_id or "",
+        context_snapshot=queue_payload.context_snapshot,
+        model_id=queue_payload.model_id or "",
+        model_value=queue_payload.model_value or "",
+        agent_profile=queue_payload.agent_profile or {},
+        schema_version=queue_payload.schema_version,
+    )
+    lease_row = {
+        "id": "lease-a",
+        "attempt_id": "attempt-a",
+        "executor_reconciliation_context_json": {
+            "adapter_name": "claude-agent-worker",
+            "adapter_context": {},
+            "run_payload": asdict(run_payload),
+        },
+    }
+    result = ExecutorResult(
+        status="succeeded",
+        adapter_version="opensandbox/1",
+        executor_type="claude_agent_sdk",
+        executor_version="1",
+        capabilities={},
+        result={"message": "done"},
+        executor_payload={},
+    )
+
+    outcome = await worker_module.reconcile_executor_terminal_result(
+        lease_row=lease_row,
+        result=result,
+        registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
+        worker_id="worker-a",
+        claim_token="claim-a",
+    )
+
+    assert outcome == WorkerOutcome("succeeded", "run-a")
+    assert get_run_calls.count(False) >= 2
+    assert True in get_run_calls
+    assert ("complete", "run-a") in terminal_calls
+    assert not any(
+        call == ("event", "capability_not_authorized") for call in terminal_calls
+    )
+
+
 def test_run_payload_accepts_only_complete_pinned_harness_profile():
     profile = {
         "agent_id": "agt_support",
