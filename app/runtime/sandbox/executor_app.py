@@ -7,8 +7,10 @@ import functools
 import hmac
 import inspect
 import json
+import logging
 import math
 import os
+import random
 import re
 import signal
 import subprocess
@@ -17,7 +19,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -75,6 +77,43 @@ from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
+CallbackRetrySleep = Callable[[float], Awaitable[None]]
+
+_logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _CallbackRetryPolicy:
+    max_attempts: int = 4
+    attempt_timeout_seconds: float = 10.0
+    initial_backoff_seconds: float = 0.25
+    max_backoff_seconds: float = 2.0
+    jitter_ratio: float = 0.2
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("callback retry max_attempts must be positive")
+        if self.attempt_timeout_seconds <= 0:
+            raise ValueError("callback retry attempt timeout must be positive")
+        if self.initial_backoff_seconds < 0 or self.max_backoff_seconds < 0:
+            raise ValueError("callback retry backoff must not be negative")
+        if self.initial_backoff_seconds > self.max_backoff_seconds:
+            raise ValueError("callback retry initial backoff exceeds maximum")
+        if not 0 <= self.jitter_ratio <= 1:
+            raise ValueError("callback retry jitter ratio must be between zero and one")
+
+    def delay_after_attempt(self, attempt: int) -> float:
+        base_delay = min(
+            self.initial_backoff_seconds * (2 ** max(attempt - 1, 0)),
+            self.max_backoff_seconds,
+        )
+        return base_delay + random.uniform(0, base_delay * self.jitter_ratio)
+
+
+class _CallbackDeliveryError(RuntimeError):
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
 
 
 class _CallbackBatchIdFactory:
@@ -197,9 +236,10 @@ def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> b
     """Accept only the runtime-callback receipt for one envelope plus its events."""
 
     acknowledged_count = result.get("event_count") if isinstance(result, dict) else None
-    return isinstance(result, dict) and result.get("accepted") is True and type(
-        acknowledged_count
-    ) is int and acknowledged_count == 1 + event_count
+    acknowledged = isinstance(result, dict) and (
+        result.get("accepted") is True or result.get("deduplicated") is True
+    )
+    return acknowledged and type(acknowledged_count) is int and acknowledged_count == 1 + event_count
 
 
 def _private_capability_fact(
@@ -389,6 +429,83 @@ async def _dispatch_callback(
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _callback_error_is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code in {408, 429} or status_code >= 500
+    return isinstance(exc, (httpx.TransportError, TimeoutError, OSError))
+
+
+def _callback_error_reason(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"http_{exc.response.status_code}"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "attempt_timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "transport_error"
+    if isinstance(exc, OSError):
+        return "os_error"
+    return "hard_rejection"
+
+
+async def _deliver_nonterminal_callback(
+    callback_sender: CallbackSender,
+    url: str,
+    payload: CallbackPayload,
+    token: str,
+    *,
+    retry_policy: _CallbackRetryPolicy,
+    retry_sleep: CallbackRetrySleep,
+) -> None:
+    frozen_payload = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    event_count = len(payload.get("events") or [])
+    for attempt in range(1, retry_policy.max_attempts + 1):
+        try:
+            result = await asyncio.wait_for(
+                _dispatch_callback(
+                    callback_sender,
+                    url,
+                    json.loads(frozen_payload),
+                    token,
+                ),
+                timeout=retry_policy.attempt_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            reason = _callback_error_reason(exc)
+            log_context = {
+                "callback_batch_id": str(payload.get("batch_id") or ""),
+                "callback_attempt": attempt,
+                "callback_reason": reason,
+            }
+            if not _callback_error_is_retryable(exc):
+                _logger.warning("sandbox_callback_delivery_rejected", extra=log_context)
+                raise _CallbackDeliveryError("stream_delivery_rejected") from exc
+            if attempt >= retry_policy.max_attempts:
+                _logger.error("sandbox_callback_delivery_exhausted", extra=log_context)
+                raise _CallbackDeliveryError("stream_delivery_exhausted") from exc
+            _logger.warning("sandbox_callback_delivery_retry", extra=log_context)
+            await retry_sleep(retry_policy.delay_after_attempt(attempt))
+            continue
+        if not _callback_acknowledges_exact_batch(result, event_count=event_count):
+            _logger.warning(
+                "sandbox_callback_delivery_rejected",
+                extra={
+                    "callback_batch_id": str(payload.get("batch_id") or ""),
+                    "callback_attempt": attempt,
+                    "callback_reason": "invalid_receipt",
+                },
+            )
+            raise _CallbackDeliveryError("stream_delivery_rejected")
+        return
 
 
 def _write_runtime_marker(workspace_root: Path, request: ExecutorTaskRequest) -> Path:
@@ -1669,6 +1786,8 @@ def create_executor_app(
     dispatch_in_background: bool = True,
     terminal_callback_retry_seconds: float = 300.0,
     heartbeat_interval_seconds: float = 15.0,
+    nonterminal_callback_retry_policy: _CallbackRetryPolicy | None = None,
+    callback_retry_sleep: CallbackRetrySleep | None = None,
 ) -> FastAPI:
     task_state: dict[str, Any] = {
         "status": "idle",
@@ -1701,6 +1820,8 @@ def create_executor_app(
     app.state.dispatch_in_background = dispatch_in_background
     resolved_workspace_root = Path(workspace_root)
     resolved_callback_sender = callback_sender or _default_callback_sender
+    resolved_nonterminal_callback_retry_policy = nonterminal_callback_retry_policy or _CallbackRetryPolicy()
+    resolved_callback_retry_sleep = callback_retry_sleep or asyncio.sleep
     configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
     configured_expected_session_id = _configured_expected_value(expected_session_id, "AI_PLATFORM_SESSION_ID")
     configured_expected_run_id = _configured_expected_value(expected_run_id, "AI_PLATFORM_RUN_ID")
@@ -1790,6 +1911,7 @@ def create_executor_app(
         artifact_upload_latency_ms = 0
         runner_events_open = {"value": True}
         capability_callback_failed = {"value": False}
+        stream_delivery_failure: dict[str, str | None] = {"error_code": None}
         public_execution_projector = PublicExecutionV2Projector()
         public_execution_phase_publisher = PublicExecutionPhasePublisher()
         runner_event_lock = asyncio.Lock()
@@ -1851,36 +1973,40 @@ def create_executor_app(
             runner_events_open["value"] = False
             stop_all_active_progress()
 
+        def seal_runner_events_after_delivery_failure(error_code: str) -> None:
+            if stream_delivery_failure["error_code"] is None:
+                stream_delivery_failure["error_code"] = error_code
+            runner_events_open["value"] = False
+            stop_all_active_progress()
+
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
+            if stream_delivery_failure["error_code"] is not None:
+                return False
             try:
-                result = await _dispatch_callback(
+                await _deliver_nonterminal_callback(
                     resolved_callback_sender,
                     request.callback_url,
                     event.model_dump(),
                     request.callback_token,
+                    retry_policy=resolved_nonterminal_callback_retry_policy,
+                    retry_sleep=resolved_callback_retry_sleep,
                 )
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except _CallbackDeliveryError as exc:
                 callback_errors.append(event.status)
+                seal_runner_events_after_delivery_failure(exc.error_code)
                 return False
-            strict_event_count = sum(
-                agent_event.type.startswith("capability_")
-                or agent_event.type
-                in {
-                    "execution_step",
-                    "execution_progress",
-                    "execution_step_completed",
-                    "execution_step_failed",
-                }
-                for agent_event in event.events
-            )
-            if strict_event_count:
-                acknowledged = _callback_acknowledges_exact_batch(
-                    result,
-                    event_count=len(event.events),
-                )
-                if not acknowledged:
-                    callback_errors.append(event.status)
-                return acknowledged
+            return True
+
+        def apply_stream_delivery_failure(result: dict[str, Any]) -> bool:
+            error_code = stream_delivery_failure["error_code"]
+            if capability_callback_failed["value"] or error_code is None:
+                return False
+            result["status"] = "failed"
+            result["message"] = ""
+            result["error_code"] = error_code
+            result["error_message"] = "Public stream callback delivery failed"
             return True
 
         async def emit_runner_event_locked(event: ExecutorEvent) -> bool:
@@ -2077,6 +2203,8 @@ def create_executor_app(
             runner_result["error_code"] = "capability_callback_not_acknowledged"
             runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
             runner_result["capability_evidence"] = []
+        else:
+            apply_stream_delivery_failure(runner_result)
 
         runner_status = str(runner_result.get("status") or "").strip().lower()
         failed = timed_out or runner_status not in {"completed", "succeeded"}
@@ -2091,6 +2219,9 @@ def create_executor_app(
             await emit_runner_event(
                 _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
             )
+        if apply_stream_delivery_failure(runner_result):
+            runner_status = "failed"
+            failed = True
         runner_events_open["value"] = False
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
         error_code = (
@@ -2138,6 +2269,11 @@ def create_executor_app(
         )
 
         await dispatch_callback_event(execution_observation)
+        if apply_stream_delivery_failure(runner_result):
+            runner_status = "failed"
+            failed = True
+            error_code = str(runner_result["error_code"])
+            error_message = str(runner_result["error_message"])
 
         executor_model_latency_ms = _elapsed_ms(started_at)
         response: dict[str, Any] = {
