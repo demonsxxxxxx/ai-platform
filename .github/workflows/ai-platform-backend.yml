@@ -165,6 +165,7 @@ jobs:
             test_files: >-
               tests/test_architecture_governance.py
               tests/test_backend_ci_workflow.py
+              tests/test_ci_image_scope.py
               tests/test_pre_push_readiness.py
               tests/test_s72_release_contract.py
               tests/test_packaging_contract.py
@@ -286,7 +287,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-validation
     timeout-minutes: 30
+    outputs:
+      disposition: ${{ steps.image-scope.outputs.disposition }}
     env:
+      IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
     steps:
@@ -294,9 +298,26 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Determine backend image impact
+        id: image-scope
+        run: |
+          set -euo pipefail
+          python tools/ci_image_scope.py \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --role backend \
+            --base-ref "$IMAGE_BASE_COMMIT" \
+            --head-ref "$IMAGE_SOURCE_COMMIT" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Report backend image validation not affected
+        if: steps.image-scope.outputs.build != 'true'
+        run: printf 'backend_image_validation=not_affected\n'
+
       - name: Resolve image source repository
+        if: steps.image-scope.outputs.build == 'true'
         run: |
           set -euo pipefail
           image_source_repository="https://github.com/${GITHUB_REPOSITORY}.git"
@@ -307,6 +328,7 @@ jobs:
           printf 'IMAGE_SOURCE_REPOSITORY=%s\n' "$image_source_repository" >> "$GITHUB_ENV"
 
       - name: Build backend image
+        if: steps.image-scope.outputs.build == 'true'
         run: |
           set -euo pipefail
           [[ "$IMAGE_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
@@ -320,6 +342,7 @@ jobs:
             .
 
       - name: Block fixable backend image vulnerabilities
+        if: steps.image-scope.outputs.build == 'true'
         env:
           TRIVY_LIST_ALL_PKGS: 'false'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -334,6 +357,7 @@ jobs:
           version: v0.70.0
 
       - name: Verify backend image runtime contract
+        if: steps.image-scope.outputs.build == 'true'
         run: |
           set -euo pipefail
           image="ai-platform-backend:$IMAGE_SOURCE_COMMIT"
@@ -368,6 +392,7 @@ jobs:
           '
 
       - name: Verify backend image startup
+        if: steps.image-scope.outputs.build == 'true'
         run: |
           set -euo pipefail
           image="ai-platform-backend:$IMAGE_SOURCE_COMMIT"
@@ -409,8 +434,13 @@ jobs:
           BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}
           AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}
           IMAGE_RESULT: ${{ needs.backend-image.result }}
+          IMAGE_DISPOSITION: ${{ needs.backend-image.outputs.disposition }}
         run: |
           test "$VALIDATION_RESULT" = "success"
           test "$BACKEND_TESTS_RESULT" = "success"
           test "$AGENT_SKILL_RESULT" = "success"
           test "$IMAGE_RESULT" = "success"
+          case "$IMAGE_DISPOSITION" in
+            affected|required_event|not_affected) ;;
+            *) exit 1 ;;
+          esac
