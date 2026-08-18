@@ -7,6 +7,7 @@ AGENTS = ROOT / "AGENTS.md"
 DOCS_INDEX = ROOT / "docs/README.md"
 MULTI_AGENT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
+LOCAL_TEST_EXECUTION = ROOT / "docs/agent-rules/local-test-execution.md"
 PULL_REQUEST_TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
 CLAUDE = ROOT / "CLAUDE.md"
 RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
@@ -30,6 +31,7 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
     for relative_path in (
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
+        "agent-rules/local-test-execution.md",
         "architecture/source-code-architecture.md",
         "architecture/ci-test-readiness-governance.md",
         "adr/0006-domain-first-modular-monolith.md",
@@ -44,6 +46,7 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     agents = read(AGENTS)
     claude = read(CLAUDE)
     workflow = read(GITHUB_WORKFLOW)
+    local_test_execution = read(LOCAL_TEST_EXECUTION)
     pull_request_template = read(PULL_REQUEST_TEMPLATE)
     claude_flat = " ".join(claude.split())
     workflow_flat = " ".join(workflow.split())
@@ -64,6 +67,22 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     )
     assert "falsifiable regression" in workflow
     assert "cannot prove the contract existed before coding" in workflow
+    assert "python tools/run_test_stage.py" in agents
+    assert "docs/agent-rules/local-test-execution.md" in agents
+    for execution_rule in (
+        "test_isolation_failure",
+        "test_timeout",
+        "invalid_test_plan",
+        "required_dependency_missing",
+        "passed_with_skips",
+        "spawnSync",
+        "only direct-pytest exception",
+        "Git-tracked",
+        "any skip returns a non-zero exit",
+        "a fixture cannot own a production runtime task",
+        "tasks created only by a test",
+    ):
+        assert execution_rule in local_test_execution
     assert re.search(r"Only risk categories .* non-applicable", workflow_flat)
     assert re.search(r"bare `N/A`.*does not satisfy", workflow_flat)
     for heading in (
@@ -179,6 +198,10 @@ def test_ci_test_readiness_governance_separates_evidence_and_tracks_completion()
     }
 
     assert "[`ci-test-readiness-governance.md`](ci-test-readiness-governance.md)" in architecture
+    assert (
+        "[`../agent-rules/local-test-execution.md`](../agent-rules/local-test-execution.md)"
+        in governance
+    )
     assert "Authority baseline audited: `6c010079782afe30ada5f75c44600939f0381b13`" in governance
     assert {
         "## 2. Evidence levels",

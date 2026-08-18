@@ -3535,7 +3535,7 @@ async def reconcile_executor_terminal_result(
         context_snapshot=run_payload.context_snapshot,
         model_id=run_payload.model_id or None,
         model_value=run_payload.model_value or None,
-        agent_profile=run_payload.agent_profile,
+        agent_profile=run_payload.agent_profile or None,
         schema_version=run_payload.schema_version,
     )
     return await process_run_payload(

@@ -122,6 +122,7 @@
     "app/error_taxonomy.py",
     "app/error_taxonomy_dashboard_readiness.py",
     "app/execution_boundary.py",
+    "app/executor_reconciler.py",
     "app/file_parser_contracts.py",
     "app/file_preview_contracts.py",
     "app/file_type_validation.py",

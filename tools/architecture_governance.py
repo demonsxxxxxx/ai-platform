@@ -1,7 +1,8 @@
 """Evaluate an exact Git range against the trusted backend architecture policy.
 
-The executable, policy, and policy schema are authority objects. Candidate
-filesystem contents are never imported or used to decide their own result.
+The executable, policy schema, and normal policy are authority objects. Candidate
+filesystem contents cannot relax their own result. A narrowly bounded recovery
+path may replace only an invalid app-root inventory with the exact Git inventory.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ POLICY_SCHEMA_ID = (
 POLICY_PATH = "architecture-policy.json"
 POLICY_SCHEMA_PATH = "schemas/architecture-policy.v1.schema.json"
 TOOL_PATH = "tools/architecture_governance.py"
+EXCEPTION_PATH = ".architecture-governance-exception.json"
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 MODULE_NAME = re.compile(r"[a-z][a-z0-9_]*")
@@ -369,9 +371,30 @@ class ArchitectureEvaluator:
             error_code="invalid_policy",
         )
         _validate_json_schema_instance(policy, schema)
-        _validate_policy(policy, self._git, authority)
-
         changes = self._git.changes(base, head)
+        if authority != base and any(change.path == POLICY_PATH for change in changes):
+            self._reject_invalid_base_policy_repair(
+                schema=schema,
+                base=base,
+            )
+        try:
+            _validate_policy(policy, self._git, authority)
+        except ArchitectureError as exc:
+            if (
+                exc.code != "invalid_policy"
+                or str(exc) != "approved_root_modules must exactly inventory authority app-root Python modules"
+                or authority == head
+            ):
+                raise
+            policy = self._load_root_inventory_repair(
+                authority_policy=policy,
+                schema=schema,
+                authority=authority,
+                base=base,
+                head=head,
+                changes=changes,
+            )
+
         findings = self._evaluate_candidate(policy, base, head, changes)
         ordered = _sort_findings(findings)
         active, exempted, exception = self._apply_exception(
@@ -397,6 +420,106 @@ class ArchitectureEvaluator:
             exempted_findings=tuple(exempted),
             exception=exception,
         )
+
+    def _reject_invalid_base_policy_repair(
+        self,
+        *,
+        schema: dict[str, Any],
+        base: str,
+    ) -> None:
+        base_policy = _load_json_object(
+            self._git.text(base, POLICY_PATH),
+            path=POLICY_PATH,
+            error_code="invalid_policy_repair",
+        )
+        try:
+            _validate_json_schema_instance(base_policy, schema)
+            _validate_policy(base_policy, self._git, base)
+        except ArchitectureError as exc:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "policy changes cannot repair an invalid base when authority_ref differs from base_ref",
+            ) from exc
+
+    def _load_root_inventory_repair(
+        self,
+        *,
+        authority_policy: dict[str, Any],
+        schema: dict[str, Any],
+        authority: str,
+        base: str,
+        head: str,
+        changes: Sequence[_ChangedPath],
+    ) -> dict[str, Any]:
+        if authority != base:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "root inventory repair requires authority_ref to equal base_ref",
+            )
+
+        policy_changes = [change for change in changes if change.path == POLICY_PATH]
+        exception_changes = [change for change in changes if change.path == EXCEPTION_PATH]
+        changed_paths = {
+            path
+            for change in changes
+            for path in (change.old_path, change.new_path)
+            if path is not None
+        }
+        if changed_paths - {POLICY_PATH, EXCEPTION_PATH}:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "root inventory repair cannot change files outside the policy and stale exception",
+            )
+        if len(policy_changes) != 1 or policy_changes[0] != _ChangedPath("M", POLICY_PATH, POLICY_PATH):
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "root inventory repair must modify architecture-policy.json in place",
+            )
+        if exception_changes and exception_changes != [_ChangedPath("D", EXCEPTION_PATH, None)]:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "root inventory repair may only delete the stale architecture exception",
+            )
+        if self._git.blob(head, EXCEPTION_PATH, required=False) is not None:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "root inventory repair requires the candidate architecture exception to be absent",
+            )
+
+        candidate_policy = _load_json_object(
+            self._git.text(head, POLICY_PATH),
+            path=POLICY_PATH,
+            error_code="invalid_policy_repair",
+        )
+        _validate_json_schema_instance(candidate_policy, schema)
+        authority_contract = copy.deepcopy(authority_policy)
+        candidate_contract = copy.deepcopy(candidate_policy)
+        authority_contract.pop("approved_root_modules", None)
+        candidate_contract.pop("approved_root_modules", None)
+        if candidate_contract != authority_contract:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "root inventory repair cannot change any other architecture policy field",
+            )
+
+        authority_roots = sorted(
+            path
+            for path in self._git.paths(authority, "app")
+            if len(PurePosixPath(path).parts) == 2 and PurePosixPath(path).suffix == ".py"
+        )
+        head_roots = sorted(
+            path
+            for path in self._git.paths(head, "app")
+            if len(PurePosixPath(path).parts) == 2 and PurePosixPath(path).suffix == ".py"
+        )
+        if authority_roots != head_roots or candidate_policy["approved_root_modules"] != authority_roots:
+            raise ArchitectureError(
+                "invalid_policy_repair",
+                "approved_root_modules must exactly match the unchanged authority and candidate Git trees",
+            )
+
+        _validate_policy(candidate_policy, self._git, head)
+        return candidate_policy
 
     def _discover_repository(self) -> None:
         result = self._runner.run(("git", "rev-parse", "--show-toplevel"), cwd=self._repo_root)
@@ -672,6 +795,12 @@ class ArchitectureEvaluator:
         raw = self._git.text(head, exception_path, required=False)
         if raw is None:
             return list(findings), [], {"path": exception_path, "status": "absent"}
+        base_raw = self._git.text(base, exception_path, required=False)
+        if raw == base_raw:
+            return list(findings), [], {
+                "path": exception_path,
+                "status": "inherited_inactive",
+            }
         payload = _load_json_object(raw, path=exception_path, error_code="invalid_exception")
         _validate_exception(
             payload,
@@ -1506,7 +1635,7 @@ def _validate_symbol_entry(entry: dict[str, Any], label: str) -> None:
 def _validate_exception_contract(contract: Any) -> None:
     expected = {"path", "schema_version", "max_days", "non_exemptible_codes", "owner", "reason"}
     _require_exact_keys(contract, expected, "exception_contract", "invalid_policy")
-    if contract["path"] != ".architecture-governance-exception.json":
+    if contract["path"] != EXCEPTION_PATH:
         raise ArchitectureError("invalid_policy", "exception_contract.path is not canonical")
     if contract["schema_version"] != "ai-platform.architecture-governance-exception.v1":
         raise ArchitectureError("invalid_policy", "exception_contract.schema_version is invalid")

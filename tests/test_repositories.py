@@ -12711,7 +12711,7 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     class DetailConnection:
         async def execute(self, sql, params):
             compact = " ".join(sql.split())
-            if "from runs where tenant_id" in compact:
+            if "from runs" in compact and "where runs.tenant_id" in compact:
                 return DetailCursor(
                     one={
                         "id": "run-a",

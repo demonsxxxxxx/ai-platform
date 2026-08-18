@@ -149,9 +149,24 @@ async def get_run(
     run_id: str,
     for_update: bool = False,
 ) -> dict[str, Any] | None:
-    lock_clause = "for update" if for_update else ""
+    lock_clause = "for update of runs" if for_update else ""
     cursor = await conn.execute(
-        f"select * from runs where tenant_id = %s and id = %s {lock_clause}",
+        f"""
+        select runs.*,
+               sessions.admitted_agent_profile_revision
+                 as session_admitted_agent_profile_revision,
+               sessions.admitted_agent_profile_hash
+                 as session_admitted_agent_profile_hash
+        from runs
+        left join sessions
+          on sessions.tenant_id = runs.tenant_id
+         and sessions.id = runs.session_id
+         and sessions.workspace_id = runs.workspace_id
+         and sessions.user_id is not distinct from runs.user_id
+         and sessions.agent_id = runs.agent_id
+        where runs.tenant_id = %s and runs.id = %s
+        {lock_clause}
+        """,
         (tenant_id, run_id),
     )
     return await cursor.fetchone()
