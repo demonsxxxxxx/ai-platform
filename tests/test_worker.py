@@ -1549,7 +1549,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
     monkeypatch.setattr(worker_module, "process_run_payload", capture_payload)
     lease_row = {
         "executor_reconciliation_context_json": {
-            "adapter_name": "opensandbox",
+            "adapter_name": "claude-agent-worker",
             "adapter_context": {},
             "run_payload": {
                 "tenant_id": "tenant-a",

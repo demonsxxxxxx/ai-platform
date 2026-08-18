@@ -3,7 +3,7 @@
   "candidate": {
     "authority_ref": "7e879e074ea4a2298214c154af1157b05bf2bfd3",
     "base_ref": "7e879e074ea4a2298214c154af1157b05bf2bfd3",
-    "head_scope_sha256": "8cd325c3e98e363c5d35a0ad9070a859fe1d544a0230163fc443d77026ba6f55"
+    "head_scope_sha256": "be2935c8e2f4cc0edbabe49ae3b47d5ba4f8177cf4a1d885c5ad66818016eb4a"
   },
   "expires_on": "2026-08-25",
   "owner": "execution",
