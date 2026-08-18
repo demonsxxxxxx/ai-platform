@@ -113,7 +113,7 @@ def _is_dispatch_operation(value) -> bool:
         isinstance(arguments, dict)
         and arguments.get("port") == 18000
         and str(arguments.get("method") or "").upper() == "POST"
-        and str(arguments.get("target") or "").split("?", 1)[0] == "/v1/tasks/execute"
+        and str(arguments.get("target") or "").split("?", 1)[0] == "/v2/tasks"
     )
 
 

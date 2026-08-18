@@ -37,6 +37,17 @@ def callback_payload(**overrides):
         "error_message": None,
     }
     payload.update(overrides)
+    if payload["status"] in {"completed", "failed", "cancelled"} and "terminal_result" not in payload:
+        payload["terminal_result"] = {
+            "status": payload["status"],
+            "run_id": payload["run_id"],
+            "message": "done" if payload["status"] == "completed" else "",
+            **(
+                {"error_code": "executor_failed", "error_message": "Executor failed"}
+                if payload["status"] == "failed"
+                else {}
+            ),
+        }
     return payload
 
 
@@ -53,24 +64,41 @@ def patch_callback_settings(monkeypatch, settings_obj):
         monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: settings_obj)
 
 
-def patch_active_attempt(monkeypatch, runtime_callbacks, attempt_id="attempt-a"):
+def patch_active_attempt(
+    monkeypatch,
+    runtime_callbacks,
+    attempt_id="attempt-a",
+    lease_id: str | None = None,
+):
     active_attempt = attempt_id
 
     async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
         if attempt_id != active_attempt:
             return []
-        return [{"lease_payload_json": {"attempt_id": active_attempt}}]
+        lease = {"lease_payload_json": {"attempt_id": active_attempt}}
+        if lease_id is not None:
+            lease["id"] = lease_id
+        return [lease]
+
+    async def ignore_terminal_signal(**_kwargs):
+        return None
 
     monkeypatch.setattr(
         runtime_callbacks.repositories,
         "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
     )
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "publish_executor_terminal_signal",
+        ignore_terminal_signal,
+    )
 
 
 def patch_callback_stream(monkeypatch, runtime_callbacks, published):
     authority = SimpleNamespace(
         tenant_scope="scope-a",
+        run_id="run-a",
         attempt_id="attempt-a",
         stream_incarnation=1,
         state="confirmed",
@@ -481,7 +509,7 @@ def test_runtime_tool_permission_callback_is_retired_without_resolver_access():
     assert response.json()["detail"] == "tool_permission_runtime_approval_removed"
     assert ExecutorToolPermissionRequest.model_fields["attempt_id"].is_required()
 
-def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
+def test_executor_callback_persists_terminal_receipt_without_public_terminal_event(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -500,23 +528,51 @@ def test_executor_callback_rejects_terminal_status_before_persisting_public_even
         calls.append((event_type, stage, message, payload))
         return f"evt_{len(calls)}"
 
+    async def fake_record_terminal(conn, **kwargs):
+        calls.append(("terminal", kwargs))
+        return {"id": kwargs["lease_id"]}
+
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
-    patch_active_attempt(monkeypatch, runtime_callbacks)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_terminal",
+        fake_record_terminal,
+    )
+    signaled = []
+
+    async def record_signal(**kwargs):
+        signaled.append(kwargs)
+
+    patch_active_attempt(monkeypatch, runtime_callbacks, lease_id="lease-a")
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "publish_executor_terminal_signal",
+        record_signal,
+    )
     client = TestClient(create_app())
 
     response = client.post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(status="completed", progress=100),
+        json=callback_payload(
+            status="completed",
+            progress=100,
+            new_message=None,
+            state_patch={},
+        ),
     )
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
-    assert calls == []
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "event_count": 1}
+    terminal_calls = [item for item in calls if item[0] == "terminal"]
+    assert len(terminal_calls) == 1
+    assert terminal_calls[0][1]["lease_id"] == "lease-a"
+    assert terminal_calls[0][1]["terminal_result"]["status"] == "completed"
+    assert signaled == [{}]
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -541,23 +597,33 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
     async def fake_append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload):
         return "evt-a"
 
+    async def fake_record_terminal(conn, **kwargs):
+        return {"id": kwargs["lease_id"]}
+
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
-    patch_active_attempt(monkeypatch, runtime_callbacks)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_terminal",
+        fake_record_terminal,
+    )
+    patch_active_attempt(monkeypatch, runtime_callbacks, lease_id="lease-a")
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda: FakeProvider(), raising=False)
     client = TestClient(create_app())
 
     response = client.post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(status="completed", progress=100),
+        json=callback_payload(
+            status="completed", progress=100, new_message=None, state_patch={}
+        ),
     )
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "event_count": 1}
     assert calls == []
 
 
@@ -629,8 +695,8 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     )
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
-    assert calls == []
+    assert response.json() == {"detail": "run_already_terminal"}
+    assert calls == [("identity", "run-a", True)]
 
 
 def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatch):

@@ -815,7 +815,7 @@ class DockerRuntimeAdapter:
         output = self._command(
             ["docker", "exec", "-i", container_id, "python3", "-c", PROXY_SOURCE],
             input_bytes=_json_text(value).encode(),
-            timeout_seconds=self.dispatch_timeout_seconds if port == 18000 and request.target.split("?", 1)[0] == "/v1/tasks/execute" else None,
+            timeout_seconds=self.dispatch_timeout_seconds if port == 18000 and request.target.split("?", 1)[0] == "/v2/tasks" else None,
         )
         try:
             result = json.loads(output)
@@ -933,7 +933,7 @@ class HelperRuntimeAdapter:
             and isinstance(arguments, Mapping)
             and arguments.get("port") == 18000
             and str(arguments.get("method") or "").upper() == "POST"
-            and str(arguments.get("target") or "").split("?", 1)[0] == "/v1/tasks/execute"
+            and str(arguments.get("target") or "").split("?", 1)[0] == "/v2/tasks"
         )
         deadline = operation_deadline(self.dispatch_timeout_seconds if dispatch else self.timeout_seconds)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

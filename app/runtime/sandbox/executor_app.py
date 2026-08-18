@@ -15,13 +15,14 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
@@ -1663,8 +1664,39 @@ def create_executor_app(
     expected_run_id: str | None = None,
     expected_attempt_id: str | None = None,
     trusted_callback_base_url: str | None = None,
+    dispatch_in_background: bool = True,
+    terminal_callback_retry_seconds: float = 300.0,
+    heartbeat_interval_seconds: float = 15.0,
 ) -> FastAPI:
-    app = FastAPI(title="AI Platform Sandbox Executor", version="0.1.0")
+    task_state: dict[str, Any] = {
+        "status": "idle",
+        "result": None,
+        "task": None,
+        "run_id": None,
+        "attempt_id": None,
+        "delivery_error": None,
+    }
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+        task = task_state.get("task")
+        if not isinstance(task, asyncio.Task) or task.done():
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
+        except asyncio.CancelledError:
+            pass
+        except TimeoutError:
+            task.cancel()
+
+    app = FastAPI(
+        title="AI Platform Sandbox Executor",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.state.dispatch_in_background = dispatch_in_background
     resolved_workspace_root = Path(workspace_root)
     resolved_callback_sender = callback_sender or _default_callback_sender
     configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
@@ -1708,22 +1740,9 @@ def create_executor_app(
             ) from exc
         return {"uid": uid, "gid": gid}
 
-    @app.post("/v1/tasks/execute")
-    async def execute_task(
+    async def execute_claimed_task(
         request: ExecutorTaskRequest,
-        executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
     ) -> dict[str, Any]:
-        _require_executor_credential(executor_credential, configured_executor_auth_token)
-        _validate_executor_request_scope(
-            request,
-            expected_session_id=configured_expected_session_id,
-            expected_run_id=configured_expected_run_id,
-            expected_attempt_id=configured_expected_attempt_id,
-            trusted_callback_base_url=trusted_callback_base_url,
-        )
-        if execute_claimed["value"]:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="executor_request_replayed")
-        execute_claimed["value"] = True
         started_at = time.monotonic()
         document_started_at = time.monotonic()
         try:
@@ -2159,5 +2178,197 @@ def create_executor_app(
         if callback_errors:
             response["callback_errors"] = callback_errors
         return response
+
+    async def deliver_terminal_callback(
+        request: ExecutorTaskRequest,
+        result: dict[str, Any],
+    ) -> None:
+        result_status = str(result.get("status") or "failed").strip().lower()
+        if result_status in {"completed", "succeeded"}:
+            callback_status = "completed"
+            progress = 100
+        elif result_status in {"cancelled", "canceled"}:
+            callback_status = "cancelled"
+            progress = 100
+            result["status"] = "cancelled"
+        else:
+            callback_status = "failed"
+            progress = 100
+            result["status"] = "failed"
+        callback = ExecutorCallbackEvent(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
+            batch_id=f"terminal-{uuid.uuid4().hex}",
+            status=callback_status,
+            progress=progress,
+            sdk_session_id=str(result.get("sdk_session_id") or request.sdk_session_id or "") or None,
+            error_message=str(result.get("error_message") or "") or None,
+            terminal_result=result,
+        )
+        deadline = time.monotonic() + terminal_callback_retry_seconds
+        delay = 0.5
+        while True:
+            try:
+                acknowledged = resolved_callback_sender(
+                    request.callback_url,
+                    callback.model_dump(exclude_none=True),
+                    request.callback_token,
+                )
+                if inspect.isawaitable(acknowledged):
+                    acknowledged = await acknowledged
+                if isinstance(acknowledged, dict) and acknowledged.get("accepted") is True:
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                task_state["delivery_error"] = (
+                    f"{type(exc).__name__}: {str(exc)}"[:512]
+                )
+            if time.monotonic() >= deadline:
+                raise RuntimeError("executor_terminal_callback_not_acknowledged")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 10.0)
+
+    async def send_supervisor_heartbeats(request: ExecutorTaskRequest) -> None:
+        while True:
+            await asyncio.sleep(heartbeat_interval_seconds)
+            heartbeat = ExecutorCallbackEvent(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                attempt_id=request.attempt_id,
+                callback_token_id=request.callback_token_id,
+                batch_id=f"heartbeat-{uuid.uuid4().hex}",
+                status="running",
+                progress=5,
+                state_patch={"executor_heartbeat": True},
+            )
+            try:
+                acknowledged = resolved_callback_sender(
+                    request.callback_url,
+                    heartbeat.model_dump(exclude_none=True),
+                    request.callback_token,
+                )
+                if inspect.isawaitable(acknowledged):
+                    await acknowledged
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Heartbeats are best-effort liveness hints. Runner events and
+                # terminal delivery keep their own acknowledgement semantics.
+                continue
+
+    async def supervise_task(request: ExecutorTaskRequest) -> None:
+        task_state["status"] = "running"
+        heartbeat_task = asyncio.create_task(send_supervisor_heartbeats(request))
+        try:
+            result = await execute_claimed_task(request)
+        except asyncio.CancelledError:
+            result = {
+                "status": "cancelled",
+                "run_id": request.run_id,
+                "message": "Task cancelled",
+                "error_code": "executor_cancelled",
+                "error_message": "Task cancelled",
+            }
+        except Exception:
+            result = {
+                "status": "failed",
+                "run_id": request.run_id,
+                "message": "Executor failed",
+                "error_code": "executor_runner_failed",
+                "error_message": "Executor failed",
+            }
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        task_state["result"] = result
+        task_state["status"] = str(result.get("status") or "failed")
+        try:
+            await deliver_terminal_callback(request, result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            task_state["status"] = "callback_failed"
+
+    def validate_control_scope(run_id: str, attempt_id: str) -> None:
+        expected_run = configured_expected_run_id or task_state.get("run_id")
+        expected_attempt = configured_expected_attempt_id or task_state.get("attempt_id")
+        if run_id != expected_run or attempt_id != expected_attempt:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="invalid_executor_scope")
+
+    @app.post("/v2/tasks")
+    async def dispatch_task(
+        request: ExecutorTaskRequest,
+        response: Response = None,  # type: ignore[assignment]
+        executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
+    ) -> dict[str, Any]:
+        _require_executor_credential(executor_credential, configured_executor_auth_token)
+        _validate_executor_request_scope(
+            request,
+            expected_session_id=configured_expected_session_id,
+            expected_run_id=configured_expected_run_id,
+            expected_attempt_id=configured_expected_attempt_id,
+            trusted_callback_base_url=trusted_callback_base_url,
+        )
+        if execute_claimed["value"]:
+            if response is not None:
+                response.status_code = status.HTTP_202_ACCEPTED
+            return {
+                "status": "accepted",
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+            }
+        execute_claimed["value"] = True
+        task_state["run_id"] = request.run_id
+        task_state["attempt_id"] = request.attempt_id
+        if not app.state.dispatch_in_background:
+            result = await execute_claimed_task(request)
+            task_state["result"] = result
+            task_state["status"] = str(result.get("status") or "failed")
+            return result
+        task = asyncio.create_task(supervise_task(request))
+        task_state["task"] = task
+        task_state["status"] = "accepted"
+        if response is not None:
+            response.status_code = status.HTTP_202_ACCEPTED
+        return {
+            "status": "accepted",
+            "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
+        }
+
+    @app.get("/v2/tasks/{run_id}/{attempt_id}")
+    async def get_task_status(
+        run_id: str,
+        attempt_id: str,
+        executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
+    ) -> dict[str, Any]:
+        _require_executor_credential(executor_credential, configured_executor_auth_token)
+        validate_control_scope(run_id, attempt_id)
+        response: dict[str, Any] = {
+            "status": task_state["status"],
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+        }
+        if task_state["result"] is not None:
+            response["terminal_result"] = task_state["result"]
+        if task_state["delivery_error"] is not None:
+            response["error_message"] = task_state["delivery_error"]
+        return response
+
+    @app.post("/v2/tasks/{run_id}/{attempt_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+    async def cancel_task(
+        run_id: str,
+        attempt_id: str,
+        executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
+    ) -> dict[str, Any]:
+        _require_executor_credential(executor_credential, configured_executor_auth_token)
+        validate_control_scope(run_id, attempt_id)
+        task = task_state.get("task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+        return {"status": "cancel_requested", "run_id": run_id, "attempt_id": attempt_id}
 
     return app

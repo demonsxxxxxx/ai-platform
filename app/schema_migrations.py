@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.13.1"
+TARGET_SCHEMA_VERSION = "2026.08.17.3"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -29,6 +29,7 @@ CRITICAL_RELATIONS = (
     "artifacts",
     "object_deletion_outbox",
     "audit_logs",
+    "sandbox_leases",
 )
 CRITICAL_COLUMNS = (
     ("agent_profile_revisions", "skill_set", "jsonb", True),
@@ -58,6 +59,23 @@ CRITICAL_COLUMNS = (
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
     ("object_deletion_outbox", "reconcile_required", "bool", True),
     ("audit_logs", "payload_json", "jsonb", True),
+    ("sandbox_leases", "attempt_id", "text", False),
+    ("sandbox_leases", "runtime_container_id", "text", False),
+    ("sandbox_leases", "runtime_container_name", "text", False),
+    ("sandbox_leases", "runtime_executor_url", "text", False),
+    ("sandbox_leases", "runtime_workspace_container_path", "text", False),
+    ("sandbox_leases", "runtime_handle_verified_at", "timestamptz", False),
+    ("sandbox_leases", "executor_status", "text", True),
+    ("sandbox_leases", "executor_heartbeat_at", "timestamptz", False),
+    ("sandbox_leases", "executor_terminal_json", "jsonb", False),
+    ("sandbox_leases", "executor_terminal_received_at", "timestamptz", False),
+    ("sandbox_leases", "executor_reconciliation_context_json", "jsonb", False),
+    ("sandbox_leases", "executor_reconciliation_status", "text", True),
+    ("sandbox_leases", "executor_reconciliation_claim_token", "text", False),
+    ("sandbox_leases", "executor_reconciliation_claimed_at", "timestamptz", False),
+    ("sandbox_leases", "executor_reconciliation_attempt_count", "int4", True),
+    ("sandbox_leases", "executor_reconciliation_error", "text", True),
+    ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
 )
 CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
@@ -69,6 +87,8 @@ CRITICAL_CONSTRAINTS = (
     ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target_state"),
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
+    ("sandbox_leases", "chk_sandbox_leases_executor_status"),
+    ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
 )
 CRITICAL_TRIGGERS = (
     (
@@ -125,6 +145,22 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "object_deletion_outbox_file_id_fkey",
         "f",
         "FOREIGN KEY (file_id) REFERENCES files(id)",
+    ),
+    (
+        "sandbox_leases",
+        "chk_sandbox_leases_executor_status",
+        "c",
+        "CHECK (executor_status = ANY (ARRAY["
+        "'pending'::text, 'accepted'::text, 'running'::text, "
+        "'completed'::text, 'failed'::text, 'cancelled'::text]))",
+    ),
+    (
+        "sandbox_leases",
+        "chk_sandbox_leases_executor_reconciliation_status",
+        "c",
+        "CHECK (executor_reconciliation_status = ANY (ARRAY["
+        "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
+        "'retry'::text, 'finalized'::text]))",
     ),
 )
 
@@ -263,10 +299,39 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "target_type = 'file' and file_id is not null",
         unique=True,
     ),
+    ConcurrentIndexMigration(
+        "idx_sandbox_leases_executor_reconcile",
+        "create index concurrently if not exists idx_sandbox_leases_executor_reconcile "
+        "on sandbox_leases(executor_reconciliation_status, updated_at asc, id asc) "
+        "where status = 'active' and executor_terminal_json is not null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status in ('pending', 'retry', 'claimed')",
+        "sandbox_leases",
+        ("executor_reconciliation_status", "updated_at", "id"),
+        (False, False, False),
+        "status = 'active' and executor_terminal_json is not null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status = any array['pending', 'retry', 'claimed']",
+    ),
+    ConcurrentIndexMigration(
+        "idx_sandbox_leases_executor_watch",
+        "create index concurrently if not exists idx_sandbox_leases_executor_watch "
+        "on sandbox_leases(executor_heartbeat_at asc nulls first, updated_at asc, id asc) "
+        "where status = 'active' and executor_terminal_json is null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status in ('waiting_terminal', 'retry', 'claimed')",
+        "sandbox_leases",
+        ("executor_heartbeat_at", "updated_at", "id"),
+        (False, False, False),
+        "status = 'active' and executor_terminal_json is null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status = any array['waiting_terminal', 'retry', 'claimed']",
+    ),
 )
 CRITICAL_INDEXES = (
     *((migration.name, migration.unique) for migration in CONCURRENT_INDEX_MIGRATIONS),
     ("uq_run_events_tenant_run_sequence", True),
+    ("idx_sandbox_leases_attempt", False),
 )
 
 

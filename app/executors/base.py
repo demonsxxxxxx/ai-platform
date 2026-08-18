@@ -59,7 +59,7 @@ class RunExecutionOwner:
         payload: "RunPayload",
         *,
         event_sink: ExecutorEventSink | None,
-    ) -> asyncio.Task["ExecutorResult"]:
+    ) -> asyncio.Task["ExecutorResult | ExecutorDispatchAccepted"]:
         """Start an adapter, exposing this owner only when its seam accepts it."""
 
         submit_run = adapter.submit_run
@@ -138,6 +138,18 @@ class RunExecutionOwner:
             if stop_task in done:
                 return stop_task.result()
             return RunStopResult(status="timed_out", quiescent=False, detail="stop_timeout")
+
+
+@dataclass(frozen=True)
+class ExecutorDispatchAccepted:
+    """Durable asynchronous dispatch receipt; it is not a terminal result."""
+
+    run_id: str
+    attempt_id: str
+    lease_id: str
+    provider: str
+    adapter_context: dict[str, Any] = field(default_factory=dict)
+    timings: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -255,5 +267,5 @@ class ExecutorAdapter(Protocol):
         payload: RunPayload,
         event_sink: ExecutorEventSink | None = None,
         execution_owner: RunExecutionOwner | None = None,
-    ) -> ExecutorResult:
-        """Execute a platform run and return a normalized platform result."""
+    ) -> ExecutorResult | ExecutorDispatchAccepted:
+        """Dispatch a platform run and return either acceptance or a terminal result."""

@@ -1226,7 +1226,7 @@ def test_submit_executor_task_marks_executed_after_http_success():
 
     assert response == {"status": "accepted", "run_id": "run-a"}
     request = requests[0][0]
-    assert request.full_url == "http://executor.test/v1/tasks/execute"
+    assert request.full_url == "http://executor.test/v2/tasks"
     assert request.get_method() == "POST"
     body = json.loads(request.data.decode("utf-8"))
     assert body["run_id"] == "run-a"

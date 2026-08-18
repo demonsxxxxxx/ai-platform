@@ -626,7 +626,7 @@ def test_scope_reuse_workspace_conflict_and_parallel_attempt_lifecycle() -> None
         assert call(
             app,
             "POST",
-            f"/v1/sandboxes/{sandbox_id}/proxy/18000/v1/tasks/execute",
+            f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks",
             task,
             {ROUTE_HEADER: route_token},
         ).status == 200
@@ -659,7 +659,7 @@ def test_dispatch_revalidates_scope_and_rewrites_callback() -> None:
     response = call(
         app,
         "POST",
-        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v1/tasks/execute",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks",
         task,
         {ROUTE_HEADER: token},
     )
@@ -667,8 +667,27 @@ def test_dispatch_revalidates_scope_and_rewrites_callback() -> None:
     forwarded = json.loads(runtime.proxied[-1][2].body)
     assert forwarded["callback_base_url"] == "http://127.0.0.1:18888"
     assert forwarded["callback_url"] == "http://127.0.0.1:18888/api/ai/runtime/callbacks/executor"
+    assert call(
+        app,
+        "GET",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks/run-one/attempt-one",
+        headers={ROUTE_HEADER: token},
+    ).status == 200
+    assert call(
+        app,
+        "POST",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks/run-one/attempt-one/cancel",
+        {},
+        {ROUTE_HEADER: token},
+    ).status == 200
+    assert call(
+        app,
+        "GET",
+        f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks/other/attempt-one",
+        headers={ROUTE_HEADER: token},
+    ).status == 409
     task["workspace_id"] = "other"
-    denied = call(app, "POST", f"/v1/sandboxes/{sandbox_id}/proxy/18000/v1/tasks/execute", task, {ROUTE_HEADER: token})
+    denied = call(app, "POST", f"/v1/sandboxes/{sandbox_id}/proxy/18000/v2/tasks", task, {ROUTE_HEADER: token})
     assert denied.status == 409
     assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/proxy/18000/debug", headers={ROUTE_HEADER: token}).status == 404
     assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/endpoints/18000?use_server_proxy=false").status == 400
@@ -1493,7 +1512,7 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
     client = socket.create_connection(server.server_address, timeout=1)
     try:
         client.sendall(
-            b"POST /v1/sandboxes/sandbox-one/proxy/18000/v1/tasks/execute HTTP/1.1\r\n"
+            b"POST /v1/sandboxes/sandbox-one/proxy/18000/v2/tasks HTTP/1.1\r\n"
             b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
         )
         client.settimeout(1)
@@ -1533,7 +1552,7 @@ def test_exact_dispatch_cannot_outlive_accept_time_total_budget() -> None:
     started = time.monotonic()
     try:
         client.sendall(
-            b"POST /v1/sandboxes/sandbox-one/proxy/18000/v1/tasks/execute HTTP/1.1\r\n"
+            b"POST /v1/sandboxes/sandbox-one/proxy/18000/v2/tasks HTTP/1.1\r\n"
             b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
         )
         client.settimeout(1)
@@ -1644,7 +1663,7 @@ def test_helper_real_framing_allows_only_cleanup_operations_for_cleanup_pending(
         "proxy": {
             "port": 18000,
             "method": "POST",
-            "target": "/v1/tasks/execute",
+            "target": "/v2/tasks",
             "headers": {},
             "body": "",
         },

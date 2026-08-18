@@ -286,7 +286,7 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         if (
             request.method.upper() == "POST"
             and re.fullmatch(
-                r"/v1/sandboxes/[^/?]+/proxy/18000/v1/tasks/execute(?:\?[^#]*)?",
+                r"/v1/sandboxes/[^/?]+/proxy/18000/v2/tasks(?:\?[^#]*)?",
                 request.target,
             )
         ):
