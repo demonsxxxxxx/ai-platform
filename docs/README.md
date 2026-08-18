@@ -10,6 +10,8 @@ does not represent deployed runtime state.
   handoff.
 - `agent-rules/github-issue-pr-workflow.md` defines issue, PR, review, and
   closure evidence.
+- `agent-rules/local-test-execution.md` defines the bounded, observable,
+  worktree-safe procedure for local pytest stages and their failure taxonomy.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
   single business authority and defines the Harness replacement seam.
 - `architecture/expert-agent-service-workbench.md` defines the Agent-first
