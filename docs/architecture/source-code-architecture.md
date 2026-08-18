@@ -634,7 +634,7 @@ an administrator bypass. The trusted base checker accepts the candidate policy
 only when all of the following hold:
 
 - the authority commit equals the base commit;
-- the candidate changes only `architecture-policy.json` and optionally deletes
+- the candidate modifies `architecture-policy.json` in place and optionally deletes
   the stale `.architecture-governance-exception.json`;
 - every policy field except `approved_root_modules` is semantically unchanged;
 - the approved inventory exactly equals the unchanged base and candidate
