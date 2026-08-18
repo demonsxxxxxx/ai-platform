@@ -165,10 +165,44 @@ def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
                 len(parts) >= 2
                 and parts[-2] == "stream_publisher"
                 and parts[-1]
-                in {"open", "publish_assistant_delta", "publish_committed_event"}
+                in {"open", "publish_committed_event"}
             )
             if direct_bridge_append or publisher_redis_call:
                 failures.append(call.lineno)
+    return failures
+
+
+def _assistant_delta_ownership_failures(
+    *,
+    worker_source: str,
+    redis_source: str,
+    callback_source: str,
+    executor_source: str,
+    adr_source: str,
+) -> list[str]:
+    failures: list[str] = []
+    if "publish_assistant_delta" in worker_source or "publish_assistant_delta" in redis_source:
+        failures.append("worker direct assistant-delta publisher exists")
+    if "raise WorkerDirectAssistantDeltaError" not in worker_source:
+        failures.append("worker assistant-delta ingress does not fail closed")
+    if "canonical_assistant_delta_event" not in callback_source or "await bridge.append(" not in callback_source:
+        failures.append("runtime callback is not the declared assistant-delta ingress")
+    forbidden_executor_dependencies = (
+        "RedisStreamBridge",
+        "redis.asyncio",
+        "psycopg",
+        "app.db",
+        "app.repositories",
+    )
+    if any(value in executor_source for value in forbidden_executor_dependencies):
+        failures.append("sandbox executor has a direct database or Redis transport dependency")
+    required_adr_statements = (
+        "assistant_text_delta` has one ingress",
+        "Adding any second assistant-text ingress requires a new accepted ADR",
+        "one logical delta cannot be published by both owners",
+    )
+    if any(value not in adr_source for value in required_adr_statements):
+        failures.append("ADR 0009 does not freeze assistant-delta producer ownership")
     return failures
 
 
@@ -327,6 +361,22 @@ def check() -> list[str]:
     ):
         if required_marker not in redis_source:
             failures.append(f"redis.py:v3_semantic_id_marker_missing:{required_marker}")
+
+    failures.extend(
+        _assistant_delta_ownership_failures(
+            worker_source=(ROOT / "app/worker.py").read_text(encoding="utf-8"),
+            redis_source=redis_source,
+            callback_source=(ROOT / "app/routes/runtime_callbacks.py").read_text(
+                encoding="utf-8"
+            ),
+            executor_source=(
+                ROOT / "app/runtime/sandbox/executor_app.py"
+            ).read_text(encoding="utf-8"),
+            adr_source=(
+                ROOT / "docs/adr/0009-redis-streams-sse-v3-live-fanout.md"
+            ).read_text(encoding="utf-8"),
+        )
+    )
 
     worker = _function("app/worker.py", "process_run_payload")
     worker_calls = _calls(worker)
