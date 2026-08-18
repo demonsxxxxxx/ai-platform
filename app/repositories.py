@@ -5778,8 +5778,7 @@ async def list_multi_agent_terminal_children_requiring_reconciliation(
     bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
     cursor = await conn.execute(
         """
-        select child.tenant_id, child.id as run_id, child.status,
-               child.mcp_context_id
+        select child.tenant_id, child.id as run_id, child.status, child.mcp_context_id
         from runs child
         join run_steps parent_step
           on parent_step.tenant_id = child.tenant_id
@@ -8988,8 +8987,7 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         from eligible_run
         where runs.tenant_id = eligible_run.tenant_id
           and runs.id = eligible_run.id
-        returning runs.id, runs.status, eligible_run.trace_id,
-                  eligible_run.mcp_context_id,
+        returning runs.id, runs.status, eligible_run.trace_id, eligible_run.mcp_context_id,
                   eligible_run.cancel_requested_newly
         """,
         (tenant_id, run_id, user_id, user_id),
@@ -9041,9 +9039,7 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
             "requested_by_role": "owner",
         },
     )
-    result = {"run_id": row["id"], "status": status}
-    if row.get("mcp_context_id"):
-        result["_mcp_context_id"] = str(row["mcp_context_id"])
+    result = {"run_id": row["id"], "status": status, **({"_mcp_context_id": str(row["mcp_context_id"])} if row.get("mcp_context_id") else {})}
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         result["_permission_terminalization_progress"] = progress
     if active_sandbox_leases:
@@ -9089,8 +9085,7 @@ async def request_admin_run_cancel(
         from eligible_run
         where runs.tenant_id = eligible_run.tenant_id
           and runs.id = eligible_run.id
-        returning runs.id, runs.status, eligible_run.user_id, eligible_run.trace_id,
-                  eligible_run.mcp_context_id,
+        returning runs.id, runs.status, eligible_run.user_id, eligible_run.trace_id, eligible_run.mcp_context_id,
                   eligible_run.cancel_requested_newly
         """,
         (tenant_id, run_id, admin_user_id),
@@ -9148,9 +9143,7 @@ async def request_admin_run_cancel(
             "result_status": result_status,
         },
     )
-    result = {"run_id": row["id"], "status": result_status}
-    if row.get("mcp_context_id"):
-        result["_mcp_context_id"] = str(row["mcp_context_id"])
+    result = {"run_id": row["id"], "status": result_status, **({"_mcp_context_id": str(row["mcp_context_id"])} if row.get("mcp_context_id") else {})}
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         result["_permission_terminalization_progress"] = progress
     if active_sandbox_leases:
