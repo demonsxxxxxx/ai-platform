@@ -106,6 +106,29 @@ async def invalidate_terminal_mcp_runtime_context(
     await invalidate_mcp_runtime_context(context_id)
 
 
+async def invalidate_committed_terminal_run_mcp_context(
+    *,
+    tenant_id: str,
+    run_id: str,
+    status: object,
+    transaction_factory: Any,
+) -> None:
+    """Best-effort cleanup after a terminal Run transaction has committed."""
+
+    if str(status or "") not in _TERMINAL_RUN_STATUSES:
+        return
+    try:
+        async with transaction_factory() as conn:
+            context_id = await mcp_runtime_services().get_run_context_id(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
+    except Exception:  # noqa: BLE001 - expiry remains the final cleanup fence.
+        return
+    await invalidate_mcp_runtime_context(context_id)
+
+
 async def discard_unbound_mcp_runtime_context(
     context_id: str | None,
     principal: Any,
@@ -162,6 +185,7 @@ __all__ = [
     "discard_unbound_mcp_runtime_context",
     "get_mcp_relay_auth_failure_limiter",
     "get_mcp_runtime_context_manager",
+    "invalidate_committed_terminal_run_mcp_context",
     "invalidate_mcp_runtime_context",
     "invalidate_terminal_mcp_runtime_context",
     "migrate_legacy_mcp_credentials",

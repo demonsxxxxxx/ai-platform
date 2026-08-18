@@ -4023,7 +4023,7 @@ async def list_stale_run_reconciliation_candidates(
     cursor = await conn.execute(
         """
         select runs.tenant_id, runs.workspace_id, runs.user_id, runs.id as run_id,
-               runs.status, runs.cancel_requested_at, runs.mcp_context_id,
+               runs.status, runs.cancel_requested_at,
                runs.cancel_requested_at as cancel_requested_before,
                greatest(
                  coalesce(latest_event.created_at, '-infinity'::timestamptz),
@@ -5738,7 +5738,7 @@ async def list_runs_requiring_tool_permission_terminalization(
     bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
     cursor = await conn.execute(
         """
-        select runs.tenant_id, runs.id as run_id, runs.mcp_context_id
+        select runs.tenant_id, runs.id as run_id
         from runs
         where runs.permission_terminalization_target is not null
            or (
@@ -5778,7 +5778,7 @@ async def list_multi_agent_terminal_children_requiring_reconciliation(
     bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
     cursor = await conn.execute(
         """
-        select child.tenant_id, child.id as run_id, child.status, child.mcp_context_id
+        select child.tenant_id, child.id as run_id, child.status
         from runs child
         join run_steps parent_step
           on parent_step.tenant_id = child.tenant_id
@@ -8959,7 +8959,7 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
     cursor = await conn.execute(
         """
         with eligible_run as (
-          select id, tenant_id, status, trace_id, mcp_context_id,
+          select id, tenant_id, status, trace_id,
                  cancel_requested_at is null as cancel_requested_newly
           from runs
           where tenant_id = %s
@@ -8987,7 +8987,7 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         from eligible_run
         where runs.tenant_id = eligible_run.tenant_id
           and runs.id = eligible_run.id
-        returning runs.id, runs.status, eligible_run.trace_id, eligible_run.mcp_context_id,
+        returning runs.id, runs.status, eligible_run.trace_id,
                   eligible_run.cancel_requested_newly
         """,
         (tenant_id, run_id, user_id, user_id),
@@ -9039,7 +9039,7 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
             "requested_by_role": "owner",
         },
     )
-    result = {"run_id": row["id"], "status": status, **({"_mcp_context_id": str(row["mcp_context_id"])} if row.get("mcp_context_id") else {})}
+    result = {"run_id": row["id"], "status": status}
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         result["_permission_terminalization_progress"] = progress
     if active_sandbox_leases:
@@ -9058,7 +9058,7 @@ async def request_admin_run_cancel(
     cursor = await conn.execute(
         """
         with eligible_run as (
-          select id, tenant_id, status, user_id, trace_id, mcp_context_id,
+          select id, tenant_id, status, user_id, trace_id,
                  cancel_requested_at is null as cancel_requested_newly
           from runs
           where tenant_id = %s
@@ -9085,7 +9085,7 @@ async def request_admin_run_cancel(
         from eligible_run
         where runs.tenant_id = eligible_run.tenant_id
           and runs.id = eligible_run.id
-        returning runs.id, runs.status, eligible_run.user_id, eligible_run.trace_id, eligible_run.mcp_context_id,
+        returning runs.id, runs.status, eligible_run.user_id, eligible_run.trace_id,
                   eligible_run.cancel_requested_newly
         """,
         (tenant_id, run_id, admin_user_id),
@@ -9143,7 +9143,7 @@ async def request_admin_run_cancel(
             "result_status": result_status,
         },
     )
-    result = {"run_id": row["id"], "status": result_status, **({"_mcp_context_id": str(row["mcp_context_id"])} if row.get("mcp_context_id") else {})}
+    result = {"run_id": row["id"], "status": result_status}
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         result["_permission_terminalization_progress"] = progress
     if active_sandbox_leases:

@@ -373,6 +373,23 @@ async def bind_run_mcp_context(
     )
 
 
+async def get_run_mcp_context_id(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> str | None:
+    """Read only the opaque context ID for one exact Run."""
+
+    cursor = await conn.execute(
+        "select mcp_context_id from runs where tenant_id = %s and id = %s",
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    context_id = row.get("mcp_context_id") if row is not None else None
+    return str(context_id) if isinstance(context_id, str) and context_id else None
+
+
 class PostgresMcpRelayTargetReader:
     def __init__(self, transaction_factory: Any) -> None:
         self._transaction_factory = transaction_factory

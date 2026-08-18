@@ -22,6 +22,7 @@ from app.control_plane_contracts import (
 from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
 from app.mcp.api import (
+    invalidate_committed_terminal_run_mcp_context,
     invalidate_terminal_mcp_runtime_context,
     migrate_legacy_mcp_credentials,
     persisted_mcp_context_id,
@@ -275,9 +276,11 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             max_batches=4,
         )
         if outcome is not None and outcome.completed and outcome.is_terminal():
-            await invalidate_terminal_mcp_runtime_context(
-                persisted_mcp_context_id(candidate),
+            await invalidate_committed_terminal_run_mcp_context(
+                tenant_id=tenant_id,
+                run_id=run_id,
                 status=outcome.status,
+                transaction_factory=transaction,
             )
         if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
             await reconcile_terminalized_permission_run(
@@ -303,9 +306,11 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
-        await invalidate_terminal_mcp_runtime_context(
-            persisted_mcp_context_id(candidate),
+        await invalidate_committed_terminal_run_mcp_context(
+            tenant_id=tenant_id,
+            run_id=run_id,
             status=candidate.get("status"),
+            transaction_factory=transaction,
         )
         await reconcile_terminalized_permission_run(
             tenant_id=tenant_id,
@@ -448,9 +453,11 @@ async def reconcile_stale_runs_for_worker(
                             {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
                         )
                         continue
-                    await invalidate_terminal_mcp_runtime_context(
-                        persisted_mcp_context_id(candidate),
+                    await invalidate_committed_terminal_run_mcp_context(
+                        tenant_id=tenant_id,
+                        run_id=run_id,
                         status=outcome.status,
+                        transaction_factory=transaction,
                     )
                     await fence_guard.release_if_live()
                 results.append(

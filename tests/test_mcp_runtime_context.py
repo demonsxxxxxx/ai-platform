@@ -3,6 +3,7 @@ import base64
 import ipaddress
 import json
 import ssl
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -83,6 +84,54 @@ async def test_terminal_context_cleanup_ignores_non_terminal_run_status(monkeypa
     )
 
     assert invalidated == ["mcpctx-terminal"]
+
+
+@pytest.mark.asyncio
+async def test_committed_terminal_cleanup_reads_context_after_commit(monkeypatch):
+    calls = []
+
+    class Services:
+        async def get_run_context_id(self, conn, **kwargs):
+            calls.append(("read", conn, kwargs))
+            return "mcpctx-committed"
+
+    @asynccontextmanager
+    async def transaction_factory():
+        calls.append(("tx_enter",))
+        yield "connection"
+        calls.append(("tx_commit",))
+
+    async def invalidate(context_id):
+        calls.append(("invalidate", context_id))
+
+    monkeypatch.setattr(mcp_api, "mcp_runtime_services", lambda: Services())
+    monkeypatch.setattr(mcp_api, "invalidate_mcp_runtime_context", invalidate)
+
+    await mcp_api.invalidate_committed_terminal_run_mcp_context(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        status="running",
+        transaction_factory=transaction_factory,
+    )
+    assert calls == []
+
+    await mcp_api.invalidate_committed_terminal_run_mcp_context(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        status="cancelled",
+        transaction_factory=transaction_factory,
+    )
+
+    assert calls == [
+        ("tx_enter",),
+        (
+            "read",
+            "connection",
+            {"tenant_id": "tenant-a", "run_id": "run-a"},
+        ),
+        ("tx_commit",),
+        ("invalidate", "mcpctx-committed"),
+    ]
 
 
 def _settings(
