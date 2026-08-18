@@ -158,11 +158,20 @@ def test_v2_delivery_exhaustion_still_delivers_failed_terminal_callback(tmp_path
 def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path, caplog):
     callbacks: list[dict[str, object]] = []
     assistant_attempts: list[dict[str, object]] = []
+    post_cancel_results: list[bool] = []
     retry_started = threading.Event()
     caplog.set_level("INFO", logger=executor_app.__name__)
 
     async def executor_runner(_request, _workspace_root, emit_event):
-        await emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+        try:
+            await emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+        except asyncio.CancelledError:
+            post_cancel_results.append(
+                await emit_event(
+                    AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"})
+                )
+            )
+            raise
         await emit_event(AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"}))
         return {"status": "completed", "message": "done"}
 
@@ -213,6 +222,7 @@ def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path,
 
     assert len(assistant_attempts) == 1
     assert assistant_attempts[0]["events"][0]["payload"]["delta"] == "first"
+    assert post_cancel_results == [False]
     cancelled_records = [
         record for record in caplog.records if record.message == "sandbox_callback_batch_cancelled"
     ]

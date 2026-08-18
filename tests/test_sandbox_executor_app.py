@@ -3740,6 +3740,27 @@ def test_callback_batch_freezes_content_and_tracks_lifecycle():
     assert delivery.state == "accepted"
     assert delivery.error_code is None
 
+    with pytest.raises(RuntimeError):
+        delivery.begin_attempt()
+    with pytest.raises(RuntimeError):
+        delivery.accept()
+    with pytest.raises(RuntimeError):
+        delivery.exhaust("stream_delivery_rejected")
+
+
+def test_callback_batch_cancel_is_terminal_and_idempotent():
+    content = _CallbackBatchContent.freeze({"batch_id": "callback-test-2"})
+    delivery = _CallbackBatchDelivery(content=content)
+
+    delivery.begin_attempt()
+    delivery.cancel()
+    assert delivery.state == "cancelled"
+    assert delivery.error_code == "executor_cancelled"
+
+    delivery.cancel()
+    assert delivery.state == "cancelled"
+    assert delivery.error_code == "executor_cancelled"
+
 
 def test_callback_batch_factory_allocates_distinct_adjacent_identities():
     factory = _CallbackBatchIdFactory(namespace="run-attempt")
