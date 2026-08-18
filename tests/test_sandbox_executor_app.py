@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -34,6 +35,7 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.runtime.sandbox.executor_app import (
+    _CallbackRetryPolicy,
     _default_callback_sender,
     _default_executor_runner,
     create_executor_app,
@@ -145,6 +147,10 @@ def _synchronous_executor_endpoint(app):
 
 
 def create_test_client(tmp_path, **kwargs) -> TestClient:
+    kwargs.setdefault(
+        "callback_sender",
+        lambda url, payload, token: callback_ack(payload),
+    )
     return TestClient(
         create_executor_app(
             workspace_root=tmp_path,
@@ -156,6 +162,20 @@ def create_test_client(tmp_path, **kwargs) -> TestClient:
             dispatch_in_background=False,
             **kwargs,
         )
+    )
+
+
+def callback_retry_policy(
+    *,
+    max_attempts: int = 3,
+    attempt_timeout_seconds: float = 0.05,
+) -> _CallbackRetryPolicy:
+    return _CallbackRetryPolicy(
+        max_attempts=max_attempts,
+        attempt_timeout_seconds=attempt_timeout_seconds,
+        initial_backoff_seconds=0,
+        max_backoff_seconds=0,
+        jitter_ratio=0,
     )
 
 
@@ -1259,9 +1279,25 @@ def test_executor_active_progress_drains_on_callback_failure_runner_completion_o
     progress_count = sum(event["type"] == "execution_progress" for event in public_execution_events(callbacks))
     assert progress_count >= 1 if mode == "cancelled" else progress_count == 1
     assert runner_cancelled == ([True] if mode == "cancelled" else [])
-    assert (response.json().get("callback_errors") == ["running"]) is (mode in {"rejected", "exception"})
-    finished = next(index for index, item in enumerate(callbacks) if item.get("state_patch", {}).get("stage") == "executor_finished")
-    assert not any(event["type"] == "execution_progress" for item in callbacks[finished + 1 :] for event in item.get("events", []))
+    assert (
+        response.json().get("callback_errors") == ["running"]
+    ) is (mode in {"rejected", "exception"})
+    finished = [
+        index
+        for index, item in enumerate(callbacks)
+        if item.get("state_patch", {}).get("stage") == "executor_finished"
+    ]
+    if mode in {"rejected", "exception"}:
+        assert response.json()["status"] == "failed"
+        assert response.json()["error_code"] == "stream_delivery_rejected"
+        assert finished == []
+    else:
+        assert len(finished) == 1
+        assert not any(
+            event["type"] == "execution_progress"
+            for item in callbacks[finished[0] + 1 :]
+            for event in item.get("events", [])
+        )
     callback_count = len(callbacks)
     time.sleep(interval_seconds * 3)
     assert len(callbacks) == callback_count
@@ -3639,7 +3675,7 @@ def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
     assert "secret" not in content
 
 
-def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monkeypatch):
+def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch):
     callbacks = []
 
     class StubSettings:
@@ -3662,12 +3698,237 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "failed"
     assert body["run_id"] == "run-a"
+    assert body["error_code"] == "stream_delivery_rejected"
+    assert body["error_message"] == "Public stream callback delivery failed"
     assert body["callback_errors"] == ["running"]
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
     assert callbacks == [("running", "accepted"), ("running", "executor_finished")]
+
+
+def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog):
+    assistant_attempts: list[dict[str, object]] = []
+    caplog.set_level("WARNING", logger=executor_app.__name__)
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts.append(payload)
+            if len(assistant_attempts) == 1:
+                raise httpx.ConnectError(
+                    "callback unavailable",
+                    request=httpx.Request("POST", url),
+                )
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=2),
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert len(assistant_attempts) == 2
+    assert assistant_attempts[0] == assistant_attempts[1]
+    assert assistant_attempts[0]["batch_id"] == assistant_attempts[1]["batch_id"]
+    retry_records = [record for record in caplog.records if record.message == "sandbox_callback_delivery_retry"]
+    assert len(retry_records) == 1
+    assert retry_records[0].callback_attempt == 1
+    assert retry_records[0].callback_reason == "transport_error"
+    assert "partial" not in caplog.text
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize("status_code", [408, 429, 500, 503])
+def test_executor_retries_transient_callback_statuses(tmp_path, status_code):
+    assistant_attempts = 0
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        nonlocal assistant_attempts
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts += 1
+            if assistant_attempts == 1:
+                request = httpx.Request("POST", url)
+                response = httpx.Response(status_code, request=request)
+                raise httpx.HTTPStatusError(
+                    "callback temporarily unavailable",
+                    request=request,
+                    response=response,
+                )
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=2),
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert assistant_attempts == 2
+
+
+def test_executor_uses_bounded_exponential_callback_backoff(tmp_path):
+    assistant_attempts = 0
+    retry_delays: list[float] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        nonlocal assistant_attempts
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts += 1
+            if assistant_attempts < 4:
+                raise httpx.ConnectError(
+                    "callback unavailable",
+                    request=httpx.Request("POST", url),
+                )
+        return callback_ack(payload)
+
+    async def record_retry_delay(delay: float) -> None:
+        retry_delays.append(delay)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=_CallbackRetryPolicy(
+            max_attempts=4,
+            attempt_timeout_seconds=0.05,
+            initial_backoff_seconds=0.25,
+            max_backoff_seconds=0.5,
+            jitter_ratio=0,
+        ),
+        callback_retry_sleep=record_retry_delay,
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert assistant_attempts == 4
+    assert retry_delays == [0.25, 0.5, 0.5]
+
+
+def test_executor_accepts_deduplicated_receipt_after_response_loss(tmp_path):
+    assistant_attempts: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts.append(payload)
+            if len(assistant_attempts) == 1:
+                raise httpx.ReadTimeout(
+                    "response lost after commit",
+                    request=httpx.Request("POST", url),
+                )
+            return {
+                "accepted": False,
+                "deduplicated": True,
+                "event_count": 1 + len(payload.get("events", [])),
+            }
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=2),
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert len(assistant_attempts) == 2
+    assert assistant_attempts[0] == assistant_attempts[1]
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 409, 422])
+def test_executor_does_not_retry_hard_callback_rejections(tmp_path, status_code):
+    assistant_attempts = 0
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        nonlocal assistant_attempts
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts += 1
+            request = httpx.Request("POST", url)
+            response = httpx.Response(status_code, request=request)
+            raise httpx.HTTPStatusError("callback rejected", request=request, response=response)
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=3),
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "stream_delivery_rejected"
+    assert assistant_attempts == 1
+
+
+def test_executor_exhausts_timed_out_callback_and_seals_late_deltas(tmp_path):
+    assistant_attempts: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+        await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, token):
+        if any(event.get("type") == "assistant_delta" for event in payload.get("events", [])):
+            assistant_attempts.append(payload)
+            await asyncio.Event().wait()
+        return callback_ack(payload)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        nonterminal_callback_retry_policy=callback_retry_policy(
+            max_attempts=2,
+            attempt_timeout_seconds=0.005,
+        ),
+    )
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "stream_delivery_exhausted"
+    assert len(assistant_attempts) == 2
+    assert assistant_attempts[0] == assistant_attempts[1]
+    assert all(event.get("message") != "late" for attempt in assistant_attempts for event in attempt.get("events", []))
 
 
 def test_executor_finished_observation_marker_path_is_container_path(tmp_path, monkeypatch):
