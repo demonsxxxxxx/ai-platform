@@ -133,3 +133,34 @@ def test_changed_paths_uses_exact_ancestor_commits(
 
     with pytest.raises(ValueError, match="exact lowercase commit SHA"):
         changed_paths("main", head)
+
+
+def test_changed_paths_compares_diverged_exact_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    _git(repo, "config", "user.email", "ci@example.invalid")
+    _git(repo, "config", "user.name", "CI")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "common base")
+    common_base = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "--create", "candidate", common_base)
+    app_dir = repo / "app"
+    app_dir.mkdir()
+    (app_dir / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(repo, "add", "app/main.py")
+    _git(repo, "commit", "-m", "candidate change")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "main")
+    (repo / "base-only.txt").write_text("advanced base\n", encoding="utf-8")
+    _git(repo, "add", "base-only.txt")
+    _git(repo, "commit", "-m", "advance base")
+    base = _git(repo, "rev-parse", "HEAD")
+
+    monkeypatch.chdir(repo)
+    assert changed_paths(base, head) == ("app/main.py", "base-only.txt")

@@ -60,11 +60,6 @@ def changed_paths(base_ref: str, head_ref: str) -> tuple[str, ...]:
             check=True,
             stdout=subprocess.DEVNULL,
         )
-    subprocess.run(
-        ["git", "merge-base", "--is-ancestor", base_ref, head_ref],
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
     completed = subprocess.run(
         ["git", "diff", "--name-only", "--no-renames", "-z", base_ref, head_ref],
         check=True,

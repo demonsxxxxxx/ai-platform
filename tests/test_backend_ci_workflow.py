@@ -959,9 +959,14 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "- name: Determine backend image impact" in image_job
     assert "id: image-scope" in image_job
     assert "python tools/ci_image_scope.py" in image_job
+    assert '--event-name "$GITHUB_EVENT_NAME"' in image_job
     assert '--role backend' in image_job
+    assert '--base-ref "$IMAGE_BASE_COMMIT"' in image_job
+    assert '--head-ref "$IMAGE_SOURCE_COMMIT"' in image_job
     assert "- name: Report backend image validation not affected" in image_job
     assert "if: steps.image-scope.outputs.build != 'true'" in image_job
+    assert "reason=packaged_inputs_unchanged" in image_job
+    assert "base_commit=%s head_commit=%s" in image_job
     for step_name in [
         "Resolve image source repository",
         "Build backend image",

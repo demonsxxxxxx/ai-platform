@@ -211,7 +211,12 @@ jobs:
 
       - name: Report frontend image validation not affected
         if: steps.image-scope.outputs.build != 'true'
-        run: printf 'frontend_image_validation=not_affected\n'
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IMAGE_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          printf 'frontend_image_validation=not_affected reason=packaged_inputs_unchanged base_commit=%s head_commit=%s\n' \
+            "$IMAGE_BASE_COMMIT" "$IMAGE_SOURCE_COMMIT"
 
       - name: Set up Python for Linux contracts
         if: steps.image-scope.outputs.build == 'true'
