@@ -9,6 +9,7 @@ import {
   isNonRetryableSSEAuthenticationError,
   isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
+  MAX_SSE_STARTUP_RETRIES,
   MAX_STATUS_QUERY_RETRIES,
   queryAuthoritativeRunStatus,
   reconnectSSE,
@@ -248,7 +249,7 @@ test("SSE uses the same explicit cookie-session credential boundary", () => {
   assert.match(source, /credentials:\s*"include"/);
 });
 
-test("renders a valid v3 replay after rejected SSE admission and persists the accepted cursor", async () => {
+test("retries startup-not-ready inside one SSE owner and persists the accepted cursor", async () => {
   const { context } = createTokenRefreshContext();
   context.messagesRef.current = [
     {
@@ -270,14 +271,26 @@ test("renders a valid v3 replay after rejected SSE admission and persists the ac
     current: { sessionId: null, runId: null, eventId: null },
   };
   context.onRunTerminal = () => true;
-  const seen: Array<Record<string, string>> = [];
+  const ownerHeaders: Array<Record<string, string>> = [];
+  let startupAttempts = 0;
   const fetchStream: SSEFetchEventSource = async (_input, init) => {
-    seen.push((init.headers || {}) as Record<string, string>);
-    if (seen.length === 1) {
-      await init.onopen?.(new Response(null, { status: 409 }));
-      return;
+    ownerHeaders.push((init.headers || {}) as Record<string, string>);
+    if (ownerHeaders.length === 2) return;
+    try {
+      startupAttempts += 1;
+      await init.onopen?.(
+        new Response(null, {
+          status: 409,
+          headers: {
+            "X-SSE-Error-Code": "sse_stream_not_admitted",
+            "X-SSE-Retryable": "true",
+          },
+        }),
+      );
+    } catch (error) {
+      assert.equal(typeof init.onerror?.(error as never), "number");
     }
-    if (seen.length === 3) return;
+    startupAttempts += 1;
     await init.onopen?.(new Response(null, { status: 200 }));
     init.onmessage?.(
       v3Frame({
@@ -308,17 +321,171 @@ test("renders a valid v3 replay after rejected SSE admission and persists the ac
     getRefreshToken: () => null,
   };
 
-  await assert.rejects(
-    connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens),
-    /HTTP error! status: 409/,
+  await connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    fetchStream,
+    tokens,
   );
-  await connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens);
-  await connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens);
+  await connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    fetchStream,
+    tokens,
+  );
 
-  assert.equal(seen[0]?.["Last-Event-ID"], undefined);
-  assert.equal(seen[1]?.["Last-Event-ID"], undefined);
+  assert.equal(startupAttempts, 2);
+  assert.equal(ownerHeaders.length, 2);
+  assert.equal(ownerHeaders[0]?.["Last-Event-ID"], undefined);
   assert.equal(context.messagesRef.current[0]?.content, "accepted");
-  assert.equal(seen[2]?.["Last-Event-ID"], "run-old:1:2-0");
+  assert.equal(ownerHeaders[1]?.["Last-Event-ID"], "run-old:1:2-0");
+});
+
+test("does not retry a hard startup conflict", async () => {
+  const { context } = createTokenRefreshContext();
+  let attempts = 0;
+  const fetchStream: SSEFetchEventSource = async (_input, init) => {
+    attempts += 1;
+    try {
+      await init.onopen?.(
+        new Response(null, {
+          status: 409,
+          headers: {
+            "X-SSE-Error-Code": "sse_authority_revoked",
+            "X-SSE-Retryable": "false",
+          },
+        }),
+      );
+    } catch (error) {
+      init.onerror?.(error as never);
+    }
+  };
+
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      fetchStream,
+    ),
+    /sse_authority_revoked/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("bounds startup-not-ready retries inside one SSE owner", async () => {
+  const { context } = createTokenRefreshContext();
+  let attempts = 0;
+  let nowMs = 0;
+  const scheduledDiagnostics: Array<Record<string, unknown>> = [];
+  const exhaustedDiagnostics: Array<Record<string, unknown>> = [];
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+  console.info = (message: unknown, details?: unknown) => {
+    if (message === "[SSE] Startup retry scheduled") {
+      scheduledDiagnostics.push(details as Record<string, unknown>);
+    }
+  };
+  console.warn = (message: unknown, details?: unknown) => {
+    if (message === "[SSE] Startup retry exhausted") {
+      exhaustedDiagnostics.push(details as Record<string, unknown>);
+    }
+  };
+  const fetchStream: SSEFetchEventSource = async (_input, init) => {
+    while (true) {
+      attempts += 1;
+      try {
+        await init.onopen?.(
+          new Response(null, {
+            status: 409,
+            headers: {
+              "X-SSE-Error-Code": "sse_stream_not_confirmed",
+              "X-SSE-Retryable": "true",
+            },
+          }),
+        );
+      } catch (error) {
+        init.onerror?.(error as never);
+      }
+    }
+  };
+
+  try {
+    await assert.rejects(
+      connectToSSE(
+        "session-old",
+        "run-old",
+        "assistant-old",
+        context,
+        false,
+        fetchStream,
+        { now: () => (nowMs += 100) },
+      ),
+      /sse_startup_retry_exhausted/,
+    );
+  } finally {
+    console.info = originalInfo;
+    console.warn = originalWarn;
+  }
+
+  assert.equal(attempts, MAX_SSE_STARTUP_RETRIES + 1);
+  assert.equal(scheduledDiagnostics.length, MAX_SSE_STARTUP_RETRIES);
+  assert.equal(scheduledDiagnostics[0]?.outcome, "scheduled");
+  assert.equal(typeof scheduledDiagnostics[0]?.elapsedMs, "number");
+  assert.equal(exhaustedDiagnostics.length, 1);
+  assert.equal(exhaustedDiagnostics[0]?.outcome, "exhausted");
+  assert.equal(typeof exhaustedDiagnostics[0]?.elapsedMs, "number");
+});
+
+test("aborts a startup request that remains pending past the owner deadline", async () => {
+  const { context } = createTokenRefreshContext();
+  let fireDeadline: (() => void) | undefined;
+  let requestAborted = false;
+  const fetchStream: SSEFetchEventSource = async (_input, init) =>
+    await new Promise<void>((resolve) => {
+      init.signal?.addEventListener(
+        "abort",
+        () => {
+          requestAborted = true;
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  const setStartupTimeout = ((handler: () => void) => {
+    fireDeadline = handler;
+    return 1;
+  }) as unknown as typeof globalThis.setTimeout;
+  const clearStartupTimeout = (() => undefined) as typeof globalThis.clearTimeout;
+
+  const connection = connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    fetchStream,
+    {
+      now: () => 10_000,
+      setStartupTimeout,
+      clearStartupTimeout,
+    },
+  );
+  await Promise.resolve();
+  assert.ok(fireDeadline);
+  fireDeadline();
+
+  await assert.rejects(connection, /sse_startup_retry_exhausted/);
+  assert.equal(requestAborted, true);
+  assert.equal(context.isConnectingRef.current, false);
 });
 
 test("retries an SSE close that arrives before a terminal stream event", () => {
