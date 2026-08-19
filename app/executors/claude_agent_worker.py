@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import inspect
 import posixpath
 import shutil
@@ -53,6 +54,13 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
+from app.file_parser_contracts import (
+    XLSX_CONTENT_TYPE,
+    AttachmentParserRequirement,
+    MaterializedAttachmentFact,
+    build_attachment_preprocessing_contract,
+    validate_required_parser_evidence,
+)
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -247,6 +255,7 @@ class PreparedSandboxFinalization:
     staged_skill_names: list[str]
     skill_manifests: list[dict[str, Any]]
     public_skill_metadata: dict[str, dict[str, str]]
+    attachment_parser_requirements: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -271,6 +280,7 @@ class PreparedSdkRun:
     system_prompt: str = ""
     public_skill_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
     attachment_metadata: list[_AuthorizedAttachmentMetadata] = field(default_factory=list)
+    attachment_parser_requirements: list[dict[str, Any]] = field(default_factory=list)
     materialized_file_names: list[str] | None = None
 
 
@@ -287,6 +297,53 @@ class _MaterializedFileNames(list[str]):
         self.materialized_file_names = list(
             values if materialized_file_names is None else materialized_file_names
         )
+
+
+def _attachment_parser_requirements(
+    payload: RunPayload,
+    prepared: PreparedSdkRun,
+) -> list[dict[str, Any]]:
+    """Build non-secret parser requirements from server-materialized attachment bytes."""
+
+    if not payload.file_ids or not prepared.file_names:
+        return []
+    metadata_by_id = {item.file_id: item for item in prepared.attachment_metadata}
+    materialized_names = prepared.materialized_file_names or prepared.file_names
+    if len(materialized_names) != len(prepared.file_names):
+        return []
+    facts: list[MaterializedAttachmentFact] = []
+    for index, file_name in enumerate(prepared.file_names):
+        if index >= len(payload.file_ids):
+            return []
+        file_id = payload.file_ids[index]
+        metadata = metadata_by_id.get(file_id)
+        declared_name = metadata.file_name if metadata is not None else file_name
+        declared_content_type = (
+            metadata.content_type
+            if metadata is not None
+            else (XLSX_CONTENT_TYPE if str(declared_name).lower().endswith(".xlsx") else "")
+        )
+        materialized_path = Path(prepared.workspace) / materialized_names[index]
+        try:
+            ensure_path_inside(
+                prepared.workspace,
+                materialized_path,
+                "attachment_parser_workspace_escape",
+            )
+            content = materialized_path.read_bytes()
+        except (OSError, ValueError):
+            return []
+        facts.append(
+            MaterializedAttachmentFact(
+                file_id=file_id,
+                file_name=declared_name,
+                content_type=declared_content_type,
+                byte_count=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        )
+    contract = build_attachment_preprocessing_contract(attachment_facts=facts)
+    return [item.model_dump(mode="json") for item in contract.requirements]
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -1341,6 +1398,7 @@ class ClaudeAgentWorkerAdapter:
                 **prompt_builder_kwargs,
             )
         )
+        attachment_parser_requirements = _attachment_parser_requirements(payload, prepared)
         return (
             PreparedSdkRun(
                 workspace=resolved_workspace,
@@ -1355,6 +1413,7 @@ class ClaudeAgentWorkerAdapter:
                 prompt=prompt,
                 system_prompt=self._agent_profile_system_prompt(payload),
                 attachment_metadata=attachment_metadata,
+                attachment_parser_requirements=attachment_parser_requirements,
                 materialized_file_names=staged_file_names,
             ),
             None,
@@ -1390,6 +1449,10 @@ class ClaudeAgentWorkerAdapter:
                 pins=prepared.pinned_manifests,
             ),
             "public_skill_metadata": dict(prepared.public_skill_metadata),
+            "attachment_parser_requirements": list(
+                prepared.attachment_parser_requirements
+                or _attachment_parser_requirements(payload, prepared)
+            ),
         }
         reconciliation_context = {
             "schema_version": "ai-platform.executor-reconciliation.v1",
@@ -1553,6 +1616,11 @@ class ClaudeAgentWorkerAdapter:
                 for key, value in dict(adapter_context.get("public_skill_metadata") or {}).items()
                 if isinstance(value, dict)
             },
+            attachment_parser_requirements=[
+                dict(item)
+                for item in adapter_context.get("attachment_parser_requirements", [])
+                if isinstance(item, dict)
+            ],
         )
         runtime_result = _PersistedSandboxRuntimeResult(
             status=str(terminal_result.get("status") or ""),
@@ -1595,6 +1663,24 @@ class ClaudeAgentWorkerAdapter:
             capability_evidence,
             available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
         )
+        parser_requirements = [
+            AttachmentParserRequirement.model_validate(item)
+            for item in getattr(prepared, "attachment_parser_requirements", [])
+            if isinstance(item, dict)
+        ]
+        if not parser_requirements and isinstance(prepared, PreparedSdkRun):
+            parser_requirements = [
+                AttachmentParserRequirement.model_validate(item)
+                for item in _attachment_parser_requirements(payload, prepared)
+            ]
+        parser_evidence = executor_response.get("attachment_parser_evidence")
+        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
+            parser_valid, parser_error = validate_required_parser_evidence(
+                requirements=parser_requirements,
+                evidence=parser_evidence,
+            )
+            if not parser_valid and selected_capability_error is None:
+                selected_capability_error = parser_error
         runtime_tool_evidence = validate_runtime_tool_evidence(
             executor_response,
             binding={
@@ -1657,6 +1743,11 @@ class ClaudeAgentWorkerAdapter:
             "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
             "capability_evidence": capability_evidence,
+            **(
+                {"attachment_parser_evidence": parser_evidence}
+                if isinstance(parser_evidence, list)
+                else {}
+            ),
             **runtime_tool_evidence.private_payload(),
         }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
