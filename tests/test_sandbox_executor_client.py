@@ -474,6 +474,15 @@ async def test_executor_client_posts_task_request(monkeypatch):
         ),
         (
             {
+                "error_code": "tool_invocation_evidence_mismatch",
+                "detail": "tool_invocation_evidence_mismatch",
+            },
+            b"bounded-json",
+            "tool_invocation_evidence_mismatch",
+            "tool_invocation_evidence_mismatch",
+        ),
+        (
+            {
                 "error_code": "token_private-value",
                 "detail": "<html>prompt=private-prompt</html>",
                 "url": "https://executor.test/run?token=private-token",
@@ -580,6 +589,23 @@ async def test_executor_client_rejects_http_200_reported_failure_as_invalid_prot
 
     assert raised.value.status_code == 502
     assert raised.value.error_code == "executor_protocol_invalid"
+
+
+def test_executor_failure_normalizer_preserves_tool_evidence_code_without_private_detail():
+    normalized = executor_client_module.normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "tool_invocation_evidence_mismatch",
+            "message": "/workspace/private-command --token private-token",
+        },
+        expected_run_id="run-a",
+    )
+
+    assert normalized["error_code"] == "tool_invocation_evidence_mismatch"
+    assert normalized["error_message"] == "Tool invocation evidence was incomplete"
+    assert "/workspace/" not in str(normalized)
+    assert "private-token" not in str(normalized)
 
 
 def test_executor_failure_normalizer_drops_unknown_private_fields():

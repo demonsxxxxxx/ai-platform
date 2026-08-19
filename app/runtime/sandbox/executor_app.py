@@ -44,7 +44,8 @@ from app.public_execution import (
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
-    SANDBOX_LOCAL_TOOL_IDENTITIES,
+    SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
+    SANDBOX_READ_ONLY_TOOL_IDENTITIES,
     TOOL_INVOCATION_EVIDENCE_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
@@ -1459,10 +1460,14 @@ async def _default_executor_runner(
             else "tool_invocation_evidence_mismatch"
         )
         is_governed_bash = bash_subject is not None and tool_name == "Bash"
-        is_governed_tool = (
-            tool_name in SANDBOX_LOCAL_TOOL_IDENTITIES or tool_name == "MCP"
+        is_read_only_tool = tool_name in SANDBOX_READ_ONLY_TOOL_IDENTITIES
+        is_strict_tool = (
+            is_required_tool
+            or tool_name in SANDBOX_EFFECTFUL_TOOL_IDENTITIES
+            or tool_name == "MCP"
         )
-        if invocation_id and not claim_invocation_id(
+        is_lifecycle_tool = is_strict_tool or is_read_only_tool
+        if invocation_id and is_strict_tool and not claim_invocation_id(
             invocation_id,
             f"tool:{tool_name}",
             lifecycle_error,
@@ -1470,11 +1475,12 @@ async def _default_executor_runner(
             if is_governed_bash:
                 required_capability_evidence = None
             return False
-        if is_governed_tool and (
+        if is_lifecycle_tool and (
             not invocation_id or lifecycle not in {"started", "completed", "failed"}
         ):
-            required_capability_evidence = None
-            reject_capability_evidence(lifecycle_error)
+            if is_strict_tool:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
             return False
         try:
             acknowledged = await emit_event(
@@ -1487,16 +1493,19 @@ async def _default_executor_runner(
                 )
             )
         except Exception:
-            if is_governed_tool:
+            if is_strict_tool:
                 required_capability_evidence = None
                 reject_capability_evidence(lifecycle_error)
             return False
-        if not is_governed_tool:
+        if not is_lifecycle_tool:
             return acknowledged is True
         if acknowledged is not True or not invocation_id:
-            required_capability_evidence = None
-            reject_capability_evidence(lifecycle_error)
+            if is_strict_tool:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
             return False
+        if not is_strict_tool:
+            return True
         invocation_key = (tool_name, invocation_id)
         current_state = required_tool_invocation_states.get(invocation_key)
         if lifecycle == "started":

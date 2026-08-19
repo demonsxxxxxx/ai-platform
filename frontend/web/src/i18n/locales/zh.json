@@ -598,6 +598,7 @@
         "subagentStarted": "协作者已开始",
         "toolCallCompleted": "操作已完成",
         "toolCallStarted": "操作已开始",
+        "toolInvocationEvidenceMismatch": "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
         "toolPermissionDenied": "操作未获授权"
       },
       "status": {

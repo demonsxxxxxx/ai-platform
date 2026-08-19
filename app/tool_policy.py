@@ -20,6 +20,7 @@ BUILTIN_TOOL_IDENTITIES = frozenset(
     {
         "Read",
         "Glob",
+        "Grep",
         "LS",
         "Bash",
         "Write",

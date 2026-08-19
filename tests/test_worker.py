@@ -484,7 +484,9 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     )
     by_identity = {subject["identity"]: subject for subject in subjects}
 
-    assert set(by_identity) == {"Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit"}
+    assert set(by_identity) == {
+        "Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit"
+    }
     assert all(
         subject["declared_identities"] == [subject["identity"]]
         for subject in subjects
@@ -1185,7 +1187,7 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
     assert captured["requested_tool_ids"] == ["search-a"]
     assert [
         subject["identity"] for subject in captured["tool_policy_subjects"]
-    ] == ["Read", "Glob", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
+    ] == ["Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
     bash_subject = next(
         subject
         for subject in captured["tool_policy_subjects"]
@@ -2477,6 +2479,8 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "text_blocks": 2,
             "result_messages": 1,
             "tool_admission_denials": 0,
+            "tool_policy_denials": 0,
+            "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
         },
         "last_public_stage": "message",
@@ -3703,6 +3707,8 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
             "text_blocks": 0,
             "result_messages": 0,
             "tool_admission_denials": 0,
+            "tool_policy_denials": 0,
+            "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
         },
         "last_public_stage": "runtime",
@@ -6942,6 +6948,8 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
             "text_blocks": 1,
             "result_messages": 0,
             "tool_admission_denials": 0,
+            "tool_policy_denials": 0,
+            "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
         },
         "last_public_stage": "message",

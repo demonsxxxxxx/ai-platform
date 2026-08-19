@@ -32,6 +32,17 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
 _BUILTIN_PARAMETER_KEYS = {
     "Read": ("file_path",),
     "Glob": ("pattern", "path"),
+    "Grep": (
+        "pattern",
+        "path",
+        "glob",
+        "output_mode",
+        "-i",
+        "multiline",
+        "head_limit",
+        "offset",
+        "context",
+    ),
     "LS": ("path",),
     "Bash": ("command",),
     "Write": ("file_path", "content"),
@@ -49,6 +60,7 @@ _BUILTIN_PARAMETER_KEYS = {
     "Skill": ("skill",),
 }
 _BUILTIN_REQUIRED_PARAMETER_KEYS = {
+    "Grep": ("pattern",),
     "Bash": ("command",),
     "Write": ("file_path", "content"),
     "Skill": ("skill",),

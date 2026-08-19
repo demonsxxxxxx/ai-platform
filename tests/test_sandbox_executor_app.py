@@ -572,6 +572,56 @@ async def test_executor_optional_bash_can_complete_without_invocation(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("callback_acknowledged", [True, False])
+async def test_executor_records_read_only_grep_without_terminal_evidence_failure(
+    monkeypatch,
+    tmp_path,
+    callback_acknowledged,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        assert (
+            await lifecycle(
+                {
+                    "tool_name": "Grep",
+                    "invocation_id": "grep-call-1",
+                    "lifecycle": "started",
+                }
+            )
+        ) is callback_acknowledged
+        return sdk_result("safe answer")
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [{"identity": "Grep"}]
+    request = ExecutorTaskRequest.model_validate(raw)
+    callbacks = []
+
+    async def emit_event(event):
+        callbacks.append(event)
+        return callback_acknowledged
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert result["message"] == "safe answer"
+    assert result[TOOL_INVOCATION_EVIDENCE_KEY] == []
+    assert any(
+        isinstance(event, executor_app._PrivateExecutionFact)
+        and event.fact == {
+            "invocation_id": "grep-call-1",
+            "tool_name": "Grep",
+            "lifecycle": "started",
+        }
+        for event in callbacks
+    )
+
+
+@pytest.mark.asyncio
 async def test_executor_binds_bash_evidence_without_optional_context_retrieval_scope(
     monkeypatch,
     tmp_path,
@@ -1144,11 +1194,19 @@ def test_executor_rejects_call_id_reused_across_write_and_mcp(tmp_path, monkeypa
     assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
 
 
-@pytest.mark.parametrize("tool_name", ["Read", "Write"])
-def test_executor_rejects_incomplete_non_bash_local_tool(
+@pytest.mark.parametrize(
+    ("tool_name", "expected_status", "expected_error"),
+    [
+        ("Read", "completed", None),
+        ("Write", "failed", "tool_invocation_evidence_mismatch"),
+    ],
+)
+def test_executor_treats_incomplete_read_only_lifecycle_as_telemetry(
     tmp_path,
     monkeypatch,
     tool_name,
+    expected_status,
+    expected_error,
 ):
     class StubSettings:
         claude_agent_sdk_enabled = True
@@ -1179,9 +1237,9 @@ def test_executor_rejects_incomplete_non_bash_local_tool(
         headers=auth_headers(),
     ).json()
 
-    assert body["status"] == "failed"
-    assert body["message"] == ""
-    assert body["error_code"] == "tool_invocation_evidence_mismatch"
+    assert body["status"] == expected_status
+    assert body["message"] == ("must not qualify" if expected_error is None else "")
+    assert body.get("error_code") == expected_error
     assert body["capability_evidence"] == []
     assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
 

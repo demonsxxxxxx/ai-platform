@@ -2926,6 +2926,82 @@ def _xlsx_parser_evidence(**overrides):
 
 
 
+@pytest.mark.parametrize(
+    ("evidence", "expected_status", "expected_error"),
+    [
+        (_xlsx_parser_evidence(), "succeeded", None),
+        (_xlsx_parser_evidence(parser_version="999"), "failed", "attachment_parser_evidence_mismatch"),
+    ],
+)
+def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
+    tmp_path,
+    evidence,
+    expected_status,
+    expected_error,
+):
+    adapter = ClaudeAgentWorkerAdapter()
+
+    current_payload = sandbox_writing_payload(
+        agent_id="qa-rag-agent",
+        skill_id="qa-rag-skill",
+        file_ids=["file_1"],
+    )
+    result = adapter._executor_result_from_sandbox_runtime(
+        current_payload,
+        _xlsx_prepared_run(tmp_path),
+        types.SimpleNamespace(
+            status="completed",
+            provider="docker",
+            executor_response={
+                "status": "completed",
+                "message": "xlsx answer",
+                "sdk_used": True,
+                "used_skills": ["qa-rag-skill"],
+                "used_skills_source": "executor_hook",
+                "sdk_turn_diagnostics": {
+                    "counters": {
+                        "max_turns": 128,
+                        "turns_observed": 4,
+                        "assistant_messages": 2,
+                        "text_blocks": 3,
+                        "result_messages": 1,
+                        "tool_admission_denials": 0,
+                        "tool_policy_denials": 0,
+                        "tool_lifecycle_denials": 0,
+                        "skill_invocations": 1,
+                    },
+                    "last_public_stage": "skills",
+                    "private_untrusted_field": "must-not-project",
+                },
+                "attachment_parser_evidence": [evidence],
+                "capability_evidence": _payload_skill_evidence(current_payload),
+                TOOL_INVOCATION_EVIDENCE_KEY: [],
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == expected_status
+    if expected_error is None:
+        assert result.executor_payload["attachment_parser_evidence"] == [evidence]
+        assert result.result["sdk_turn_diagnostics"]["terminal_class"] == "completed"
+        assert result.result["sdk_turn_diagnostics"]["selected_skill"] == {
+            "name": "Workbook analysis",
+            "version": "version-a",
+            "availability": "available",
+        }
+        assert result.result["sdk_turn_diagnostics"]["used_skills"] == [
+            {
+                "name": "Workbook analysis",
+                "version": "version-a",
+                "availability": "available",
+            }
+        ]
+        assert "qa-rag-skill" not in str(result.result["sdk_turn_diagnostics"])
+        assert "private_untrusted_field" not in str(result.result["sdk_turn_diagnostics"])
+        assert result.artifacts == []
+    else:
+        assert result.result["error_code"] == expected_error
 
 
 @pytest.mark.asyncio

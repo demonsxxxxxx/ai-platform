@@ -39,6 +39,34 @@ test("projects the controlled native Skill sandbox admission failure stage", () 
   );
 });
 
+test("projects tool evidence mismatch as a specific safe terminal without backend detail", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-tool-evidence",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "tool_invocation_evidence_mismatch",
+      message: "/workspace/private-command --token private-token",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-tool-evidence",
+  );
+
+  assert.equal(result.content.includes("tool_invocation_evidence_mismatch"), true);
+  const terminal = result.parts[0];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "tool_invocation_evidence_mismatch");
+  assert.equal(terminal.stage, "tool_evidence");
+  assert.doesNotMatch(JSON.stringify(result), /workspace|private-token/);
+});
+
 test("projects an actionable bounded file-size terminal without backend detail", () => {
   const result = processMessageEvent(
     "final_detail",

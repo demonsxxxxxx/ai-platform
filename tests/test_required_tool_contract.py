@@ -126,6 +126,7 @@ def test_real_sandbox_replaces_local_tool_authority_once():
     assert [subject["identity"] for subject in subjects] == [
         "Read",
         "Glob",
+        "Grep",
         "LS",
         "Bash",
         "Write",
@@ -138,6 +139,20 @@ def test_real_sandbox_replaces_local_tool_authority_once():
     assert bash_subject["distributed"] is True
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
     assert bash_subject["workspace_contract"] == "ai-platform.skill-workspace.v1"
+    grep_subject = next(subject for subject in subjects if subject["identity"] == "Grep")
+    assert grep_subject["write_capable"] is False
+    assert grep_subject["allowed_parameter_keys"] == [
+        "pattern",
+        "path",
+        "glob",
+        "output_mode",
+        "-i",
+        "multiline",
+        "head_limit",
+        "offset",
+        "context",
+    ]
+    assert grep_subject["required_parameter_keys"] == ["pattern"]
 
 
 def test_sandbox_local_tools_use_credential_free_docker_sibling_for_bash():
@@ -202,6 +217,7 @@ def test_real_boundary_adds_all_local_tools_after_sanitizing_existing_authority(
         "mcp__catalog__search",
         "Read",
         "Glob",
+        "Grep",
         "LS",
         "Bash",
         "Write",

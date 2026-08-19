@@ -255,6 +255,16 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert "Bash" not in str(ordinary)
 
 
+def test_tool_evidence_terminal_projection_preserves_safe_code_without_private_detail():
+    projection = public_terminal_projection("failed", "tool_invocation_evidence_mismatch")
+
+    assert projection["detail_code"] == "tool_invocation_evidence_mismatch"
+    assert projection["error_code"] == "tool_invocation_evidence_mismatch"
+    assert "tool_invocation_evidence_mismatch" in projection["message"]
+    assert "/workspace/" not in str(projection)
+    assert "token" not in str(projection)
+
+
 def test_context_file_size_terminal_projection_is_specific_and_safe():
     projection = public_terminal_projection("failed", "context_file_too_large")
 

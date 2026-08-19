@@ -321,6 +321,7 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
     assert captured["allowed_tools"] == [
         "Read",
         "Glob",
+        "Grep",
         "LS",
         "Bash",
         "Write",
@@ -332,6 +333,103 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
         ("bash-call-1", "started"),
         ("bash-call-1", "completed"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_grep_is_workspace_bounded_and_records_acknowledged_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    captured, lifecycle_facts = {}, []
+    hook_input = {
+        "tool_name": "Grep",
+        "tool_use_id": "grep-call-1",
+        "tool_input": {"pattern": "TODO", "path": str(tmp_path), "glob": "*.md"},
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[
+                ("PreToolUse", hook_input, hook_input["tool_use_id"]),
+                ("PostToolUse", hook_input, hook_input["tool_use_id"]),
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    async def acknowledge(fact):
+        lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
+        return True
+
+    result = await run_claude_agent_sdk(
+        prompt="search the workspace",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert result.error is None
+    assert pretool_output["permissionDecision"] == "allow"
+    assert lifecycle_facts == [
+        ("grep-call-1", "started"),
+        ("grep-call-1", "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path):
+    captured = {}
+    hook_input = {
+        "tool_name": "Grep",
+        "tool_use_id": "grep-call-1",
+        "tool_input": {"pattern": "TODO", "path": str(tmp_path.parent / "outside")},
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search outside the workspace",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=_acknowledge_capability_evidence,
+    )
+
+    assert captured["hook_results"][0][1]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert result.turn_diagnostics["counters"] == {
+        "max_turns": 12,
+        "turns_observed": 1,
+        "assistant_messages": 0,
+        "text_blocks": 0,
+        "result_messages": 1,
+        "tool_admission_denials": 1,
+        "tool_policy_denials": 1,
+        "tool_lifecycle_denials": 0,
+        "skill_invocations": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -385,6 +483,8 @@ async def test_autonomous_sandbox_bash_pretool_denies_unacknowledged_lifecycle(
     )
     assert result.error == "required_tool_completion_evidence_mismatch"
     assert result.message == ""
+    assert result.turn_diagnostics["counters"]["tool_policy_denials"] == 0
+    assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 1
 
 
 @pytest.mark.asyncio
@@ -438,9 +538,9 @@ async def test_autonomous_sandbox_bash_keeps_answer_sealed_without_terminal_life
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool_name",
-    ["Read", "Glob", "LS", "Write", "Edit", "NotebookEdit"],
+    ["Write", "Edit", "NotebookEdit"],
 )
-async def test_sandbox_local_tool_keeps_answer_sealed_without_terminal_lifecycle(
+async def test_sandbox_effectful_tool_keeps_answer_sealed_without_terminal_lifecycle(
     monkeypatch,
     tmp_path,
     tool_name,
@@ -450,6 +550,7 @@ async def test_sandbox_local_tool_keeps_answer_sealed_without_terminal_lifecycle
     tool_input = {
         "Read": {"file_path": file_path},
         "Glob": {"pattern": "output/*.txt", "path": str(tmp_path)},
+        "Grep": {"pattern": "done", "path": str(tmp_path), "glob": "*.txt"},
         "LS": {"path": str(tmp_path)},
         "Write": {"file_path": file_path, "content": "done"},
         "Edit": {
@@ -510,6 +611,80 @@ async def test_sandbox_local_tool_keeps_answer_sealed_without_terminal_lifecycle
     assert deltas == []
     assert result.error == "required_tool_completion_evidence_missing"
     assert result.message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "callback_acknowledged"),
+    [
+        (tool_name, callback_acknowledged)
+        for tool_name in ["Read", "Glob", "Grep", "LS"]
+        for callback_acknowledged in [True, False]
+    ],
+)
+async def test_sandbox_read_only_tool_records_incomplete_lifecycle_without_failing_run(
+    monkeypatch,
+    tmp_path,
+    tool_name,
+    callback_acknowledged,
+):
+    captured, deltas, lifecycle_facts = {}, [], []
+    file_path = str(tmp_path / "output" / "output.txt")
+    tool_input = {
+        "Read": {"file_path": file_path},
+        "Glob": {"pattern": "output/*.txt", "path": str(tmp_path)},
+        "Grep": {"pattern": "done", "path": str(tmp_path), "glob": "*.txt"},
+        "LS": {"path": str(tmp_path)},
+    }[tool_name]
+    hook_input = {
+        "tool_name": tool_name,
+        "tool_use_id": "read-only-call-1",
+        "tool_input": tool_input,
+    }
+    steps = [
+        ("hook", ("PreToolUse", hook_input, "read-only-call-1")),
+        *_stream_steps("safe answer"),
+        ("assistant", "safe answer"),
+    ]
+
+    async def acknowledge(fact):
+        lifecycle_facts.append(dict(fact))
+        return callback_acknowledged
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="safe answer"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="use one sandbox read-only tool",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+        on_text=deltas.append,
+    )
+
+    assert lifecycle_facts == [
+        {
+            "fact_kind": "tool_invocation",
+            "tool_name": tool_name,
+            "invocation_id": "read-only-call-1",
+            "lifecycle": "started",
+        }
+    ]
+    assert result.error is None
+    assert result.message == "safe answer"
+    assert deltas == ["safe answer"]
+    assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 1
 
 
 @pytest.mark.asyncio

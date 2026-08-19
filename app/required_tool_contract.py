@@ -672,6 +672,20 @@ def attach_required_tool_declaration(input_payload: dict[str, Any]) -> dict[str,
 _BUILTIN_CAPABILITY_PARAMETERS = {
     "Read": (["file_path", "offset", "limit", "pages"], ["file_path"]),
     "Glob": (["pattern", "path"], []),
+    "Grep": (
+        [
+            "pattern",
+            "path",
+            "glob",
+            "output_mode",
+            "-i",
+            "multiline",
+            "head_limit",
+            "offset",
+            "context",
+        ],
+        ["pattern"],
+    ),
     "LS": (["path"], []),
     "Bash": (["command", "timeout", "description"], ["command"]),
     "Write": (["file_path", "content"], ["file_path", "content"]),
@@ -691,11 +705,16 @@ _BUILTIN_CAPABILITY_PARAMETERS = {
 SANDBOX_LOCAL_TOOL_IDENTITIES = (
     "Read",
     "Glob",
+    "Grep",
     "LS",
     "Bash",
     "Write",
     "Edit",
     "NotebookEdit",
+)
+SANDBOX_READ_ONLY_TOOL_IDENTITIES = frozenset({"Read", "Glob", "Grep", "LS"})
+SANDBOX_EFFECTFUL_TOOL_IDENTITIES = frozenset(
+    set(SANDBOX_LOCAL_TOOL_IDENTITIES) - SANDBOX_READ_ONLY_TOOL_IDENTITIES
 )
 _SANDBOX_WRITE_TOOL_IDENTITIES = frozenset(
     {"Bash", "Write", "Edit", "NotebookEdit"}
@@ -818,8 +837,8 @@ def _builtin_subject(
         "identity_authorized": True,
         "object_authorized": True,
         "parameters_authorized": True,
-        "risk_level": "low" if identity in {"Read", "Glob", "LS", "Skill"} else "high",
-        "write_capable": identity not in {"Read", "Glob", "LS", "Skill"},
+        "risk_level": "low" if identity in {"Read", "Glob", "Grep", "LS", "Skill"} else "high",
+        "write_capable": identity not in {"Read", "Glob", "Grep", "LS", "Skill"},
         "allowed_parameter_keys": list(allowed_parameter_keys),
         "required_parameter_keys": list(required_parameter_keys),
         "allowed_skill_names": list(allowed_skill_names),

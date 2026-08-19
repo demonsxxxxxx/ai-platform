@@ -46,7 +46,9 @@ from app.executors.claude_stream_projection import ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
+    SANDBOX_READ_ONLY_TOOL_IDENTITIES,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
@@ -154,6 +156,8 @@ _PUBLIC_DIAGNOSTIC_COUNTERS = (
     "text_blocks",
     "result_messages",
     "tool_admission_denials",
+    "tool_policy_denials",
+    "tool_lifecycle_denials",
     "skill_invocations",
 )
 _TURN_LIMIT_ERROR_PATTERN = re.compile(
@@ -810,6 +814,12 @@ def _workspace_path_parameters_authorized(
             tool_input.get("pattern"),
             search_path=search_path,
         )
+    if tool_name == "Grep":
+        search_path = tool_input.get("path") or "."
+        glob = tool_input.get("glob")
+        return path_authorized(search_path) and (
+            glob is None or glob_pattern_authorized(glob, search_path=search_path)
+        )
     if mutating_key is not None:
         return path_authorized(tool_input.get(mutating_key), mutating=True)
     key = _WORKSPACE_PATH_PARAMETER.get(tool_name)
@@ -885,6 +895,8 @@ async def run_claude_agent_sdk(
         "text_blocks": 0,
         "result_messages": 0,
         "tool_admission_denials": 0,
+        "tool_policy_denials": 0,
+        "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
     }
     last_public_stage = "runtime"
@@ -1131,21 +1143,28 @@ async def run_claude_agent_sdk(
             error=_SDK_TOOL_ADMISSION_FAILED,
             turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED),
         )
-    governed_tool_lifecycle_names = {
+    sandbox_local_lifecycle_names = {
         identity
         for identity in SANDBOX_LOCAL_TOOL_IDENTITIES
         if sandbox_brokered and identity in authorized_subjects
     }
+    strict_tool_lifecycle_names = (
+        sandbox_local_lifecycle_names & SANDBOX_EFFECTFUL_TOOL_IDENTITIES
+    )
+    read_only_tool_lifecycle_names = (
+        sandbox_local_lifecycle_names & SANDBOX_READ_ONLY_TOOL_IDENTITIES
+    )
     if sandbox_brokered and internal_context_subjects:
-        governed_tool_lifecycle_names.add("MCP")
-    sandbox_bash_lifecycle_governed = "Bash" in governed_tool_lifecycle_names
-    sandbox_tool_lifecycle_governed = bool(governed_tool_lifecycle_names)
+        strict_tool_lifecycle_names.add("MCP")
+    sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
+    sandbox_tool_lifecycle_governed = bool(strict_tool_lifecycle_names)
     required_answer_gate = bool(
         required_capability_declarations
         or required_builtin_declarations
         or sandbox_tool_lifecycle_governed
     )
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
+    observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     governed_builtin_lifecycle_rejected = False
     actual_sandbox_bash_invocation_observed = False
     private_mcp_replacements = {
@@ -1267,39 +1286,49 @@ async def run_claude_agent_sdk(
             return ""
         return canonical[0] if len(set(canonical)) == 1 else ""
 
+    def reject_governed_lifecycle() -> bool:
+        nonlocal governed_builtin_lifecycle_rejected
+
+        governed_builtin_lifecycle_rejected = True
+        diagnostic_counters["tool_lifecycle_denials"] += 1
+        answer_stream_gate.fail_closed()
+        return False
+
+    def record_read_only_lifecycle_denial() -> None:
+        diagnostic_counters["tool_lifecycle_denials"] += 1
+
     async def record_tool_lifecycle(
         *, tool_name: object, tool_call_id: object, lifecycle: str
     ) -> bool:
-        """Report a private actual-tool fact and return its exact acknowledgement."""
+        """Report a private actual-tool fact and enforce strict evidence where needed."""
 
         nonlocal actual_sandbox_bash_invocation_observed
-        nonlocal governed_builtin_lifecycle_rejected
 
         name = str(tool_name or "").strip()
         call_id = canonical_tool_call_id(tool_call_id) or ""
         required_key = ("builtin", name)
         is_required_builtin = required_key in required_builtin_declarations
-        is_sandbox_bash = sandbox_bash_lifecycle_governed and name == "Bash"
+        is_read_only_tool = name in read_only_tool_lifecycle_names
         lifecycle_required = (
-            is_required_builtin or name in governed_tool_lifecycle_names
+            is_required_builtin or name in strict_tool_lifecycle_names
         )
+        lifecycle_observed = lifecycle_required or is_read_only_tool
+        is_sandbox_bash = sandbox_bash_lifecycle_governed and name == "Bash"
         if is_sandbox_bash:
             actual_sandbox_bash_invocation_observed = True
         if lifecycle_required and call_id:
-            answer_stream_gate.seal(
-                {call_id: "tool invocation"}
-            )
+            answer_stream_gate.seal({call_id: "tool invocation"})
         if not name or not call_id or lifecycle not in {"started", "completed", "failed"}:
             if lifecycle_required:
-                governed_builtin_lifecycle_rejected = True
-                answer_stream_gate.fail_closed()
-                return False
+                return reject_governed_lifecycle()
+            if is_read_only_tool:
+                record_read_only_lifecycle_denial()
             return True
         if on_tool_lifecycle is None:
             if lifecycle_required:
-                governed_builtin_lifecycle_rejected = True
-                answer_stream_gate.fail_closed()
-                return False
+                return reject_governed_lifecycle()
+            if is_read_only_tool:
+                record_read_only_lifecycle_denial()
             return True
         try:
             acknowledged = await on_tool_lifecycle(
@@ -1312,31 +1341,35 @@ async def run_claude_agent_sdk(
             )
         except Exception:  # noqa: BLE001
             acknowledged = False
-        if not lifecycle_required:
+        if not lifecycle_observed:
             return True
         if acknowledged is not True:
-            governed_builtin_lifecycle_rejected = True
-            if call_id:
+            if lifecycle_required:
                 governed_builtin_invocation_states[(name, call_id)] = "rejected"
-            answer_stream_gate.fail_closed()
-            return False
+                return reject_governed_lifecycle()
+            record_read_only_lifecycle_denial()
+            return True
+        invocation_states = (
+            governed_builtin_invocation_states
+            if lifecycle_required
+            else observed_read_only_invocation_states
+        )
         invocation_key = (name, call_id)
-        current_state = governed_builtin_invocation_states.get(invocation_key)
+        current_state = invocation_states.get(invocation_key)
         invalid_sequence = (
             lifecycle == "started" and current_state is not None
         ) or (
             lifecycle in {"completed", "failed"} and current_state != "started"
         )
         if invalid_sequence:
-            governed_builtin_lifecycle_rejected = True
-            governed_builtin_invocation_states[invocation_key] = "rejected"
-            answer_stream_gate.fail_closed()
-            return False
-        governed_builtin_invocation_states[invocation_key] = lifecycle
+            invocation_states[invocation_key] = "rejected"
+            if lifecycle_required:
+                return reject_governed_lifecycle()
+            record_read_only_lifecycle_denial()
+            return True
+        invocation_states[invocation_key] = lifecycle
         if lifecycle == "failed" and is_required_builtin:
-            governed_builtin_lifecycle_rejected = True
-            answer_stream_gate.fail_closed()
-            return False
+            return reject_governed_lifecycle()
         return True
 
     def selected_skill_hook_error() -> str | None:
@@ -1442,6 +1475,7 @@ async def run_claude_agent_sdk(
         decision = policy_for_tool(tool_name, tool_input)
         if not decision.allowed:
             diagnostic_counters["tool_admission_denials"] += 1
+            diagnostic_counters["tool_policy_denials"] += 1
             return PermissionResultDeny(message=decision.reason)
         return PermissionResultAllow()
 
@@ -1454,6 +1488,7 @@ async def run_claude_agent_sdk(
             decision = policy_for_tool(tool_name, tool_input)
         if not decision.allowed:
             diagnostic_counters["tool_admission_denials"] += 1
+            diagnostic_counters["tool_policy_denials"] += 1
         output: dict[str, object] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": decision.outcome,
@@ -1487,7 +1522,7 @@ async def run_claude_agent_sdk(
                 )
                 if (
                     ("builtin", identity) in required_builtin_declarations
-                    or identity in governed_tool_lifecycle_names
+                    or identity in strict_tool_lifecycle_names
                 ):
                     capability_evidence_acknowledged = lifecycle_acknowledged
             if tool_name.lower() == "skill":
@@ -1840,6 +1875,11 @@ async def run_claude_agent_sdk(
             stream_projector.close_unfinished()
             if stream_projector.disabled:
                 answer_stream_gate.fail_closed()
+        incomplete_read_only_lifecycles = sum(
+            state == "started"
+            for state in observed_read_only_invocation_states.values()
+        )
+        diagnostic_counters["tool_lifecycle_denials"] += incomplete_read_only_lifecycles
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"

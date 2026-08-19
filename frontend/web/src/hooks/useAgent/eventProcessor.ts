@@ -179,6 +179,13 @@ function publicTerminalPresentation(
       }),
       "policy",
     ),
+    tool_invocation_evidence_mismatch: failed(
+      i18n.t("chat.runTerminal.toolInvocationEvidenceMismatch", {
+        defaultValue:
+          "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
+      }),
+      "tool_evidence",
+    ),
     skill_sandbox_admission_failed: failed(
       i18n.t("chat.runTerminal.skillSandboxAdmissionFailed"),
       "skill_sandbox_admission",
