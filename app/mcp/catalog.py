@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from app.mcp.domain.headers import (
+from app.mcp.api import (
     MCP_JWT_AUTHORIZATION_HEADER,
     normalize_static_mcp_headers,
 )
