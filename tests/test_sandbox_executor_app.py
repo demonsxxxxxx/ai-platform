@@ -1109,6 +1109,19 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
             error="claude_agent_sdk_timeout",
             received_structured_terminal=False,
             terminal_reason=None,
+            turn_diagnostics={
+                "terminal_class": "timeout",
+                "error_code": "claude_agent_sdk_timeout",
+                "action": "retry_or_split_request",
+                "retryable": True,
+                "counters": {
+                    "assistant_messages": 85,
+                    "tool_policy_denials": 4,
+                },
+                "tool_policy_denials_detail": [
+                    {"tool_name": "Bash", "reason": "parameter_not_authorized"}
+                ],
+            },
         )
 
     def callback_sender(url, payload, token):
@@ -1124,7 +1137,13 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     body = response.json()
     assert body["status"] == "failed"
     assert body["error_code"] == "claude_agent_sdk_timeout"
-    assert body["error_message"] == "claude_agent_sdk_timeout"
+    message = body["error_message"]
+    assert message.startswith("error=claude_agent_sdk_timeout")
+    assert "terminal_class=timeout" in message
+    assert "action=retry_or_split_request" in message
+    assert "assistant_messages=85" in message
+    assert "tool_policy_denials=4" in message
+    assert "denied_tools=Bash(parameter_not_authorized)" in message
 
 
 @pytest.mark.parametrize(
@@ -1954,7 +1973,8 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
     assert body["status"] == "failed"
     assert body["sdk_used"] is used_sdk
     assert body["error_code"] == expected_error_code
-    assert body["error_message"] == sdk_error
+    assert body["error_message"].startswith(f"error={sdk_error}")
+    assert "terminal_class=upstream_error" in body["error_message"]
     assert body["used_skills"] == []
     assert body["sdk_turn_diagnostics"] == {
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",

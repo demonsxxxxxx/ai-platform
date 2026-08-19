@@ -464,6 +464,45 @@ class _ExecutorCleanupError(RuntimeError):
         self.error_message = error_message
 
 
+def _expand_sdk_error_message(raw_error: str, sdk_result: object) -> str:
+    """Expand a structured SDK failure into a concrete, non-generic message.
+
+    The error_code stays machine-stable (e.g. claude_agent_sdk_timeout); the
+    error_message carries the actionable details a user or support needs to
+    understand exactly what happened: terminal class, recommended action,
+    output volume, and any tools the policy denied.
+    """
+
+    diagnostics = getattr(sdk_result, "turn_diagnostics", None)
+    if not isinstance(diagnostics, dict):
+        return raw_error
+    parts = [f"error={raw_error}"]
+    terminal_class = str(diagnostics.get("terminal_class") or "").strip()
+    if terminal_class:
+        parts.append(f"terminal_class={terminal_class}")
+    action = str(diagnostics.get("action") or "").strip()
+    if action:
+        parts.append(f"action={action}")
+    counters = diagnostics.get("counters")
+    if isinstance(counters, dict):
+        assistant_messages = counters.get("assistant_messages")
+        if assistant_messages is not None:
+            parts.append(f"assistant_messages={assistant_messages}")
+        denied_count = counters.get("tool_policy_denials")
+        if denied_count is not None:
+            parts.append(f"tool_policy_denials={denied_count}")
+    detail = diagnostics.get("tool_policy_denials_detail")
+    if isinstance(detail, list) and detail:
+        denied = ", ".join(
+            f"{item.get('tool_name')}({item.get('reason')})"
+            for item in detail[:8]
+            if isinstance(item, dict)
+        )
+        if denied:
+            parts.append(f"denied_tools={denied}")
+    return " | ".join(parts)
+
+
 def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
     """Keep known SDK terminal codes while classifying post-start SDK failures."""
 
@@ -1726,7 +1765,7 @@ async def _default_executor_runner(
     if error:
         raw_error = str(error)
         response["error_code"] = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
-        response["error_message"] = raw_error
+        response["error_message"] = _expand_sdk_error_message(raw_error, sdk_result)
     elif not used_sdk:
         response["error_code"] = "claude_agent_sdk_disabled"
         response["error_message"] = "Claude Agent SDK is disabled"
