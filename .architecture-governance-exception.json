@@ -1,21 +1,21 @@
 {
   "schema_version": "ai-platform.architecture-governance-exception.v1",
   "candidate": {
-    "authority_ref": "f5fc02ff75b4cb146869c9ab6a4bcd8b45876441",
-    "base_ref": "f5fc02ff75b4cb146869c9ab6a4bcd8b45876441",
-    "head_scope_sha256": "5fcbf56505baa4272e4685e8e32fb2175c0698f085eaada4c042ea7e7ec7274f"
+    "authority_ref": "d51a5d706b668a489da48283de30b5e25df64252",
+    "base_ref": "d51a5d706b668a489da48283de30b5e25df64252",
+    "head_scope_sha256": "8d3d98037822c9a81272b735fbb54805e65f0c6c2800f2a8aba81ee998f74c0a"
   },
   "expires_on": "2026-09-18",
   "owner": "platform-architecture",
-  "reason": "SDK tool lifecycle hardens attachment parser evidence: the frozen legacy Harness worker adapter must persist and validate server-owned parser requirements at async terminal normalization time. The builder itself moved to file_parser_contracts; only the frozen adapter's field, persistence, and terminal validation wiring remains and is capped by this candidate exception.",
-  "removal_condition": "Extract the remaining claude-agent-worker async terminal normalization (attachment_parser_requirements field, adapter reconciliation context persistence, and terminal evidence validation) into app/executors/claude or an execution infrastructure module so app/executors/claude_agent_worker.py stops growing.",
+  "reason": "SDK timeout is disabled by default (CLAUDE_AGENT_SDK_TIMEOUT_SECONDS=0): the frozen legacy Sandbox provider aggregate's environment default is updated from 1200 to 0 to stay consistent with the unbounded internal-beta policy. This is a one-line default-value change (no line growth); the file already exceeds its frozen max_lines on the base commit, which this candidate exception records while the provider aggregate is extracted.",
+  "removal_condition": "Extract the executor environment assembly from app/runtime/sandbox/container_provider.py into a sandbox infrastructure module so the frozen aggregate stops carrying environment defaults.",
   "paths": [
-    "app/executors/claude_agent_worker.py"
+    "app/runtime/sandbox/container_provider.py"
   ],
   "violations": [
     {
       "code": "frozen_hot_file_growth",
-      "path": "app/executors/claude_agent_worker.py"
+      "path": "app/runtime/sandbox/container_provider.py"
     }
   ]
 }
