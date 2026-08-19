@@ -1354,9 +1354,10 @@ async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_pa
 async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / "inputs").mkdir()
     outside = tmp_path / "outside.txt"
     outside.write_text("outside", encoding="utf-8")
-    symlink_or_skip(outside, workspace / "input.docx")
+    symlink_or_skip(outside, workspace / "inputs" / "input.docx")
 
     class FakeStorage:
         def get_bytes(self, *, storage_key):
