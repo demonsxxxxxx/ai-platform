@@ -140,6 +140,7 @@ def test_real_sandbox_replaces_local_tool_authority_once():
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
     assert bash_subject["workspace_contract"] == "ai-platform.skill-workspace.v1"
     grep_subject = next(subject for subject in subjects if subject["identity"] == "Grep")
+    assert grep_subject["risk_level"] == "low"
     assert grep_subject["write_capable"] is False
     assert grep_subject["allowed_parameter_keys"] == [
         "pattern",

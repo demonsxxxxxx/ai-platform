@@ -166,7 +166,7 @@ def _fake_sdk(captured, *, hook_invocations):
     )
 
 
-def _scripted_sdk(captured, steps, *, result_text="done"):
+def _scripted_sdk(captured, steps, *, result_text="done", result_error: str | None = None):
     class TextBlock:
         def __init__(self, text):
             self.text = text
@@ -184,8 +184,8 @@ def _scripted_sdk(captured, steps, *, result_text="done"):
         usage = None
         model_usage = None
         result = result_text
-        is_error = False
-        errors = None
+        is_error = result_error is not None
+        errors = [result_error] if result_error is not None else None
         stop_reason = "end_turn"
         num_turns = 1
         permission_denials = None
@@ -430,6 +430,51 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_required_keys", [None, "pattern", {"pattern": True}])
+async def test_sandbox_grep_denies_invalid_required_parameter_configuration(
+    monkeypatch,
+    tmp_path,
+    invalid_required_keys,
+):
+    captured = {}
+    hook_input = {
+        "tool_name": "Grep",
+        "tool_use_id": "grep-call-1",
+        "tool_input": {},
+    }
+    subjects = with_sandbox_local_tool_capability_subjects(
+        [], sandbox_provider="opensandbox"
+    )
+    next(subject for subject in subjects if subject["identity"] == "Grep")[
+        "required_parameter_keys"
+    ] = invalid_required_keys
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search the workspace",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=subjects,
+        on_tool_lifecycle=_acknowledge_capability_evidence,
+    )
+
+    assert captured["hook_results"][0][1]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert result.turn_diagnostics["counters"]["tool_policy_denials"] == 1
 
 
 @pytest.mark.asyncio
@@ -684,6 +729,60 @@ async def test_sandbox_read_only_tool_records_incomplete_lifecycle_without_faili
     assert result.error is None
     assert result.message == "safe answer"
     assert deltas == ["safe answer"]
+    assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sandbox_read_only_lifecycle_denial_is_counted_on_sdk_error_terminal(
+    monkeypatch,
+    tmp_path,
+):
+    captured, lifecycle_facts = {}, []
+    hook_input = {
+        "tool_name": "Grep",
+        "tool_use_id": "read-only-call-1",
+        "tool_input": {"pattern": "done", "path": str(tmp_path)},
+    }
+
+    async def acknowledge(fact):
+        lifecycle_facts.append(dict(fact))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("hook", ("PreToolUse", hook_input, "read-only-call-1"))],
+            result_error="simulated SDK failure",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search the workspace",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge,
+    )
+
+    assert lifecycle_facts == [
+        {
+            "fact_kind": "tool_invocation",
+            "tool_name": "Grep",
+            "invocation_id": "read-only-call-1",
+            "lifecycle": "started",
+        }
+    ]
+    assert result.error is not None
+    assert result.message == ""
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 1
 
 

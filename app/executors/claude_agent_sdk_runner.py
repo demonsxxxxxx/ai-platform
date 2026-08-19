@@ -904,8 +904,21 @@ async def run_claude_agent_sdk(
     capability_evidence: list[dict[str, str]] = []
     capability_evidence_rejected = False
     actual_mcp_invocation_observed = False
+    observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
+    read_only_lifecycle_denials_finalized = False
+
+    def finalize_read_only_lifecycle_denials() -> None:
+        nonlocal read_only_lifecycle_denials_finalized
+        if read_only_lifecycle_denials_finalized:
+            return
+        diagnostic_counters["tool_lifecycle_denials"] += sum(
+            state == "started"
+            for state in observed_read_only_invocation_states.values()
+        )
+        read_only_lifecycle_denials_finalized = True
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
+        finalize_read_only_lifecycle_denials()
         return project_sdk_turn_diagnostics(
             {
                 "counters": diagnostic_counters,
@@ -1164,7 +1177,6 @@ async def run_claude_agent_sdk(
         or sandbox_tool_lifecycle_governed
     )
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
-    observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     governed_builtin_lifecycle_rejected = False
     actual_sandbox_bash_invocation_observed = False
     private_mcp_replacements = {
@@ -1875,11 +1887,6 @@ async def run_claude_agent_sdk(
             stream_projector.close_unfinished()
             if stream_projector.disabled:
                 answer_stream_gate.fail_closed()
-        incomplete_read_only_lifecycles = sum(
-            state == "started"
-            for state in observed_read_only_invocation_states.values()
-        )
-        diagnostic_counters["tool_lifecycle_denials"] += incomplete_read_only_lifecycles
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
