@@ -85,6 +85,7 @@ import {
   clearReconnectTimeout,
   isNonRetryableSSEAuthenticationError,
   queryAuthoritativeRunStatus,
+  type ReplayGapRecoveryOwner,
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
@@ -778,6 +779,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // for the same session/run/generation.
   const reconcileOwnerRef = useRef<ReconcileOwner | null>(null);
   const terminalHydrationOwnerRef = useRef<TerminalHydrationOwner | null>(null);
+  const replayGapRecoveryRef = useRef<ReplayGapRecoveryOwner | null>(null);
 
   // Keep sessionId/runId in ref for closure access
   const sessionIdRef = useRef<string | null>(null);
@@ -903,6 +905,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const clearReconcileOwners = useCallback(() => {
     reconcileOwnerRef.current = null;
     terminalHydrationOwnerRef.current = null;
+    replayGapRecoveryRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
@@ -1294,6 +1297,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       reconnectTimeoutRef,
       retryCountRef,
       statusRetryCountRef,
+      replayGapRecoveryRef,
       messagesRef,
       hydrateTerminalRun,
     }),
@@ -2998,7 +3002,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     error,
     sessionId,
     currentRunId,
-    isReconnecting: connectionStatus === "reconnecting",
+    isReconnecting:
+      connectionStatus === "reconnecting" ||
+      connectionStatus === "recovering_gap",
     connectionStatus,
     newlyCreatedSession,
     isInitializingSandbox,

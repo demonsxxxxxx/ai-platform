@@ -19,6 +19,7 @@ import {
   resolveSkillCatalogPage,
   resolveSkillCatalogSelection,
   type ArchivedSkillCatalogEntry,
+  type SkillCatalogView,
 } from "./skillCatalogEntries";
 
 interface CatalogState {
@@ -57,6 +58,7 @@ export function SkillsPanel({
     ArchivedSkillCatalogEntry[]
   >([]);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const [catalogView, setCatalogView] = useState<SkillCatalogView>("all");
 
   const actions = useSkillsActions({
     allAuthorizedCatalog,
@@ -64,6 +66,7 @@ export function SkillsPanel({
     loadAdminCatalog: showDistributionEditor,
     onSkillsArchived: setArchivedSkills,
   });
+  const { page: currentPage, setPage: setCatalogPage } = actions;
   const permissionDenied = isPermissionError(actions.listError);
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
@@ -97,26 +100,37 @@ export function SkillsPanel({
         catalogEntries,
         actions.searchQuery,
         actions.selectedTags,
+        catalogView,
       ),
-    [actions.searchQuery, actions.selectedTags, catalogEntries],
+    [actions.searchQuery, actions.selectedTags, catalogEntries, catalogView],
   );
   const catalogPage = useMemo(
     () =>
       resolveSkillCatalogPage({
         entries: filteredCatalogEntries,
-        page: actions.page,
+        page: currentPage,
         pageSize: actions.pageSize,
         localPagination: allAuthorizedCatalog,
         serverTotal: actions.total,
       }),
     [
-      actions.page,
       actions.pageSize,
       actions.total,
       allAuthorizedCatalog,
+      currentPage,
       filteredCatalogEntries,
     ],
   );
+  useEffect(() => {
+    if (catalogPage.page !== currentPage) {
+      setCatalogPage(catalogPage.page);
+    }
+  }, [catalogPage.page, currentPage, setCatalogPage]);
+
+  useEffect(() => {
+    setCatalogPage(1);
+  }, [catalogView, setCatalogPage]);
+
   const selectableNames = useMemo(
     () =>
       filteredCatalogEntries.flatMap((entry) =>
@@ -305,9 +319,12 @@ export function SkillsPanel({
         metricsCatalogEntries={catalogEntries}
         paginatedCatalogEntries={catalogPage.entries}
         total={catalogPage.total}
-        page={actions.page}
+        page={catalogPage.page}
         pageSize={actions.pageSize}
-        setPage={actions.setPage}
+        setPage={setCatalogPage}
+        setPageSize={actions.setPageSize}
+        catalogView={catalogView}
+        setCatalogView={setCatalogView}
         toggleTag={actions.toggleTag}
         clearFilters={actions.clearFilters}
         isLoading={actions.isLoading}

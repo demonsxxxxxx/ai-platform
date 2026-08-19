@@ -190,7 +190,7 @@ test("Skill catalog refreshes fail pending and hidden batch selections are clear
   );
   assert.match(
     actions,
-    /setSelectedNames\(new Set\(\)\);\s*\}, \[page, searchQuery, selectedTags\]\);/,
+    /setSelectedNames\(new Set\(\)\);\s*\}, \[page, pageSize, searchQuery, selectedTags\]\);/,
   );
 });
 

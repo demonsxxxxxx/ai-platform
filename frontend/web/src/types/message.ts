@@ -346,6 +346,7 @@ export type ConnectionStatus =
   | "connecting"
   | "connected"
   | "reconnecting"
+  | "recovering_gap"
   | "disconnected";
 
 export interface ConnectionState {

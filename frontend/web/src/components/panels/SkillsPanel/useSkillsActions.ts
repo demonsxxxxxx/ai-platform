@@ -54,7 +54,12 @@ export function useSkillsActions(options?: {
 
   // Pagination
   const [page, setPage] = useState(1);
-  const pageSize = 20;
+  const [pageSize, setPageSizeState] = useState(10);
+  const setPageSize = useCallback((nextPageSize: number) => {
+    if (![10, 20, 50].includes(nextPageSize)) return;
+    setPageSizeState(nextPageSize);
+    setPage(1);
+  }, []);
   const listParams = useMemo(
     () => ({
       skip: (page - 1) * pageSize,
@@ -160,7 +165,7 @@ export function useSkillsActions(options?: {
 
   useEffect(() => {
     setSelectedNames(new Set());
-  }, [page, searchQuery, selectedTags]);
+  }, [page, pageSize, searchQuery, selectedTags]);
 
   // Delete confirmation
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -721,6 +726,7 @@ export function useSkillsActions(options?: {
     toggleTag,
     clearFilters,
     setPage,
+    setPageSize,
 
     // Form modal
     editingSkill,

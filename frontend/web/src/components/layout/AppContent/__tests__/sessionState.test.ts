@@ -28,6 +28,16 @@ test("shows the footer skeleton only when reconnecting after a stream disappears
 
   assert.equal(
     shouldShowStreamingFooterSkeleton({
+      connectionStatus: "recovering_gap",
+      sessionRunning: true,
+      messageCount: 2,
+      hasVisibleStreamingMessage: false,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldShowStreamingFooterSkeleton({
       connectionStatus: "connected",
       sessionRunning: true,
       messageCount: 2,

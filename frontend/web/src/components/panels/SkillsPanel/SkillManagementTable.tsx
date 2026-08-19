@@ -1,6 +1,7 @@
 import {
   Download,
   Archive,
+  Boxes,
   FileArchive,
   Pencil,
   Power,
@@ -48,6 +49,7 @@ function catalogStatusKey(status: SkillCatalogStatus): string {
   if (status === "available") return "skills.managementTable.distributed";
   if (status === "hidden") return "skills.managementTable.hidden";
   if (status === "disabled") return "skills.managementTable.distributionDisabled";
+  if (status === "internal") return "skills.managementTable.internal";
   return "skills.managementTable.notPublished";
 }
 
@@ -105,10 +107,13 @@ export function SkillManagementTable({
           const rowCanDelete = canDelete && canAct;
           const hasActions =
             rowCanToggle || rowCanEdit || rowCanExport || rowCanDelete;
+          const CatalogStatusIcon =
+            entry.catalogStatus === "internal" ? Boxes : Store;
           return (
             <div
             aria-selected={entry.id === selectedSkillId}
             className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""} ${entry.id === selectedSkillId ? "skill-management-table__row--selected" : ""}`}
+            data-catalog-status={entry.catalogStatus}
             data-skill-catalog-item={entry.id}
             key={entry.id}
             onClick={() => onSelectDetail(entry.id)}
@@ -198,14 +203,22 @@ export function SkillManagementTable({
 
             <div className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
               <span
-                className={`skill-management-table__status ${entry.runtimeEnabled ? "skill-management-table__status--active" : ""}`}
+                className={`skill-management-table__status ${
+                  entry.runtimeEnabled
+                    ? "skill-management-table__status--active"
+                    : entry.catalogStatus === "internal"
+                      ? "skill-management-table__status--internal"
+                      : ""
+                }`}
               >
                 <span aria-hidden="true" />
-                {entry.runtimeEnabled === null
-                  ? t("skills.managementTable.notPublished")
-                  : entry.runtimeEnabled
-                  ? t("skills.managementTable.enabled")
-                  : t("skills.managementTable.disabled")}
+                {entry.catalogStatus === "internal"
+                  ? t("skills.managementTable.internalRuntime")
+                  : entry.runtimeEnabled === null
+                    ? t("skills.managementTable.notPublished")
+                    : entry.runtimeEnabled
+                      ? t("skills.managementTable.enabled")
+                      : t("skills.managementTable.disabled")}
               </span>
             </div>
 
@@ -215,9 +228,9 @@ export function SkillManagementTable({
               role="cell"
             >
               <span
-                className={`skill-management-table__status ${entry.catalogStatus === "available" ? "skill-management-table__status--distribution" : ""}`}
+                className={`skill-management-table__status skill-management-table__status--catalog skill-management-table__status--${entry.catalogStatus}`}
               >
-                <Store aria-hidden="true" size={13} />
+                <CatalogStatusIcon aria-hidden="true" size={13} />
                 {t(catalogStatusKey(entry.catalogStatus))}
               </span>
               {entry.publishedCatalogName ? (
@@ -310,7 +323,11 @@ export function SkillManagementTable({
               ) : null}
               {!hasActions ? (
                 <span className="text-xs text-[var(--theme-text-secondary)]">
-                  {t("skills.managementTable.readOnly")}
+                  {t(
+                    entry.catalogStatus === "internal"
+                      ? "skills.managementTable.internalDependency"
+                      : "skills.managementTable.readOnly",
+                  )}
                 </span>
               ) : null}
             </div>
