@@ -27,6 +27,7 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
+    _AuthorizedAttachmentMetadata,
     _allowed_skill_names,
     _inferred_used_skill_names,
     _ordinary_run_requires_sandbox,
@@ -2882,7 +2883,9 @@ def test_sandbox_runtime_rejects_required_bash_evidence_for_different_or_failed_
 
 
 def _xlsx_prepared_run(tmp_path):
-    (tmp_path / "book.xlsx").write_bytes(b"xlsx-worker-evidence")
+    inputs_dir = tmp_path / "inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    (inputs_dir / "book.xlsx").write_bytes(b"xlsx-worker-evidence")
     return PreparedSdkRun(
         workspace=tmp_path,
         file_names=["book.xlsx"],
@@ -2898,6 +2901,15 @@ def _xlsx_prepared_run(tmp_path):
                 "availability": "available",
             }
         },
+        attachment_metadata=[
+            _AuthorizedAttachmentMetadata(
+                file_id="file_1",
+                file_name="book.xlsx",
+                content_type=XLSX_CONTENT_TYPE,
+                size_bytes=len(b"xlsx-worker-evidence"),
+            )
+        ],
+        materialized_file_names=["book.xlsx"],
     )
 
 

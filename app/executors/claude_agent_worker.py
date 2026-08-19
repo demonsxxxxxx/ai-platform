@@ -1354,7 +1354,7 @@ class ClaudeAgentWorkerAdapter:
             content_types=[
                 item.content_type for item in attachment_metadata
             ] if len(attachment_metadata) == len(file_names) else [],
-            workspace=resolved_workspace,
+            materialized_dir=resolved_workspace / "inputs",
             materialized_file_names=staged_file_names,
         )
         return (
@@ -1415,7 +1415,7 @@ class ClaudeAgentWorkerAdapter:
                     content_types=[
                         item.content_type for item in prepared.attachment_metadata
                     ] if len(prepared.attachment_metadata) == len(prepared.file_names) else [],
-                    workspace=prepared.workspace,
+                    materialized_dir=prepared.workspace / "inputs",
                     materialized_file_names=list(
                         prepared.materialized_file_names or prepared.file_names
                     ),
@@ -1645,7 +1645,7 @@ class ClaudeAgentWorkerAdapter:
                     content_types=[
                         item.content_type for item in prepared.attachment_metadata
                     ] if len(prepared.attachment_metadata) == len(prepared.file_names) else [],
-                    workspace=prepared.workspace,
+                    materialized_dir=prepared.workspace / "inputs",
                     materialized_file_names=list(
                         prepared.materialized_file_names or prepared.file_names
                     ),

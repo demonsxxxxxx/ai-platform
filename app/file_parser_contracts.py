@@ -14,6 +14,7 @@ from zipfile import BadZipFile, ZipFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, utf8_token_estimate
+from app.path_safety import ensure_path_inside
 from app.validation import assert_safe_id
 
 
@@ -264,13 +265,16 @@ def build_attachment_parser_requirements(
     file_ids: list[str],
     declared_file_names: list[str],
     content_types: list[str],
-    workspace: Path,
+    materialized_dir: Path,
     materialized_file_names: list[str],
 ) -> list[dict[str, Any]]:
     """Build non-secret parser requirements from server-materialized attachment bytes.
 
     The worker calls this after staging attachments so terminal reconciliation can
     enforce exact parser-version evidence without persisting file content.
+    materialized_dir is the workspace subdirectory that actually holds the staged
+    bytes (for example ``workspace/inputs``); every materialized name must resolve
+    to a safe relative path inside it and never a symlink.
     """
 
     if not file_ids or not declared_file_names:
@@ -282,10 +286,24 @@ def build_attachment_parser_requirements(
     for index, file_name in enumerate(declared_file_names):
         if index >= len(file_ids):
             return []
-        materialized_path = Path(workspace) / materialized_names[index]
+        materialized_name = materialized_names[index]
+        if (
+            not materialized_name
+            or materialized_name != Path(materialized_name).name
+            or any(separator in materialized_name for separator in ("/", "\\"))
+        ):
+            return []
+        materialized_path = materialized_dir / materialized_name
         try:
+            ensure_path_inside(
+                materialized_dir,
+                materialized_path,
+                "attachment_parser_workspace_escape",
+            )
+            if materialized_path.is_symlink():
+                return []
             content = materialized_path.read_bytes()
-        except OSError:
+        except (OSError, ValueError):
             return []
         facts.append(
             MaterializedAttachmentFact(
