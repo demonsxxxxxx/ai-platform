@@ -14,6 +14,7 @@ from zipfile import BadZipFile, ZipFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, utf8_token_estimate
+from app.path_safety import ensure_path_inside
 from app.validation import assert_safe_id
 
 
@@ -257,6 +258,71 @@ def dispatched_context_file_ids(manifest: object) -> frozenset[str]:
         for row in rows
         if isinstance(row, dict) and str(row.get("file_id") or "").strip()
     )
+
+
+def build_attachment_parser_requirements(
+    *,
+    file_ids: list[str],
+    declared_file_names: list[str],
+    content_types: list[str],
+    materialized_dir: Path,
+    materialized_file_names: list[str],
+) -> list[dict[str, Any]]:
+    """Build non-secret parser requirements from server-materialized attachment bytes.
+
+    The worker calls this after staging attachments so terminal reconciliation can
+    enforce exact parser-version evidence without persisting file content.
+    materialized_dir is the workspace subdirectory that actually holds the staged
+    bytes (for example ``workspace/inputs``); every materialized name must resolve
+    to a safe relative path inside it and never a symlink.
+    """
+
+    if not file_ids or not declared_file_names:
+        return []
+    materialized_names = materialized_file_names or declared_file_names
+    if len(materialized_names) != len(declared_file_names):
+        return []
+    facts: list[MaterializedAttachmentFact] = []
+    for index, file_name in enumerate(declared_file_names):
+        if index >= len(file_ids):
+            return []
+        materialized_name = materialized_names[index]
+        if (
+            not materialized_name
+            or materialized_name != Path(materialized_name).name
+            or any(separator in materialized_name for separator in ("/", "\\"))
+        ):
+            return []
+        materialized_path = materialized_dir / materialized_name
+        try:
+            ensure_path_inside(
+                materialized_dir,
+                materialized_path,
+                "attachment_parser_workspace_escape",
+            )
+            if materialized_path.is_symlink():
+                return []
+            content = materialized_path.read_bytes()
+        except (OSError, ValueError):
+            return []
+        facts.append(
+            MaterializedAttachmentFact(
+                file_id=file_ids[index],
+                file_name=PurePosixPath(str(file_name).replace("\\", "/")).name,
+                content_type=(
+                    content_types[index]
+                    if index < len(content_types) and content_types[index]
+                    else (XLSX_CONTENT_TYPE if str(file_name).lower().endswith(".xlsx") else "")
+                ),
+                byte_count=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        )
+    contract = build_attachment_preprocessing_contract(attachment_facts=facts)
+    raw_requirements = contract.get("requirements")
+    if not isinstance(raw_requirements, list):
+        return []
+    return list(raw_requirements)
 
 
 def build_attachment_preprocessing_contract(

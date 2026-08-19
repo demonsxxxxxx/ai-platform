@@ -32,6 +32,23 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
 _BUILTIN_PARAMETER_KEYS = {
     "Read": ("file_path",),
     "Glob": ("pattern", "path"),
+    "Grep": (
+        "pattern",
+        "path",
+        "glob",
+        "output_mode",
+        "-i",
+        "multiline",
+        "head_limit",
+        "offset",
+        "context",
+        "-A",
+        "-B",
+        "-C",
+        "-n",
+        "-o",
+        "type",
+    ),
     "LS": ("path",),
     "Bash": ("command",),
     "Write": ("file_path", "content"),
@@ -49,6 +66,7 @@ _BUILTIN_PARAMETER_KEYS = {
     "Skill": ("skill",),
 }
 _BUILTIN_REQUIRED_PARAMETER_KEYS = {
+    "Grep": ("pattern",),
     "Bash": ("command",),
     "Write": ("file_path", "content"),
     "Skill": ("skill",),
@@ -270,23 +288,24 @@ def _parameters_match_subject(
     allowed_keys = _authorized_parameter_keys(subject, tool_name)
     if not allowed_keys or not set(tool_input).issubset(allowed_keys):
         return False
-    required = subject.get(
-        "required_parameter_keys",
-        list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())),
+    required = (
+        subject["required_parameter_keys"]
+        if "required_parameter_keys" in subject
+        else list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
     )
-    if isinstance(required, list):
-        if not all(isinstance(key, str) and key for key in required):
-            return False
-        if any(
-            key not in tool_input or tool_input[key] in (None, "") for key in required
-        ):
-            return False
-    elif tool_name == "Bash":
-        if (
-            not isinstance(tool_input.get("command"), str)
-            or not tool_input["command"].strip()
-        ):
-            return False
+    if not isinstance(required, list) or not all(
+        isinstance(key, str) and key for key in required
+    ):
+        return False
+    if any(
+        key not in tool_input or tool_input[key] in (None, "") for key in required
+    ):
+        return False
+    if tool_name == "Bash" and (
+        not isinstance(tool_input.get("command"), str)
+        or not tool_input["command"].strip()
+    ):
+        return False
     if tool_name == "Skill":
         allowed_skill_names = subject.get("allowed_skill_names")
         requested = _extract_skill_names_from_tool_input(

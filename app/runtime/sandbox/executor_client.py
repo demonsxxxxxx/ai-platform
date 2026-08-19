@@ -90,6 +90,7 @@ _EXECUTOR_REPORTED_FAILURE_CODES = frozenset(
         "executor_runner_failed",
         "executor_system_prompt_invalid",
         "executor_system_prompt_too_large",
+        "tool_invocation_evidence_mismatch",
     }
 )
 
@@ -113,6 +114,7 @@ def executor_reported_failure_message(error_code: str) -> str:
         "executor_cancelled": "Executor cancelled",
         "executor_deadline_exceeded": "Executor deadline exceeded",
         "executor_health_timeout": "Executor health timeout",
+        "tool_invocation_evidence_mismatch": "Tool invocation evidence was incomplete",
     }.get(error_code, "Executor reported failure")
 
 

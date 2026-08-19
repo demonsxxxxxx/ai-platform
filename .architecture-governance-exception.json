@@ -1,0 +1,21 @@
+{
+  "schema_version": "ai-platform.architecture-governance-exception.v1",
+  "candidate": {
+    "authority_ref": "f5fc02ff75b4cb146869c9ab6a4bcd8b45876441",
+    "base_ref": "f5fc02ff75b4cb146869c9ab6a4bcd8b45876441",
+    "head_scope_sha256": "5fcbf56505baa4272e4685e8e32fb2175c0698f085eaada4c042ea7e7ec7274f"
+  },
+  "expires_on": "2026-09-18",
+  "owner": "platform-architecture",
+  "reason": "SDK tool lifecycle hardens attachment parser evidence: the frozen legacy Harness worker adapter must persist and validate server-owned parser requirements at async terminal normalization time. The builder itself moved to file_parser_contracts; only the frozen adapter's field, persistence, and terminal validation wiring remains and is capped by this candidate exception.",
+  "removal_condition": "Extract the remaining claude-agent-worker async terminal normalization (attachment_parser_requirements field, adapter reconciliation context persistence, and terminal evidence validation) into app/executors/claude or an execution infrastructure module so app/executors/claude_agent_worker.py stops growing.",
+  "paths": [
+    "app/executors/claude_agent_worker.py"
+  ],
+  "violations": [
+    {
+      "code": "frozen_hot_file_growth",
+      "path": "app/executors/claude_agent_worker.py"
+    }
+  ]
+}
