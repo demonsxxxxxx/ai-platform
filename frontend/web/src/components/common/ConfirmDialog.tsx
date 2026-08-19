@@ -71,7 +71,7 @@ export function ConfirmDialog({
     warning: {
       icon: "text-amber-500 dark:text-amber-400",
       confirmButton:
-        "bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-700 text-white",
+        "btn-primary bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-700 text-white",
       confirmIcon: AlertTriangle,
     },
     info: {
@@ -85,7 +85,7 @@ export function ConfirmDialog({
   return createPortal(
     <div
       data-yields-sidebar
-      className="fixed inset-0 z-[300] flex items-center justify-center"
+      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
     >
       {/* Backdrop */}
       <div
@@ -94,7 +94,7 @@ export function ConfirmDialog({
       />
 
       {/* Dialog */}
-      <div className="enterprise-modal-shell relative z-10 mx-4 max-w-sm animate-in fade-in zoom-in-95 duration-200">
+      <div className="enterprise-modal-shell relative z-10 w-full max-w-sm animate-in fade-in zoom-in-95 duration-200">
         {/* Content */}
         <div className="p-5">
           <div className="flex items-start gap-3">
@@ -115,7 +115,7 @@ export function ConfirmDialog({
         </div>
 
         {/* Actions */}
-        <div className="enterprise-modal-footer justify-end">
+        <div className="enterprise-modal-footer flex-wrap justify-end">
           <button
             onClick={onCancel}
             disabled={loading}

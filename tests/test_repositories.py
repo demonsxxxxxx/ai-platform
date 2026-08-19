@@ -888,11 +888,24 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
         tenant_id="tenant-a",
         session_id="session-a",
         title="Renamed",
+        title_source="user",
     )
     rename_sql, rename_params = conn.calls[-1]
     assert "update sessions" in rename_sql
     assert "status = 'active'" in rename_sql
-    assert rename_params == ("Renamed", "tenant-a", "session-a")
+    assert rename_params == ("Renamed", "user", "tenant-a", "session-a")
+
+    await repositories.update_session_title(
+        conn,
+        tenant_id="tenant-a",
+        session_id="session-a",
+        title="First task",
+        title_source="generated",
+        expected_title_source="initial",
+    )
+    initialize_sql, initialize_params = conn.calls[-1]
+    assert "title_source = %s" in initialize_sql
+    assert initialize_params == ("First task", "generated", "tenant-a", "session-a", "initial")
 
     await repositories.mark_session_deleted(
         conn,
@@ -915,6 +928,26 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "order by created_at asc, id asc" in messages_sql
     assert "limit %s" in messages_sql
     assert messages_params == ("tenant-a", "session-a", 201)
+
+
+@pytest.mark.asyncio
+async def test_initialize_session_title_returns_none_when_user_rename_wins():
+    class NoUpdateCursor:
+        async def fetchone(self):
+            return None
+
+    class NoUpdateConnection:
+        async def execute(self, _sql, *_params):
+            return NoUpdateCursor()
+
+    assert await repositories.update_session_title(
+        NoUpdateConnection(),
+        tenant_id="tenant-a",
+        session_id="session-a",
+        title="First task",
+        title_source="generated",
+        expected_title_source="initial",
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -5410,6 +5443,7 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
         None,
         "agent-a",
         "Agent A",
+        "initial",
         None,
         None,
         "conversation",

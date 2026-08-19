@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.17.3"
+TARGET_SCHEMA_VERSION = "2026.08.18.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -32,6 +32,7 @@ CRITICAL_RELATIONS = (
     "sandbox_leases",
 )
 CRITICAL_COLUMNS = (
+    ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
     # Temporary physical compatibility for the previous binary; product DTOs ignore it.
@@ -78,6 +79,7 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
 )
 CRITICAL_CONSTRAINTS = (
+    ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
