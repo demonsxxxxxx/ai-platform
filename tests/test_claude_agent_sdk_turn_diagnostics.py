@@ -142,6 +142,7 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
         "last_public_stage": "runtime",
         "selected_skill": None,
         "used_skills": [],
+        "tool_policy_denials_detail": [],
     }
 
 

@@ -1079,6 +1079,54 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     assert "tool-call-1" not in json.dumps(capability_events)
 
 
+@pytest.mark.asyncio
+async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
+    monkeypatch,
+    tmp_path,
+):
+    """A real SDK failure (timeout) must not be masked by pending evidence.
+
+    Before the fix, a started-but-incomplete tool invocation downgraded a
+    claude_agent_sdk_timeout into tool_invocation_evidence_mismatch, hiding
+    the real cause ("Capability lifecycle sequence is invalid").
+    """
+
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        await kwargs["on_tool_lifecycle"](
+            {
+                "tool_name": "Skill",
+                "invocation_id": "skill-call-1",
+                "lifecycle": "started",
+            }
+        )
+        return sdk_result(
+            "timed out",
+            error="claude_agent_sdk_timeout",
+            received_structured_terminal=False,
+            terminal_reason=None,
+        )
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "claude_agent_sdk_timeout"
+    assert body["error_message"] == "claude_agent_sdk_timeout"
+
+
 @pytest.mark.parametrize(
     ("first_owner", "expected_error_code"),
     [

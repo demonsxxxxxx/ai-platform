@@ -1688,13 +1688,18 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
-    if required_capability_declaration is not None:
-        required_tool_states = set(required_tool_invocation_states.values())
-        if "started" in required_tool_states or "completed" not in required_tool_states:
-            required_capability_evidence = None
-            reject_capability_evidence("required_tool_completion_evidence_mismatch")
-    elif any(state == "started" for state in required_tool_invocation_states.values()):
-        reject_capability_evidence("tool_invocation_evidence_mismatch")
+    if used_sdk and not error:
+        # Only a successful SDK run may be downgraded by missing completion
+        # evidence.  When the SDK already failed (timeout, cancelled, upstream
+        # error, ...) preserve that structured error so callers see the real
+        # terminal cause instead of a misleading evidence mismatch.
+        if required_capability_declaration is not None:
+            required_tool_states = set(required_tool_invocation_states.values())
+            if "started" in required_tool_states or "completed" not in required_tool_states:
+                required_capability_evidence = None
+                reject_capability_evidence("required_tool_completion_evidence_mismatch")
+        elif any(state == "started" for state in required_tool_invocation_states.values()):
+            reject_capability_evidence("tool_invocation_evidence_mismatch")
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",
