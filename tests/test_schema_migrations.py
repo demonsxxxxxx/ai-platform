@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.17.3"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.18.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -203,6 +203,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "audit_logs",
         "sandbox_leases",
     )
+    assert (
+        "sessions",
+        "title_source",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
         "skill_set",
@@ -221,6 +227,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "sessions",
+        "chk_sessions_title_source",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "runs",
         "chk_runs_execution_skill_identity",
@@ -387,7 +397,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "aca73b789463a4ba5878f5dd9b00135db2e0854420370337d9747273380a14bd"
+        "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

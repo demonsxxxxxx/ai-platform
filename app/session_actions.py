@@ -50,6 +50,32 @@ async def _authorized_session(
     return row
 
 
+async def initialize_session_title(
+    conn: Any,
+    *,
+    principal: AuthPrincipal,
+    session_id: str,
+    title: str,
+) -> dict[str, Any]:
+    """Persist the first-task title without overwriting a later user rename."""
+
+    normalized_title = title.strip()
+    if not normalized_title or len(normalized_title) > 200:
+        raise SessionActionValidationError("invalid_session_title")
+    row = await _authorized_session(conn, principal=principal, session_id=session_id)
+    if row.get("title_source") != "initial":
+        return _session_payload(row)
+    updated = await repositories.update_session_title(
+        conn,
+        tenant_id=principal.tenant_id,
+        session_id=session_id,
+        title=normalized_title,
+        title_source="generated",
+        expected_title_source="initial",
+    )
+    return _session_payload(updated or row)
+
+
 async def rename_session(
     conn: Any,
     *,
@@ -68,6 +94,7 @@ async def rename_session(
         tenant_id=principal.tenant_id,
         session_id=session_id,
         title=normalized_title,
+        title_source="user",
     )
     if updated is None:
         raise SessionActionNotFoundError("session_not_found")
@@ -134,6 +161,7 @@ async def fork_session_message(
         user_id=principal.user_id,
         agent_id=source["agent_id"],
         title=f"{source.get('title') or '新会话'} (fork)",
+        title_source="user",
     )
     for message in messages[: selected_index + 1]:
         await repositories.append_message(
