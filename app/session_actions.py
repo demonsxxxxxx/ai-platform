@@ -50,6 +50,35 @@ async def _authorized_session(
     return row
 
 
+async def initialize_session_title(
+    conn: Any,
+    *,
+    principal: AuthPrincipal,
+    session_id: str,
+    title: str,
+    initial_titles: set[str],
+) -> dict[str, Any]:
+    """Persist the first-task title without overwriting a later user rename."""
+
+    normalized_title = title.strip()
+    if not normalized_title or len(normalized_title) > 200:
+        raise SessionActionValidationError("invalid_session_title")
+    row = await _authorized_session(conn, principal=principal, session_id=session_id)
+    initial_title_candidates = set(initial_titles)
+    initial_title_candidates.add(str(row["agent_id"]))
+    if str(row.get("title") or "") not in initial_title_candidates:
+        return _session_payload(row)
+    updated = await repositories.update_session_title(
+        conn,
+        tenant_id=principal.tenant_id,
+        session_id=session_id,
+        title=normalized_title,
+    )
+    if updated is None:
+        raise SessionActionNotFoundError("session_not_found")
+    return _session_payload(updated)
+
+
 async def rename_session(
     conn: Any,
     *,

@@ -154,6 +154,110 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
 
 
 @pytest.mark.asyncio
+async def test_session_action_initializes_first_task_title_once_without_overwriting_rename(monkeypatch):
+    from app import session_actions
+    from app.auth import AuthPrincipal
+
+    record = {
+        "id": "ses-owner",
+        "tenant_id": "default",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "agent-rca",
+        "title": "RCA Expert",
+        "status": "active",
+    }
+    writes = []
+
+    async def get_session_for_action(_conn, *, tenant_id, session_id):
+        return record if (tenant_id, session_id) == ("default", "ses-owner") else None
+
+    async def update_session_title(_conn, *, tenant_id, session_id, title):
+        writes.append((tenant_id, session_id, title))
+        record["title"] = title
+        return record
+
+    monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
+    monkeypatch.setattr(session_actions.repositories, "update_session_title", update_session_title)
+    owner = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
+
+    initialized = await session_actions.initialize_session_title(
+        object(),
+        principal=owner,
+        session_id="ses-owner",
+        title="Investigate batch variance",
+        initial_titles={"RCA Expert"},
+    )
+    assert initialized["title"] == "Investigate batch variance"
+    assert writes == [("default", "ses-owner", "Investigate batch variance")]
+
+    replay = await session_actions.initialize_session_title(
+        object(),
+        principal=owner,
+        session_id="ses-owner",
+        title="A later task must not replace the first title",
+        initial_titles={"RCA Expert"},
+    )
+    assert replay["title"] == "Investigate batch variance"
+    assert len(writes) == 1
+
+    record["title"] = "User renamed this task"
+    renamed = await session_actions.initialize_session_title(
+        object(),
+        principal=owner,
+        session_id="ses-owner",
+        title="Do not overwrite a rename",
+        initial_titles={"RCA Expert"},
+    )
+    assert renamed["title"] == "User renamed this task"
+    assert len(writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_title_route_persists_only_authorized_initial_title(monkeypatch):
+    from app.auth import AuthPrincipal
+    from app.routes import lambchat_compat
+
+    principal = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
+    captured = {}
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def get_authorized_session_projection(_conn, *, tenant_id, user_id, session_id):
+        captured["projection"] = (tenant_id, user_id, session_id)
+        return {"agent_profile_name": "RCA Expert"}
+
+    async def initialize_session_title(_conn, **kwargs):
+        captured["initialize"] = kwargs
+        return {"title": "Investigate batch variance"}
+
+    monkeypatch.setattr(lambchat_compat, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        lambchat_compat.repositories,
+        "get_authorized_session_projection",
+        get_authorized_session_projection,
+    )
+    monkeypatch.setattr(lambchat_compat.session_actions, "initialize_session_title", initialize_session_title)
+
+    response = await lambchat_compat.generate_title(
+        "ses-owner",
+        message="Investigate batch variance",
+        principal=principal,
+    )
+
+    assert response == {"session_id": "ses-owner", "title": "Investigate batch variance"}
+    assert captured["projection"] == ("default", "user-a", "ses-owner")
+    assert captured["initialize"] == {
+        "principal": principal,
+        "session_id": "ses-owner",
+        "title": "Investigate batch variance",
+        "initial_titles": {"RCA Expert"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_action_fork_copies_only_authorized_message_prefix_without_oracles(monkeypatch):
     from app import session_actions
     from app.auth import AuthPrincipal

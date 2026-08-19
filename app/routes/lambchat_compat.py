@@ -1429,9 +1429,35 @@ async def session_events(
 
 
 @router.post("/sessions/{session_id}/generate-title")
-async def generate_title(session_id: str, message: str = "", lang: str = "en") -> dict[str, str]:
+async def generate_title(
+    session_id: str,
+    message: str = "",
+    lang: str = "en",
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
     title = (message or "").strip().replace("\n", " ")[:32] or "新会话"
-    return {"session_id": session_id, "title": title}
+    async with transaction() as conn:
+        projection = await repositories.get_authorized_session_projection(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        try:
+            session = await session_actions.initialize_session_title(
+                conn,
+                principal=principal,
+                session_id=session_id,
+                title=title,
+                initial_titles={str(projection.get("agent_profile_name") or "")},
+            )
+        except session_actions.SessionActionValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except session_actions.SessionActionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="session_not_found") from exc
+    return {"session_id": session_id, "title": str(session["title"])}
 
 
 @router.post("/sessions/{session_id}/mark-read")
