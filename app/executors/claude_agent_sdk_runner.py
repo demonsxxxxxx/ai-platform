@@ -37,7 +37,6 @@ from app.executors.claude.capability_policy import (
     internal_context_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (
-    attachment_context_data_message as _attachment_context_data_message,
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
@@ -45,7 +44,6 @@ from app.executors.claude.prompts import (
 )
 from app.executors.claude_stream_projection import ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
-from app.file_parser_contracts import ParsedAttachmentContext
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
@@ -520,7 +518,6 @@ async def _sdk_user_prompt_stream(
     prompt: str,
     *,
     session_id: str | None = None,
-    attachment_data_message: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
     yield {
         "type": "user",
@@ -528,13 +525,6 @@ async def _sdk_user_prompt_stream(
         "parent_tool_use_id": None,
         "session_id": session_id or "default",
     }
-    if attachment_data_message:
-        yield {
-            "type": "user",
-            "message": {"role": "user", "content": attachment_data_message},
-            "parent_tool_use_id": None,
-            "session_id": session_id or "default",
-        }
 
 
 def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
@@ -640,17 +630,6 @@ def _build_context_retrieval_mcp_server(
         return await _run("read_session_messages", args)
 
     @sdk_tool(
-        "read_context_file",
-        "Read an uploaded context file for the current ai-platform run scope only.",
-        {
-            "file_id": str,
-            "max_bytes": int,
-        },
-    )
-    async def read_context_file(args):
-        return await _run("read_context_file", args)
-
-    @sdk_tool(
         "read_run_artifact",
         "Read an artifact explicitly authorized by the current ai-platform run snapshot.",
         {
@@ -702,7 +681,6 @@ def _build_context_retrieval_mcp_server(
             tool
             for tool in (
                 read_session_messages,
-                read_context_file,
                 read_run_artifact,
                 stage_context_file_to_workspace,
                 stage_run_artifact_to_workspace,
@@ -895,7 +873,6 @@ async def run_claude_agent_sdk(
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     execution_profile: str = "",
-    attachment_contexts: list[ParsedAttachmentContext] | None = None,
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
@@ -983,15 +960,6 @@ async def run_claude_agent_sdk(
         on_text is not None
         and execution_policy == "sandbox_brokered"
     )
-    try:
-        attachment_data_message = _attachment_context_data_message(attachment_contexts)
-    except (TypeError, ValueError):
-        error_code = _SDK_TOOL_ADMISSION_FAILED
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
-            error=error_code,
-            turn_diagnostics=turn_diagnostics(error_code),
-        )
     failed_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
@@ -1760,7 +1728,6 @@ async def run_claude_agent_sdk(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
                 session_id=session_id,
-                attachment_data_message=attachment_data_message,
             ),
             options=options,
         ):

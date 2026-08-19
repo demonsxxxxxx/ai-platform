@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +11,6 @@ from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
     validate_context_file_for_stage,
 )
-from app.file_parser_contracts import MaterializedAttachmentFact
 from app.path_safety import ensure_creatable_inside
 from app.storage import ObjectStorageSizeLimitError
 
@@ -34,7 +32,6 @@ class ContextFileMetadata:
 class ContextFileMaterialization:
     file_names: tuple[str, ...]
     materialized_file_names: tuple[str, ...]
-    attachment_facts: tuple[MaterializedAttachmentFact, ...]
     attachment_metadata: tuple[ContextFileMetadata, ...]
 
 
@@ -279,7 +276,6 @@ async def materialize_run_context_files(
     session_id: str,
     run_id: str,
     file_ids: list[str],
-    typed_preprocessing: bool,
 ) -> ContextFileMaterialization:
     """Authorize, validate, then atomically stage one run's context-file set."""
 
@@ -326,26 +322,18 @@ async def materialize_run_context_files(
                 ContextFileMetadata(file_id, filename, content_type, size_bytes)
             )
             file_names.append(filename)
-            if typed_preprocessing:
-                name_key = filename.casefold()
-                if name_key in materialized_name_keys:
-                    raise ContextFileContentError(
-                        "context_file_name_conflict",
-                        file_kind=file_kind,
-                        attachment_index=attachment_index,
-                    )
-                materialized_name_keys.add(name_key)
-                authorized_files.append(
-                    (attachment_index, file_id, normalized_row, filename, size_bytes)
+            name_key = filename.casefold()
+            if name_key in materialized_name_keys:
+                raise ContextFileContentError(
+                    "context_file_name_conflict",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
                 )
+            materialized_name_keys.add(name_key)
+            authorized_files.append(
+                (attachment_index, file_id, normalized_row, filename, size_bytes)
+            )
 
-    if not typed_preprocessing:
-        return ContextFileMaterialization(
-            tuple(file_names),
-            (),
-            (),
-            tuple(attachment_metadata),
-        )
     if storage is None:
         raise ContextFileContentError(
             "context_file_storage_unavailable",
@@ -355,29 +343,17 @@ async def materialize_run_context_files(
         raise ContextFileContentError("context_file_too_large")
 
     inputs_dir = workspace / "inputs"
-    targets: list[tuple[Path, Path]] = []
+    targets: list[Path] = []
     validated_contents: list[bytes] = []
-    attachment_facts: list[MaterializedAttachmentFact] = []
-    for attachment_index, file_id, row, filename, size_bytes in authorized_files:
+    for attachment_index, _file_id, row, filename, size_bytes in authorized_files:
         file_kind = Path(filename).suffix.casefold().lstrip(".")
-        target = workspace / filename
-        ensure_creatable_inside(
-            workspace,
-            target,
-            "uploaded file target must stay inside the run workspace",
-        )
-        canonical_target = inputs_dir / filename
+        target = inputs_dir / filename
         ensure_creatable_inside(
             inputs_dir,
-            canonical_target,
+            target,
             "uploaded file target must stay inside the run inputs directory",
         )
-        if (
-            target.exists()
-            or target.is_symlink()
-            or canonical_target.exists()
-            or canonical_target.is_symlink()
-        ):
+        if target.exists() or target.is_symlink():
             raise ContextFileContentError(
                 "context_file_name_conflict",
                 file_kind=file_kind,
@@ -420,16 +396,7 @@ async def materialize_run_context_files(
                 attachment_index=attachment_index,
                 file_kind=file_kind,
             )
-        attachment_facts.append(
-            MaterializedAttachmentFact(
-                file_id=file_id,
-                file_name=filename,
-                content_type=str(row.get("content_type") or ""),
-                byte_count=len(content),
-                sha256=hashlib.sha256(content).hexdigest(),
-            )
-        )
-        targets.append((target, canonical_target))
+        targets.append(target)
         validated_contents.append(content)
 
     materialized_file_names: list[str] = []
@@ -437,11 +404,9 @@ async def materialize_run_context_files(
     try:
         if targets:
             inputs_dir.mkdir(parents=True, exist_ok=True)
-        for (target, canonical_target), content in zip(targets, validated_contents, strict=True):
+        for target, content in zip(targets, validated_contents, strict=True):
             written_paths.append(target)
             target.write_bytes(content)
-            written_paths.append(canonical_target)
-            canonical_target.write_bytes(content)
             materialized_file_names.append(target.name)
     except BaseException as exc:
         for written_path in reversed(written_paths):
@@ -462,6 +427,5 @@ async def materialize_run_context_files(
     return ContextFileMaterialization(
         tuple(file_names),
         tuple(materialized_file_names),
-        tuple(attachment_facts),
         tuple(attachment_metadata),
     )

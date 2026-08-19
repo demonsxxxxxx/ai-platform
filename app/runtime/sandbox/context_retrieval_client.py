@@ -106,13 +106,6 @@ class PlatformContextRetrievalClient:
             {"limit": limit, "offset": offset, "max_tokens": max_tokens},
         )
 
-    async def read_context_file(self, *, file_id: str, max_bytes: int = 65536, **scope: str) -> dict[str, Any]:
-        self._require_scope(**scope)
-        return await self._request(
-            "read_context_file",
-            {"file_id": file_id, "max_bytes": max_bytes},
-        )
-
     async def read_run_artifact(
         self,
         *,

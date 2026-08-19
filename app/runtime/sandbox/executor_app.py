@@ -29,19 +29,11 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
-from app.context.retrieval import ContextRetrievalDenied
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     _translation_target_language,
     run_claude_agent_sdk,
-)
-from app.file_parser_contracts import (
-    AttachmentPreprocessingError,
-    ParsedAttachmentContext,
-    attachment_requirements_from_contract,
-    dispatched_context_file_ids,
-    parse_xlsx_attachment,
 )
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
@@ -781,19 +773,6 @@ def _authorized_capability_subject(subject: dict[str, Any]) -> bool:
     )
 
 
-def _attachment_stage_subject_authorized(request: ExecutorTaskRequest) -> bool:
-    identity = "mcp__ai-platform-context__stage_context_file_to_workspace"
-    return any(
-        str(subject.get("identity") or "") == identity
-        and _authorized_capability_subject(subject)
-        and bool(subject.get("write_capable"))
-        and {"file_id", "max_bytes"}.issubset(
-            {str(key) for key in subject.get("allowed_parameter_keys") or []}
-        )
-        for subject in _task_tool_policy_subjects(request)
-    )
-
-
 def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[str | None, str | None]:
     """Return a controlled Skill only with its canonical builtin execution identities."""
 
@@ -847,90 +826,6 @@ def _resolved_workspace_file(workspace_root: Path, candidate: Path) -> Path | No
     return resolved
 
 
-async def _preprocess_typed_attachments(
-    request: ExecutorTaskRequest,
-    workspace_root: Path,
-    emit_event: ExecutorEventEmitter,
-    *,
-    retrieval: PlatformContextRetrievalClient | None,
-    identity: ScopedContextRetrievalIdentity | None,
-) -> tuple[list[ParsedAttachmentContext], str | None]:
-    """Stage and parse server-required attachments through the scoped broker."""
-
-    manifest = request.config.get("context_manifest")
-    raw_contract = manifest.get("attachment_preprocessing") if isinstance(manifest, dict) else None
-    try:
-        requirements = attachment_requirements_from_contract(raw_contract)
-    except AttachmentPreprocessingError as exc:
-        return [], exc.code
-    if not requirements:
-        return [], None
-    manifest_file_ids = dispatched_context_file_ids(manifest)
-    if any(requirement.file_id not in manifest_file_ids for requirement in requirements):
-        return [], "attachment_parser_manifest_file_mismatch"
-    if not _attachment_stage_subject_authorized(request):
-        return [], "attachment_parser_staging_not_authorized"
-    if retrieval is None or identity is None:
-        return [], "attachment_parser_context_retrieval_unavailable"
-    contexts: list[ParsedAttachmentContext] = []
-    for requirement in requirements:
-        if not requirement.supported:
-            return contexts, "attachment_parser_unsupported"
-        await emit_event(
-            AgentEvent(
-                type="tool_call_started",
-                message=f"Platform attachment parser started: {requirement.parser_id}",
-                payload={
-                    "tool_name": "AttachmentParser",
-                    "file_id": requirement.file_id,
-                    "parser_id": requirement.parser_id,
-                    "parser_version": requirement.parser_version,
-                    "source": "platform_attachment_preprocessor",
-                },
-                admin_only=True,
-            )
-        )
-        try:
-            staged = await retrieval.stage_context_file_to_workspace(
-                file_id=requirement.file_id,
-                workspace_root=str(workspace_root),
-                max_bytes=requirement.max_bytes,
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-            )
-        except ContextRetrievalDenied:
-            return contexts, "attachment_parser_staging_denied"
-        except Exception:
-            return contexts, "attachment_parser_staging_failed"
-        if int(staged.get("bytes_staged") or -1) < 0 or int(staged.get("bytes_staged") or -1) > requirement.max_bytes:
-            return contexts, "attachment_parser_file_too_large"
-        workspace_path = str(staged.get("workspace_path") or "").replace("\\", "/")
-        staged_path = _resolved_workspace_file(workspace_root, workspace_root / workspace_path)
-        if staged_path is None:
-            return contexts, "attachment_parser_staged_file_invalid"
-        try:
-            parsed = parse_xlsx_attachment(path=staged_path, requirement=requirement)
-        except AttachmentPreprocessingError as exc:
-            return contexts, exc.code
-        contexts.append(parsed)
-        await emit_event(
-            AgentEvent(
-                type="tool_call_completed",
-                message=f"Platform attachment parser completed: {requirement.parser_id}",
-                payload={
-                    "tool_name": "AttachmentParser",
-                    **parsed.evidence.model_dump(mode="json"),
-                    "source": "platform_attachment_preprocessor",
-                },
-                admin_only=True,
-            )
-        )
-    return contexts, None
-
-
 def _user_message_from_skill_prompt(prompt: str) -> str:
     _, marker, remainder = str(prompt or "").partition("User request: ")
     if not marker:
@@ -962,7 +857,10 @@ def _ordered_materialized_docx(request: ExecutorTaskRequest, workspace_root: Pat
         name = _safe_materialized_basename(raw_name)
         if name is None:
             return None, "controlled_skill_input_name_invalid"
-        materialized = _resolved_workspace_file(workspace_root, workspace_root / name)
+        materialized = _resolved_workspace_file(
+            workspace_root,
+            workspace_root / "inputs" / name,
+        )
         if materialized is None:
             return None, "controlled_skill_input_file_invalid"
         if materialized.suffix.lower() == ".docx":
@@ -1467,42 +1365,16 @@ async def _default_executor_runner(
             "executor_mode": "context_retrieval_invalid",
         }
     await emit_event(
-        _PlatformExecutionPhaseFact("attachment_materialization", "started")
-    )
-    attachment_contexts, attachment_error = await _preprocess_typed_attachments(
-        request,
-        workspace_root,
-        emit_event,
-        retrieval=context_retrieval,
-        identity=context_retrieval_identity,
-    )
-    parser_evidence = [context.evidence.model_dump(mode="json") for context in attachment_contexts]
-    if attachment_error:
-        await emit_event(
-            _PlatformExecutionPhaseFact("attachment_materialization", "failed")
-        )
-        return {
-            "status": "failed",
-            "message": "Platform attachment preprocessing failed",
-            "error_code": attachment_error,
-            "error_message": "Platform attachment preprocessing failed",
-            "sdk_used": False,
-            "executor_mode": "platform_attachment_preprocessor",
-            "attachment_parser_evidence": parser_evidence,
-        }
-    await emit_event(
         _PlatformExecutionPhaseFact("attachment_materialization", "completed")
     )
 
-    if not attachment_contexts:
-        controlled_result = await _run_selected_authorized_file_skill(
-            request,
-            workspace_root,
-            emit_event,
-        )
-        if controlled_result is not None:
-            controlled_result["attachment_parser_evidence"] = parser_evidence
-            return controlled_result
+    controlled_result = await _run_selected_authorized_file_skill(
+        request,
+        workspace_root,
+        emit_event,
+    )
+    if controlled_result is not None:
+        return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         return {
             "status": "failed",
@@ -1511,7 +1383,6 @@ async def _default_executor_runner(
             "error_message": "Claude Agent SDK is disabled",
             "sdk_used": False,
             "executor_mode": "claude_agent_sdk_disabled",
-            "attachment_parser_evidence": parser_evidence,
         }
 
     skill_ids = _task_skill_ids(request)
@@ -1539,7 +1410,6 @@ async def _default_executor_runner(
             "error_message": "Required capability declaration is invalid",
             "sdk_used": False,
             "executor_mode": "required_capability_declaration_invalid",
-            "attachment_parser_evidence": parser_evidence,
         }
     required_tool_invocation_states: dict[tuple[str, str], str] = {}
     required_capability_evidence: dict[str, Any] | None = None
@@ -1784,7 +1654,6 @@ async def _default_executor_runner(
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
             "execution_profile": str(request.config.get("sdk_execution_profile") or ""),
-            "attachment_contexts": attachment_contexts,
             "require_selected_skill_invocation": request.config.get(
                 "require_selected_skill_invocation", True
             ) is not False,
@@ -1801,7 +1670,6 @@ async def _default_executor_runner(
             "error_code": "claude_agent_sdk_unavailable",
             "error_message": "Claude Agent SDK is unavailable",
             "sdk_used": False,
-            "attachment_parser_evidence": parser_evidence,
         }
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
@@ -1836,7 +1704,6 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
         "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
-        "attachment_parser_evidence": parser_evidence,
         "capability_evidence": bound_capability_evidence,
         TOOL_INVOCATION_EVIDENCE_KEY: tool_invocation_evidence,
     }
@@ -2401,7 +2268,6 @@ def create_executor_app(
             "used_skills",
             "used_skills_source",
             "sdk_turn_diagnostics",
-            "attachment_parser_evidence",
             "capability_evidence",
             REQUIRED_CAPABILITY_EVIDENCE_KEY,
             TOOL_INVOCATION_EVIDENCE_KEY,

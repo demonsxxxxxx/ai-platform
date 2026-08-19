@@ -12,7 +12,6 @@ DEFAULT_CONTEXT_MANIFEST_VERSION = "v1"
 DEFAULT_CONTEXT_SELECTION_VERSION = "conversation-turns-v1"
 CONTEXT_RETRIEVAL_TOOLS = (
     "read_session_messages",
-    "read_context_file",
     "read_run_artifact",
     "stage_context_file_to_workspace",
     "stage_run_artifact_to_workspace",
@@ -42,7 +41,7 @@ def available_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[s
         if "read_session_messages" in advertised:
             selected.append("read_session_messages")
     for refs_key, tool_names in (
-        ("files", ("read_context_file", "stage_context_file_to_workspace")),
+        ("files", ("stage_context_file_to_workspace",)),
         ("artifacts", ("read_run_artifact", "stage_run_artifact_to_workspace")),
         ("memory_records", ("search_memory",)),
     ):

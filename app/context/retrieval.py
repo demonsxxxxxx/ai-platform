@@ -10,8 +10,6 @@ from typing import Any, Literal, Protocol
 from app import repositories
 from app.context.file_content import (
     ContextFileContentError,
-    MAX_CONTEXT_FILE_STAGE_BYTES,
-    parse_context_file,
     validate_context_file_for_stage,
 )
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
@@ -40,7 +38,6 @@ class ContextRetrievalIdentity:
 
 _CONTEXT_ACTION_ARGUMENTS = {
     "read_session_messages": frozenset({"limit", "offset", "max_tokens"}),
-    "read_context_file": frozenset({"file_id", "max_bytes"}),
     "read_run_artifact": frozenset({"artifact_id", "max_bytes"}),
     "stage_context_file_to_workspace": frozenset({"file_id", "max_bytes"}),
     "stage_run_artifact_to_workspace": frozenset({"artifact_id", "max_bytes"}),
@@ -443,7 +440,6 @@ class ContextRetrievalAuthority:
             raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
         values = {key: supplied[key] for key in allowed_arguments if key in supplied}
         required_key = {
-            "read_context_file": "file_id",
             "read_run_artifact": "artifact_id",
             "stage_context_file_to_workspace": "file_id",
             "stage_run_artifact_to_workspace": "artifact_id",
@@ -469,12 +465,6 @@ class ContextRetrievalAuthority:
                 limit=_bounded_int(values.get("limit"), default=20, minimum=1, maximum=100),
                 offset=_bounded_int(values.get("offset"), default=0, minimum=0, maximum=10000),
                 max_tokens=_bounded_int(values.get("max_tokens"), default=1200, minimum=1, maximum=8000),
-            )
-        if action_name == "read_context_file":
-            return await self.read_context_file(
-                **self._run_identity(identity),
-                file_id=self._required_identifier(values, "file_id"),
-                max_bytes=_bounded_int(values.get("max_bytes"), default=65536, minimum=1, maximum=262144),
             )
         if action_name == "read_run_artifact":
             return await self.read_run_artifact(
@@ -669,51 +659,6 @@ class ContextRetrievalAuthority:
             "context_retrieval.read_session_messages",
             items=selected,
             next_offset=next_offset if has_more else None,
-        )
-
-    async def read_context_file(
-        self,
-        *,
-        tenant_id: str,
-        workspace_id: str,
-        user_id: str,
-        session_id: str,
-        run_id: str,
-        file_id: str,
-        max_bytes: int = 65536,
-    ) -> dict[str, Any]:
-        row = await self._get_file_row(
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            file_id=file_id,
-        )
-        try:
-            raw_bytes, _byte_cap = self._bounded_export_bytes(
-                row,
-                max_bytes=MAX_CONTEXT_FILE_STAGE_BYTES,
-                size_required_reason="context_file_size_required",
-                too_large_reason="context_file_too_large",
-            )
-            parsed = parse_context_file(
-                row,
-                raw_bytes,
-                max_output_bytes=max_bytes,
-            )
-        except ContextFileContentError as exc:
-            raise ContextRetrievalDenied(exc.code) from exc
-        return self._envelope(
-            "context_retrieval.read_context_file",
-            file_id=file_id,
-            name=self._safe_name(row),
-            content=parsed.content,
-            content_type=parsed.content_type,
-            parser_id=parsed.parser_id,
-            parser_version=parsed.parser_version,
-            source_bytes=parsed.source_bytes,
-            truncated=parsed.truncated,
         )
 
     async def read_run_artifact(
