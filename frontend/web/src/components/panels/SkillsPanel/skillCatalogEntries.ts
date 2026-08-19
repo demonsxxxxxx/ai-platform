@@ -5,7 +5,14 @@ export type SkillCatalogStatus =
   | "available"
   | "hidden"
   | "disabled"
+  | "internal"
   | "unpublished";
+
+export type SkillCatalogView =
+  | "all"
+  | "available"
+  | "internal"
+  | "restricted";
 
 export interface SkillCatalogEntry {
   id: string;
@@ -26,12 +33,14 @@ export interface SkillCatalogEntry {
 export interface SkillCatalogPage {
   entries: SkillCatalogEntry[];
   total: number;
+  page: number;
 }
 
 export interface SkillCatalogMetrics {
   total: number;
   enabled: number;
   visible: number;
+  internal: number;
 }
 
 export interface SkillCatalogSelection {
@@ -49,13 +58,30 @@ function statusFor(
   adminSkill: AdminSkillCatalogItem | null,
   runtimeSkill: SkillResponse | null,
 ): SkillCatalogStatus {
+  if (runtimeSkill) {
+    if (!runtimeSkill.is_published) return "unpublished";
+    if (runtimeSkill.marketplace_is_active) return "available";
+    if (
+      adminSkill?.distributionStatus === "active" &&
+      !adminSkill.visibleToUser
+    ) {
+      return "hidden";
+    }
+    return "disabled";
+  }
   if (adminSkill) {
-    if (!adminSkill.currentVersion) return "unpublished";
+    if (!adminSkill.currentVersion) {
+      return adminSkill.latestVersionStatus === "active" &&
+        adminSkill.lifecycleStatus === "active" &&
+        adminSkill.distributionStatus === "active" &&
+        !adminSkill.visibleToUser
+        ? "internal"
+        : "unpublished";
+    }
     if (adminSkill.distributionStatus !== "active") return "disabled";
     return adminSkill.visibleToUser ? "available" : "hidden";
   }
-  if (!runtimeSkill?.is_published) return "unpublished";
-  return runtimeSkill.marketplace_is_active ? "available" : "disabled";
+  return "unpublished";
 }
 
 function createEntry(
@@ -116,9 +142,23 @@ export function filterSkillCatalogEntries(
   entries: SkillCatalogEntry[],
   query: string,
   selectedTags: string[],
+  view: SkillCatalogView = "all",
 ): SkillCatalogEntry[] {
   const normalizedQuery = query.trim().normalize("NFKC").toLocaleLowerCase();
   return entries.filter((entry) => {
+    if (view === "available" && entry.catalogStatus !== "available") {
+      return false;
+    }
+    if (view === "internal" && entry.catalogStatus !== "internal") {
+      return false;
+    }
+    if (
+      view === "restricted" &&
+      (entry.catalogStatus === "available" ||
+        entry.catalogStatus === "internal")
+    ) {
+      return false;
+    }
     if (
       normalizedQuery &&
       !`${entry.displayName}\n${entry.description}`
@@ -140,6 +180,8 @@ export function resolveSkillCatalogMetrics(
     total: entries.length,
     enabled: entries.filter((entry) => entry.runtimeEnabled === true).length,
     visible: entries.filter((entry) => entry.catalogStatus === "available")
+      .length,
+    internal: entries.filter((entry) => entry.catalogStatus === "internal")
       .length,
   };
 }
@@ -210,11 +252,15 @@ export function resolveSkillCatalogPage({
   serverTotal: number;
 }): SkillCatalogPage {
   if (!localPagination) {
-    return { entries, total: serverTotal };
+    return { entries, total: serverTotal, page: Math.max(1, page) };
   }
-  const start = (page - 1) * pageSize;
+  const total = entries.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const normalizedPage = Math.min(Math.max(1, page), totalPages);
+  const start = (normalizedPage - 1) * pageSize;
   return {
     entries: entries.slice(start, start + pageSize),
-    total: entries.length,
+    total,
+    page: normalizedPage,
   };
 }

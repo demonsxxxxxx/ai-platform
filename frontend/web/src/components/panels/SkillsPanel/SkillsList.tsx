@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   Package,
   Archive,
+  Boxes,
   CheckCircle2,
   Eye,
   FolderOpen,
@@ -22,6 +23,7 @@ import { workbenchSurface } from "../../workbench/workbenchSurface";
 import {
   resolveSkillCatalogMetrics,
   type SkillCatalogEntry,
+  type SkillCatalogView,
 } from "./skillCatalogEntries";
 
 interface SkillsListProps {
@@ -40,6 +42,9 @@ interface SkillsListProps {
   page: number;
   pageSize: number;
   setPage: (page: number) => void;
+  setPageSize: (pageSize: number) => void;
+  catalogView: SkillCatalogView;
+  setCatalogView: (view: SkillCatalogView) => void;
   toggleTag: (tag: string) => void;
   clearFilters: () => void;
   isLoading: boolean;
@@ -82,6 +87,9 @@ export function SkillsList({
   page,
   pageSize,
   setPage,
+  setPageSize,
+  catalogView,
+  setCatalogView,
   toggleTag,
   clearFilters,
   isLoading,
@@ -146,7 +154,9 @@ export function SkillsList({
   }
 
   const hasActiveFilters =
-    searchQuery.trim().length > 0 || selectedTags.length > 0;
+    searchQuery.trim().length > 0 ||
+    selectedTags.length > 0 ||
+    catalogView !== "all";
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const canToggleSkills = canWrite && !governedUnavailable;
   const canEditSkills = canEdit && !governedUnavailable;
@@ -160,6 +170,34 @@ export function SkillsList({
     selectableNames.length > 0 &&
     selectableNames.every((name) => selectedNames.has(name));
   const catalogMetrics = resolveSkillCatalogMetrics(metricsCatalogEntries);
+  const restrictedCount =
+    catalogMetrics.total - catalogMetrics.visible - catalogMetrics.internal;
+  const catalogViews: Array<{
+    id: SkillCatalogView;
+    label: string;
+    count: number;
+  }> = [
+    { id: "all", label: t("skills.views.all"), count: catalogMetrics.total },
+    {
+      id: "available",
+      label: t("skills.views.available"),
+      count: catalogMetrics.visible,
+    },
+    {
+      id: "internal",
+      label: t("skills.views.internal"),
+      count: catalogMetrics.internal,
+    },
+    {
+      id: "restricted",
+      label: t("skills.views.restricted"),
+      count: restrictedCount,
+    },
+  ];
+  const clearCatalogFilters = () => {
+    clearFilters();
+    setCatalogView("all");
+  };
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -202,7 +240,7 @@ export function SkillsList({
             {hasActiveFilters && (
               <button
                 type="button"
-                onClick={clearFilters}
+                onClick={clearCatalogFilters}
                 className="text-xs text-[var(--theme-text-secondary)] transition-colors hover:text-[var(--theme-primary)]"
               >
                 {t("marketplace.clearFilters")}
@@ -290,90 +328,129 @@ export function SkillsList({
       {embedded && (
         <>
           <section
-            className="mb-3 grid gap-4 overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4 shadow-[0_8px_24px_rgba(18,38,63,0.05)] sm:p-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)] lg:items-center"
+            className="skill-management-hero"
             data-skill-management-overview
           >
-            <div
-              className="min-w-0"
-            >
-              <div className="flex items-start gap-3">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-primary-light)] text-[var(--theme-primary)] ring-1 ring-[var(--theme-border)]">
+            <div className="skill-management-hero__intro">
+              <div className="skill-management-hero__title-row">
+                <span className="skill-management-hero__mark">
                   <Package aria-hidden="true" size={20} />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-tertiary)]">
+                  <p className="skill-management-hero__eyebrow">
                     {t("skills.managementEyebrow")}
                   </p>
-                  <h1 className="mt-1 text-xl font-semibold tracking-tight text-[var(--theme-text)]">
+                  <h1 className="skill-management-hero__title">
                     {t("skills.managementTitle")}
                   </h1>
-                  <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--theme-text-secondary)]">
-                    {t("skills.managementDescription")}
-                  </p>
                 </div>
               </div>
-              <div className="mt-4 inline-flex max-w-full items-start gap-2 rounded-lg bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-5 text-[var(--theme-warning)] ring-1 ring-[var(--theme-warning-ring)]">
-                <Archive aria-hidden="true" className="mt-0.5 shrink-0" size={15} />
+              <p className="skill-management-hero__description">
+                {t("skills.managementDescription")}
+              </p>
+              <p className="skill-management-hero__policy">
+                <Archive aria-hidden="true" size={14} />
                 <span>{t("skills.archivePolicyDescription")}</span>
-              </div>
+              </p>
             </div>
-            <dl className="grid grid-cols-3 gap-2" data-skill-management-metrics>
-              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
-                <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
+            <dl
+              className="skill-management-metrics"
+              data-skill-management-metrics
+            >
+              <div className="skill-management-metric">
+                <dt>
                   <Package aria-hidden="true" size={14} />
                   {t("skills.metrics.total")}
                 </dt>
-                <dd className="mt-2 text-xl font-semibold text-[var(--theme-text)]">{catalogMetrics.total}</dd>
+                <dd>{catalogMetrics.total}</dd>
               </div>
-              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
-                <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
+              <div className="skill-management-metric skill-management-metric--enabled">
+                <dt>
                   <CheckCircle2 aria-hidden="true" size={14} />
                   {t("skills.metrics.enabled")}
                 </dt>
-                <dd className="mt-2 text-xl font-semibold text-[var(--theme-success)]">{catalogMetrics.enabled}</dd>
+                <dd>{catalogMetrics.enabled}</dd>
               </div>
-              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
-                <dt className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--theme-text-secondary)]">
+              <div className="skill-management-metric skill-management-metric--visible">
+                <dt>
                   <Eye aria-hidden="true" size={14} />
                   {t("skills.metrics.visible")}
                 </dt>
-                <dd className="mt-2 text-xl font-semibold text-[var(--theme-info)]">{catalogMetrics.visible}</dd>
+                <dd>{catalogMetrics.visible}</dd>
+              </div>
+              <div className="skill-management-metric skill-management-metric--internal">
+                <dt>
+                  <Boxes aria-hidden="true" size={14} />
+                  {t("skills.metrics.internal")}
+                </dt>
+                <dd>{catalogMetrics.internal}</dd>
               </div>
             </dl>
           </section>
           <div
             data-skills-catalog-toolbar
-            className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar} px-0`}
+            className={`skill-panel-header skill-catalog-toolbar skill-catalog-command ${workbenchSurface.catalog.toolbar} px-0`}
           >
             <div
-              className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell} rounded-xl`}
+              className={`skill-catalog-toolbar__row skill-catalog-command__surface ${workbenchSurface.catalog.toolbarShell}`}
             >
-              <div
-                className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
-              >
-                <div className="relative min-w-0 flex-1">
-                  <Search
-                    size={18}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                  />
-                  <input
-                    aria-label={t("skills.searchPlaceholder")}
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="panel-search h-10"
-                    placeholder={t("skills.searchPlaceholder")}
-                  />
-                </div>
-                {filterMenu}
-              </div>
-              {headerActions && (
+              <div className="skill-catalog-command__primary">
                 <div
-                  className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
+                  className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
                 >
-                  {headerActions}
+                  <div className="relative min-w-0 flex-1">
+                    <Search
+                      size={18}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
+                    />
+                    <input
+                      aria-label={t("skills.searchPlaceholder")}
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="panel-search h-10"
+                      placeholder={t("skills.searchPlaceholder")}
+                    />
+                  </div>
+                  {filterMenu}
                 </div>
-              )}
+                {headerActions && (
+                  <div
+                    className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
+                  >
+                    {headerActions}
+                  </div>
+                )}
+              </div>
+              <div className="skill-catalog-command__secondary">
+                <div
+                  aria-label={t("skills.views.label")}
+                  className="skill-catalog-view-switcher"
+                  role="group"
+                >
+                  {catalogViews.map((view) => (
+                    <button
+                      aria-pressed={catalogView === view.id}
+                      className="skill-catalog-view-switcher__item"
+                      key={view.id}
+                      onClick={() => setCatalogView(view.id)}
+                      type="button"
+                    >
+                      <span>{view.label}</span>
+                      <span aria-hidden="true">{view.count}</span>
+                    </button>
+                  ))}
+                </div>
+                {hasActiveFilters ? (
+                  <button
+                    className="skill-catalog-clear"
+                    onClick={clearCatalogFilters}
+                    type="button"
+                  >
+                    {t("marketplace.clearFilters")}
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
         </>
@@ -436,7 +513,7 @@ export function SkillsList({
             {hasActiveFilters && (
               <button
                 type="button"
-                onClick={clearFilters}
+                onClick={clearCatalogFilters}
                 className="btn-secondary mt-4"
               >
                 {t("marketplace.clearFilters")}
@@ -444,7 +521,7 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <div className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(34rem,1.15fr)_minmax(24rem,0.85fr)] 2xl:items-start">
+          <div className="skill-catalog-layout">
             <SkillManagementTable
               canBatch={canBatchSkills}
               canDelete={canDelete}
@@ -462,7 +539,7 @@ export function SkillsList({
               entries={paginatedCatalogEntries}
             />
             <div
-              className="min-w-0 overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_8px_24px_rgba(18,38,63,0.05)] 2xl:sticky 2xl:top-0"
+              className="skill-catalog-detail-shell"
               data-selected-skill-detail-shell
             >
               {selectedDetail}
@@ -473,23 +550,39 @@ export function SkillsList({
 
       {/* Pagination */}
       {total > 0 && (
-        <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
-          {total > pageSize ? (
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              total={total}
-              onChange={setPage}
-            />
-          ) : (
-            <p className="text-center text-xs text-[var(--theme-text-secondary)] sm:text-sm">
-              {t("skills.paginationSummary", {
-                total,
-                page,
-                pages: totalPages,
-              })}
-            </p>
-          )}
+        <div className="skill-catalog-pagination enterprise-divider">
+          <div className="skill-catalog-pagination__navigation">
+            {total > pageSize ? (
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onChange={setPage}
+              />
+            ) : (
+              <p className="text-xs text-[var(--theme-text-secondary)] sm:text-sm">
+                {t("skills.paginationSummary", {
+                  total,
+                  page,
+                  pages: totalPages,
+                })}
+              </p>
+            )}
+          </div>
+          <label className="skill-catalog-page-size">
+            <span>{t("skills.paginationPageSize")}</span>
+            <select
+              aria-label={t("skills.paginationPageSize")}
+              onChange={(event) => setPageSize(Number(event.target.value))}
+              value={pageSize}
+            >
+              {[10, 20, 50].map((size) => (
+                <option key={size} value={size}>
+                  {t("skills.paginationRows", { count: size })}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
     </>
