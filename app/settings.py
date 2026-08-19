@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     database_pool_max_waiting: int = Field(default=100)
     database_pool_close_timeout_seconds: float = Field(default=5.0)
     redis_url: str = Field(default="redis://localhost:63799/0")
-    redis_max_connections: int = Field(default=10, ge=1)
+    redis_max_connections: int = Field(default=64, ge=1)
     datastore_readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     queue_key_prefix: str = Field(default="ai-platform:runs")
 
