@@ -208,9 +208,9 @@ def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_
     worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
     redis_section = compose_text.split("\n  redis:", 1)[1].split("\n  minio:", 1)[0]
 
-    assert "REDIS_MAX_CONNECTIONS=10" in env_example_text
-    assert "REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-10}" in api_section
-    assert "REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-10}" in worker_section
+    assert "REDIS_MAX_CONNECTIONS=64" in env_example_text
+    assert "REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-64}" in api_section
+    assert "REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-64}" in worker_section
     assert "maxclients" not in redis_section.lower()
 
 
