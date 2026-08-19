@@ -22,10 +22,8 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
-from app.model_catalog import (
-    build_model_catalog,
-    fetch_upstream_openai_models,
-)
+from app.model_catalog import build_model_catalog
+from app.platform.model_upstream import fetch_upstream_openai_models
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
     capability_id_from_skill,

@@ -48,10 +48,8 @@ from app.intent_router import (
     fallback_to_general_chat,
     route_intent,
 )
-from app.model_catalog import (
-    resolve_model_selection,
-    upstream_model_cache_snapshot,
-)
+from app.model_catalog import resolve_model_selection
+from app.platform.model_upstream import upstream_model_cache_snapshot
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,

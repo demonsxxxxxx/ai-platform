@@ -1,5 +1,4 @@
 import json
-import time
 from typing import Any
 
 from app.validation import assert_safe_id
@@ -7,75 +6,6 @@ from app.validation import assert_safe_id
 
 MODEL_CATALOG_NOT_CONFIGURED = "model_catalog_not_configured"
 DEFAULT_MAX_INPUT_TOKENS = 128000
-
-_UPSTREAM_MODEL_CACHE_TTL_SECONDS = 60.0
-_upstream_model_cache: dict[str, Any] = {
-    "fetched_at": 0.0,
-    "models": [],
-    "error": None,
-}
-
-
-async def fetch_upstream_openai_models(settings: object) -> list[dict[str, Any]]:
-    """Return OpenAI-compatible model options from settings.openai_base_url.
-
-    Uses a short TTL in-process cache so the model page does not hit the
-    upstream gateway on every request. Returns [] when the gateway is not
-    configured or unreachable so callers can fall back to the static catalog.
-    """
-
-    base_url = str(getattr(settings, "openai_base_url", "") or "").strip().rstrip("/")
-    if not base_url:
-        return []
-    now = time.monotonic()
-    cached = _upstream_model_cache.get("models")
-    if cached and (now - float(_upstream_model_cache.get("fetched_at") or 0.0)) < _UPSTREAM_MODEL_CACHE_TTL_SECONDS:
-        return list(cached)
-    api_key = str(getattr(settings, "openai_api_key", "") or "").strip()
-    provider = str(getattr(settings, "llm_gateway_provider", "") or "").strip() or "openai_compatible"
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5.0, headers=headers) as client:
-            response = await client.get(f"{base_url}/v1/models")
-            if response.status_code >= 400:
-                raise RuntimeError(f"upstream_http_{response.status_code}")
-            payload = response.json()
-    except Exception:
-        _upstream_model_cache.update({"fetched_at": now, "models": [], "error": "upstream_unavailable"})
-        return []
-    raw_models = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
-        _upstream_model_cache.update({"fetched_at": now, "models": [], "error": "invalid_upstream_response"})
-        return []
-    models: list[dict[str, Any]] = []
-    for item in raw_models:
-        if not isinstance(item, dict):
-            continue
-        model = _model_from_item(
-            {
-                "id": item.get("id"),
-                "value": item.get("id"),
-                "label": item.get("id"),
-                "provider": provider,
-                "description": item.get("description") if isinstance(item.get("description"), str) else "",
-            },
-            default_provider=provider,
-        )
-        if model is not None:
-            models.append(model)
-    _upstream_model_cache.update({"fetched_at": now, "models": list(models), "error": None})
-    return models
-
-
-def upstream_model_cache_snapshot() -> tuple[list[dict[str, Any]], str | None]:
-    """Return the last upstream fetch for synchronous model validation."""
-
-    models = _upstream_model_cache.get("models") or []
-    return list(models), _upstream_model_cache.get("error")
 
 
 def _model_from_item(

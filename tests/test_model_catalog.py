@@ -7,9 +7,9 @@ from app.model_catalog import (
     DEFAULT_MAX_INPUT_TOKENS,
     MODEL_CATALOG_NOT_CONFIGURED,
     build_model_catalog,
-    fetch_upstream_openai_models,
     resolve_model_selection,
 )
+from app.platform.model_upstream import fetch_upstream_openai_models
 
 
 def settings(**overrides):
@@ -261,9 +261,9 @@ async def test_fetch_upstream_openai_models_returns_mapped_options(monkeypatch):
 async def test_fetch_upstream_openai_models_falls_back_empty_on_failure(monkeypatch):
     import httpx
 
-    from app import model_catalog as model_catalog_module
+    from app.platform import model_upstream as model_upstream_module
 
-    model_catalog_module._upstream_model_cache.update(
+    model_upstream_module._upstream_model_cache.update(
         {"fetched_at": 0.0, "models": [], "error": None}
     )
 
