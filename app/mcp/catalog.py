@@ -15,7 +15,6 @@ from app.mcp.api import (
     MCP_JWT_AUTHORIZATION_HEADER,
     normalize_static_mcp_headers,
 )
-from app.settings import get_settings
 from app.validation import SAFE_ID_PATTERN
 
 
@@ -360,18 +359,13 @@ class StreamableHttpMcpToolDiscoveryAdapter:
         self,
         *,
         timeout_seconds: float = 10.0,
-        max_response_bytes: int | None = None,
+        max_response_bytes: int = 1024 * 1024,
     ) -> None:
         self._timeout_seconds = timeout_seconds
-        self._max_response_bytes = max_response_bytes
+        self._max_response_bytes = max(1, int(max_response_bytes))
 
     def _response_limit(self) -> int:
-        configured = (
-            self._max_response_bytes
-            if self._max_response_bytes is not None
-            else int(getattr(get_settings(), "mcp_relay_max_response_bytes", 1024 * 1024))
-        )
-        return max(1, configured)
+        return self._max_response_bytes
 
     @staticmethod
     def _headers(
@@ -536,12 +530,15 @@ class McpToolCatalogSynchronizer:
         *,
         discovery: McpToolDiscoveryAdapter | None = None,
         store: McpCatalogStore | None = None,
+        max_response_bytes: int = 1024 * 1024,
     ) -> None:
         if store is None:
             from app.mcp.repository import PostgresMcpCatalogStore
 
             store = PostgresMcpCatalogStore()
-        self._discovery = discovery or StreamableHttpMcpToolDiscoveryAdapter()
+        self._discovery = discovery or StreamableHttpMcpToolDiscoveryAdapter(
+            max_response_bytes=max_response_bytes
+        )
         self._store = store
 
     async def synchronize(self, command: McpToolCatalogSyncCommand) -> McpToolCatalogSyncResult:

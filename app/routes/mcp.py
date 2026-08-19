@@ -39,13 +39,18 @@ from app.mcp.api import (
     seal_mcp_server_credentials,
 )
 from app.tool_policy import evaluate_tool_policy
+from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
-MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer()
+MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer(
+    max_response_bytes=int(
+        getattr(get_settings(), "mcp_relay_max_response_bytes", 1024 * 1024)
+    )
+)
 MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
 MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
 HostMcpRelay = create_host_mcp_relay
