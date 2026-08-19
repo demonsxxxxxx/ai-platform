@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import io
 import json
@@ -22,7 +23,6 @@ from app.context_manifest import truncate_utf8_text
 from app.file_parser_contracts import (
     AttachmentParserRequirement,
     MaterializedAttachmentFact,
-    XLSX_CONTENT_TYPE,
     build_attachment_preprocessing_contract,
     parse_xlsx_attachment,
 )
@@ -38,9 +38,18 @@ MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024
 MAX_DOCX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_PDF_PAGES = 200
 MAX_PDF_OBJECTS_INSPECTED = 20_000
+MAX_XLSX_ARCHIVE_ENTRIES = 2_000
+MAX_XLSX_ARCHIVE_ENTRY_BYTES = 8 * 1024 * 1024
+MAX_XLSX_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024
+MAX_XLSX_ARCHIVE_COMPRESSION_RATIO = 100
+_FORBIDDEN_XLSX_XML_DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
+_FORBIDDEN_XLSX_XML_DECLARATION_TEXT = tuple(
+    token.decode("ascii") for token in _FORBIDDEN_XLSX_XML_DECLARATIONS
+)
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 PDF_CONTENT_TYPE = "application/pdf"
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 TEXT_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -191,6 +200,75 @@ def _validate_docx_archive(raw: bytes) -> None:
                 raise ContextFileContentError(
                     "context_file_docx_external_relationship_unsupported"
                 )
+    finally:
+        archive.close()
+
+
+def _xlsx_xml_multibyte_encoding(prefix: bytes) -> str | None:
+    if prefix.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return "utf-32"
+    if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    if prefix.startswith(b"\x00\x00\x00<"):
+        return "utf-32-be"
+    if prefix.startswith(b"<\x00\x00\x00"):
+        return "utf-32-le"
+    if prefix.startswith(b"\x00<"):
+        return "utf-16-be"
+    if prefix.startswith(b"<\x00"):
+        return "utf-16-le"
+    return None
+
+
+def _validate_xlsx_xml_entry(archive: ZipFile, entry: Any) -> None:
+    normalized_name = str(entry.filename).replace("\\", "/").casefold()
+    if not normalized_name.endswith((".xml", ".rels")):
+        return
+    try:
+        payload = archive.read(entry)
+    except (BadZipFile, OSError, RuntimeError, ValueError) as exc:
+        raise ContextFileContentError("context_file_xlsx_archive_invalid") from exc
+    try:
+        encoding = _xlsx_xml_multibyte_encoding(payload)
+        if encoding is not None:
+            text = payload.decode(encoding, errors="strict").upper()
+            if any(token in text for token in _FORBIDDEN_XLSX_XML_DECLARATION_TEXT):
+                raise ContextFileContentError("context_file_xlsx_archive_invalid")
+            return
+        probe = payload.removeprefix(codecs.BOM_UTF8).lstrip(b" \t\r\n")
+        if b"\x00" in payload or (probe and not probe.startswith(b"<")):
+            raise ContextFileContentError("context_file_xlsx_archive_invalid")
+        if any(token in payload.upper() for token in _FORBIDDEN_XLSX_XML_DECLARATIONS):
+            raise ContextFileContentError("context_file_xlsx_archive_invalid")
+    except (UnicodeError, ValueError) as exc:
+        raise ContextFileContentError("context_file_xlsx_archive_invalid") from exc
+
+
+def _validate_xlsx_archive_security(raw: bytes) -> None:
+    try:
+        archive = ZipFile(io.BytesIO(raw))
+    except (BadZipFile, ValueError) as exc:
+        raise ContextFileContentError("context_file_xlsx_archive_invalid") from exc
+    total_bytes = 0
+    try:
+        entries = archive.infolist()
+        if len(entries) > MAX_XLSX_ARCHIVE_ENTRIES:
+            raise ContextFileContentError("context_file_xlsx_archive_invalid")
+        for entry in entries:
+            normalized_name = entry.filename.replace("\\", "/").casefold()
+            if entry.flag_bits & 0x1 or normalized_name.endswith("vbaproject.bin"):
+                raise ContextFileContentError("context_file_xlsx_archive_invalid")
+            if entry.file_size < 0 or entry.file_size > MAX_XLSX_ARCHIVE_ENTRY_BYTES:
+                raise ContextFileContentError("context_file_xlsx_archive_invalid")
+            total_bytes += entry.file_size
+            if total_bytes > MAX_XLSX_ARCHIVE_TOTAL_BYTES:
+                raise ContextFileContentError("context_file_xlsx_archive_invalid")
+            if entry.compress_size == 0:
+                if entry.file_size > 0:
+                    raise ContextFileContentError("context_file_xlsx_archive_invalid")
+            elif entry.file_size / entry.compress_size > MAX_XLSX_ARCHIVE_COMPRESSION_RATIO:
+                raise ContextFileContentError("context_file_xlsx_archive_invalid")
+            _validate_xlsx_xml_entry(archive, entry)
     finally:
         archive.close()
 
@@ -371,7 +449,29 @@ def parse_context_file(
     raise ContextFileContentError("context_file_type_unsupported")
 
 
+def _validate_pdf_file(raw: bytes) -> None:
+    try:
+        reader = PdfReader(io.BytesIO(raw), strict=True)
+        if reader.is_encrypted:
+            raise ContextFileContentError("context_file_pdf_password_required")
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise ContextFileContentError("context_file_pdf_page_limit_exceeded")
+        if _pdf_has_active_content(reader):
+            raise ContextFileContentError("context_file_pdf_active_content_unsupported")
+    except ContextFileContentError:
+        raise
+    except Exception as exc:
+        raise ContextFileContentError("context_file_pdf_parse_failed") from exc
+
+
 def validate_context_file_for_stage(row: dict[str, Any], raw: bytes) -> None:
     if len(raw) > MAX_CONTEXT_FILE_STAGE_BYTES:
         raise ContextFileContentError("context_file_too_large")
-    parse_context_file(row, raw, max_output_bytes=1)
+    _validate_identity(row, raw)
+    kind, _content_type = _classify(row, raw)
+    if kind == "docx":
+        _validate_docx_archive(raw)
+    elif kind == "xlsx":
+        _validate_xlsx_archive_security(raw)
+    elif kind == "pdf":
+        _validate_pdf_file(raw)

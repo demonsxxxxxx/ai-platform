@@ -11,7 +11,6 @@ from app.tool_policy import evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_session_messages",
-    "read_context_file",
     "read_run_artifact",
     "stage_context_file_to_workspace",
     "stage_run_artifact_to_workspace",
@@ -20,14 +19,12 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     "read_session_messages": ("limit", "offset", "max_tokens"),
-    "read_context_file": ("file_id", "max_bytes"),
     "read_run_artifact": ("artifact_id", "max_bytes"),
     "stage_context_file_to_workspace": ("file_id", "max_bytes"),
     "stage_run_artifact_to_workspace": ("artifact_id", "max_bytes"),
     "search_memory": ("query", "limit", "max_tokens"),
 }
 _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
-    "read_context_file": ("file_id",),
     "read_run_artifact": ("artifact_id",),
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),

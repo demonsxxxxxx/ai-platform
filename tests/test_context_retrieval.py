@@ -157,7 +157,7 @@ async def test_authority_execute_owns_dispatch_bounds_and_scope():
             identity,
             {"tenant_id": "tenant-b", "limit": 1},
         )
-    with pytest.raises(ContextRetrievalInputError, match="file_id_required"):
+    with pytest.raises(ContextRetrievalInputError, match="context_retrieval_action_invalid"):
         await retrieval.execute("read_context_file", identity, {})
     with pytest.raises(ContextRetrievalInputError, match="context_retrieval_stage_delivery_required"):
         await retrieval.execute(
@@ -231,18 +231,9 @@ async def test_read_session_messages_denies_cross_user_scope():
 
 
 @pytest.mark.asyncio
-async def test_file_and_artifact_reads_are_scoped_limited_and_redacted():
+async def test_artifact_reads_are_scoped_limited_and_redacted():
     retrieval = _retrieval()
 
-    file_result = await retrieval.read_context_file(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        file_id="file-a",
-        max_bytes=9,
-    )
     artifact_result = await retrieval.read_run_artifact(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -253,10 +244,7 @@ async def test_file_and_artifact_reads_are_scoped_limited_and_redacted():
         max_bytes=20,
     )
 
-    assert file_result["content"] == "file cont"
-    assert file_result["truncated"] is True
     assert artifact_result["content"] == "artifact content"
-    assert "storage_key" not in file_result
     assert "storage_key" not in artifact_result
 
     with pytest.raises(ContextRetrievalDenied):
@@ -616,7 +604,7 @@ async def test_stage_context_file_to_workspace_rejects_symlinked_context_parent(
 
 
 @pytest.mark.asyncio
-async def test_repository_context_retrieval_reads_file_through_scoped_repository_and_storage(monkeypatch):
+async def test_repository_context_retrieval_stages_file_through_scoped_repository_and_storage(monkeypatch, tmp_path):
     calls = []
 
     async def fake_get_scoped_context_file(conn, **kwargs):
@@ -637,14 +625,15 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
     monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
-    result = await retrieval.read_context_file(
+    result = await retrieval.stage_context_file_to_workspace(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
         file_id="file-a",
-        max_bytes=10,
+        workspace_root=str(tmp_path),
+        max_bytes=30,
     )
 
     assert calls == [
@@ -661,11 +650,8 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
         ),
         ("storage", "tenants/tenant-a/private/source.txt", 30),
     ]
-    assert result["content"] == "repository"
-    assert result["truncated"] is True
-    serialized = str(result)
-    assert "storage_key" not in serialized
-    assert "tenants/tenant-a/private" not in serialized
+    assert result["bytes_staged"] == 30
+    assert (tmp_path / result["workspace_path"]).read_bytes() == b"repository backed file content"
 
 
 @pytest.mark.asyncio

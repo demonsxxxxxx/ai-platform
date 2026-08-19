@@ -17,10 +17,7 @@ from app.context.api import (
     context_file_executor_failure,
 )
 from app.context.file_continuity import materialize_run_context_files
-from app.context_manifest import (
-    CONTEXT_MANIFEST_SCHEMA_VERSION,
-    available_context_retrieval_tools,
-)
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.context.retrieval import ContextRetrievalAuthority
 from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
@@ -56,14 +53,6 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
-from app.file_parser_contracts import (
-    AttachmentPreprocessingError,
-    MaterializedAttachmentFact,
-    attachment_requirements_from_contract,
-    build_attachment_preprocessing_contract,
-    dispatched_context_file_ids,
-    validate_required_parser_evidence,
-)
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -258,7 +247,6 @@ class PreparedSandboxFinalization:
     staged_skill_names: list[str]
     skill_manifests: list[dict[str, Any]]
     public_skill_metadata: dict[str, dict[str, str]]
-    attachment_contract: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -282,7 +270,6 @@ class PreparedSdkRun:
     prompt: str
     system_prompt: str = ""
     public_skill_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
-    attachment_facts: list[MaterializedAttachmentFact] = field(default_factory=list)
     attachment_metadata: list[_AuthorizedAttachmentMetadata] = field(default_factory=list)
     materialized_file_names: list[str] | None = None
 
@@ -292,12 +279,10 @@ class _MaterializedFileNames(list[str]):
         self,
         values: list[str],
         *,
-        attachment_facts: list[MaterializedAttachmentFact],
         attachment_metadata: list[_AuthorizedAttachmentMetadata] | None = None,
         materialized_file_names: list[str] | None = None,
     ) -> None:
         super().__init__(values)
-        self.attachment_facts = list(attachment_facts)
         self.attachment_metadata = list(attachment_metadata or [])
         self.materialized_file_names = list(
             values if materialized_file_names is None else materialized_file_names
@@ -482,60 +467,13 @@ def _merged_pinned_skill_manifests(
     return pinned
 
 
-def _attachment_preprocessing_contract(
-    payload: RunPayload,
-    prepared: PreparedSdkRun,
-) -> dict[str, Any]:
-    if not _requires_typed_attachment_preprocessing(payload):
-        return build_attachment_preprocessing_contract()
-    if prepared.attachment_facts:
-        return build_attachment_preprocessing_contract(
-            attachment_facts=list(prepared.attachment_facts)
-        )
-    return build_attachment_preprocessing_contract(
-        file_ids=list(payload.file_ids[: len(prepared.file_names)]),
-        file_names=list(prepared.file_names),
-    )
-
-
-def _requires_typed_attachment_preprocessing(payload: RunPayload) -> bool:
-    """Use only server-selected capability/Skill facts to require typed parsing."""
-
-    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-        return False
-    if payload.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
-        return bool(_string_list(payload.input.get("skill_ids")))
-    return True
-
-
-def _allows_context_file_tools(payload: RunPayload) -> bool:
-    """Allow scoped on-demand file access without implying typed preprocessing."""
-
-    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-        return True
-    return _requires_typed_attachment_preprocessing(payload)
-
-
 def _context_manifest_with_attachment_metadata(
     manifest: dict[str, Any] | None,
     metadata: list[_AuthorizedAttachmentMetadata],
-    *,
-    allow_file_content_tools: bool,
 ) -> dict[str, Any]:
-    """Enrich authorized refs and remove file-content tools for metadata-only runs."""
+    """Enrich authorized attachment refs with sandbox materialization metadata."""
 
     result = dict(manifest or {})
-    available_tools = result.get("available_retrieval_tools")
-    if not allow_file_content_tools and isinstance(available_tools, list):
-        file_content_tools = (
-            "read_context_file",
-            "stage_context_file_to_workspace",
-        )
-        result["available_retrieval_tools"] = [
-            tool_name
-            for tool_name in available_tools
-            if tool_name not in file_content_tools
-        ]
     raw_files = result.get("files")
     if not metadata or not isinstance(raw_files, list):
         return result
@@ -1244,14 +1182,6 @@ class ClaudeAgentWorkerAdapter:
         _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
         materialized_file_names = await self._materialize_files(payload, resolved_workspace)
         file_names = list(materialized_file_names)
-        raw_attachment_facts = getattr(materialized_file_names, "attachment_facts", [])
-        attachment_facts = (
-            list(raw_attachment_facts)
-            if isinstance(raw_attachment_facts, list)
-            and len(raw_attachment_facts) == len(file_names)
-            and all(isinstance(fact, MaterializedAttachmentFact) for fact in raw_attachment_facts)
-            else []
-        )
         raw_attachment_metadata = getattr(materialized_file_names, "attachment_metadata", [])
         attachment_metadata = (
             list(raw_attachment_metadata)
@@ -1389,7 +1319,6 @@ class ClaudeAgentWorkerAdapter:
                 _context_manifest_with_attachment_metadata(
                     prompt_context_manifest,
                     attachment_metadata,
-                    allow_file_content_tools=_allows_context_file_tools(payload),
                 )
             )
         prompt_builder_kwargs = {
@@ -1425,7 +1354,6 @@ class ClaudeAgentWorkerAdapter:
                 ),
                 prompt=prompt,
                 system_prompt=self._agent_profile_system_prompt(payload),
-                attachment_facts=attachment_facts,
                 attachment_metadata=attachment_metadata,
                 materialized_file_names=staged_file_names,
             ),
@@ -1444,38 +1372,12 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
         context_manifest = _context_manifest_from_pack(context_pack)
-        try:
-            attachment_contract = _attachment_preprocessing_contract(payload, prepared)
-            attachment_requirements = attachment_requirements_from_contract(attachment_contract)
-        except AttachmentPreprocessingError as exc:
-            return self._attachment_parser_failure_result(error_code=exc.code)
         runtime_context_manifest = _context_manifest_with_attachment_metadata(
             context_manifest,
             prepared.attachment_metadata,
-            allow_file_content_tools=_allows_context_file_tools(payload),
         )
         runtime_context_manifest = dict(runtime_context_manifest or {})
         runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
-        if attachment_requirements:
-            if context_manifest is None:
-                return self._attachment_parser_failure_result(
-                    error_code="attachment_parser_context_manifest_required"
-                )
-            manifest_file_ids = dispatched_context_file_ids(runtime_context_manifest)
-            if any(
-                requirement.file_id not in manifest_file_ids
-                for requirement in attachment_requirements
-            ):
-                return self._attachment_parser_failure_result(
-                    error_code="attachment_parser_manifest_file_mismatch"
-                )
-            if "stage_context_file_to_workspace" not in available_context_retrieval_tools(
-                runtime_context_manifest
-            ):
-                return self._attachment_parser_failure_result(
-                    error_code="attachment_parser_staging_not_authorized"
-                )
-            runtime_context_manifest["attachment_preprocessing"] = attachment_contract
         adapter_reconciliation_context = {
             "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
             "run_payload": _sandbox_reconciliation_payload(payload),
@@ -1488,7 +1390,6 @@ class ClaudeAgentWorkerAdapter:
                 pins=prepared.pinned_manifests,
             ),
             "public_skill_metadata": dict(prepared.public_skill_metadata),
-            "attachment_contract": attachment_contract,
         }
         reconciliation_context = {
             "schema_version": "ai-platform.executor-reconciliation.v1",
@@ -1595,40 +1496,6 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
-    def _attachment_parser_failure_result(
-        self,
-        *,
-        error_code: str,
-        sandbox_provider: str = "",
-        runtime_started: bool = False,
-        runtime_terminal_status: str = "",
-        evidence: object = None,
-    ) -> ExecutorResult:
-        return ExecutorResult(
-            status="failed",
-            adapter_version=self.adapter_version,
-            executor_type=self.executor_type,
-            executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
-            result={
-                "message": "Platform attachment parser evidence is required for XLSX input.",
-                "error_code": error_code,
-                "sdk_used": False,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-            },
-            artifacts=[],
-            executor_payload={
-                "sdk_used": False,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "sandbox_provider": sandbox_provider,
-                "sandbox_runtime_used": runtime_started,
-                "runtime_terminal_status": runtime_terminal_status,
-                "attachment_parser_evidence": evidence if isinstance(evidence, list) else [],
-            },
-        )
-
     def _context_file_failure_result(
         self,
         *,
@@ -1686,7 +1553,6 @@ class ClaudeAgentWorkerAdapter:
                 for key, value in dict(adapter_context.get("public_skill_metadata") or {}).items()
                 if isinstance(value, dict)
             },
-            attachment_contract=dict(adapter_context.get("attachment_contract") or {}),
         )
         runtime_result = _PersistedSandboxRuntimeResult(
             status=str(terminal_result.get("status") or ""),
@@ -1718,33 +1584,6 @@ class ClaudeAgentWorkerAdapter:
                 sandbox_provider=sandbox_provider,
                 runtime_started=True,
                 runtime_terminal_status=runtime_status,
-            )
-        parser_evidence = executor_response.get("attachment_parser_evidence")
-        try:
-            attachment_requirements = attachment_requirements_from_contract(
-                prepared.attachment_contract
-                if isinstance(prepared, PreparedSandboxFinalization)
-                else _attachment_preprocessing_contract(payload, prepared)
-            )
-        except AttachmentPreprocessingError as exc:
-            return self._attachment_parser_failure_result(
-                error_code=exc.code,
-                sandbox_provider=sandbox_provider,
-                runtime_started=True,
-                runtime_terminal_status=runtime_status,
-                evidence=parser_evidence,
-            )
-        evidence_valid, evidence_error = validate_required_parser_evidence(
-            requirements=attachment_requirements,
-            evidence=parser_evidence,
-        )
-        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and not evidence_valid:
-            return self._attachment_parser_failure_result(
-                error_code=evidence_error,
-                sandbox_provider=sandbox_provider,
-                runtime_started=True,
-                runtime_terminal_status=runtime_status,
-                evidence=parser_evidence,
             )
         capability_evidence = (
             executor_response.get("capability_evidence")
@@ -1817,7 +1656,6 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_runtime_used": True,
             "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
-            "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
             "capability_evidence": capability_evidence,
             **runtime_tool_evidence.private_payload(),
         }
@@ -2001,16 +1839,6 @@ class ClaudeAgentWorkerAdapter:
             return preflight_failure
         if prepared is None:
             return None
-        try:
-            attachment_requirements = attachment_requirements_from_contract(
-                _attachment_preprocessing_contract(payload, prepared)
-            )
-        except AttachmentPreprocessingError as exc:
-            return self._attachment_parser_failure_result(error_code=exc.code)
-        if attachment_requirements and not sandbox_required:
-            return self._attachment_parser_failure_result(
-                error_code="attachment_parser_sandbox_required"
-            )
         if sandbox_required:
             return await self._submit_prepared_run_to_sandbox_runtime(
                 payload,
@@ -2240,7 +2068,6 @@ class ClaudeAgentWorkerAdapter:
                 _context_manifest_with_attachment_metadata(
                     context_manifest,
                     attachment_metadata,
-                    allow_file_content_tools=_allows_context_file_tools(payload),
                 )
             )
         if not prompt:
@@ -2441,11 +2268,10 @@ class ClaudeAgentWorkerAdapter:
             return []
         if workspace.exists() and workspace.is_symlink():
             raise ValueError("run workspace must not be a symlink")
-        typed_preprocessing = _requires_typed_attachment_preprocessing(payload)
         result = await materialize_run_context_files(
             transaction_factory=transaction,
             repository=repositories,
-            storage=ObjectStorage() if typed_preprocessing else None,
+            storage=ObjectStorage(),
             workspace=workspace,
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -2453,11 +2279,9 @@ class ClaudeAgentWorkerAdapter:
             session_id=payload.session_id,
             run_id=payload.run_id,
             file_ids=payload.file_ids,
-            typed_preprocessing=typed_preprocessing,
         )
         return _MaterializedFileNames(
             list(result.file_names),
-            attachment_facts=list(result.attachment_facts),
             attachment_metadata=[
                 _AuthorizedAttachmentMetadata(
                     item.file_id,
