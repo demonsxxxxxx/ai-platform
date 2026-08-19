@@ -1,6 +1,5 @@
 import base64
 import binascii
-import hashlib
 import inspect
 import posixpath
 import shutil
@@ -55,10 +54,8 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
 from app.file_parser_contracts import (
-    XLSX_CONTENT_TYPE,
     AttachmentParserRequirement,
-    MaterializedAttachmentFact,
-    build_attachment_preprocessing_contract,
+    build_attachment_parser_requirements,
     validate_required_parser_evidence,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -297,60 +294,6 @@ class _MaterializedFileNames(list[str]):
         self.materialized_file_names = list(
             values if materialized_file_names is None else materialized_file_names
         )
-
-
-def _attachment_parser_requirements(
-    payload: RunPayload,
-    *,
-    workspace: Path,
-    declared_file_names: list[str],
-    attachment_metadata: list[_AuthorizedAttachmentMetadata],
-    materialized_file_names: list[str],
-) -> list[dict[str, Any]]:
-    """Build non-secret parser requirements from server-materialized attachment bytes."""
-
-    if not payload.file_ids or not declared_file_names:
-        return []
-    metadata_by_id = {item.file_id: item for item in attachment_metadata}
-    materialized_names = materialized_file_names or declared_file_names
-    if len(materialized_names) != len(declared_file_names):
-        return []
-    facts: list[MaterializedAttachmentFact] = []
-    for index, file_name in enumerate(declared_file_names):
-        if index >= len(payload.file_ids):
-            return []
-        file_id = payload.file_ids[index]
-        metadata = metadata_by_id.get(file_id)
-        declared_name = metadata.file_name if metadata is not None else file_name
-        declared_content_type = (
-            metadata.content_type
-            if metadata is not None
-            else (XLSX_CONTENT_TYPE if str(declared_name).lower().endswith(".xlsx") else "")
-        )
-        materialized_path = Path(workspace) / materialized_names[index]
-        try:
-            ensure_path_inside(
-                workspace,
-                materialized_path,
-                "attachment_parser_workspace_escape",
-            )
-            content = materialized_path.read_bytes()
-        except (OSError, ValueError):
-            return []
-        facts.append(
-            MaterializedAttachmentFact(
-                file_id=file_id,
-                file_name=declared_name,
-                content_type=declared_content_type,
-                byte_count=len(content),
-                sha256=hashlib.sha256(content).hexdigest(),
-            )
-        )
-    contract = build_attachment_preprocessing_contract(attachment_facts=facts)
-    raw_requirements = contract.get("requirements")
-    if not isinstance(raw_requirements, list):
-        return []
-    return list(raw_requirements)
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -1405,11 +1348,13 @@ class ClaudeAgentWorkerAdapter:
                 **prompt_builder_kwargs,
             )
         )
-        attachment_parser_requirements = _attachment_parser_requirements(
-            payload,
-            workspace=resolved_workspace,
+        attachment_parser_requirements = build_attachment_parser_requirements(
+            file_ids=list(payload.file_ids),
             declared_file_names=file_names,
-            attachment_metadata=attachment_metadata,
+            content_types=[
+                item.content_type for item in attachment_metadata
+            ] if len(attachment_metadata) == len(file_names) else [],
+            workspace=resolved_workspace,
             materialized_file_names=staged_file_names,
         )
         return (
@@ -1464,11 +1409,13 @@ class ClaudeAgentWorkerAdapter:
             "public_skill_metadata": dict(prepared.public_skill_metadata),
             "attachment_parser_requirements": list(
                 prepared.attachment_parser_requirements
-                or _attachment_parser_requirements(
-                    payload,
-                    workspace=prepared.workspace,
+                or build_attachment_parser_requirements(
+                    file_ids=list(payload.file_ids),
                     declared_file_names=prepared.file_names,
-                    attachment_metadata=prepared.attachment_metadata,
+                    content_types=[
+                        item.content_type for item in prepared.attachment_metadata
+                    ] if len(prepared.attachment_metadata) == len(prepared.file_names) else [],
+                    workspace=prepared.workspace,
                     materialized_file_names=list(
                         prepared.materialized_file_names or prepared.file_names
                     ),
@@ -1692,11 +1639,13 @@ class ClaudeAgentWorkerAdapter:
         if not parser_requirements and isinstance(prepared, PreparedSdkRun):
             parser_requirements = [
                 AttachmentParserRequirement.model_validate(item)
-                for item in _attachment_parser_requirements(
-                    payload,
-                    workspace=prepared.workspace,
+                for item in build_attachment_parser_requirements(
+                    file_ids=list(payload.file_ids),
                     declared_file_names=prepared.file_names,
-                    attachment_metadata=prepared.attachment_metadata,
+                    content_types=[
+                        item.content_type for item in prepared.attachment_metadata
+                    ] if len(prepared.attachment_metadata) == len(prepared.file_names) else [],
+                    workspace=prepared.workspace,
                     materialized_file_names=list(
                         prepared.materialized_file_names or prepared.file_names
                     ),

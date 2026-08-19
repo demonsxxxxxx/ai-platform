@@ -259,6 +259,54 @@ def dispatched_context_file_ids(manifest: object) -> frozenset[str]:
     )
 
 
+def build_attachment_parser_requirements(
+    *,
+    file_ids: list[str],
+    declared_file_names: list[str],
+    content_types: list[str],
+    workspace: Path,
+    materialized_file_names: list[str],
+) -> list[dict[str, Any]]:
+    """Build non-secret parser requirements from server-materialized attachment bytes.
+
+    The worker calls this after staging attachments so terminal reconciliation can
+    enforce exact parser-version evidence without persisting file content.
+    """
+
+    if not file_ids or not declared_file_names:
+        return []
+    materialized_names = materialized_file_names or declared_file_names
+    if len(materialized_names) != len(declared_file_names):
+        return []
+    facts: list[MaterializedAttachmentFact] = []
+    for index, file_name in enumerate(declared_file_names):
+        if index >= len(file_ids):
+            return []
+        materialized_path = Path(workspace) / materialized_names[index]
+        try:
+            content = materialized_path.read_bytes()
+        except OSError:
+            return []
+        facts.append(
+            MaterializedAttachmentFact(
+                file_id=file_ids[index],
+                file_name=PurePosixPath(str(file_name).replace("\\", "/")).name,
+                content_type=(
+                    content_types[index]
+                    if index < len(content_types) and content_types[index]
+                    else (XLSX_CONTENT_TYPE if str(file_name).lower().endswith(".xlsx") else "")
+                ),
+                byte_count=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        )
+    contract = build_attachment_preprocessing_contract(attachment_facts=facts)
+    raw_requirements = contract.get("requirements")
+    if not isinstance(raw_requirements, list):
+        return []
+    return list(raw_requirements)
+
+
 def build_attachment_preprocessing_contract(
     *,
     file_ids: list[str] | None = None,
