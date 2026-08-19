@@ -9,9 +9,11 @@ import {
   isNonRetryableSSEAuthenticationError,
   isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
+  MAX_SSE_STARTUP_RETRIES,
   MAX_STATUS_QUERY_RETRIES,
   queryAuthoritativeRunStatus,
   reconnectSSE,
+  recoverReplayGap,
   type SSEConnectionContext,
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
@@ -248,7 +250,7 @@ test("SSE uses the same explicit cookie-session credential boundary", () => {
   assert.match(source, /credentials:\s*"include"/);
 });
 
-test("renders a valid v3 replay after rejected SSE admission and persists the accepted cursor", async () => {
+test("retries startup-not-ready inside one SSE owner and persists the accepted cursor", async () => {
   const { context } = createTokenRefreshContext();
   context.messagesRef.current = [
     {
@@ -270,14 +272,26 @@ test("renders a valid v3 replay after rejected SSE admission and persists the ac
     current: { sessionId: null, runId: null, eventId: null },
   };
   context.onRunTerminal = () => true;
-  const seen: Array<Record<string, string>> = [];
+  const ownerHeaders: Array<Record<string, string>> = [];
+  let startupAttempts = 0;
   const fetchStream: SSEFetchEventSource = async (_input, init) => {
-    seen.push((init.headers || {}) as Record<string, string>);
-    if (seen.length === 1) {
-      await init.onopen?.(new Response(null, { status: 409 }));
-      return;
+    ownerHeaders.push((init.headers || {}) as Record<string, string>);
+    if (ownerHeaders.length === 2) return;
+    try {
+      startupAttempts += 1;
+      await init.onopen?.(
+        new Response(null, {
+          status: 409,
+          headers: {
+            "X-SSE-Error-Code": "sse_stream_not_admitted",
+            "X-SSE-Retryable": "true",
+          },
+        }),
+      );
+    } catch (error) {
+      assert.equal(typeof init.onerror?.(error as never), "number");
     }
-    if (seen.length === 3) return;
+    startupAttempts += 1;
     await init.onopen?.(new Response(null, { status: 200 }));
     init.onmessage?.(
       v3Frame({
@@ -308,17 +322,171 @@ test("renders a valid v3 replay after rejected SSE admission and persists the ac
     getRefreshToken: () => null,
   };
 
-  await assert.rejects(
-    connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens),
-    /HTTP error! status: 409/,
+  await connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    fetchStream,
+    tokens,
   );
-  await connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens);
-  await connectToSSE("session-old", "run-old", "assistant-old", context, false, fetchStream, tokens);
+  await connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    fetchStream,
+    tokens,
+  );
 
-  assert.equal(seen[0]?.["Last-Event-ID"], undefined);
-  assert.equal(seen[1]?.["Last-Event-ID"], undefined);
+  assert.equal(startupAttempts, 2);
+  assert.equal(ownerHeaders.length, 2);
+  assert.equal(ownerHeaders[0]?.["Last-Event-ID"], undefined);
   assert.equal(context.messagesRef.current[0]?.content, "accepted");
-  assert.equal(seen[2]?.["Last-Event-ID"], "run-old:1:2-0");
+  assert.equal(ownerHeaders[1]?.["Last-Event-ID"], "run-old:1:2-0");
+});
+
+test("does not retry a hard startup conflict", async () => {
+  const { context } = createTokenRefreshContext();
+  let attempts = 0;
+  const fetchStream: SSEFetchEventSource = async (_input, init) => {
+    attempts += 1;
+    try {
+      await init.onopen?.(
+        new Response(null, {
+          status: 409,
+          headers: {
+            "X-SSE-Error-Code": "sse_authority_revoked",
+            "X-SSE-Retryable": "false",
+          },
+        }),
+      );
+    } catch (error) {
+      init.onerror?.(error as never);
+    }
+  };
+
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      fetchStream,
+    ),
+    /sse_authority_revoked/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("bounds startup-not-ready retries inside one SSE owner", async () => {
+  const { context } = createTokenRefreshContext();
+  let attempts = 0;
+  let nowMs = 0;
+  const scheduledDiagnostics: Array<Record<string, unknown>> = [];
+  const exhaustedDiagnostics: Array<Record<string, unknown>> = [];
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+  console.info = (message: unknown, details?: unknown) => {
+    if (message === "[SSE] Startup retry scheduled") {
+      scheduledDiagnostics.push(details as Record<string, unknown>);
+    }
+  };
+  console.warn = (message: unknown, details?: unknown) => {
+    if (message === "[SSE] Startup retry exhausted") {
+      exhaustedDiagnostics.push(details as Record<string, unknown>);
+    }
+  };
+  const fetchStream: SSEFetchEventSource = async (_input, init) => {
+    while (true) {
+      attempts += 1;
+      try {
+        await init.onopen?.(
+          new Response(null, {
+            status: 409,
+            headers: {
+              "X-SSE-Error-Code": "sse_stream_not_confirmed",
+              "X-SSE-Retryable": "true",
+            },
+          }),
+        );
+      } catch (error) {
+        init.onerror?.(error as never);
+      }
+    }
+  };
+
+  try {
+    await assert.rejects(
+      connectToSSE(
+        "session-old",
+        "run-old",
+        "assistant-old",
+        context,
+        false,
+        fetchStream,
+        { now: () => (nowMs += 100) },
+      ),
+      /sse_startup_retry_exhausted/,
+    );
+  } finally {
+    console.info = originalInfo;
+    console.warn = originalWarn;
+  }
+
+  assert.equal(attempts, MAX_SSE_STARTUP_RETRIES + 1);
+  assert.equal(scheduledDiagnostics.length, MAX_SSE_STARTUP_RETRIES);
+  assert.equal(scheduledDiagnostics[0]?.outcome, "scheduled");
+  assert.equal(typeof scheduledDiagnostics[0]?.elapsedMs, "number");
+  assert.equal(exhaustedDiagnostics.length, 1);
+  assert.equal(exhaustedDiagnostics[0]?.outcome, "exhausted");
+  assert.equal(typeof exhaustedDiagnostics[0]?.elapsedMs, "number");
+});
+
+test("aborts a startup request that remains pending past the owner deadline", async () => {
+  const { context } = createTokenRefreshContext();
+  let fireDeadline: (() => void) | undefined;
+  let requestAborted = false;
+  const fetchStream: SSEFetchEventSource = async (_input, init) =>
+    await new Promise<void>((resolve) => {
+      init.signal?.addEventListener(
+        "abort",
+        () => {
+          requestAborted = true;
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  const setStartupTimeout = ((handler: () => void) => {
+    fireDeadline = handler;
+    return 1;
+  }) as unknown as typeof globalThis.setTimeout;
+  const clearStartupTimeout = (() => undefined) as typeof globalThis.clearTimeout;
+
+  const connection = connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    fetchStream,
+    {
+      now: () => 10_000,
+      setStartupTimeout,
+      clearStartupTimeout,
+    },
+  );
+  await Promise.resolve();
+  assert.ok(fireDeadline);
+  fireDeadline();
+
+  await assert.rejects(connection, /sse_startup_retry_exhausted/);
+  assert.equal(requestAborted, true);
+  assert.equal(context.isConnectingRef.current, false);
 });
 
 test("retries an SSE close that arrives before a terminal stream event", () => {
@@ -2125,10 +2293,11 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
   assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
 });
 
-test("replay gap preserves the run owner and performs durable status reconciliation", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("replay gap preserves partial output until an active run reaches terminal hydration", async () => {
   let statusCalls = 0;
-  let reconnectCalls = 0;
+  let hydrateCalls = 0;
+  let capturedInit: Parameters<SSEFetchEventSource>[1] | undefined;
+  const connectionStates: string[] = [];
   const context = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
@@ -2136,6 +2305,7 @@ test("replay gap preserves the run owner and performs durable status reconciliat
     reconnectTimeoutRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
     messagesRef: {
       current: [
         {
@@ -2145,7 +2315,7 @@ test("replay gap preserves the run owner and performs durable status reconciliat
           timestamp: new Date(),
           isStreaming: true,
         },
-      ],
+      ] as Message[],
     },
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
@@ -2159,52 +2329,104 @@ test("replay gap preserves the run owner and performs durable status reconciliat
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
-    isReconnectFromHistoryRef: { current: false },
     setSessionId: () => undefined,
-    setMessages: () => undefined,
-    setConnectionStatus: () => undefined,
+    setMessages: (update: Message[] | ((current: Message[]) => Message[])) => {
+      context.messagesRef.current =
+        typeof update === "function" ? update(context.messagesRef.current) : update;
+    },
+    setConnectionStatus: (status: string) => connectionStates.push(status),
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
-  } satisfies SSEConnectionContext & {
-    isReconnectFromHistoryRef: { current: boolean };
-  };
+    hydrateTerminalRun: async () => {
+      hydrateCalls += 1;
+    },
+  } satisfies SSEConnectionContext;
 
-  await assert.rejects(
-    connectToSSE(
-      "session-1",
-      "run-1",
-      "assistant-1",
-      context,
-      false,
-      async (_input, init) => {
-        await init.onopen?.(new Response(null, { status: 200 }));
-        init.onmessage?.({
-          event: "gap",
-          data: JSON.stringify({ recovery: "reload_durable_state" }),
-        } as never);
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      capturedInit = init;
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.({
+        event: "gap",
+        data: JSON.stringify({ recovery: "reload_durable_state" }),
+      } as never);
+    },
+    {
+      replayGapDependencies: {
+        getStatus: async () => {
+          statusCalls += 1;
+          return {
+            session_id: "session-1",
+            run_id: "run-1",
+            status: statusCalls === 1 ? "running" : "succeeded",
+          };
+        },
+        replayGapStatusPollDelayMs: 0,
       },
-    ),
-    /sse_replay_gap/,
+    },
   );
-  assert.equal(context.currentRunIdRef.current, "run-1");
 
-  await reconnectSSE(context, {
-    getStatus: async () => {
-      statusCalls += 1;
-      return { session_id: "session-1", run_id: "run-1", status: "running" };
-    },
-    connect: async () => {
-      reconnectCalls += 1;
-    },
-    reconnectDelay: () => 0,
+  assert.equal(statusCalls, 2);
+  assert.equal(hydrateCalls, 1);
+  assert.doesNotThrow(() =>
+    capturedInit?.onmessage?.({ event: "message", data: "not-json" } as never),
+  );
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: null,
+    runId: null,
+    eventId: null,
+    streamIncarnation: null,
   });
-  t.mock.timers.tick(1);
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.equal(statusCalls, 1);
-  assert.equal(reconnectCalls, 1);
+  assert.deepEqual(context.acceptedRunEventSequenceRef.current, {
+    sessionId: null,
+    runId: null,
+    sequence: null,
+  });
+  assert.equal(context.messagesRef.current[0]?.content, "partial");
+  assert.equal(context.messagesRef.current[0]?.isStreaming, false);
+  assert.deepEqual(connectionStates, ["connecting", "connected", "recovering_gap"]);
   assert.equal(context.currentRunIdRef.current, "run-1");
+});
+
+test("does not mutate shared state when a stale owner receives a replay gap", async () => {
+  const states: string[] = [];
+  const context = {
+    isMountedRef: { current: true },
+    sessionIdRef: { current: "session-new" },
+    currentRunIdRef: { current: "run-new" },
+    streamVersionRef: { current: 2 },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: "session-old",
+        runId: "run-old",
+        eventId: "run-old:1:1-0",
+        streamIncarnation: 1,
+      },
+    },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-old", runId: "run-old", sequence: 8 },
+    },
+    replayGapRecoveryRef: { current: null },
+    setMessages: () => assert.fail("stale gap must not mutate messages"),
+    setConnectionStatus: (status: string) => states.push(status),
+    setIsInitializingSandbox: () => assert.fail("stale gap must not mutate sandbox state"),
+  } as unknown as SSEConnectionContext;
+
+  await recoverReplayGap(context, {
+    sessionId: "session-old",
+    runId: "run-old",
+    messageId: "assistant-old",
+    streamVersion: 1,
+  });
+
+  assert.deepEqual(states, []);
+  assert.equal(context.acceptedStreamCursorRef!.current.eventId, "run-old:1:1-0");
+  assert.equal(context.acceptedRunEventSequenceRef!.current.sequence, 8);
 });
 
 test("drops a queued reconnect timer after session switch or unmount", async (t) => {

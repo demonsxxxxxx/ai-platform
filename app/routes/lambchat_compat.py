@@ -42,6 +42,7 @@ from app.routes.runs import (
     event_visible_to_principal,
     run_event_response,
 )
+from app.runs import api as runs_api
 from app.run_projection import (
     CHAT_PUBLIC_PROJECTION_VERSION,
     PublicChatAnswerStreamProjector,
@@ -75,6 +76,21 @@ from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
 _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
+_SSE_RETRYABLE_STARTUP_CODES = frozenset(
+    {"sse_stream_not_admitted", "sse_stream_not_confirmed"}
+)
+
+
+def _sse_conflict(code: str) -> HTTPException:
+    retryable = code in _SSE_RETRYABLE_STARTUP_CODES
+    return HTTPException(
+        status_code=409,
+        detail={"code": code, "retryable": retryable},
+        headers={
+            "X-SSE-Error-Code": code,
+            "X-SSE-Retryable": "true" if retryable else "false",
+        },
+    )
 
 
 def _json_default(value: Any) -> str:
@@ -1542,11 +1558,11 @@ async def chat_session_stream(
             run_id=run_id,
         )
         if initial_run is not None and initial_run.get("session_id") == session_id:
-            authority = await get_stream_authority(
-                conn, tenant_id=principal.tenant_id, run_id=run_id
-            )
-            if authority is not None:
-                try:
+            try:
+                authority = await get_stream_authority(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id
+                )
+                if authority is not None:
                     lease = await acquire_sse_authority_lease(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -1555,14 +1571,16 @@ async def chat_session_stream(
                         connection_id=connection_id,
                         lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
                     )
-                except SseAuthorityConflictError as exc:
-                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except SseAuthorityConflictError as exc:
+                raise _sse_conflict(str(exc)) from exc
     if initial_run is None or initial_run.get("session_id") != session_id:
         raise HTTPException(status_code=404, detail="run_not_found")
     if authority is None:
-        raise HTTPException(status_code=409, detail="sse_stream_not_admitted")
+        if str(initial_run.get("status") or "") in runs_api.TERMINAL_RUN_STATUSES:
+            raise _sse_conflict("sse_run_already_terminal")
+        raise _sse_conflict("sse_stream_not_admitted")
     if lease is None:
-        raise HTTPException(status_code=409, detail="sse_authority_lease_unavailable")
+        raise _sse_conflict("sse_authority_lease_unavailable")
 
     async def release_lease() -> None:
         try:
