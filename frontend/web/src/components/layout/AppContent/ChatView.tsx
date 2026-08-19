@@ -65,7 +65,10 @@ import type {
   ConnectionStatus,
 } from "../../../types";
 import type { AgentProfilePublicProjection } from "../../../types/agentProfile";
-import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
+import type {
+  StopGenerationResult,
+  SubmissionOutcome,
+} from "../../../hooks/useAgent/types";
 import type {
   SelectedSkillRecoverableCode,
   SelectedSkillTaskState,
@@ -161,7 +164,7 @@ interface ChatViewProps {
   ) => Promise<SubmissionOutcome>;
   canRetryPendingSubmission: boolean;
   onRetryPendingSubmission: () => Promise<void>;
-  onStopGeneration: () => void;
+  onStopGeneration: () => Promise<StopGenerationResult>;
   attachments: MessageAttachment[];
   onAttachmentsChange: React.Dispatch<
     React.SetStateAction<MessageAttachment[]>

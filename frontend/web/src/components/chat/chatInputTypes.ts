@@ -9,7 +9,10 @@ import type {
   AgentOption,
   MessageAttachment,
 } from "../../types";
-import type { SubmissionOutcome } from "../../hooks/useAgent/types";
+import type {
+  StopGenerationResult,
+  SubmissionOutcome,
+} from "../../hooks/useAgent/types";
 import type {
   SelectedSkillRecoverableCode,
   SelectedSkillTaskState,
@@ -24,7 +27,7 @@ export interface ChatInputProps {
     attachments?: MessageAttachment[],
     selectedSkill?: SelectedSkillRequest | null,
   ) => Promise<SubmissionOutcome>;
-  onStop: () => void;
+  onStop: () => Promise<StopGenerationResult>;
   isLoading: boolean;
   disabled?: boolean;
   canSend?: boolean;

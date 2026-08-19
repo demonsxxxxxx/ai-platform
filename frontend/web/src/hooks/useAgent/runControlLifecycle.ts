@@ -28,6 +28,12 @@ export type RunControlPhase =
 
 export type RunControlAction = "cancel" | "retry" | "resume";
 
+/** A cancel command is distinct from the later authoritative terminal result. */
+export type RunControlCancelResult =
+  | "acknowledged"
+  | "unavailable"
+  | "unconfirmed";
+
 interface PendingRunControlOperation {
   version: 1;
   tenantId: string;
@@ -524,8 +530,20 @@ export class RunControlLifecycle {
     });
   }
 
-  async cancel(): Promise<void> {
+  async cancel(): Promise<RunControlCancelResult> {
+    const owner = this.owner;
+    if (
+      !owner ||
+      !this.callbacks ||
+      owner.mutationStarted ||
+      !this.isCurrentOwner(owner)
+    ) {
+      return "unavailable";
+    }
+
     await this.mutate("cancel");
+    if (!this.isCurrentOwner(owner)) return "unconfirmed";
+    return owner.phase === "cancel_requested" ? "acknowledged" : "unconfirmed";
   }
 
   async retry(): Promise<void> {

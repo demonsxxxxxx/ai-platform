@@ -17,33 +17,40 @@ function getStopGenerationSource(): string {
   return source.slice(stopGenerationStart, clearMessagesStart);
 }
 
-test("stopGeneration cancels the current real run id instead of the session POC endpoint", () => {
+test("stopGeneration delegates the real run id to the run-control lifecycle", () => {
   const source = getStopGenerationSource();
 
   assert.match(source, /const currentRunId = currentRunIdRef\.current/);
-  assert.match(source, /await sessionApi\.cancelRun\(currentRunId\)/);
+  assert.match(source, /return runControlLifecycle\.cancel\(\)/);
   assert.doesNotMatch(source, /sessionApi\.cancel\(currentSessionId\)/);
   assert.doesNotMatch(source, /\/chat\/sessions\/\$\{sessionId\}\/cancel/);
 });
 
-test("stopGeneration fails closed when no trusted current run id exists", () => {
+test("stopGeneration returns unavailable instead of claiming cancellation without a trusted run", () => {
   const source = getStopGenerationSource();
-  const currentRunRead = source.indexOf("const currentRunId = currentRunIdRef.current");
-  const missingRunGuard = source.indexOf("if (!currentRunId)", currentRunRead);
-  const clearLoading = source.indexOf("setIsLoading(false)");
-  const dismissQueueToast = source.indexOf('toast.dismiss("chat-queue")');
-  const cancelCall = source.indexOf("sessionApi.cancelRun(currentRunId)", currentRunRead);
 
-  assert.notEqual(currentRunRead, -1);
-  assert.notEqual(missingRunGuard, -1);
-  assert.notEqual(clearLoading, -1);
-  assert.notEqual(dismissQueueToast, -1);
-  assert.notEqual(cancelCall, -1);
-  assert.ok(
-    currentRunRead < missingRunGuard &&
-      missingRunGuard < clearLoading &&
-      clearLoading < dismissQueueToast &&
-      dismissQueueToast < cancelCall,
-    "stopGeneration must not guess session-to-run when current run id is missing",
+  assert.match(source, /if \(!currentRunId \|\| !currentSessionId\) \{\s*return "unavailable" as const;/);
+  assert.doesNotMatch(source, /toast\.custom/);
+});
+
+test("the stop confirmation awaits the command result before showing acknowledgement", () => {
+  const source = readFileSync(
+    resolve(__dirname, "../../../components/chat/ChatInput.tsx"),
+    "utf8",
   );
+  const confirmStart = source.indexOf('<ConfirmDialog\n        isOpen={stopConfirmOpen}');
+  const contactDialogStart = source.indexOf("<ContactAdminDialog", confirmStart);
+  assert.notEqual(confirmStart, -1);
+  assert.notEqual(contactDialogStart, -1);
+
+  const confirm = source.slice(confirmStart, contactDialogStart);
+  const awaitStop = confirm.indexOf("result = await onStop()");
+  const closeDialog = confirm.indexOf("setStopConfirmOpen(false)", awaitStop);
+  const acknowledged = confirm.indexOf('result !== "acknowledged"');
+  const requestedCopy = confirm.indexOf('t("chat.runStatus.event.cancelRequested")');
+
+  assert.ok(awaitStop >= 0 && acknowledged > awaitStop);
+  assert.ok(closeDialog > acknowledged && requestedCopy > closeDialog);
+  assert.match(confirm, /loading=\{isStopSubmitting\}/);
+  assert.doesNotMatch(confirm, /chat\.status\.cancelled/);
 });
