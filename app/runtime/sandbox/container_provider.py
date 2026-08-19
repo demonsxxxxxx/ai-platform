@@ -1037,7 +1037,7 @@ def _executor_environment(
         "DEFAULT_MODEL_ID": request.model,
         "MODEL_CATALOG_JSON": _env_value(settings, "model_catalog_json"),
         "CLAUDE_AGENT_SDK_ENABLED": _env_bool(getattr(settings, "claude_agent_sdk_enabled", False)),
-        "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 1200),
+        "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 0),
         "CLAUDE_AGENT_SDK_MAX_TURNS": _env_value(settings, "claude_agent_sdk_max_turns", 128),
         "CLAUDE_AGENT_SDK_EFFORT": _env_value(settings, "claude_agent_sdk_effort", "xhigh"),
         "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS": _env_value(

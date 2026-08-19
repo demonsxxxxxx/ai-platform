@@ -23,6 +23,7 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.model_catalog import build_model_catalog
+from app.platform.model_upstream import fetch_upstream_openai_models
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
     capability_id_from_skill,
@@ -1110,7 +1111,22 @@ async def update_profile_metadata(
 
 @router.get("/agent/models/available")
 async def available_models() -> dict[str, object]:
-    return build_model_catalog(get_settings())
+    settings = get_settings()
+    upstream_models = await fetch_upstream_openai_models(settings)
+    if upstream_models:
+        model_ids = {str(model["id"]) for model in upstream_models}
+        runtime_default = str(
+            getattr(settings, "default_model_id", "") or ""
+        ).strip()
+        if runtime_default not in model_ids:
+            runtime_default = str(upstream_models[0]["id"])
+        return {
+            "models": upstream_models,
+            "count": len(upstream_models),
+            "enabled_count": len(upstream_models),
+            "default_model_id": runtime_default,
+        }
+    return build_model_catalog(settings)
 
 
 @router.get("/agent/models/")

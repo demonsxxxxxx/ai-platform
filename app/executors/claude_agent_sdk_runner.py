@@ -148,6 +148,9 @@ _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
 _MAX_PUBLIC_DIAGNOSTIC_SKILLS = 16
+_MAX_PUBLIC_TOOL_POLICY_DENIALS = 8
+_TOOL_POLICY_DENIAL_MAX_NAME_BYTES = 256
+_TOOL_POLICY_DENIAL_MAX_REASON_BYTES = 512
 _PUBLIC_DIAGNOSTIC_STAGES = frozenset({"planning", "runtime", "message", "skills"})
 _PUBLIC_DIAGNOSTIC_COUNTERS = (
     "max_turns",
@@ -175,11 +178,17 @@ def _sdk_run_timeout_seconds(
     *,
     sandbox_brokered: bool,
     full_access: bool,
-) -> float:
-    """Return the bounded SDK execution time without an approval wait extension."""
-    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 1200.0))
-    if full_access:
-        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
+) -> float | None:
+    """Return the bounded SDK execution time, or None for unbounded runs.
+
+    A configured value <= 0 disables the internal SDK execution deadline
+    entirely (internal beta: tasks run until they finish). Explicit positive
+    values still bound the run, so operators can re-enable a cap later.
+    """
+
+    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 0.0))
+    if timeout_seconds <= 0:
+        return None
     return timeout_seconds
 
 
@@ -248,6 +257,34 @@ def _diagnostic_terminal_class(error_code: str | None) -> tuple[str, str | None,
     return "upstream_error", _SDK_UPSTREAM_ERROR, "retry_later", True
 
 
+def _public_tool_policy_denials(raw: object) -> list[dict[str, str]]:
+    """Return a strict public-safe projection of tool admission denials.
+
+    Each denial carries only the requested tool name and the policy reason
+    code (no tool inputs, file content, or other private data).
+    """
+
+    if not isinstance(raw, list):
+        return []
+    projected: list[dict[str, str]] = []
+    for item in raw:
+        if len(projected) >= _MAX_PUBLIC_TOOL_POLICY_DENIALS:
+            break
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(sanitize_public_payload(item.get("tool_name") or "")).strip()
+        reason = str(sanitize_public_payload(item.get("reason") or "")).strip()
+        if not tool_name or not reason:
+            continue
+        projected.append(
+            {
+                "tool_name": truncate_utf8_text(tool_name, max_bytes=_TOOL_POLICY_DENIAL_MAX_NAME_BYTES),
+                "reason": truncate_utf8_text(reason, max_bytes=_TOOL_POLICY_DENIAL_MAX_REASON_BYTES),
+            }
+        )
+    return projected
+
+
 def _public_diagnostic_skill(
     skill_id: str | None,
     public_skill_metadata: dict[str, dict[str, str]] | None,
@@ -307,6 +344,9 @@ def project_sdk_turn_diagnostics(
         metadata = _public_diagnostic_skill(skill_id, public_skill_metadata)
         if metadata is not None:
             used_skills.append(metadata)
+    tool_policy_denials_detail = _public_tool_policy_denials(
+        raw_counters.get("tool_policy_denials_detail")
+    )
     return {
         "schema_version": SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION,
         "terminal_class": terminal_class,
@@ -317,6 +357,7 @@ def project_sdk_turn_diagnostics(
         "last_public_stage": last_public_stage,
         "selected_skill": selected_skill,
         "used_skills": used_skills,
+        "tool_policy_denials_detail": tool_policy_denials_detail,
     }
 
 
@@ -1488,10 +1529,14 @@ async def run_claude_agent_sdk(
         if not decision.allowed:
             diagnostic_counters["tool_admission_denials"] += 1
             diagnostic_counters["tool_policy_denials"] += 1
+            diagnostic_counters.setdefault("tool_policy_denials_detail", []).append(
+                {"tool_name": tool_name, "reason": decision.reason}
+            )
             return PermissionResultDeny(message=decision.reason)
         return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+        tool_name = ""
         if not isinstance(hook_input, dict):
             decision = evaluate_tool_policy(tool={})
         else:
@@ -1501,6 +1546,9 @@ async def run_claude_agent_sdk(
         if not decision.allowed:
             diagnostic_counters["tool_admission_denials"] += 1
             diagnostic_counters["tool_policy_denials"] += 1
+            diagnostic_counters.setdefault("tool_policy_denials_detail", []).append(
+                {"tool_name": tool_name, "reason": decision.reason}
+            )
         output: dict[str, object] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": decision.outcome,

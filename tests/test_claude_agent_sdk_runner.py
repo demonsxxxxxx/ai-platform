@@ -14,14 +14,14 @@ from app.required_tool_contract import (
 )
 
 
-def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
+def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(),
             sandbox_brokered=True,
             full_access=False,
         )
-        == 1200.0
+        is None
     )
     assert (
         _sdk_run_timeout_seconds(
@@ -30,6 +30,14 @@ def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
             full_access=False,
         )
         == 45.0
+    )
+    assert (
+        _sdk_run_timeout_seconds(
+            types.SimpleNamespace(claude_agent_sdk_timeout_seconds=0),
+            sandbox_brokered=True,
+            full_access=True,
+        )
+        is None
     )
 
 
@@ -1507,6 +1515,51 @@ async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
     )
     denied = await captured["can_use_tool"]("Skill", {"skill": "untrusted-skill"})
     assert denied.behavior == "deny"
+
+
+@pytest.mark.asyncio
+async def test_sdk_records_public_tool_policy_denial_detail(monkeypatch, tmp_path):
+    """Denied tool calls must surface tool name + policy reason in diagnostics.
+
+    This is what lets users (and support) see exactly which tool the model was
+    blocked from and why, instead of only a denial counter.
+    """
+
+    captured = {}
+    hook_input = {
+        "tool_name": "Grep",
+        "tool_use_id": "grep-call-1",
+        "tool_input": {"pattern": "TODO", "path": str(tmp_path.parent / "outside")},
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search outside the workspace",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=_acknowledge_capability_evidence,
+    )
+
+    assert captured["hook_results"][0][1]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    detail = result.turn_diagnostics["tool_policy_denials_detail"]
+    assert len(detail) == 1
+    assert detail[0]["tool_name"] == "Grep"
+    assert detail[0]["reason"]
 
 
 @pytest.mark.asyncio

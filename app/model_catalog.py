@@ -132,13 +132,20 @@ def build_model_catalog(settings: object) -> dict[str, Any]:
     }
 
 
-def resolve_model_selection(model_id: str | None, settings: object) -> dict[str, str] | None:
+def resolve_model_selection(
+    model_id: str | None,
+    settings: object,
+    *,
+    upstream_ids: set[str] | None = None,
+) -> dict[str, str] | None:
     """Resolve a frontend catalog id to the runtime model value used by providers."""
     if model_id is None:
         return None
     if not isinstance(model_id, str):
         raise ValueError("model_id_not_available")
     normalized = assert_safe_id(model_id.strip(), "model_id")
+    if upstream_ids and normalized in upstream_ids:
+        return {"id": normalized, "value": normalized}
     catalog = build_model_catalog(settings)
     for model in catalog["models"]:
         if str(model["id"]) == normalized:

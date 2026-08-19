@@ -485,7 +485,7 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     by_identity = {subject["identity"]: subject for subject in subjects}
 
     assert set(by_identity) == {
-        "Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit"
+        "Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep"
     }
     assert all(
         subject["declared_identities"] == [subject["identity"]]

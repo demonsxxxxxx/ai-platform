@@ -352,7 +352,15 @@ def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
         "schema_version": "ai-platform.skill-execution-profile.v1",
         "strategy": "sdk_native",
         "trust_basis": "admin_reviewed_release",
-        "builtin_tool_identities": ["Read", "Glob", "LS", "Bash", "Write", "Edit"],
+        "builtin_tool_identities": [
+            "Read",
+            "Glob",
+            "LS",
+            "Bash",
+            "Write",
+            "Edit",
+            "Grep",
+        ],
         "workspace_contract": "ai-platform.skill-workspace.v1",
         "command_isolation": "sibling-tool-sandbox-v1",
     }

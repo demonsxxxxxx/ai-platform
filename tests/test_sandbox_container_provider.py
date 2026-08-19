@@ -5002,7 +5002,7 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
                 "default_model_id": "deepseek-v4-flash",
                 "model_catalog_json": "[{\"id\":\"deepseek-v4-flash\"}]",
                 "claude_agent_sdk_enabled": True,
-                "claude_agent_sdk_timeout_seconds": 120,
+                "claude_agent_sdk_timeout_seconds": 0,
                 "claude_agent_sdk_max_turns": 128,
                 "claude_agent_sdk_effort": "xhigh",
                 "claude_agent_sdk_max_thinking_tokens": 16384,
@@ -5030,7 +5030,7 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
     assert environment["ANTHROPIC_AUTH_TOKEN"] == "test-anthropic-token"
     assert environment["OPENAI_API_KEY"] == "test-newapi-token"
     assert environment["CLAUDE_AGENT_PERMISSION_MODE"] == "bypassPermissions"
-    assert environment["CLAUDE_AGENT_SDK_TIMEOUT_SECONDS"] == "120"
+    assert environment["CLAUDE_AGENT_SDK_TIMEOUT_SECONDS"] == "0"
     assert environment["CLAUDE_AGENT_ALLOWED_TOOLS"] == "Read,Glob,LS,Bash"
     assert environment["CLAUDE_AGENT_WORKSPACE_ROOT"] == "/workspace"
     assert environment["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer"
