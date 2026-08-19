@@ -53,6 +53,24 @@ def test_catalog_identity_is_opaque_and_accepted_by_the_existing_chat_selector_c
 
 
 @pytest.mark.parametrize(
+    "authorization",
+    [
+        "Bearer catalog token",
+        "Bearer catalog\x7ftoken",
+        "Bearer catalog\u0080token",
+        "Bearer catalog\u00e9token",
+    ],
+)
+def test_catalog_jwt_authorization_rejects_non_sendable_bearer_tokens(authorization):
+    with pytest.raises(McpToolDiscoveryError, match="authorization_required"):
+        catalog._normalized_jwt_authorization(authorization)
+
+
+def test_catalog_jwt_authorization_accepts_visible_ascii_bearer_tokens():
+    assert catalog._normalized_jwt_authorization("Bearer catalog-token~!#") == "Bearer catalog-token~!#"
+
+
+@pytest.mark.parametrize(
     ("annotations", "expected_state", "expected_write_capable", "expected_risk_level"),
     [
         (None, MCP_TOOL_ANNOTATION_UNKNOWN, True, "high"),

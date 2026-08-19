@@ -362,7 +362,13 @@ def test_static_headers_reject_dynamic_name_and_round_trip_only_in_envelope(monk
         {" X-API-Key ": "  static-secret  "}
     ) == {"X-API-Key": "static-secret"}
     assert normalize_static_mcp_headers({"X-Empty": "   "}) == {"X-Empty": ""}
-    for value in ("secret\x00value", "secret\x1fvalue", "secret\x7fvalue"):
+    for value in (
+        "secret\x00value",
+        "secret\x1fvalue",
+        "secret\x7fvalue",
+        "secret\u0080value",
+        "secret\u00e9value",
+    ):
         with pytest.raises(McpRuntimeContextError, match="mcp_header_invalid"):
             normalize_static_mcp_headers({"X-API-Key": value})
 

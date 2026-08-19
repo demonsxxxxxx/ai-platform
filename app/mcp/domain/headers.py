@@ -22,7 +22,7 @@ def normalize_static_mcp_headers(
         if not _HTTP_HEADER_NAME_PATTERN.fullmatch(name):
             raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
         value = raw_value.strip()
-        if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        if any(not 0x20 <= ord(character) <= 0x7E for character in value):
             raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
         folded = name.casefold()
         if folded == MCP_JWT_AUTHORIZATION_HEADER.casefold():

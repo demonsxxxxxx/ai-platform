@@ -292,7 +292,7 @@ def _normalized_jwt_authorization(value: str | None) -> str:
         or scheme.casefold() != "bearer"
         or not token
         or len(token) > 16_384
-        or any(ord(character) < 0x21 or ord(character) == 0x7F for character in token)
+        or any(not 0x21 <= ord(character) <= 0x7E for character in token)
     ):
         raise McpToolDiscoveryError("authorization_required")
     return f"Bearer {token}"
