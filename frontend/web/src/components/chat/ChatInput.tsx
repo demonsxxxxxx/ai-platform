@@ -138,6 +138,7 @@ export const ChatInput = memo(function ChatInput({
   const [imageViewerSrc, setImageViewerSrc] = useState<string | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const [isStopSubmitting, setIsStopSubmitting] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [composerSelections, dispatchComposerSelection] = useReducer(
     composerSelectionReducer,
@@ -946,26 +947,51 @@ export const ChatInput = memo(function ChatInput({
         confirmText={t("chat.stop")}
         cancelText={t("common.cancel")}
         variant="warning"
+        loading={isStopSubmitting}
         onConfirm={() => {
-          setStopConfirmOpen(false);
-          onStop();
-          toast.custom(() => (
-            <div
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
-              style={{
-                background:
-                  "color-mix(in srgb, var(--theme-primary) 10%, transparent)",
-                border:
-                  "1px solid color-mix(in srgb, var(--theme-primary) 20%, transparent)",
-                color: "var(--theme-primary)",
-              }}
-            >
-              <Ban size={16} className="shrink-0" />
-              <span>{t("chat.status.cancelled")}</span>
-            </div>
-          ));
+          void (async () => {
+            setIsStopSubmitting(true);
+            let result: Awaited<ReturnType<typeof onStop>> = "unconfirmed";
+            try {
+              result = await onStop();
+            } catch {
+              // The lifecycle normally converts transport uncertainty into an
+              // explicit result. Keep this UI truthful if a caller regresses.
+            }
+
+            if (result !== "acknowledged") {
+              setIsStopSubmitting(false);
+              toast.error(
+                result === "unavailable"
+                  ? t("chat.stopUnavailable")
+                  : t("chat.stopUnconfirmed"),
+              );
+              return;
+            }
+
+            setStopConfirmOpen(false);
+            setIsStopSubmitting(false);
+            toast.custom(() => (
+              <div
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+                style={{
+                  background:
+                    "color-mix(in srgb, var(--theme-primary) 10%, transparent)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--theme-primary) 20%, transparent)",
+                  color: "var(--theme-primary)",
+                }}
+              >
+                <Ban size={16} className="shrink-0" />
+                <span>{t("chat.runStatus.event.cancelRequested")}</span>
+              </div>
+            ));
+          })();
         }}
-        onCancel={() => setStopConfirmOpen(false)}
+        onCancel={() => {
+          setStopConfirmOpen(false);
+          setIsStopSubmitting(false);
+        }}
       />
 
       <ContactAdminDialog

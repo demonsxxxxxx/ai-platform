@@ -8,12 +8,17 @@ import type {
 } from "../../types";
 import type { ExecutionTimelineKind } from "../../types/message";
 import type { SelectedSkillRecoverableCode } from "../useSelectedSkillTask";
-import type { RunControlLifecycle } from "./runControlLifecycle";
+import type {
+  RunControlCancelResult,
+  RunControlLifecycle,
+} from "./runControlLifecycle";
 
 export type SubmissionOutcome =
   | { status: "accepted" }
   | { status: "recoverable_error"; code: SelectedSkillRecoverableCode }
   | { status: "failed" };
+
+export type StopGenerationResult = RunControlCancelResult;
 
 export const CHAT_PUBLIC_PROJECTION_VERSION =
   "ai-platform.chat-public-projection.v1";
@@ -568,7 +573,7 @@ export interface UseAgentReturn {
   ) => Promise<SubmissionOutcome>;
   canRetryPendingSubmission: boolean;
   retryPendingSubmission: () => Promise<void>;
-  stopGeneration: () => Promise<void>;
+  stopGeneration: () => Promise<StopGenerationResult>;
   clearMessages: () => void;
   loadHistory: (
     targetSessionId: string,

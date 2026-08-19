@@ -218,7 +218,7 @@ test("RunControlLifecycle preserves a created-but-unopened child for GET-only re
   }
 });
 
-test("RunControlLifecycle keeps cancel acknowledgement separate from terminal convergence", async () => {
+test("RunControlLifecycle reports a cancel acknowledgement without inventing terminal state", async () => {
   const lifecycle = new RunControlLifecycle();
   const originalCancel = sessionApi.cancelRun;
   const originalStatus = sessionApi.getStatus;
@@ -242,7 +242,8 @@ test("RunControlLifecycle keeps cancel acknowledgement separate from terminal co
   lifecycle.bindParent(parent());
 
   try {
-    await lifecycle.cancel();
+    const result = await lifecycle.cancel();
+    assert.equal(result, "acknowledged");
     assert.equal(cancelCalls, 1);
     assert.equal(lifecycle.getSnapshot().phase, "cancel_requested");
     assert.equal(
@@ -256,6 +257,56 @@ test("RunControlLifecycle keeps cancel acknowledgement separate from terminal co
         JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
+    sessionApi.cancelRun = originalCancel;
+    sessionApi.getStatus = originalStatus;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("RunControlLifecycle reports unavailable without sending a cancel request", async () => {
+  const lifecycle = new RunControlLifecycle();
+  const originalCancel = sessionApi.cancelRun;
+  let cancelCalls = 0;
+  sessionApi.cancelRun = (async () => {
+    cancelCalls += 1;
+    return { run_id: "run-a", session_id: "session-a", status: "cancel_requested" };
+  }) as typeof sessionApi.cancelRun;
+
+  try {
+    assert.equal(await lifecycle.cancel(), "unavailable");
+    assert.equal(cancelCalls, 0);
+  } finally {
+    sessionApi.cancelRun = originalCancel;
+  }
+});
+
+test("RunControlLifecycle reports an unconfirmed cancel request without fabricating success", async () => {
+  const lifecycle = new RunControlLifecycle();
+  const originalCancel = sessionApi.cancelRun;
+  const originalStatus = sessionApi.getStatus;
+  const originalFetch = globalThis.fetch;
+  sessionApi.cancelRun = (async () => {
+    throw new TypeError("network response unavailable");
+  }) as typeof sessionApi.cancelRun;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-a",
+    run_id: "run-a",
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
+    )) as typeof fetch;
+  lifecycle.configure({
+    adoptRunControlChild: async () => "superseded",
+    reconnectRunControlOwner: async () => {},
+  });
+  lifecycle.bindParent(parent());
+
+  try {
+    assert.equal(await lifecycle.cancel(), "unconfirmed");
+    assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+  } finally {
     sessionApi.cancelRun = originalCancel;
     sessionApi.getStatus = originalStatus;
     globalThis.fetch = originalFetch;

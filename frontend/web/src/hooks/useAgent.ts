@@ -2423,7 +2423,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     const currentRunId = currentRunIdRef.current;
     const currentSessionId = sessionIdRef.current;
     if (!currentRunId || !currentSessionId) {
-      return;
+      return "unavailable" as const;
     }
     const owner = runControlLifecycle.getSnapshot().owner;
     if (
@@ -2436,7 +2436,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     }
     // A cancel acknowledgement is only a request. The existing SSE/reconcile
     // path remains the sole terminal convergence writer for the transcript.
-    await runControlLifecycle.cancel();
+    return runControlLifecycle.cancel();
   }, [bindRunControlParent, runControlLifecycle]);
 
   const clearMessages = useCallback(() => {
