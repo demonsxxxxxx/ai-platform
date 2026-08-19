@@ -178,11 +178,17 @@ def _sdk_run_timeout_seconds(
     *,
     sandbox_brokered: bool,
     full_access: bool,
-) -> float:
-    """Return the bounded SDK execution time without an approval wait extension."""
-    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 1200.0))
-    if full_access:
-        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
+) -> float | None:
+    """Return the bounded SDK execution time, or None for unbounded runs.
+
+    A configured value <= 0 disables the internal SDK execution deadline
+    entirely (internal beta: tasks run until they finish). Explicit positive
+    values still bound the run, so operators can re-enable a cap later.
+    """
+
+    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 0.0))
+    if timeout_seconds <= 0:
+        return None
     return timeout_seconds
 
 

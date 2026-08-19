@@ -14,14 +14,14 @@ from app.required_tool_contract import (
 )
 
 
-def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
+def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(),
             sandbox_brokered=True,
             full_access=False,
         )
-        == 1200.0
+        is None
     )
     assert (
         _sdk_run_timeout_seconds(
@@ -30,6 +30,14 @@ def test_sdk_timeout_fallback_is_bounded_for_document_workflows():
             full_access=False,
         )
         == 45.0
+    )
+    assert (
+        _sdk_run_timeout_seconds(
+            types.SimpleNamespace(claude_agent_sdk_timeout_seconds=0),
+            sandbox_brokered=True,
+            full_access=True,
+        )
+        is None
     )
 
 
