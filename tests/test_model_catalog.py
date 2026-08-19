@@ -7,6 +7,7 @@ from app.model_catalog import (
     DEFAULT_MAX_INPUT_TOKENS,
     MODEL_CATALOG_NOT_CONFIGURED,
     build_model_catalog,
+    fetch_upstream_openai_models,
     resolve_model_selection,
 )
 
@@ -230,3 +231,62 @@ def test_model_selection_rejects_non_string_ids_without_coercion(invalid_model_i
 
     with pytest.raises(ValueError, match="model_id_not_available"):
         resolve_model_selection(invalid_model_id, configured)
+
+
+@pytest.mark.asyncio
+async def test_fetch_upstream_openai_models_returns_mapped_options(monkeypatch):
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        assert url.endswith("/v1/models")
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "model-a"}, {"id": "model-b"}]},
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    models = await fetch_upstream_openai_models(
+        SimpleNamespace(
+            openai_base_url="http://gateway.test",
+            openai_api_key="secret",
+            llm_gateway_provider="openai_compatible",
+        )
+    )
+    assert [m["id"] for m in models] == ["model-a", "model-b"]
+    assert all(m["provider"] == "openai_compatible" for m in models)
+    assert all(m["value"] == m["id"] for m in models)
+
+
+@pytest.mark.asyncio
+async def test_fetch_upstream_openai_models_falls_back_empty_on_failure(monkeypatch):
+    import httpx
+
+    from app import model_catalog as model_catalog_module
+
+    model_catalog_module._upstream_model_cache.update(
+        {"fetched_at": 0.0, "models": [], "error": None}
+    )
+
+    async def fake_get(self, url, **kwargs):
+        raise httpx.ConnectError("unreachable")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    models = await fetch_upstream_openai_models(
+        SimpleNamespace(
+            openai_base_url="http://gateway.test",
+            openai_api_key="",
+            llm_gateway_provider="openai_compatible",
+        )
+    )
+    assert models == []
+
+
+def test_resolve_model_selection_accepts_upstream_ids(monkeypatch):
+    selection = resolve_model_selection(
+        "claude-sonnet-5",
+        settings(),
+        upstream_ids={"claude-sonnet-5", "deepseek-v4"},
+    )
+    assert selection == {"id": "claude-sonnet-5", "value": "claude-sonnet-5"}
+    with pytest.raises(ValueError):
+        resolve_model_selection("not-in-upstream", settings(), upstream_ids=set())
