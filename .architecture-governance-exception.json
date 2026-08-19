@@ -3,7 +3,7 @@
   "candidate": {
     "authority_ref": "d51a5d706b668a489da48283de30b5e25df64252",
     "base_ref": "d51a5d706b668a489da48283de30b5e25df64252",
-    "head_scope_sha256": "fbfef2bc2c317ad3659ae2777960e82efaa15c1c51a7d507a086788bd8698758"
+    "head_scope_sha256": "81f4c86dccb776e8632584208285aca62be8817908ee32d5fc6b9332fd5e5e6e"
   },
   "expires_on": "2026-09-18",
   "owner": "platform-architecture",
