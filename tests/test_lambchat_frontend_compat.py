@@ -102,10 +102,11 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
     async def get_session_for_action(_conn, *, tenant_id, session_id):
         return records.get((tenant_id, session_id))
 
-    async def update_session_title(_conn, *, tenant_id, session_id, title):
-        writes.append(("rename", tenant_id, session_id, title))
+    async def update_session_title(_conn, *, tenant_id, session_id, title, title_source):
+        writes.append(("rename", tenant_id, session_id, title, title_source))
         record = records[(tenant_id, session_id)]
         record["title"] = title
+        record["title_source"] = title_source
         return record
 
     async def mark_session_deleted(_conn, *, tenant_id, session_id):
@@ -124,10 +125,10 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
 
     renamed = await session_actions.rename_session(object(), principal=owner, session_id="ses-owner", title=" Renamed ")
     assert renamed["title"] == "Renamed"
-    assert writes == [("rename", "default", "ses-owner", "Renamed")]
+    assert writes == [("rename", "default", "ses-owner", "Renamed", "user")]
 
     await session_actions.rename_session(object(), principal=admin, session_id="ses-other", title="Admin rename")
-    assert writes[-1] == ("rename", "default", "ses-other", "Admin rename")
+    assert writes[-1] == ("rename", "default", "ses-other", "Admin rename", "user")
 
     with pytest.raises(session_actions.SessionActionValidationError):
         await session_actions.rename_session(object(), principal=owner, session_id="ses-owner", title="   ")
@@ -165,6 +166,7 @@ async def test_session_action_initializes_first_task_title_once_without_overwrit
         "user_id": "user-a",
         "agent_id": "agent-rca",
         "title": "RCA Expert",
+        "title_source": "initial",
         "status": "active",
     }
     writes = []
@@ -172,9 +174,18 @@ async def test_session_action_initializes_first_task_title_once_without_overwrit
     async def get_session_for_action(_conn, *, tenant_id, session_id):
         return record if (tenant_id, session_id) == ("default", "ses-owner") else None
 
-    async def update_session_title(_conn, *, tenant_id, session_id, title):
-        writes.append((tenant_id, session_id, title))
+    async def update_session_title(
+        _conn,
+        *,
+        tenant_id,
+        session_id,
+        title,
+        title_source,
+        expected_title_source=None,
+    ):
+        writes.append((tenant_id, session_id, title, title_source, expected_title_source))
         record["title"] = title
+        record["title_source"] = title_source
         return record
 
     monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
@@ -186,30 +197,28 @@ async def test_session_action_initializes_first_task_title_once_without_overwrit
         principal=owner,
         session_id="ses-owner",
         title="Investigate batch variance",
-        initial_titles={"RCA Expert"},
     )
     assert initialized["title"] == "Investigate batch variance"
-    assert writes == [("default", "ses-owner", "Investigate batch variance")]
+    assert writes == [("default", "ses-owner", "Investigate batch variance", "generated", "initial")]
 
     replay = await session_actions.initialize_session_title(
         object(),
         principal=owner,
         session_id="ses-owner",
         title="A later task must not replace the first title",
-        initial_titles={"RCA Expert"},
     )
     assert replay["title"] == "Investigate batch variance"
     assert len(writes) == 1
 
-    record["title"] = "User renamed this task"
+    record["title"] = "RCA Expert"
+    record["title_source"] = "user"
     renamed = await session_actions.initialize_session_title(
         object(),
         principal=owner,
         session_id="ses-owner",
         title="Do not overwrite a rename",
-        initial_titles={"RCA Expert"},
     )
-    assert renamed["title"] == "User renamed this task"
+    assert renamed["title"] == "RCA Expert"
     assert len(writes) == 1
 
 
@@ -253,7 +262,6 @@ async def test_generate_title_route_persists_only_authorized_initial_title(monke
         "principal": principal,
         "session_id": "ses-owner",
         "title": "Investigate batch variance",
-        "initial_titles": {"RCA Expert"},
     }
 
 
@@ -312,7 +320,7 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
     result = await session_actions.fork_session_message(object(), principal=owner, session_id="ses-source", message_id="msg-1")
     assert result["source_session_id"] == "ses-source"
     assert result["session"]["id"] == "ses-fork"
-    assert created == [{"tenant_id": "default", "workspace_id": "workspace-a", "user_id": "user-a", "agent_id": "general-agent", "title": "Source (fork)"}]
+    assert created == [{"tenant_id": "default", "workspace_id": "workspace-a", "user_id": "user-a", "agent_id": "general-agent", "title": "Source (fork)", "title_source": "user"}]
     assert copied == [{"tenant_id": "default", "session_id": "ses-fork", "run_id": None, "role": "user", "content": "one", "metadata_json": {}}]
     assert ensured_users == [("default", "user-a", "A")]
 

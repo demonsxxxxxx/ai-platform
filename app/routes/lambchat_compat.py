@@ -1451,7 +1451,6 @@ async def generate_title(
                 principal=principal,
                 session_id=session_id,
                 title=title,
-                initial_titles={str(projection.get("agent_profile_name") or "")},
             )
         except session_actions.SessionActionValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
