@@ -1,9 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
 
 import pytest
 
+from app import db
 from app import schema_migrations
 
 
@@ -188,8 +190,22 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
     assert state.schema_execute_count == 0
 
 
+@pytest.mark.asyncio
+async def test_apply_schema_runs_only_the_one_shot_schema_migration(monkeypatch):
+    calls = []
+
+    async def apply_core_schema():
+        calls.append("core_schema")
+
+    monkeypatch.setattr(schema_migrations, "apply_migrations", apply_core_schema)
+
+    await db.apply_schema()
+
+    assert calls == ["core_schema"]
+
+
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.17.3"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.19.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -202,6 +218,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "audit_logs",
         "sandbox_leases",
+        "mcp_servers",
+        "mcp_server_credentials",
+        "mcp_tools",
     )
     assert (
         "agent_profile_revisions",
@@ -219,6 +238,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "agent_profile_revisions",
         "supported_file_types",
         "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "runs",
+        "mcp_context_id",
+        "text",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "mcp_server_credentials",
+        "credential_envelope",
+        "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -253,6 +284,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "sandbox_leases",
         "chk_sandbox_leases_executor_reconciliation_status",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "mcp_servers",
+        "mcp_servers_endpoint_not_persisted",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "mcp_tools",
+        "mcp_tools_endpoint_not_persisted",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
             "agent_profile_revisions",
@@ -273,6 +312,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "mcp_servers",
+            "mcp_servers_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint_redacted = ''::text)",
+        ),
+        (
+            "mcp_tools",
+            "mcp_tools_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint = ''::text)",
+        ),
         (
             "files",
             "chk_files_lifecycle_state",
@@ -331,6 +382,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'retry'::text, 'finalized'::text]))",
         ),
     )
+    source = Path("app/schema_migrations.py").read_text(encoding="utf-8")
+    normalized_source = " ".join(source.split())
+    assert r"^check\\(\\((.*)\\)\\)$" in normalized_source
+    assert r"'check(\\1)'" in normalized_source
     assert (
         "object_deletion_outbox",
         "lease_generation",
@@ -387,7 +442,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "aca73b789463a4ba5878f5dd9b00135db2e0854420370337d9747273380a14bd"
+        "83cd476628e2a7814da471b600804fde3f4c3fc2204426663718bef3b46235d5"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

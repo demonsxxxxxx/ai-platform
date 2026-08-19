@@ -292,7 +292,8 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     /authenticatedRequest\(`\/api\/mcp\/chat-tools\$\{query\}`\)/,
   );
   assert.match(toolsHook, /if \(!rawResponse\.ok\) throw new Error\("chat_mcp_catalog_request_failed"\)/);
-  assert.match(toolsHook, /parseChatMcpCatalogResponse\(await rawResponse\.json\(\)\)/);
+  assert.match(toolsHook, /const payload: unknown = await rawResponse\.json\(\)/);
+  assert.match(toolsHook, /parseChatMcpCatalogResponse\(payload\)/);
   assert.match(toolsHook, /publishChatMcpCatalogFailure\(current, generation\)/);
   assert.match(
     toolsHook,

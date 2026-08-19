@@ -146,11 +146,20 @@ async def test_api_lifespan_closes_redis_then_database_even_if_redis_close_fails
     async def close_database():
         calls.append("database")
 
+    async def require_schema_current():
+        calls.append("schema")
+        return {}
+
     monkeypatch.setattr(main, "close_redis_client", close_redis)
     monkeypatch.setattr(main, "close_pool", close_database)
+    monkeypatch.setattr(
+        main,
+        "require_schema_current",
+        require_schema_current,
+    )
 
     with pytest.raises(redis_client.RedisClientCloseError, match="redis_client_close_failed"):
-        async with main.lifespan(types.SimpleNamespace()):
+        async with main.lifespan(types.SimpleNamespace(state=types.SimpleNamespace())):
             calls.append("app")
 
-    assert calls == ["app", "redis", "database"]
+    assert calls == ["schema", "app", "redis", "database"]

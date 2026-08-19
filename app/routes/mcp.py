@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
@@ -26,13 +26,38 @@ from app.mcp.catalog import (
     McpToolCatalogSyncCommand,
     McpToolCatalogSynchronizer,
 )
+from app.mcp.api import (
+    McpRelayError,
+    McpRuntimeContextError,
+    create_host_mcp_relay,
+    discard_unbound_mcp_runtime_context,
+    get_mcp_relay_auth_failure_limiter,
+    get_mcp_runtime_context_manager,
+    normalize_static_mcp_headers,
+    open_mcp_server_credentials,
+    record_mcp_server_credential,
+    seal_mcp_server_credentials,
+)
 from app.tool_policy import evaluate_tool_policy
+from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
-MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer()
+MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer(
+    max_response_bytes=int(
+        getattr(get_settings(), "mcp_relay_max_response_bytes", 1024 * 1024)
+    )
+)
+MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
+MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
+HostMcpRelay = create_host_mcp_relay
+
+
+def _mcp_runtime_http_error(exc: McpRuntimeContextError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.code)
 
 
 class McpRoleQuota(BaseModel):
@@ -71,6 +96,11 @@ class McpServerLifecycleRequest(BaseModel):
         if value not in {"sse", "streamable_http", "sandbox"}:
             raise ValueError("mcp_transport unsupported")
         return value
+
+    @field_validator("headers")
+    @classmethod
+    def validate_static_headers(cls, value: dict[str, str]):
+        return normalize_static_mcp_headers(value)
 
     @field_validator("allowed_roles")
     @classmethod
@@ -139,16 +169,14 @@ def _catalog_change_event(catalog_sync: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _request_uses_credentials(request: McpServerLifecycleRequest) -> bool:
-    return bool(request.headers or request.env_keys or request.command)
-
-
 async def _synchronize_catalog(
     *,
     principal: AuthPrincipal,
     row: dict[str, Any],
     endpoint: str | None,
     credentialed: bool,
+    static_headers: dict[str, str] | None = None,
+    jwt_authorization: str | None = None,
 ) -> dict[str, Any]:
     result = await MCP_TOOL_CATALOG_SYNCHRONIZER.synchronize(
         McpToolCatalogSyncCommand(
@@ -159,6 +187,8 @@ async def _synchronize_catalog(
             endpoint=endpoint,
             credentialed=credentialed,
             actor_id=principal.user_id,
+            static_headers=dict(static_headers or {}),
+            jwt_authorization=jwt_authorization or "",
         )
     )
     return result.public_payload()
@@ -191,6 +221,11 @@ def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
     try:
         return model_type.model_validate(payload or {})
     except ValidationError as exc:
+        for error in exc.errors(include_input=False):
+            message = str(error.get("msg") or "")
+            for code in ("mcp_header_conflict", "mcp_header_duplicate", "mcp_header_invalid"):
+                if code in message:
+                    raise HTTPException(status_code=400, detail=code) from exc
         safe_errors = []
         for error in exc.errors(include_input=False):
             safe_loc = []
@@ -209,25 +244,8 @@ def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
         raise HTTPException(status_code=422, detail=safe_errors) from exc
 
 
-def _redacted_endpoint(raw_url: str | None) -> str:
-    if not raw_url:
-        return ""
-    parsed = urlsplit(raw_url)
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    hostname = parsed.hostname or ""
-    if not hostname:
-        return ""
-    netloc = hostname
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
-
-
 def _credential_metadata(request: McpServerLifecycleRequest) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    if request.headers:
-        metadata["header_names"] = sorted(str(key) for key in request.headers)
     if request.env_keys:
         metadata["env_keys"] = sorted(request.env_keys)
     if request.command:
@@ -553,11 +571,22 @@ async def _write_server(
     name: str,
     is_system: bool,
     action: str,
+    jwt_authorization: str | None,
 ) -> dict[str, Any]:
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
-    endpoint = _redacted_endpoint(request.url)
+    credential_envelope = ""
+    if request.url or request.headers:
+        try:
+            credential_envelope = seal_mcp_server_credentials(
+                tenant_id=principal.tenant_id,
+                server_id=name,
+                endpoint=request.url,
+                static_headers=request.headers,
+            )
+        except McpRuntimeContextError as exc:
+            raise _mcp_runtime_http_error(exc) from exc
     try:
         async with transaction() as conn:
             await repositories.ensure_user(
@@ -579,7 +608,7 @@ async def _write_server(
                 transport=request.transport,
                 enabled=request.enabled,
                 is_system=is_system,
-                endpoint_redacted=endpoint,
+                endpoint_redacted="",
                 allowed_roles=request.allowed_roles,
                 role_quotas=_role_quotas_payload(request.role_quotas),
                 department_ids=request.department_ids,
@@ -613,12 +642,13 @@ async def _write_server(
                 ),
                 updated_by=principal.user_id,
             )
-            await repositories.record_mcp_server_credential(
+            await record_mcp_server_credential(
                 conn,
                 tenant_id=principal.tenant_id,
                 server_name=name,
                 credential_fingerprint=fingerprint,
                 metadata=metadata,
+                credential_envelope=credential_envelope,
                 updated_by=principal.user_id,
             )
             if not request.enabled:
@@ -659,7 +689,9 @@ async def _write_server(
             principal=principal,
             row=row,
             endpoint=request.url,
-            credentialed=_request_uses_credentials(request),
+            credentialed=bool(request.env_keys or request.command),
+            static_headers=request.headers,
+            jwt_authorization=jwt_authorization,
         )
     else:
         server["catalog_sync"] = _catalog_sync_payload(row)
@@ -732,11 +764,105 @@ async def list_chat_mcp_tools(
     return response
 
 
+@router.post("/mcp/runtime-contexts")
+@router.post("/ai/mcp/runtime-contexts")
+async def create_mcp_runtime_context(
+    response: Response,
+    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Create one opaque MCP-only context from the dedicated JWT header."""
+
+    try:
+        result = await MCP_RUNTIME_CONTEXT_MANAGER.create_context(
+            principal=principal,
+            bearer_jwt=jwt_authorization or "",
+        )
+    except McpRuntimeContextError as exc:
+        raise _mcp_runtime_http_error(exc) from exc
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return result
+
+
+@router.delete("/mcp/runtime-contexts/{context_id}", status_code=204)
+@router.delete("/ai/mcp/runtime-contexts/{context_id}", status_code=204)
+async def discard_mcp_runtime_context(
+    context_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    """Best-effort discard without revealing context existence or ownership."""
+
+    await discard_unbound_mcp_runtime_context(context_id, principal)
+    return Response(status_code=204)
+
+
+@router.post("/mcp/relay/{server_id}", response_model=None)
+@router.post("/ai/mcp/relay/{server_id}", response_model=None)
+async def relay_mcp_jsonrpc(
+    server_id: str,
+    request: Request,
+    response: Response,
+    payload: dict[str, Any] = Body(...),
+    capability: str | None = Header(default=None, alias="X-MCP-Broker-Capability"),
+) -> dict[str, Any] | Response:
+    """Relay sandbox JSON-RPC to one capability-bound registered MCP."""
+
+    source_fingerprint = hashlib.sha256(
+        str(request.client.host if request.client is not None else "unknown").encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    capability_fingerprint = hashlib.sha256((capability or "").encode("utf-8")).hexdigest()
+    try:
+        await MCP_RELAY_AUTH_FAILURE_LIMITER.ensure_allowed(
+            source_fingerprint=source_fingerprint,
+            capability_fingerprint=capability_fingerprint,
+        )
+        relay = HostMcpRelay(context_manager=MCP_RUNTIME_CONTEXT_MANAGER)
+        result = await relay.forward(
+            capability_token=capability or "",
+            server_id=server_id,
+            payload=payload,
+            incoming_headers=request.headers,
+            response_headers=response.headers,
+        )
+    except McpRuntimeContextError as exc:
+        if exc.status_code in {401, 403}:
+            try:
+                failure_counts = await MCP_RELAY_AUTH_FAILURE_LIMITER.record_failure(
+                    source_fingerprint=source_fingerprint,
+                    capability_fingerprint=capability_fingerprint,
+                )
+            except McpRuntimeContextError as limiter_exc:
+                raise _mcp_runtime_http_error(limiter_exc) from limiter_exc
+            logger.warning(
+                "mcp_relay_auth_failure",
+                extra={
+                    "mcp_source_sha256": source_fingerprint,
+                    "mcp_capability_sha256": capability_fingerprint,
+                    "mcp_error_code": exc.code,
+                    "mcp_source_failure_count": failure_counts.source,
+                    "mcp_capability_failure_count": failure_counts.capability,
+                },
+            )
+        raise _mcp_runtime_http_error(exc) from exc
+    response.headers["Cache-Control"] = "no-store"
+    if result is None:
+        headers = {"Cache-Control": "no-store"}
+        session_id = response.headers.get("Mcp-Session-Id")
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+        return Response(status_code=204, headers=headers)
+    return result
+
+
 @router.post("/mcp/")
 @router.post("/mcp")
 async def create_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
+    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Create a tenant-scoped MCP server registry entry without exposing credentials."""
 
@@ -750,6 +876,7 @@ async def create_mcp_server(
         name=request.name,
         is_system=False,
         action="mcp.server.created",
+        jwt_authorization=jwt_authorization,
     )
 
 
@@ -804,6 +931,7 @@ async def update_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
+    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Update a tenant-scoped MCP server registry entry without exposing credentials."""
 
@@ -816,6 +944,7 @@ async def update_mcp_server(
         name=safe_name,
         is_system=False,
         action="mcp.server.updated",
+        jwt_authorization=jwt_authorization,
     )
 
 
@@ -929,6 +1058,7 @@ async def synchronize_mcp_server_catalog(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
+    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Run one explicit, generation-fenced discovery without retaining the request endpoint in public state."""
 
@@ -936,7 +1066,6 @@ async def synchronize_mcp_server_catalog(
     safe_name = _safe_name(name)
     request = _request_model(McpCatalogSyncRequest, payload)
     raw_url = str(request.url)  # type: ignore[attr-defined]
-    fingerprint = hashlib.sha256(raw_url.encode("utf-8")).hexdigest()
     async with transaction() as conn:
         row = await mcp_repository.get_mcp_server_catalog_sync_snapshot(
             conn,
@@ -945,8 +1074,23 @@ async def synchronize_mcp_server_catalog(
         )
     if row is None:
         raise HTTPException(status_code=404, detail="mcp_server_not_found")
-    if str(row.get("credential_fingerprint") or "") != fingerprint:
-        raise HTTPException(status_code=409, detail="mcp_catalog_endpoint_mismatch")
+    credential_envelope = str(row.get("credential_envelope") or "")
+    static_headers: dict[str, str] = {}
+    if credential_envelope:
+        try:
+            registered_url, static_headers = open_mcp_server_credentials(
+                tenant_id=principal.tenant_id,
+                server_id=safe_name,
+                envelope=credential_envelope,
+            )
+        except McpRelayError as exc:
+            raise _mcp_runtime_http_error(exc) from exc
+        if registered_url != raw_url:
+            raise HTTPException(status_code=409, detail="mcp_catalog_endpoint_mismatch")
+    else:
+        fingerprint = hashlib.sha256(raw_url.encode("utf-8")).hexdigest()
+        if str(row.get("credential_fingerprint") or "") != fingerprint:
+            raise HTTPException(status_code=409, detail="mcp_catalog_endpoint_mismatch")
     if str(row.get("status") or "") != "active":
         catalog_sync = _catalog_sync_payload(row)
         return {
@@ -956,8 +1100,7 @@ async def synchronize_mcp_server_catalog(
         }
     credential_metadata = row.get("credential_metadata_json")
     credentialed = isinstance(credential_metadata, dict) and bool(
-        credential_metadata.get("header_names")
-        or credential_metadata.get("env_keys")
+        credential_metadata.get("env_keys")
         or credential_metadata.get("command_configured")
     )
     catalog_sync = await _synchronize_catalog(
@@ -965,6 +1108,8 @@ async def synchronize_mcp_server_catalog(
         row=row,
         endpoint=raw_url,
         credentialed=credentialed,
+        static_headers=static_headers,
+        jwt_authorization=jwt_authorization,
     )
     return {
         "server_name": safe_name,
@@ -1049,6 +1194,7 @@ async def toggle_mcp_tool(
 async def create_admin_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
+    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Create a platform-admin managed MCP server registry entry."""
 
@@ -1062,6 +1208,7 @@ async def create_admin_mcp_server(
         name=request.name,
         is_system=True,
         action="admin.mcp.server.created",
+        jwt_authorization=jwt_authorization,
     )
 
 
@@ -1070,6 +1217,7 @@ async def update_admin_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
+    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Update a platform-admin managed MCP server registry entry."""
 
@@ -1082,6 +1230,7 @@ async def update_admin_mcp_server(
         name=safe_name,
         is_system=True,
         action="admin.mcp.server.updated",
+        jwt_authorization=jwt_authorization,
     )
 
 

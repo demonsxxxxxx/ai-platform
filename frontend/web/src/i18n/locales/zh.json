@@ -1191,6 +1191,8 @@
       "urlPlaceholder": "https://example.com/mcp",
       "validation": {
         "commandRequired": "沙箱传输需要填写命令",
+        "duplicateHeader": "请求头名称不能重复",
+        "jwtHeaderConflict": "JWT-Authorization 保留用于当前用户的 MCP 令牌",
         "nameRequired": "请输入服务器名称",
         "urlRequired": "HTTP 传输需要 URL"
       },

@@ -4,6 +4,8 @@ import test from "node:test";
 import { ApiRequestError } from "../../services/api/fetch.ts";
 import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation.ts";
 import type { User } from "../../types/auth.ts";
+import { MCP_GATEWAY_JWT_STORAGE_KEY } from "../../utils/mcpGatewayAuth.ts";
+import type { McpAuthHandoffInstaller } from "../../components/auth/McpAuthHandoffLifecycle.tsx";
 
 type Listener = (event: { type: string }) => void;
 
@@ -295,10 +297,16 @@ function authUser(id: string, tenantId: string): User {
 
 async function mountAuthHarness(
   configure: (api: typeof import("../../services/api/auth.ts").authApi) => void,
+  options: {
+    mcpAuthHandoffInstaller?: McpAuthHandoffInstaller;
+  } = {},
 ) {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const { AuthProvider, useAuth } = await import("../useAuth.tsx");
+  const { McpAuthHandoffLifecycle } = await import(
+    "../../components/auth/McpAuthHandoffLifecycle.tsx"
+  );
   const { authApi } = await import("../../services/api/auth.ts");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
@@ -323,7 +331,22 @@ async function mountAuthHarness(
   const container = document.createElement("div");
   const root = createRoot(container as never);
   await React.act(async () => {
-    root.render(React.createElement(AuthProvider, null, React.createElement(Probe)));
+    root.render(
+      React.createElement(
+        AuthProvider,
+        null,
+        options.mcpAuthHandoffInstaller
+          ? React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(McpAuthHandoffLifecycle, {
+                installer: options.mcpAuthHandoffInstaller,
+              }),
+              React.createElement(Probe),
+            )
+          : React.createElement(Probe),
+      ),
+    );
     await Promise.resolve();
   });
 
@@ -623,6 +646,49 @@ test("a newer login hydration owns auth state over deferred initial principal A"
   }
 });
 
+test("same-tab A to B login clears A's MCP gateway JWT", async () => {
+  let currentUserCalls = 0;
+  const handoffInstalls: number[] = [];
+  const handoffCleanups: number[] = [];
+  const mounted = await mountAuthHarness(
+    (api) => {
+      api.getCurrentUser = async () => {
+        currentUserCalls += 1;
+        return currentUserCalls === 1
+          ? authUser("admin-a", "tenant-a")
+          : authUser("admin-b", "tenant-b");
+      };
+      api.login = async () => undefined;
+    },
+    {
+      mcpAuthHandoffInstaller: () => {
+        const installation = handoffInstalls.length + 1;
+        handoffInstalls.push(installation);
+        return () => handoffCleanups.push(installation);
+      },
+    },
+  );
+  try {
+    assert.equal(mounted.auth.user?.id, "admin-a");
+    const installsBeforeLogin = handoffInstalls.length;
+    const cleanupsBeforeLogin = handoffCleanups.length;
+    assert.ok(installsBeforeLogin >= 1);
+    storage.set(MCP_GATEWAY_JWT_STORAGE_KEY, "jwt-for-admin-a");
+
+    await mounted.React.act(async () => {
+      await mounted.auth.login({ username: "admin-b", password: "safe-test" });
+    });
+
+    assert.equal(mounted.auth.user?.id, "admin-b");
+    assert.equal(storage.has(MCP_GATEWAY_JWT_STORAGE_KEY), false);
+    assert.equal(handoffInstalls.length, installsBeforeLogin + 1);
+    assert.equal(handoffCleanups.length, cleanupsBeforeLogin + 1);
+    assert.equal(handoffCleanups.at(-1), installsBeforeLogin);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
 test("a stale initial 401 cannot log out a newer authenticated principal", async () => {
   const initialA = deferred<User>();
   let currentUserCalls = 0;
@@ -682,6 +748,7 @@ test("cross-tab marker replacement clears principal and caches before hydrating 
   });
   try {
     assert.equal(mounted.auth.user?.id, "admin-a");
+    storage.set(MCP_GATEWAY_JWT_STORAGE_KEY, "jwt-for-admin-a");
     await mounted.React.act(async () => {
       storage.set("ai_platform_session_present", "marker-b");
       windowTarget.dispatchEvent(
@@ -702,6 +769,7 @@ test("cross-tab marker replacement clears principal and caches before hydrating 
     assert.deepEqual(mounted.auth.permissions, []);
     assert.equal(cacheClears, 1);
     assert.equal(storage.get("ai_platform_session_present"), "marker-b");
+    assert.equal(storage.has(MCP_GATEWAY_JWT_STORAGE_KEY), false);
     assert.equal(replacementSignal?.aborted, false);
 
     replacement.resolve(authUser("admin-b", "tenant-b"));

@@ -16,6 +16,7 @@ import type {
 } from "../../types";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
+import { mcpGatewayAuthorizationHeaders } from "../../utils/mcpGatewayAuth";
 
 export const mcpApi = {
   /**
@@ -40,6 +41,7 @@ export const mcpApi = {
   async create(data: MCPServerCreate): Promise<MCPServerResponse> {
     return authFetch<MCPServerResponse>(`${API_BASE}/api/mcp`, {
       method: "POST",
+      headers: mcpGatewayAuthorizationHeaders(),
       body: JSON.stringify(data),
     });
   },
@@ -55,6 +57,7 @@ export const mcpApi = {
       `${API_BASE}/api/mcp/${encodeURIComponent(name)}`,
       {
         method: "PUT",
+        headers: mcpGatewayAuthorizationHeaders(),
         body: JSON.stringify(data),
       },
     );
@@ -71,6 +74,7 @@ export const mcpApi = {
       `${API_BASE}/api/admin/mcp/${encodeURIComponent(name)}`,
       {
         method: "PUT",
+        headers: mcpGatewayAuthorizationHeaders(),
         body: JSON.stringify(data),
       },
     );

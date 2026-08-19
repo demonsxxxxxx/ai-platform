@@ -243,7 +243,16 @@ def install_mcp_route_fakes(
 
     class FakeCatalogSynchronizer:
         async def synchronize(self, command):
-            calls.append(("catalog_sync", {"server_name": command.server_name, "generation": command.observed_generation}))
+            calls.append(
+                (
+                    "catalog_sync",
+                    {
+                        "server_name": command.server_name,
+                        "generation": command.observed_generation,
+                        "jwt_authorization": command.jwt_authorization,
+                    },
+                )
+            )
 
             class Result:
                 def public_payload(self):
@@ -287,6 +296,11 @@ def install_mcp_route_fakes(
         return "aud-test"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(
+        mcp,
+        "seal_mcp_server_credentials",
+        lambda **_kwargs: "sealed-mcp-credential-envelope",
+    )
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
     monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list)
     monkeypatch.setattr(
@@ -332,7 +346,7 @@ def install_mcp_route_fakes(
         fake_mark_catalog_unavailable,
         raising=False,
     )
-    monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
+    monkeypatch.setattr(mcp, "record_mcp_server_credential", fake_record_credential)
     monkeypatch.setattr(
         mcp.mcp_repository,
         "get_mcp_server_catalog_sync_snapshot",
@@ -410,7 +424,10 @@ def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_re
     response = client.post(
         "/api/mcp/ragflow/catalog/sync",
         json={"url": "https://mcp.example/tools"},
-        headers=headers(roles="admin"),
+        headers={
+            **headers(roles="admin"),
+            "JWT-Authorization": "Bearer current-user.jwt",
+        },
     )
 
     assert response.status_code == 200
@@ -743,8 +760,74 @@ def test_authorized_mcp_registration_entries_require_active_parent_server():
     ) == []
 
 
-def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
+@pytest.mark.parametrize(
+    "header_name",
+    ["JWT-Authorization", "jwt-authorization", " Jwt-Authorization "],
+)
+def test_mcp_lifecycle_rejects_dynamic_jwt_header_in_static_configuration(
+    monkeypatch, header_name
+):
     install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/mcp/",
+        json={
+            "name": "conflicting",
+            "transport": "streamable_http",
+            "url": "https://mcp.example/tools",
+            "headers": {header_name: "static-value"},
+        },
+        headers=headers(roles="admin"),
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mcp_header_conflict"
+
+
+def test_mcp_lifecycle_rejects_case_insensitive_duplicate_static_headers(monkeypatch):
+    install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/mcp/",
+        json={
+            "name": "duplicate",
+            "transport": "streamable_http",
+            "url": "https://mcp.example/tools",
+            "headers": {"X-Api-Key": "one", "x-api-key": "two"},
+        },
+        headers=headers(roles="admin"),
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mcp_header_duplicate"
+
+
+def test_command_mcp_without_connection_material_skips_credential_sealing(monkeypatch):
+    from app.routes import mcp
+
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+
+    def fail_if_sealed(**_kwargs):
+        pytest.fail("command-only MCP must not require credential encryption")
+
+    monkeypatch.setattr(mcp, "seal_mcp_server_credentials", fail_if_sealed)
+    response = TestClient(create_app()).post(
+        "/api/mcp/",
+        json={
+            "name": "command-only",
+            "transport": "sandbox",
+            "command": "run-command-mcp",
+        },
+        headers=headers(roles="admin"),
+    )
+
+    assert response.status_code == 200
+    credential_write = next(
+        payload
+        for name, payload in calls
+        if name == "record_credential" and payload["server_name"] == "command-only"
+    )
+    assert credential_write["credential_envelope"] == ""
+
+
+def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
     create_denied = client.post(
@@ -767,7 +850,10 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
             "allowed_roles": [" QA-Operator ", "qa-operator"],
             "department_ids": [" QA ", "qa"],
         },
-        headers=headers(roles="admin"),
+        headers={
+            **headers(roles="admin"),
+            "JWT-Authorization": "Bearer current-user.jwt",
+        },
     )
     assert create_response.status_code == 200
     created = create_response.json()
@@ -781,6 +867,24 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
     assert "plain-secret" not in str(created)
     assert "Bearer" not in str(created)
     assert "https://mcp.example" not in str(created)
+    registry_write = next(
+        payload
+        for name, payload in calls
+        if name == "upsert_server" and payload["name"] == "custom"
+    )
+    credential_write = next(
+        payload
+        for name, payload in calls
+        if name == "record_credential" and payload["server_name"] == "custom"
+    )
+    assert registry_write["endpoint_redacted"] == ""
+    assert credential_write["credential_envelope"] == "sealed-mcp-credential-envelope"
+    catalog_sync = next(
+        payload
+        for name, payload in calls
+        if name == "catalog_sync" and payload["server_name"] == "custom"
+    )
+    assert catalog_sync["jwt_authorization"] == "Bearer current-user.jwt"
 
     toggle_response = client.patch("/api/mcp/ragflow/toggle", headers=headers(roles="admin"))
     assert toggle_response.status_code == 200
@@ -960,6 +1064,42 @@ def test_mcp_lifecycle_rejects_blank_roles_before_repository_writes(monkeypatch,
     )
 
 
+def test_runtime_context_discard_requires_principal_and_is_opaque(monkeypatch):
+    from app.routes import mcp as mcp_routes
+
+    install_mcp_route_fakes(monkeypatch)
+    calls = []
+
+    async def discard(context_id, principal):
+        calls.append((context_id, principal.user_id, principal.tenant_id))
+
+    monkeypatch.setattr(
+        mcp_routes,
+        "discard_unbound_mcp_runtime_context",
+        discard,
+    )
+    client = TestClient(create_app())
+
+    unauthorized = client.delete("/api/ai/mcp/runtime-contexts/mcpctx-owned")
+    owned = client.delete(
+        "/api/ai/mcp/runtime-contexts/mcpctx-owned",
+        headers=headers(),
+    )
+    missing = client.delete(
+        "/api/ai/mcp/runtime-contexts/mcpctx-missing",
+        headers=headers(),
+    )
+
+    assert unauthorized.status_code == 401
+    assert owned.status_code == 204
+    assert missing.status_code == 204
+    assert owned.content == missing.content == b""
+    assert calls == [
+        ("mcpctx-owned", "ordinary", "default"),
+        ("mcpctx-missing", "ordinary", "default"),
+    ]
+
+
 def test_mcp_lifecycle_validation_errors_do_not_echo_secret_inputs(monkeypatch):
     install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
@@ -1002,7 +1142,7 @@ def test_mcp_lifecycle_redacts_url_userinfo_before_persistence(monkeypatch):
     assert "raw-secret" not in serialized
     assert "raw-query-secret" not in serialized
     upsert_call = next(payload for name, payload in calls if name == "upsert_server")
-    assert upsert_call["endpoint_redacted"] == "https://mcp.example:8443/sse"
+    assert upsert_call["endpoint_redacted"] == ""
     assert "raw-secret" not in str(upsert_call)
     assert "raw-query-secret" not in str(upsert_call)
 
@@ -1070,7 +1210,7 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
     serialized_calls = str(lifecycle_calls)
     assert "raw-secret" not in serialized_calls
     assert "run --token" not in serialized_calls
-    assert "X-Api-Key" in serialized_calls
+    assert "X-Api-Key" not in serialized_calls
 
 
 def test_mcp_directory_filters_servers_by_principal_department(monkeypatch):

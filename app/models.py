@@ -1,20 +1,16 @@
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    PrivateAttr,
-    field_validator,
+    AliasChoices, BaseModel,
+    ConfigDict, Field,
+    PrivateAttr, field_validator,
     model_validator,
 )
 
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
-    RUN_EXECUTION_KIND_HARNESS_CHAT,
-    RUN_EXECUTION_KIND_SKILL,
+    RUN_EXECUTION_KIND_HARNESS_CHAT, RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
@@ -24,8 +20,7 @@ from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.skills.release_policy import (
-    validate_release_decision_lock,
-    validate_release_decision_payload,
+    validate_release_decision_lock, validate_release_decision_payload,
 )
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
@@ -34,6 +29,9 @@ from app.validation import (
     assert_safe_id,
     assert_safe_principal_user_id,
 )
+
+
+McpContextId = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")]
 
 
 def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
@@ -387,6 +385,7 @@ class AgentAppRunRequest(BaseModel):
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
+    mcp_context_id: McpContextId | None = None
 
     @field_validator("file_ids")
     @classmethod
@@ -395,7 +394,6 @@ class AgentAppRunRequest(BaseModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("file_ids contains duplicates")
         return normalized
-
 
 class AgentProfilePublicProjection(BaseModel):
     """Ordinary-user market projection without executable configuration."""
@@ -568,6 +566,7 @@ class CreateRunRequest(BaseModel):
     title: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
     file_ids: list[str] = Field(default_factory=list, max_length=32)
+    mcp_context_id: McpContextId | None = None
 
     @field_validator("tenant_id", "workspace_id", "agent_id")
     @classmethod
@@ -1260,6 +1259,7 @@ class ChatStreamRequest(BaseModel):
     enabled_skills: list[str] | None = None
     disabled_mcp_tools: list[str] = Field(default_factory=list)
     selected_mcp_tool_ids: list[str] | None = None
+    mcp_context_id: McpContextId | None = None
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
     submission_id: UUID | None = None

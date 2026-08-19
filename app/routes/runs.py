@@ -3,7 +3,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import UUID4
+from pydantic import UUID4, BaseModel, ConfigDict
 
 from app import repositories
 from app.agent_profiles import reauthorize_pinned_run_for_replay
@@ -16,6 +16,7 @@ from app.db import transaction
 from app.models import (
     CreateRunRequest,
     CreateRunResponse,
+    McpContextId,
     QueueRunPayload,
     RunControlMutationResponse,
     RunControlOperationResponse,
@@ -54,6 +55,15 @@ from app.queue import (
     remove_queued_run,
 )
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.mcp.api import (
+    McpRuntimeContextError,
+    bind_run_mcp_context,
+    get_mcp_runtime_context_manager,
+    invalidate_committed_terminal_run_mcp_context,
+    invalidate_mcp_runtime_context,
+    preflight_mcp_admission,
+    queue_input_with_mcp_context,
+)
 from app.run_projection import (
     artifact_card,
     executor_result_schema_version,
@@ -98,6 +108,13 @@ from app.skills.release_policy import release_decision_payload_for_locked_versio
 from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
+
+class RunControlMutationRequest(BaseModel):
+    """Optional fresh MCP context supplied only when replay requires it."""
+
+    model_config = ConfigDict(extra="forbid")
+    mcp_context_id: McpContextId | None = None
+
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
@@ -107,6 +124,47 @@ _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS = {"agent_or_skill_not_found", "skill_in
 def _raise_if_capability_revoked(exc: Exception) -> None:
     if str(exc) in _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS:
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+
+
+def _raise_if_mcp_retry_requires_fresh_context(exc: Exception) -> None:
+    if str(exc) == "mcp_context_required_for_retry":
+        raise HTTPException(status_code=409, detail="mcp_context_required_for_retry") from exc
+
+
+def _run_requires_fresh_mcp_context(run: object) -> bool:
+    if not isinstance(run, dict):
+        return False
+    input_json = (
+        run.get("input_json")
+        if isinstance(run.get("input_json"), dict)
+        else run
+    )
+    execution_input = (
+        input_json.get("input")
+        if isinstance(input_json.get("input"), dict)
+        else input_json
+    )
+    return bool(
+        run.get("_requires_fresh_mcp_context")
+        or run.get("mcp_context_id")
+        or input_json.get("mcp_context_id")
+        or repositories.extract_run_mcp_tool_ids(execution_input)
+    )
+
+
+async def _source_run_requires_fresh_mcp_context(
+    conn,
+    *,
+    principal: AuthPrincipal,
+    run_id: str,
+) -> bool:
+    source = await repositories.get_authorized_run(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        run_id=run_id,
+    )
+    return _run_requires_fresh_mcp_context(source)
 
 
 async def _audit_capability_denial(
@@ -765,6 +823,11 @@ async def prepare_copied_run_for_queue(
             "context_snapshot": context_ref,
         }
     )
+    if isinstance(copied.get("mcp_context_id"), str):
+        queue_snapshot["input"] = queue_input_with_mcp_context(
+            queue_snapshot["input"],
+            copied["mcp_context_id"],
+        )
     queue_payload = _validate_queue_payload_for_enqueue(
         {
             "tenant_id": effective_principal.tenant_id,
@@ -779,6 +842,7 @@ async def prepare_copied_run_for_queue(
         }
     )
     validated_snapshot = repositories.copied_run_execution_snapshot(queue_payload)
+    validated_snapshot["input"].pop("mcp_context_id", None)
     await repositories.update_run_input_execution_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -828,6 +892,7 @@ async def create_run(
         if resolved_skill_id is None
         else RUN_EXECUTION_KIND_SKILL
     )
+    bound_mcp_context_id: str | None = None
     try:
         run_input = _strip_server_owned_control_metadata(
             request.input,
@@ -947,6 +1012,12 @@ async def create_run(
             skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
+            mcp_tool_ids = (
+                repositories.run_mcp_tool_ids_for_skill(skill, run_input)
+                if skill is not None
+                else repositories.extract_run_mcp_tool_ids(run_input)
+            )
+            effective_mcp_context_id = request.mcp_context_id if mcp_tool_ids else None
             base_queue_payload = {
                 "tenant_id": tenant_id,
                 "workspace_id": request.workspace_id,
@@ -957,7 +1028,10 @@ async def create_run(
                 "execution_kind": execution_kind,
                 "skill_id": resolved_skill_id,
                 "file_ids": primary_file_ids,
-                "input": run_input,
+                "input": queue_input_with_mcp_context(
+                    run_input,
+                    effective_mcp_context_id,
+                ),
                 "executor_type": executor_type,
                 "skill_version": skill_version,
                 "release_decision": release_decision_payload,
@@ -969,6 +1043,15 @@ async def create_run(
                 ),
             }
             queue_payload = _validate_queue_payload_for_enqueue(base_queue_payload)
+            await preflight_mcp_admission(
+                context_id=effective_mcp_context_id,
+                principal=principal,
+                run_id=run_id,
+                selected_tool_names=tuple(mcp_tool_ids),
+                mcp_required=bool(mcp_tool_ids),
+                context_manager=get_mcp_runtime_context_manager(),
+            )
+            bound_mcp_context_id = effective_mcp_context_id
             await repositories.ensure_workspace_belongs_to_tenant(
                 conn,
                 tenant_id=tenant_id,
@@ -1016,6 +1099,7 @@ async def create_run(
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                     "skill_manifests": queue_payload["skill_manifests"],
+                    "mcp_context_id": effective_mcp_context_id,
                     "schema_version": queue_payload["schema_version"],
                 },
                 principal_roles=principal.roles,
@@ -1026,6 +1110,13 @@ async def create_run(
                 authority_checked_at=principal.authority_checked_at or None,
                 run_id=run_id,
             )
+            if effective_mcp_context_id:
+                await bind_run_mcp_context(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    mcp_context_id=effective_mcp_context_id,
+                )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
                     conn,
@@ -1101,18 +1192,29 @@ async def create_run(
                     ),
                 )
     except repositories.RepositoryAuthorizationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except McpRuntimeContextError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     except SkillVersionMaterializationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
+        raise
     try:
         await enqueue_run(queue_payload)
     except Exception as exc:
         await _compensate_enqueue_failure(principal=principal, run_id=run_id)
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
 
@@ -1120,9 +1222,11 @@ async def create_run(
 @router.post("/runs/{run_id}/copy", response_model=RunControlResponse)
 async def copy_run(
     run_id: str,
+    request: RunControlMutationRequest | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     _validate_principal_user_id_for_route(principal)
+    bound_mcp_context_id: str | None = None
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
@@ -1138,6 +1242,45 @@ async def copy_run(
                 run_id=run_id,
             )
             if copied is not None:
+                copied_input = (
+                    copied.get("input")
+                    if isinstance(copied.get("input"), dict)
+                    else {}
+                )
+                source_mcp_tool_ids = repositories.extract_run_mcp_tool_ids(
+                    copied_input
+                )
+                source_requires_mcp = _run_requires_fresh_mcp_context(copied)
+                if not source_requires_mcp:
+                    source_requires_mcp = await _source_run_requires_fresh_mcp_context(
+                        conn,
+                        principal=principal,
+                        run_id=run_id,
+                    )
+                mcp_context_id = (
+                    request.mcp_context_id if request is not None else None
+                )
+                if source_requires_mcp and not mcp_context_id:
+                    raise RepositoryConflictError("mcp_context_required_for_retry")
+                if source_requires_mcp:
+                    child_run_id = str(copied["run_id"])
+                    await preflight_mcp_admission(
+                        context_id=mcp_context_id,
+                        principal=principal,
+                        run_id=child_run_id,
+                        selected_tool_names=tuple(source_mcp_tool_ids),
+                        mcp_required=True,
+                        context_manager=get_mcp_runtime_context_manager(),
+                    )
+                    bound_mcp_context_id = mcp_context_id
+                    assert mcp_context_id is not None
+                    await bind_run_mcp_context(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=child_run_id,
+                        mcp_context_id=mcp_context_id,
+                    )
+                    copied["mcp_context_id"] = mcp_context_id
                 queue_payload = await prepare_copied_run_for_queue(
                     conn,
                     copied=copied,
@@ -1146,19 +1289,28 @@ async def copy_run(
                     authorized_source_run_id=run_id,
                 )
     except HTTPException as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
     except repositories.RepositoryAuthorizationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         await _audit_capability_denial(principal, exc, source="copy_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
+        _raise_if_mcp_retry_requires_fresh_context(exc)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
+        raise
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     try:
@@ -1170,21 +1322,28 @@ async def copy_run(
             )
             queue_position = await enqueue_run(queue_payload)
     except repositories.RepositoryAuthorizationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         await _audit_capability_denial(principal, exc, source="copy_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
+        _raise_if_mcp_retry_requires_fresh_context(exc)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException as exc:
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
     except Exception as exc:
         await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
+        await invalidate_mcp_runtime_context(bound_mcp_context_id)
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
         run_id=copied["run_id"],
@@ -1283,82 +1442,128 @@ async def _mutate_run_control_child(
     action: Literal["retry", "resume"],
     operation_id: UUID4,
     principal: AuthPrincipal,
+    mcp_context_id: str | None = None,
 ) -> RunControlMutationResponse:
     normalized_operation_id = str(operation_id)
     created = False
     retired_control_rejected = False
     queue_payload: dict[str, Any] | None = None
     copied: dict[str, Any] | None = None
+    bound_context_id: str | None = None
+    transaction_committed = False
     try:
-        async with transaction() as conn:
-            # Global order: operation advisory -> user admission advisory ->
-            # source-run row. The resolver takes the same first lock.
-            await repositories.acquire_run_control_operation_lock(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                source_run_id=run_id,
-                action=action,
-                operation_id=normalized_operation_id,
-            )
-            copied = await repositories.get_run_control_operation(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                source_run_id=run_id,
-                action=action,
-                operation_id=normalized_operation_id,
-            )
-            if copied is not None:
-                retired_control_rejected = contains_persisted_platform_multi_agent_control(
-                    copied.get("input_json")
-                )
-                if retired_control_rejected:
-                    child_run_id = str(copied["run_id"])
-                    await terminalize_retired_platform_multi_agent_run(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        run_id=child_run_id,
-                    )
-            if copied is None:
-                await enforce_user_active_run_limit(
+        try:
+            async with transaction() as conn:
+                # Global order: operation advisory -> user admission advisory ->
+                # source-run row. The resolver takes the same first lock.
+                await repositories.acquire_run_control_operation_lock(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
+                    source_run_id=run_id,
+                    action=action,
+                    operation_id=normalized_operation_id,
                 )
-                await reauthorize_pinned_run_for_replay(
-                    conn,
-                    principal=principal,
-                    run_id=run_id,
-                )
-                mutation = (
-                    repositories.retry_run_as_new_task
-                    if action == "retry"
-                    else repositories.resume_run_as_new_task
-                )
-                copied = await mutation(
+                copied = await repositories.get_run_control_operation(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
-                    run_id=run_id,
+                    source_run_id=run_id,
+                    action=action,
+                    operation_id=normalized_operation_id,
                 )
                 if copied is not None:
-                    queue_payload = await prepare_copied_run_for_queue(
-                        conn,
-                        copied=copied,
-                        principal=principal,
-                        source=f"{action}_run",
-                        authorized_source_run_id=run_id,
+                    retired_control_rejected = contains_persisted_platform_multi_agent_control(
+                        copied.get("input_json")
                     )
-                    await repositories.record_run_control_operation(
+                    if retired_control_rejected:
+                        child_run_id = str(copied["run_id"])
+                        await terminalize_retired_platform_multi_agent_run(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            run_id=child_run_id,
+                        )
+                if copied is None:
+                    await enforce_user_active_run_limit(
                         conn,
                         tenant_id=principal.tenant_id,
-                        source_run_id=run_id,
-                        child_run_id=str(copied["run_id"]),
-                        action=action,
-                        operation_id=normalized_operation_id,
+                        user_id=principal.user_id,
                     )
-                    created = True
+                    await reauthorize_pinned_run_for_replay(
+                        conn,
+                        principal=principal,
+                        run_id=run_id,
+                    )
+                    mutation = (
+                        repositories.retry_run_as_new_task
+                        if action == "retry"
+                        else repositories.resume_run_as_new_task
+                    )
+                    copied = await mutation(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=run_id,
+                    )
+                    if copied is not None:
+                        copied_input = (
+                            copied.get("input")
+                            if isinstance(copied.get("input"), dict)
+                            else {}
+                        )
+                        source_mcp_tool_ids = repositories.extract_run_mcp_tool_ids(
+                            copied_input
+                        )
+                        source_requires_mcp = _run_requires_fresh_mcp_context(copied)
+                        if not source_requires_mcp:
+                            source_requires_mcp = await _source_run_requires_fresh_mcp_context(
+                                conn,
+                                principal=principal,
+                                run_id=run_id,
+                            )
+                        if source_requires_mcp and not mcp_context_id:
+                            raise RepositoryConflictError(
+                                "mcp_context_required_for_retry"
+                            )
+                        if source_requires_mcp:
+                            child_run_id = str(copied["run_id"])
+                            await preflight_mcp_admission(
+                                context_id=mcp_context_id,
+                                principal=principal,
+                                run_id=child_run_id,
+                                selected_tool_names=tuple(source_mcp_tool_ids),
+                                mcp_required=True,
+                                context_manager=get_mcp_runtime_context_manager(),
+                            )
+                            assert mcp_context_id is not None
+                            bound_context_id = mcp_context_id
+                            await bind_run_mcp_context(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                run_id=child_run_id,
+                                mcp_context_id=mcp_context_id,
+                            )
+                            copied["mcp_context_id"] = mcp_context_id
+                        queue_payload = await prepare_copied_run_for_queue(
+                            conn,
+                            copied=copied,
+                            principal=principal,
+                            source=f"{action}_run",
+                            authorized_source_run_id=run_id,
+                        )
+                        await repositories.record_run_control_operation(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            source_run_id=run_id,
+                            child_run_id=str(copied["run_id"]),
+                            action=action,
+                            operation_id=normalized_operation_id,
+                        )
+                        created = True
+            transaction_committed = True
+        finally:
+            if bound_context_id and (not transaction_committed or not created):
+                await invalidate_mcp_runtime_context(bound_context_id)
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
         raise
@@ -1367,10 +1572,13 @@ async def _mutate_run_control_child(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except McpRuntimeContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     except RepositoryNotFoundError as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
+        _raise_if_mcp_retry_requires_fresh_context(exc)
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if retired_control_rejected:
@@ -1424,6 +1632,7 @@ async def _mutate_run_control_child(
 async def retry_run(
     run_id: str,
     operation_id: UUID4 | None = None,
+    request: RunControlMutationRequest | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
     """Queue or resolve one idempotent retry operation."""
@@ -1434,6 +1643,7 @@ async def retry_run(
         action="retry",
         operation_id=operation_id or uuid4(),
         principal=principal,
+        mcp_context_id=request.mcp_context_id if request is not None else None,
     )
 
 
@@ -1441,6 +1651,7 @@ async def retry_run(
 async def resume_run(
     run_id: str,
     operation_id: UUID4 | None = None,
+    request: RunControlMutationRequest | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
     """Queue or resolve one idempotent checkpoint-resume operation."""
@@ -1451,6 +1662,7 @@ async def resume_run(
         action="resume",
         operation_id=operation_id or uuid4(),
         principal=principal,
+        mcp_context_id=request.mcp_context_id if request is not None else None,
     )
 
 
@@ -1637,6 +1849,13 @@ async def cancel_run(
             run_id=run_id,
         )
     if result is not None:
+        if result["status"] in {"succeeded", "failed", "cancelled"}:
+            await invalidate_committed_terminal_run_mcp_context(
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                status=result["status"],
+                transaction_factory=transaction,
+            )
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
             await reconcile_terminalized_permission_run(
@@ -1657,6 +1876,13 @@ async def cancel_run(
                 "cancelled",
             }:
                 result["status"] = progressed_status
+        if result["status"] in {"succeeded", "failed", "cancelled"}:
+            await invalidate_committed_terminal_run_mcp_context(
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                status=result["status"],
+                transaction_factory=transaction,
+            )
         await reconcile_terminalized_permission_run(
             tenant_id=principal.tenant_id,
             run_id=run_id,

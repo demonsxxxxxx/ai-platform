@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import json
+from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
@@ -129,7 +130,7 @@ def stub_run_event_append(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypatch):
+def _stub_run_control_route_dependencies(monkeypatch):
     async def update_auth_snapshot(*_args, **_kwargs):
         return None
 
@@ -173,6 +174,11 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
 
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
+
+    # Autouse fixtures run before each test body, so a test-specific stub can
+    # replace this neutral default when it needs an authorized source row.
+    async def get_authorized_run(*_args, **_kwargs):
+        return None
 
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
@@ -229,6 +235,11 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         record_run_control_operation,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        get_authorized_run,
+        raising=False,
+    )
 
 
 def headers():
@@ -246,6 +257,240 @@ RUN_CONTROL_OPERATION_ID = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
 
 def run_control_url(run_id: str, action: str, operation_id: str = RUN_CONTROL_OPERATION_ID) -> str:
     return f"/api/ai/runs/{run_id}/{action}?operation_id={operation_id}"
+
+
+@pytest.mark.asyncio
+async def test_retry_with_fresh_mcp_context_preflights_and_persists_exact_child_binding(
+    monkeypatch,
+):
+    from app.routes import runs as runs_routes
+
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def preflight(**kwargs):
+        observed["preflight"] = kwargs
+        return object()
+
+    async def retry(_conn, **kwargs):
+        observed["retry"] = kwargs
+        return {
+            "run_id": "run-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {"message": "retry", "mcp_tool_ids": ["inventory-search"]},
+        }
+
+    async def bind(_conn, **kwargs):
+        observed["bind"] = kwargs
+
+    async def prepare(_conn, **kwargs):
+        observed["prepared"] = kwargs["copied"]
+        return {"run_id": kwargs["copied"]["run_id"]}
+
+    async def admit(*_args, **_kwargs):
+        return QueueAdmissionMetadata(
+            queue_position=1,
+            queue_admission_ordinal=1,
+            message_id="queue-message",
+        )
+
+    async def insight(*_args, **_kwargs):
+        return None
+
+    class Manager:
+        async def invalidate_context(self, context_id):
+            observed["invalidated"] = context_id
+
+    manager = Manager()
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "bind_run_mcp_context", bind)
+    monkeypatch.setattr(runs_routes, "get_mcp_runtime_context_manager", lambda: manager)
+    monkeypatch.setattr(runs_routes.repositories, "retry_run_as_new_task", retry)
+    monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr(runs_routes, "_ensure_run_control_queue_admission", admit)
+    monkeypatch.setattr(runs_routes, "queue_insight_for_status", insight)
+
+    result = await runs_routes._mutate_run_control_child(
+        run_id="run-source",
+        action="retry",
+        operation_id=UUID(RUN_CONTROL_OPERATION_ID),
+        principal=AuthPrincipal(
+            tenant_id="default",
+            user_id="user-a",
+            display_name="User A",
+            source="company-login",
+        ),
+        mcp_context_id="mcpctx-fresh",
+    )
+
+    preflight_call = observed["preflight"]
+    retry_call = observed["retry"]
+    assert preflight_call["context_id"] == "mcpctx-fresh"
+    assert preflight_call["run_id"] == result.run_id == "run-child"
+    assert preflight_call["selected_tool_names"] == ("inventory-search",)
+    assert "new_run_id" not in retry_call
+    assert "mcp_context_id" not in retry_call
+    assert observed["bind"] == {
+        "tenant_id": "default",
+        "run_id": "run-child",
+        "mcp_context_id": "mcpctx-fresh",
+    }
+    assert observed["prepared"]["mcp_context_id"] == "mcpctx-fresh"
+    assert "invalidated" not in observed
+
+
+@pytest.mark.asyncio
+async def test_retry_invalidates_fresh_mcp_context_when_binding_rolls_back(monkeypatch):
+    from app.routes import runs as runs_routes
+
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def retry(_conn, **_kwargs):
+        return {
+            "run_id": "run-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {"mcp_tool_ids": ["inventory-search"]},
+        }
+
+    async def preflight(**_kwargs):
+        return object()
+
+    async def fail_bind(*_args, **_kwargs):
+        raise RuntimeError("database binding failed")
+
+    async def invalidate(context_id):
+        observed["invalidated"] = context_id
+
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, "retry_run_as_new_task", retry)
+    monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "bind_run_mcp_context", fail_bind)
+    monkeypatch.setattr(runs_routes, "invalidate_mcp_runtime_context", invalidate)
+
+    with pytest.raises(RuntimeError, match="database binding failed"):
+        await runs_routes._mutate_run_control_child(
+            run_id="run-source",
+            action="retry",
+            operation_id=UUID(RUN_CONTROL_OPERATION_ID),
+            principal=AuthPrincipal(
+                tenant_id="default",
+                user_id="user-a",
+                display_name="User A",
+                source="company-login",
+            ),
+            mcp_context_id="mcpctx-fresh",
+        )
+
+    assert observed == {"invalidated": "mcpctx-fresh"}
+
+
+@pytest.mark.parametrize("bind_failure", [False, True], ids=["success", "rollback"])
+@pytest.mark.asyncio
+async def test_copy_with_fresh_mcp_context_preflights_and_binds_child(
+    monkeypatch,
+    bind_failure,
+):
+    from app.routes.runs import RunControlMutationRequest
+    from app.routes import runs as runs_routes
+
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def copy(_conn, **_kwargs):
+        return {
+            "run_id": "run-copy-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {},
+        }
+
+    async def source_run(*_args, **_kwargs):
+        return {"mcp_context_id": "mcpctx-source", "input_json": {"input": {}}}
+
+    async def preflight(**kwargs):
+        observed["preflight"] = kwargs
+
+    async def bind(_conn, **kwargs):
+        observed["bind"] = kwargs
+        if bind_failure:
+            raise RuntimeError("database binding failed")
+
+    async def invalidate(context_id):
+        observed["invalidated"] = context_id
+
+    async def prepare(_conn, **kwargs):
+        observed["prepared"] = kwargs["copied"]
+        return {"run_id": kwargs["copied"]["run_id"]}
+
+    async def enqueue(_payload):
+        return 1
+
+    async def insight(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, "copy_run_as_new_task", copy)
+    monkeypatch.setattr(runs_routes.repositories, "get_authorized_run", source_run)
+    monkeypatch.setattr(runs_routes, "preflight_mcp_admission", preflight)
+    monkeypatch.setattr(runs_routes, "bind_run_mcp_context", bind)
+    monkeypatch.setattr(runs_routes, "invalidate_mcp_runtime_context", invalidate)
+    monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr(runs_routes, "enqueue_run", enqueue)
+    monkeypatch.setattr(runs_routes, "queue_insight_for_status", insight)
+
+    copy_call = runs_routes.copy_run(
+        "run-source",
+        request=RunControlMutationRequest(mcp_context_id="mcpctx-fresh"),
+        principal=AuthPrincipal(
+            tenant_id="default",
+            user_id="user-a",
+            display_name="User A",
+            source="company-login",
+        ),
+    )
+    if bind_failure:
+        with pytest.raises(RuntimeError, match="database binding failed"):
+            await copy_call
+        assert observed["invalidated"] == "mcpctx-fresh"
+        return
+    result = await copy_call
+
+    assert result.run_id == "run-copy-child"
+    assert observed["preflight"]["context_id"] == "mcpctx-fresh"
+    assert observed["preflight"]["run_id"] == "run-copy-child"
+    assert observed["preflight"]["selected_tool_names"] == ()
+    assert observed["bind"] == {
+        "tenant_id": "default",
+        "run_id": "run-copy-child",
+        "mcp_context_id": "mcpctx-fresh",
+    }
+    assert observed["prepared"]["mcp_context_id"] == "mcpctx-fresh"
+    assert "invalidated" not in observed
 
 
 def admin_headers():
@@ -3277,6 +3522,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
             "session_id": "ses_old",
             "agent_id": "qa-word-review",
             "skill_id": "qa-file-reviewer",
+            "mcp_context_id": "mcpctx-source",
             "input_json": {
                 "skillIds": ["qa-file-reviewer"],
                 "allowedSkills": ["qa-file-reviewer"],
@@ -3344,6 +3590,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert copied["release_policy_version"] == ""
     assert copied["model_id"] == "model-catalog-a"
     assert copied["model_value"] == "provider-model-a"
+    assert "_requires_fresh_mcp_context" not in copied
     assert "executor_type" not in copied["input"]
     assert "skill_ids" not in copied["input"]
     assert "skillIds" not in copied["input"]
@@ -3365,6 +3612,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in persisted_json
     assert "/var/lib/ai-platform" not in persisted_json
     persisted_input = json.loads(persisted_json)
+    assert "mcp_context_id" not in persisted_input
     assert persisted_input["model_id"] == "model-catalog-a"
     assert persisted_input["model_value"] == "provider-model-a"
     persisted_snapshot = repositories.copied_run_execution_snapshot(persisted_input)
@@ -4092,6 +4340,65 @@ async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
 
     with pytest.raises(repositories.RepositoryConflictError, match="status_not_retryable"):
         await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
+
+
+@pytest.mark.parametrize(("action", "repository_method"), [("retry", "retry_run_as_new_task"), ("resume", "resume_run_as_new_task")])
+@pytest.mark.asyncio
+async def test_replay_mcp_source_requires_fresh_context_before_transaction_commit(
+    monkeypatch,
+    action,
+    repository_method,
+):
+    from app.routes import runs as runs_routes
+
+    observed: list[str] = []
+
+    @asynccontextmanager
+    async def transaction():
+        try:
+            yield object()
+        except RepositoryConflictError:
+            observed.append("rolled_back")
+            raise
+        else:
+            observed.append("committed")
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def mutation(*_args, **_kwargs):
+        observed.append("child_created_in_transaction")
+        return {
+            "run_id": "run-child",
+            "session_id": "session-a",
+            "status": "queued",
+            "input": {"mcp_tool_ids": ["inventory-search"]},
+        }
+
+    async def fail_prepare(*_args, **_kwargs):
+        raise AssertionError("an MCP replay without a fresh context must not be prepared")
+
+    monkeypatch.setattr(runs_routes, "transaction", transaction)
+    monkeypatch.setattr(runs_routes, "enforce_user_active_run_limit", no_op)
+    monkeypatch.setattr(runs_routes.repositories, repository_method, mutation)
+    monkeypatch.setattr(runs_routes, "prepare_copied_run_for_queue", fail_prepare)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs_routes._mutate_run_control_child(
+            run_id="run-source",
+            action=action,
+            operation_id=UUID(RUN_CONTROL_OPERATION_ID),
+            principal=AuthPrincipal(
+                tenant_id="default",
+                user_id="user-a",
+                display_name="User A",
+                source="company-login",
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "mcp_context_required_for_retry"
+    assert observed == ["child_created_in_transaction", "rolled_back"]
 
 
 @pytest.mark.asyncio
@@ -5679,6 +5986,7 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     """Both cancellation routes consume initial and drained typed progress without duplicate reconciliation."""
 
     reconciled = []
+    invalidated = []
 
     async def fake_request_cancel(_conn, **_kwargs):
         return {
@@ -5698,11 +6006,16 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     async def remove_queued_run(**_kwargs):
         return 0
 
+    async def invalidate(*, tenant_id, run_id, status, transaction_factory):
+        assert transaction_factory is not None
+        invalidated.append((tenant_id, run_id, status))
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)
     monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
     monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr(f"{module_path}.invalidate_committed_terminal_run_mcp_context", invalidate)
     monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
 
     response = TestClient(create_app()).post(path, headers=admin_headers() if is_admin else headers())
@@ -5710,6 +6023,63 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     assert response.status_code == 200
     assert response.json()["status"] == expected_status
     assert reconciled == ([('default', 'run_active', 'cancelled')] if expected_calls else [])
+    assert invalidated == (
+        [("default", "run_active", "cancelled")]
+        if expected_status == "cancelled"
+        else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("module_path", "cancel_name", "path", "is_admin"),
+    [
+        ("app.routes.runs", "request_run_cancel", "/api/ai/runs/run_active/cancel", False),
+        (
+            "app.routes.admin_runs",
+            "request_admin_run_cancel",
+            "/api/ai/admin/runs/run_active/cancel",
+            True,
+        ),
+    ],
+    ids=["owner", "admin"],
+)
+def test_cancel_routes_preserve_mcp_context_when_terminal_commit_fails(
+    monkeypatch,
+    module_path,
+    cancel_name,
+    path,
+    is_admin,
+):
+    invalidated = []
+
+    class CommitFailingTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                raise RuntimeError("cancel commit failed")
+            return False
+
+    async def fake_request_cancel(_conn, **_kwargs):
+        return {
+            "run_id": "run_active",
+            "status": "cancelled",
+        }
+
+    async def invalidate(**kwargs):
+        invalidated.append(kwargs)
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(f"{module_path}.transaction", CommitFailingTransaction)
+    monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
+    monkeypatch.setattr(f"{module_path}.invalidate_committed_terminal_run_mcp_context", invalidate)
+
+    client = TestClient(create_app())
+    with pytest.raises(RuntimeError, match="cancel commit failed"):
+        client.post(path, headers=admin_headers() if is_admin else headers())
+
+    assert invalidated == []
 
 
 

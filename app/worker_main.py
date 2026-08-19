@@ -12,6 +12,7 @@ import uuid
 
 from app import queue
 from app import repositories
+from app.bootstrap.mcp import configure_mcp_runtime
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -20,6 +21,11 @@ from app.control_plane_contracts import (
 )
 from app.data_retention import run_data_retention_maintenance
 from app.db import close_pool, transaction
+from app.mcp.api import (
+    invalidate_committed_terminal_run_mcp_context,
+    invalidate_terminal_mcp_runtime_context,
+    persisted_mcp_context_id,
+)
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -268,6 +274,13 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             transaction_factory=transaction,
             max_batches=4,
         )
+        if outcome is not None and outcome.completed and outcome.is_terminal():
+            await invalidate_committed_terminal_run_mcp_context(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                status=outcome.status,
+                transaction_factory=transaction,
+            )
         if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
             await reconcile_terminalized_permission_run(
                 tenant_id=tenant_id, run_id=run_id, progress=outcome, transaction_factory=transaction
@@ -292,6 +305,12 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
+        await invalidate_committed_terminal_run_mcp_context(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            status=candidate.get("status"),
+            transaction_factory=transaction,
+        )
         await reconcile_terminalized_permission_run(
             tenant_id=tenant_id,
             run_id=run_id,
@@ -433,6 +452,12 @@ async def reconcile_stale_runs_for_worker(
                             {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
                         )
                         continue
+                    await invalidate_committed_terminal_run_mcp_context(
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        status=outcome.status,
+                        transaction_factory=transaction,
+                    )
                     await fence_guard.release_if_live()
                 results.append(
                     {
@@ -502,6 +527,8 @@ async def _terminalize_escaped_process_exception(
     error_code = "worker_process_exception"
     error_message = sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly."
     progress = None
+    committed_terminal_outcome: WorkerOutcome | None = None
+    terminal_mcp_context_id: str | None = None
     if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
         return _queue_ownership_lost_outcome(run_id)
     async with transaction() as conn:
@@ -515,6 +542,7 @@ async def _terminalize_escaped_process_exception(
         )
         if locked_run is None:
             return WorkerOutcome("dead_letter", run_id, error_code, error_message)
+        terminal_mcp_context_id = persisted_mcp_context_id(locked_run)
         locked_identity = {
             "tenant_id": str(locked_run.get("tenant_id") or ""),
             "workspace_id": str(locked_run.get("workspace_id") or ""),
@@ -543,33 +571,41 @@ async def _terminalize_escaped_process_exception(
         if current_status in {"succeeded", "failed", "cancelled"}:
             if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
                 return _queue_ownership_lost_outcome(run_id)
-            return WorkerOutcome(
+            committed_terminal_outcome = WorkerOutcome(
                 current_status,
                 run_id,
                 str(locked_run.get("error_code") or "") or None,
                 sanitize_public_text(locked_run.get("error_message")) or None,
             )
-        cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
-            locked_run.get("permission_terminalization_target") or ""
-        ) in {"cancel_requested", "cancelled"}
-        if cancel_requested:
-            progress = await repositories.cancel_run(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=run_id,
-                result_json={"message": "任务已取消"},
-            )
         else:
-            progress = await repositories.fail_run(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=run_id,
-                error_code=error_code,
-                error_message=error_message,
-                result_json={"message": "Worker processing failed unexpectedly."},
-            )
-        if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
-            raise _EscapedTerminalizationOwnershipLost(run_id)
+            cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
+                locked_run.get("permission_terminalization_target") or ""
+            ) in {"cancel_requested", "cancelled"}
+            if cancel_requested:
+                progress = await repositories.cancel_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=run_id,
+                    result_json={"message": "任务已取消"},
+                )
+            else:
+                progress = await repositories.fail_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=run_id,
+                    error_code=error_code,
+                    error_message=error_message,
+                    result_json={"message": "Worker processing failed unexpectedly."},
+                )
+            if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
+                raise _EscapedTerminalizationOwnershipLost(run_id)
+
+    if committed_terminal_outcome is not None:
+        await invalidate_terminal_mcp_runtime_context(
+            terminal_mcp_context_id,
+            status=committed_terminal_outcome.status,
+        )
+        return committed_terminal_outcome
 
     if progress is None or not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
@@ -593,6 +629,10 @@ async def _terminalize_escaped_process_exception(
             )
     if progress is not None and progress.is_terminal():
         terminal_status = str(progress.status)
+        await invalidate_terminal_mcp_runtime_context(
+            terminal_mcp_context_id,
+            status=terminal_status,
+        )
         return WorkerOutcome(
             terminal_status,
             run_id,
@@ -624,6 +664,7 @@ async def run_once(
     run_initial_maintenance: bool = True,
     run_background_maintenance: bool = True,
 ) -> WorkerOutcome:
+    configure_mcp_runtime()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
     if run_initial_maintenance:
@@ -741,6 +782,7 @@ def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
 
 
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
+    configure_mcp_runtime()
     await require_schema_current()
     registry = AdapterRegistry()
     worker_id = default_worker_id()
@@ -815,6 +857,7 @@ async def run_worker_pool(
         await run_forever(poll_timeout_seconds=poll_timeout_seconds, idle_sleep_seconds=idle_sleep_seconds)
         return
 
+    configure_mcp_runtime()
     await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -862,6 +905,8 @@ async def run_worker_pool(
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     try:
+        configure_mcp_runtime()
+        await require_schema_current()
         return await run_once(timeout_seconds=timeout_seconds)
     finally:
         await _close_runtime_clients()

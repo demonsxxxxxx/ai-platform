@@ -60,6 +60,14 @@ def chat_submission_client(monkeypatch):
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
+
+    async def require_schema_current():
+        return {"ready": True}
+
+    monkeypatch.setattr(
+        "app.main.require_schema_current",
+        require_schema_current,
+    )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
 
@@ -445,6 +453,8 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     request = ChatStreamRequest(
         message="durable replay",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        selected_mcp_tool_ids=["qa-search"],
+        mcp_context_id="mcpctx-replay",
     )
     fingerprint = repository_module.chat_submission_fingerprint(
         {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
@@ -452,6 +462,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
         user_id="user-a",
     )
     calls = []
+    discarded = []
 
     async def existing_submission(conn, **kwargs):
         calls.append(kwargs)
@@ -470,9 +481,16 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     def forbidden_route(*_args, **_kwargs):
         raise AssertionError("replay must not route intent")
 
+    async def discard_context(context_id, replay_principal):
+        discarded.append((context_id, replay_principal.user_id))
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
     monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
+    monkeypatch.setattr(
+        "app.routes.chat.mcp.discard_unbound_mcp_runtime_context",
+        discard_context,
+    )
 
     response = await chat_stream(request, principal=principal())
 
@@ -485,22 +503,25 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
             "submission_id": str(request.submission_id),
         }
     ]
+    assert discarded == [("mcpctx-replay", "user-a")]
 
 
 @pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
 @pytest.mark.parametrize(
-    ("message", "selected_tools", "expected_authorizations"),
+    ("message", "selected_tools", "context_id", "expected_authorizations"),
     [
-        ("不要调用 MCP，只解释它是什么", ["qa-search"], 0),
-        ("请调用 MCP 搜索员工手册", ["qa-search"], 1),
+        ("不要调用 MCP，只解释它是什么", ["qa-search"], None, 0),
+        ("请调用 MCP 搜索员工手册", ["qa-search"], "mcpctx-test", 1),
+        ("显式不选择 MCP 工具", [], None, 1),
     ],
-    ids=["negative-veto", "affirmative"],
+    ids=["negative-veto", "affirmative", "explicit-empty-selection"],
 )
 @pytest.mark.asyncio
 async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
-    monkeypatch, roles, message, selected_tools, expected_authorizations
+    monkeypatch, roles, message, selected_tools, context_id, expected_authorizations
 ):
-    calls = {"authorization": 0}
+    calls = {"authorization": 0, "bindings": []}
+    preflight_calls = []
 
     async def authorize_run(*_args, **_kwargs):
         return {
@@ -524,6 +545,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         return "msg-polarity"
 
     async def enqueue(payload):
+        calls["queue_payload"] = payload
         calls["queue_input"] = payload["input"]
         return 1
 
@@ -532,6 +554,9 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     async def noop(*_args, **_kwargs):
         return None
+
+    async def bind_context(_conn, **kwargs):
+        calls["bindings"].append(kwargs)
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
@@ -544,9 +569,22 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr(repository_module, "append_event", noop)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.mcp.bind_run_mcp_context", bind_context)
+
+    async def preflight_stub(**kwargs):
+        preflight_calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("app.routes.chat.mcp.preflight_mcp_admission", preflight_stub)
+
+    request_kwargs = {"message": message}
+    if selected_tools is not None:
+        request_kwargs["selected_mcp_tool_ids"] = selected_tools
+    if context_id is not None:
+        request_kwargs["mcp_context_id"] = context_id
 
     response = await chat_stream(
-        ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
+        ChatStreamRequest(**request_kwargs),
         principal=principal(roles=roles),
     )
 
@@ -555,6 +593,26 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     expected_tools = selected_tools if expected_authorizations else None
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+    assert "mcp_context_id" not in calls["queue_payload"]
+    assert calls["queue_input"].get("mcp_context_id") == (
+        context_id if expected_tools else None
+    )
+    assert "mcp_tool_names" not in calls["run_input"]
+    assert "mcp_tool_names" not in calls["queue_input"]
+    assert len(preflight_calls) == 1
+    assert preflight_calls[0]["mcp_required"] is bool(expected_tools)
+    assert preflight_calls[0]["context_id"] == context_id
+    assert calls["bindings"] == (
+        [
+            {
+                "tenant_id": "tenant-a",
+                "run_id": "run-polarity",
+                "mcp_context_id": context_id,
+            }
+        ]
+        if expected_tools
+        else []
+    )
 
 
 @pytest.mark.parametrize(
@@ -724,8 +782,10 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         message="continue with selected tool",
         session_id="session-owned",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        mcp_context_id="mcpctx-concurrent",
     )
     calls: list[object] = []
+    discarded = []
 
     async def no_existing_submission(*_args, **_kwargs):
         return None
@@ -784,6 +844,9 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
             False,
         )
 
+    async def discard_context(context_id, replay_principal):
+        discarded.append((context_id, replay_principal.user_id))
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission)
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
@@ -805,6 +868,10 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         authorize_tools,
     )
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr(
+        "app.routes.chat.mcp.discard_unbound_mcp_runtime_context",
+        discard_context,
+    )
 
     response = await chat_stream(request, principal=principal())
 
@@ -818,6 +885,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         ("authorize", ["locked-search"]),
     ]
     assert calls[6][0] == "claim"
+    assert discarded == [("mcpctx-concurrent", "user-a")]
 
 
 @pytest.mark.asyncio
@@ -1561,6 +1629,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     submission = _pending_submission_row()
     committed: list[tuple[str, object]] = []
     transaction_outcomes: list[tuple[str, list[tuple[str, object]]]] = []
+    invalidated: list[str] = []
 
     class TransactionState:
         def __init__(self) -> None:
@@ -1582,7 +1651,10 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         return submission
 
     async def get_run(*_args, **_kwargs):
-        return _durable_run_row()
+        return {
+            **_durable_run_row(),
+            "mcp_context_id": "mcpctx-durable",
+        }
 
     async def fail_enqueue(_payload):
         raise QueueAdmissionRejected("queue_payload_invalid")
@@ -1601,6 +1673,13 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     async def finalize(conn, **kwargs):
         conn.pending.append(("submission", kwargs["state"]))
 
+    async def invalidate(context_id):
+        assert committed == [
+            ("run", "run-durable"),
+            ("submission", "enqueue_failed"),
+        ]
+        invalidated.append(context_id)
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
@@ -1609,6 +1688,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr("app.routes.chat.mcp.invalidate_mcp_runtime_context", invalidate)
 
     with pytest.raises(HTTPException) as exc_info:
         await _admit_chat_submission(
@@ -1622,6 +1702,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         ("commit", []),
         ("commit", [("run", "run-durable"), ("submission", "enqueue_failed")]),
     ]
+    assert invalidated == ["mcpctx-durable"]
 
 
 @pytest.mark.asyncio
@@ -4242,6 +4323,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     queue_readback_available = enqueue_failure_mode != "after_publish_unknown"
     enqueue_payloads: list[dict[str, object]] = []
     published_payloads: list[dict[str, object]] = []
+    invalidated_contexts: list[str] = []
     profile_manifest = snapshot_manifest("profile-specialist")
     secondary_profile_manifest = snapshot_manifest("profile-reference-search")
 
@@ -4314,7 +4396,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 },
             ),
             model={"id": "model-a", "value": "provider-model-a"},
-            mcp_tool_ids=(),
+            mcp_tool_ids=("qa-search",) if force_creation_rollback else (),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -4504,6 +4586,16 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def noop(*_args, **_kwargs):
         return None
 
+    async def preflight(**kwargs):
+        if kwargs["mcp_required"]:
+            calls.append("mcp_preflight")
+
+    async def bind_mcp_context(*_args, **_kwargs):
+        calls.append("bind_mcp_context")
+
+    async def invalidate_mcp_context(context_id):
+        invalidated_contexts.append(context_id)
+
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
     monkeypatch.setattr(
         "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
@@ -4544,6 +4636,12 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.mcp.preflight_mcp_admission", preflight)
+    monkeypatch.setattr("app.routes.chat.mcp.bind_run_mcp_context", bind_mcp_context)
+    monkeypatch.setattr(
+        "app.routes.chat.mcp.invalidate_mcp_runtime_context",
+        invalidate_mcp_context,
+    )
     monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
@@ -4568,6 +4666,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "agent_id": "agt_support",
             "expected_revision": 7,
         }
+    if force_creation_rollback:
+        request_payload["mcp_context_id"] = "mcpctx-profile-rollback"
     chat_request = ChatStreamRequest.model_validate(request_payload)
     query_agent_id = "agt_support" if restored_continuation else "general-agent"
     if force_creation_rollback:
@@ -4589,6 +4689,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_submission["state"] == "rejected_before_persist"
         assert committed_submission["rejection_code"] == "chat_submission_internal_error"
         assert "enqueue" not in calls
+        assert "mcp_preflight" in calls
+        assert "bind_mcp_context" in calls
+        assert invalidated_contexts == ["mcpctx-profile-rollback"]
         return
 
     if enqueue_failure_mode == "definitive_rejection":

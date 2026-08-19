@@ -59,6 +59,7 @@ SERVER_OWNED_CONTROL_KEYS = {
     "dispatchleaseexpiresat",
     "dispatchstate",
     "multiagentdispatch",
+    "mcpcontextid",
     "parentrunid",
     "parentstepid",
     "resume",

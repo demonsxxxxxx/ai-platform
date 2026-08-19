@@ -210,7 +210,8 @@ export function useTools(options?: { enabled?: boolean; sessionId?: string | nul
       const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
       const rawResponse = await authenticatedRequest(`/api/mcp/chat-tools${query}`);
       if (!rawResponse.ok) throw new Error("chat_mcp_catalog_request_failed");
-      const parsed = parseChatMcpCatalogResponse(await rawResponse.json());
+      const payload: unknown = await rawResponse.json();
+      const parsed = parseChatMcpCatalogResponse(payload);
       if (generation !== requestGeneration.current) return;
       setCatalog((current) => publishChatMcpCatalogSuccess(current, generation, {
         ...parsed,
@@ -231,7 +232,9 @@ export function useTools(options?: { enabled?: boolean; sessionId?: string | nul
       void fetchTools();
     };
     window.addEventListener("mcp-tools-changed", handleMcpToolsChanged);
-    return () => window.removeEventListener("mcp-tools-changed", handleMcpToolsChanged);
+    return () => {
+      window.removeEventListener("mcp-tools-changed", handleMcpToolsChanged);
+    };
   }, [fetchTools]);
 
   const catalogState = useMemo<ChatMcpCatalogState>(

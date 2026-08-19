@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from app.required_tool_contract import RequiredCapabilityDeclaration
 from app.tool_policy import evaluate_tool_policy
@@ -166,6 +166,20 @@ class CapabilityExecutionPlan:
             available.add(("skill", required_skill_identity))
         return cls(available=frozenset(available), required=required)
 
+    @classmethod
+    def mcp_requires_sandbox(
+        cls,
+        value: object,
+        *,
+        broker_capability: object = None,
+    ) -> bool:
+        """Require brokered execution for issued or policy-authorized MCP access."""
+
+        plan = cls.from_tool_policy_subjects(value)
+        return bool(broker_capability) or any(
+            kind == "mcp" for kind, _identity in plan.available
+        )
+
 
 def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, Any]]:
     """Build exact broker subjects for explicitly selected scoped context tools."""
@@ -263,6 +277,26 @@ def _authorized_parameter_keys(
     return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
 
 
+def _delegates_external_mcp_parameters(
+    subject: dict[str, Any],
+    tool_name: str,
+) -> bool:
+    identity = subject.get("identity")
+    server_id = subject.get("mcp_server")
+    mcp_tool = subject.get("mcp_tool")
+    return (
+        subject.get("parameter_delegation") == "external_mcp"
+        and isinstance(identity, str)
+        and isinstance(server_id, str)
+        and bool(server_id)
+        and server_id != "ai-platform-context"
+        and isinstance(mcp_tool, str)
+        and bool(mcp_tool)
+        and identity == f"mcp__{server_id}__{mcp_tool}"
+        and tool_name == identity
+    )
+
+
 def _parameters_match_subject(
     subject: dict[str, Any],
     tool_name: str,
@@ -270,13 +304,43 @@ def _parameters_match_subject(
 ) -> bool:
     if not isinstance(tool_input, dict):
         return False
-    allowed_keys = _authorized_parameter_keys(subject, tool_name)
-    if not allowed_keys or not set(tool_input).issubset(allowed_keys):
-        return False
-    required = subject.get(
-        "required_parameter_keys",
-        list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())),
+    schema = subject.get("mcp_tool_schema")
+    schema_authoritative = isinstance(schema, dict)
+    delegates_external_mcp = _delegates_external_mcp_parameters(
+        subject,
+        tool_name,
     )
+    schema_properties = schema.get("properties") if isinstance(schema, dict) else None
+    if isinstance(schema_properties, dict):
+        if schema.get("additionalProperties") is False:
+            allowed_keys = {
+                str(key) for key in schema_properties if isinstance(key, str) and key
+            }
+        else:
+            allowed_keys = set(tool_input)
+    elif isinstance(schema, dict) and schema.get("additionalProperties") is False:
+        allowed_keys = set()
+    elif isinstance(schema, dict):
+        # The registered MCP remains the schema authority when JSON Schema
+        # does not enumerate properties; relay scope still fixes the identity.
+        allowed_keys = set(tool_input)
+    elif delegates_external_mcp:
+        # The capability subject fixes identity; the relay's live MCP schema
+        # remains authoritative for the external tool's parameter object.
+        allowed_keys = set(tool_input)
+    else:
+        allowed_keys = _authorized_parameter_keys(subject, tool_name)
+    if (
+        not allowed_keys
+        and not schema_authoritative
+        and not delegates_external_mcp
+    ) or not set(tool_input).issubset(allowed_keys):
+        return False
+    required = subject.get("required_parameter_keys")
+    if required is None and isinstance(schema, dict):
+        required = schema.get("required", ())
+    if required is None:
+        required = list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
     if isinstance(required, list):
         if not all(isinstance(key, str) and key for key in required):
             return False
@@ -303,29 +367,57 @@ def _parameters_match_subject(
     )
 
 
-def _mcp_server_options(
+def _dynamic_mcp_server_option(
+    *, relay_url: str, capability: str, server_id: str
+) -> dict[str, Any]:
+    """Register one capability-bound relay URL without exposing MCP secrets."""
+
+    parsed = urlsplit(str(relay_url or "").strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not str(capability or "").startswith("mcpbrk:")
+        or not server_id
+    ):
+        raise ValueError("dynamic MCP relay registration is invalid")
+    normalized_path = (parsed.path or "/").rstrip("/")
+    return {
+        "type": "http",
+        "url": urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"{normalized_path}/{quote(server_id, safe='')}",
+                "",
+                "",
+            )
+        ),
+        "headers": {"X-MCP-Broker-Capability": capability},
+    }
+
+
+def _dynamic_mcp_server_options(
     subjects: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, str]]:
-    servers: dict[str, dict[str, str]] = {}
-    for identity, subject in subjects.items():
-        config = subject.get("mcp_server_config")
-        if not identity.startswith("mcp__") or not isinstance(config, dict):
-            continue
-        server_id = str(subject.get("mcp_server") or "")
-        transport = str(config.get("type") or "").lower()
-        endpoint = str(config.get("url") or "")
-        parsed = urlsplit(endpoint)
-        if (
-            not server_id
-            or transport not in {"http", "sse"}
-            or parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or any((parsed.username, parsed.password, parsed.query, parsed.fragment))
-        ):
-            continue
-        candidate = {"type": transport, "url": endpoint}
-        existing = servers.get(server_id)
-        if existing is not None and existing != candidate:
-            raise ValueError("conflicting MCP server registration")
-        servers[server_id] = candidate
-    return servers
+    *,
+    relay_url: str,
+    capability: str,
+) -> dict[str, dict[str, Any]]:
+    server_ids = {
+        str(subject.get("mcp_server") or "")
+        for identity, subject in subjects.items()
+        if identity.startswith("mcp__")
+        and str(subject.get("mcp_server") or "")
+        and str(subject.get("mcp_server") or "") != "ai-platform-context"
+    }
+    return {
+        server_id: _dynamic_mcp_server_option(
+            relay_url=relay_url,
+            capability=capability,
+            server_id=server_id,
+        )
+        for server_id in sorted(server_ids)
+    }

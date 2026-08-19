@@ -29,6 +29,7 @@ def _command(**overrides):
         "endpoint": "https://mcp.example/tools",
         "credentialed": False,
         "actor_id": "admin-a",
+        "jwt_authorization": "Bearer catalog.jwt",
     }
     values.update(overrides)
     return McpToolCatalogSyncCommand(**values)
@@ -49,6 +50,24 @@ def test_catalog_identity_is_opaque_and_accepted_by_the_existing_chat_selector_c
     assert SAFE_ID_PATTERN.fullmatch(first)
     assert SAFE_ID_PATTERN.fullmatch(second)
     assert first != second
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        "Bearer catalog token",
+        "Bearer catalog\x7ftoken",
+        "Bearer catalog\u0080token",
+        "Bearer catalog\u00e9token",
+    ],
+)
+def test_catalog_jwt_authorization_rejects_non_sendable_bearer_tokens(authorization):
+    with pytest.raises(McpToolDiscoveryError, match="authorization_required"):
+        catalog._normalized_jwt_authorization(authorization)
+
+
+def test_catalog_jwt_authorization_accepts_visible_ascii_bearer_tokens():
+    assert catalog._normalized_jwt_authorization("Bearer catalog-token~!#") == "Bearer catalog-token~!#"
 
 
 @pytest.mark.parametrize(
@@ -84,6 +103,11 @@ async def test_streamable_http_discovery_consumes_every_cursor_page(monkeypatch)
     seen_methods: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["X-API-Key"] == "catalog-static-secret"
+        assert request.headers["JWT-Authorization"] == "Bearer catalog.jwt"
+        assert request.headers["Host"] == "mcp.example"
+        assert request.extensions["sni_hostname"] == "mcp.example"
+        assert request.url.host == "8.8.8.8"
         payload = json.loads(request.content)
         method = payload["method"]
         seen_methods.append(method)
@@ -145,7 +169,11 @@ async def test_streamable_http_discovery_consumes_every_cursor_page(monkeypatch)
     monkeypatch.setattr(catalog.httpx, "AsyncClient", client_factory)
     monkeypatch.setattr(catalog, "_resolve_discovery_addresses", public_dns)
 
-    tools = await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
+    tools = await StreamableHttpMcpToolDiscoveryAdapter().discover(
+        "https://mcp.example/tools",
+        static_headers={"X-API-Key": "catalog-static-secret"},
+        jwt_authorization="Bearer catalog.jwt",
+    )
 
     assert [tool.remote_name for tool in tools] == ["search_docs", "get_doc"]
     assert all(tool.read_only for tool in tools)
@@ -177,7 +205,10 @@ async def test_streamable_http_discovery_rejects_cursor_loop_before_publication(
     )
 
     with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
-        await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
+        await StreamableHttpMcpToolDiscoveryAdapter().discover(
+            "https://mcp.example/tools",
+            jwt_authorization="Bearer catalog.jwt",
+        )
 
 
 async def _resolved(*addresses):
@@ -237,8 +268,9 @@ def _install_synchronizer_fakes(*, discovery, publish_result=None):
 @pytest.mark.asyncio
 async def test_synchronizer_publishes_only_the_complete_multi_tool_manifest(monkeypatch):
     class CompleteDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             assert endpoint == "https://mcp.example/tools"
+            assert jwt_authorization == "Bearer catalog.jwt"
             return (_tool("search_docs"), _tool("get_doc"), _tool("write_doc", read_only=False))
 
     synchronizer, outcomes, publications, attempts, _ = _install_synchronizer_fakes(discovery=CompleteDiscovery())
@@ -256,7 +288,7 @@ async def test_synchronizer_publishes_only_the_complete_multi_tool_manifest(monk
 @pytest.mark.asyncio
 async def test_synchronizer_publishes_a_truthful_zero_tool_result(monkeypatch):
     class EmptyDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             return ()
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(
@@ -282,7 +314,7 @@ async def test_synchronizer_publishes_a_truthful_zero_tool_result(monkeypatch):
 @pytest.mark.asyncio
 async def test_transport_failure_never_attempts_partial_publication(monkeypatch):
     class FailingDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             raise McpToolDiscoveryError("transport_failure")
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=FailingDiscovery())
@@ -299,7 +331,7 @@ async def test_transport_failure_never_attempts_partial_publication(monkeypatch)
 @pytest.mark.asyncio
 async def test_stale_generation_result_cannot_report_publication(monkeypatch):
     class CompleteDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             return (_tool("search_docs"),)
 
     synchronizer, _, publications, _, _ = _install_synchronizer_fakes(
@@ -324,7 +356,7 @@ async def test_stale_generation_result_cannot_report_publication(monkeypatch):
 @pytest.mark.asyncio
 async def test_concurrent_sync_claim_fails_closed_before_remote_discovery(monkeypatch):
     class UnexpectedDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             raise AssertionError("an already claimed generation must not rediscover")
 
     synchronizer, outcomes, publications, _, store = _install_synchronizer_fakes(discovery=UnexpectedDiscovery())
@@ -352,18 +384,24 @@ async def test_concurrent_sync_claim_fails_closed_before_remote_discovery(monkey
 @pytest.mark.asyncio
 async def test_credentialed_or_invalid_requests_stay_unavailable_without_discovery(monkeypatch):
     class UnexpectedDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             raise AssertionError("discovery must not run")
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=UnexpectedDiscovery())
 
     credentialed = await synchronizer.synchronize(_command(credentialed=True))
     invalid = await synchronizer.synchronize(_command(endpoint="https://mcp.example/tools?token=secret"))
+    missing_jwt = await synchronizer.synchronize(_command(jwt_authorization=""))
 
     assert credentialed.reason == "credentials_not_supported"
     assert invalid.reason == "invalid_endpoint"
     assert publications == []
-    assert [row["reason"] for row in outcomes] == ["credentials_not_supported", "invalid_endpoint"]
+    assert [row["reason"] for row in outcomes] == [
+        "credentials_not_supported",
+        "invalid_endpoint",
+        "authorization_required",
+    ]
+    assert missing_jwt.reason == "authorization_required"
     assert "mcp.example" not in str(invalid.public_payload())
 
 
@@ -432,14 +470,40 @@ async def test_discovery_does_not_follow_redirects_after_target_validation(monke
     )
 
     with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
-        await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
-    assert seen_urls == ["https://mcp.example/tools"]
+        await StreamableHttpMcpToolDiscoveryAdapter().discover(
+            "https://mcp.example/tools",
+            jwt_authorization="Bearer catalog.jwt",
+        )
+    assert seen_urls == ["https://8.8.8.8/tools"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_stops_streaming_when_response_exceeds_shared_limit(monkeypatch):
+    async def public_dns(hostname, port):
+        return await _resolved("8.8.8.8")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 65)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", public_dns)
+    monkeypatch.setattr(
+        catalog.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    with pytest.raises(McpToolDiscoveryError, match="response_too_large"):
+        await StreamableHttpMcpToolDiscoveryAdapter(max_response_bytes=64).discover(
+            "https://mcp.example/tools",
+            jwt_authorization="Bearer catalog.jwt",
+        )
 
 
 @pytest.mark.asyncio
 async def test_cancelled_discovery_records_retryable_outcome_before_lease_expiry():
     class CancelledDiscovery:
-        async def discover(self, endpoint):
+        async def discover(self, endpoint, *, static_headers=None, jwt_authorization=None):
             raise asyncio.CancelledError()
 
     synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=CancelledDiscovery())

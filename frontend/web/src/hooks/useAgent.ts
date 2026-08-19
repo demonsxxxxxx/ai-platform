@@ -40,7 +40,7 @@ import { feedbackApi } from "../services/api/feedback";
 import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
 import {
-  BROWSER_AUTH_INCARCINATION_EVENT,
+  BROWSER_AUTH_INCARNATION_EVENT,
   getBrowserAuthIncarnation,
 } from "./browserAuthCoordinator";
 import { Permission } from "../types/auth";
@@ -97,6 +97,11 @@ import {
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { ApiRequestError } from "../services/api/fetch";
 import {
+  discardMcpRuntimeContext,
+  prepareMcpRuntimeContext,
+} from "../services/api/mcpRuntime";
+import { clearMcpGatewayJwt } from "../utils/mcpGatewayAuth";
+import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
 } from "./useSelectedSkillTask";
@@ -133,6 +138,18 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     (transportAuthRejection ||
       (((error.status >= 400 && error.status < 500) || provenInternalRejection) &&
         error.submissionDisposition === "rejected_before_persist"))
+  );
+}
+
+function isMcpCredentialRejection(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status === 401 &&
+    typeof error.code === "string" &&
+    (error.code === "mcp_server_unauthorized" ||
+      error.code === "mcp_jwt_missing" ||
+      error.code === "mcp_jwt_invalid" ||
+      error.code === "mcp_jwt_expired_or_missing")
   );
 }
 
@@ -946,12 +963,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setBrowserAuthIncarnation(incarnation);
     };
     window.addEventListener(
-      BROWSER_AUTH_INCARCINATION_EVENT,
+      BROWSER_AUTH_INCARNATION_EVENT,
       handleAuthIncarnationChange,
     );
     return () =>
       window.removeEventListener(
-        BROWSER_AUTH_INCARCINATION_EVENT,
+        BROWSER_AUTH_INCARNATION_EVENT,
         handleAuthIncarnationChange,
       );
   }, [
@@ -2071,6 +2088,32 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
 
+        const mcpContextId = await prepareMcpRuntimeContext({
+          selectedMcpToolIds,
+          profileSelected: selectedAgentProfileForRequest !== null,
+        });
+        if (
+          submissionTokenRef.current !== submissionToken ||
+          submissionAuthIncarnationFenceRef.current !== null ||
+          authScopeRef.current !== submissionOwner ||
+          !isCurrentRequestSession()
+        ) {
+          const discardUnusedContext = mcpContextId
+            ? discardMcpRuntimeContext(mcpContextId)
+            : Promise.resolve();
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          if (submissionTokenRef.current === submissionToken) {
+            isSendingRef.current = false;
+          }
+          await discardUnusedContext;
+          return { status: "failed" };
+        }
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
           requestSessionId ?? undefined,
@@ -2083,6 +2126,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           requestAgentId,
           selectedMcpToolIds,
           selectedAgentProfileForRequest,
+          mcpContextId,
         );
 
         if (!isCurrentRequestSession()) {
@@ -2335,6 +2379,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           });
         return { status: "accepted" };
       } catch (err) {
+        if (isMcpCredentialRejection(err)) clearMcpGatewayJwt();
         if (!isCurrentRequestSession()) {
           handoffActivePreAdmissionSubmission({
             expectedToken: submissionToken,

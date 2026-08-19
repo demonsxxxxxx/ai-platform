@@ -163,6 +163,20 @@ create table if not exists mcp_servers (
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_servers_endpoint_not_persisted'
+  ) then
+    alter table mcp_servers
+      add constraint mcp_servers_endpoint_not_persisted
+      check (endpoint_redacted = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_servers
+  validate constraint mcp_servers_endpoint_not_persisted;
+
 alter table mcp_servers
   add column if not exists catalog_generation bigint not null default 0,
   add column if not exists catalog_sync_attempt bigint not null default 0,
@@ -316,12 +330,16 @@ create table if not exists mcp_server_credentials (
   server_name text not null,
   credential_fingerprint text not null default '',
   metadata_json jsonb not null default '{}'::jsonb,
+  credential_envelope text not null default '',
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (tenant_id, server_name),
   foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)
 );
+
+alter table mcp_server_credentials
+  add column if not exists credential_envelope text not null default '';
 
 create table if not exists mcp_tools (
   id text primary key,
@@ -338,6 +356,20 @@ create table if not exists mcp_tools (
   visible_to_user boolean not null default true,
   created_at timestamptz not null default now()
 );
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_tools_endpoint_not_persisted'
+  ) then
+    alter table mcp_tools
+      add constraint mcp_tools_endpoint_not_persisted
+      check (endpoint = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_tools
+  validate constraint mcp_tools_endpoint_not_persisted;
 
 create table if not exists tool_policies (
   tenant_id text not null references tenants(id),
@@ -534,6 +566,7 @@ create table if not exists runs (
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
+  mcp_context_id text,
   session_generation bigint,
   result_json jsonb not null default '{}'::jsonb,
   error_code text,
@@ -602,6 +635,7 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
+alter table runs add column if not exists mcp_context_id text;
 alter table runs add column if not exists authz_policy_version integer not null default 1;
 alter table runs add column if not exists authority_source text not null default '';
 alter table runs add column if not exists authority_checked_at timestamptz;
@@ -2411,13 +2445,13 @@ on conflict (id) do update set
   name = excluded.name,
   description = excluded.description,
   transport_type = excluded.transport_type,
-  endpoint = excluded.endpoint,
   auth_mode = excluded.auth_mode,
   allowed_tools = excluded.allowed_tools,
   status = excluded.status,
   write_capable = excluded.write_capable,
   risk_level = excluded.risk_level,
-  visible_to_user = excluded.visible_to_user;
+  visible_to_user = excluded.visible_to_user
+where mcp_tools.endpoint = '';
 
 insert into tool_policies(tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason)
 values

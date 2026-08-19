@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-import app.executors.claude_agent_sdk_runner as sdk_runner
+from app.executors.claude.capability_policy import _dynamic_mcp_server_option
 import app.skills.dependencies as dependency_policy
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
@@ -29,6 +29,7 @@ from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
     _allowed_skill_names,
+    _execution_boundary_decision,
     _inferred_used_skill_names,
     _ordinary_run_requires_sandbox,
     _required_artifact_types,
@@ -212,6 +213,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         skills=["qa-file-reviewer"],
         tool_policy_subjects=subjects,
         execution_policy="sandbox_brokered",
+        mcp_relay_url="https://platform.example/api/ai/mcp/relay",
+        mcp_broker_capability="mcpbrk:mcpctx-test:attempt-token",
         on_tool_lifecycle=acknowledge_tool_lifecycle,
     )
 
@@ -227,7 +230,13 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "mcp__corp-search__query",
     ]
     assert captured["mcp_servers"] == {
-        "corp-search": {"type": "http", "url": "https://mcp.example.test/v1"}
+        "corp-search": {
+            "type": "http",
+            "url": "https://platform.example/api/ai/mcp/relay/corp-search",
+            "headers": {
+                "X-MCP-Broker-Capability": "mcpbrk:mcpctx-test:attempt-token"
+            },
+        }
     }
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
@@ -243,20 +252,18 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
     assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
     assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",
         "https://mcp.example.test/v1#fragment",
     ):
-        assert sdk_runner._mcp_server_options(
-            {
-                "mcp__corp-search__query": {
-                    "mcp_server": "corp-search",
-                    "mcp_server_config": {"type": "http", "url": endpoint},
-                }
-            }
-        ) == {}
+        with pytest.raises(ValueError, match="dynamic MCP relay registration is invalid"):
+            _dynamic_mcp_server_option(
+                relay_url=endpoint,
+                capability="mcpbrk:mcpctx-test:attempt-token",
+                server_id="corp-search",
+            )
 
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
     allowed = await hook(
@@ -483,7 +490,6 @@ def _mcp_subject():
         "parameters_authorized": True,
         "risk_level": "low",
         "write_capable": False,
-        "mcp_server_config": {"type": "http", "url": "https://private.example/mcp"},
     }
 
 
@@ -2651,6 +2657,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
             skill_id="general-chat",
             file_ids=[],
             input={"message": "run a shell command in sandbox", "sandbox_mode": "ephemeral"},
+            mcp_broker_capability="mcpbrk:mcpctx-runtime:attempt-token",
             context_snapshot={
                 "schema_version": "ai-platform.context-snapshot.v1",
                 "context_snapshot_id": "ctx-heavy",
@@ -2689,6 +2696,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     assert runtime_calls[0].skill_ids == ["general-chat"]
     assert runtime_calls[0].callback_token_id == "cbt:run_1:qat-test-attempt"
     assert runtime_calls[0].sandbox_mode == "ephemeral"
+    assert runtime_calls[0].mcp_broker_capability == "mcpbrk:mcpctx-runtime:attempt-token"
     assert result.executor_payload["sandbox_provider"] == "docker"
 
 
@@ -2738,6 +2746,20 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
             },
         )
     ) is True
+
+
+def test_mcp_broker_capability_without_policy_subjects_forces_brokered_sandbox():
+    decision = _execution_boundary_decision(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            input={"message": "use the MCP tool"},
+            mcp_broker_capability="mcpbrk:mcpctx-runtime:attempt-token",
+        )
+    )
+
+    assert decision.requires_real_sandbox is True
+    assert decision.permission_policy == "sandbox_brokered"
 
 
 def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):
@@ -4297,7 +4319,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
         input_payload={},
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
+    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
     async def no_files(payload, workspace):
         return []
 

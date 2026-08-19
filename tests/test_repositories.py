@@ -15,6 +15,7 @@ from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
+from app.mcp.infrastructure import postgres as mcp_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.errors import (
     RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
@@ -110,6 +111,25 @@ def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
         assert getattr(repositories, name) is getattr(skill_persistence, name)
 
     assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
+
+
+@pytest.mark.asyncio
+async def test_mcp_relay_target_never_reads_plaintext_tool_endpoints():
+    connection = SingleRowConnection(
+        {
+            "credential_envelope": "sealed",
+            "metadata_json": {},
+            "active_tool_names": ["search"],
+        }
+    )
+    target = await mcp_persistence.get_mcp_relay_target(
+        connection,
+        tenant_id="default",
+        server_name="inventory",
+    )
+    assert target is not None
+    assert target["credential_envelope"] == "sealed"
+    assert "mcp_tools.endpoint" not in connection.sql
 
 
 @pytest.fixture(autouse=True)
@@ -6997,7 +7017,7 @@ async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tena
 
 
 @pytest.mark.asyncio
-async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
+async def test_record_mcp_server_credential_keeps_only_hash_metadata_and_sealed_envelope():
     class CredentialConnection:
         def __init__(self):
             self.calls = []
@@ -7008,13 +7028,14 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
 
     conn = CredentialConnection()
 
-    await repositories.record_mcp_server_credential(
+    await mcp_persistence.record_mcp_server_credential(
         conn,
         tenant_id="tenant-a",
         server_name="qa-mcp",
         credential_fingerprint="credential-sha",
         metadata={"header_names": ["Authorization"]},
         updated_by="admin-a",
+        credential_envelope="sealed-envelope",
     )
 
     sql, params = conn.calls[0]
@@ -7025,6 +7046,7 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
         "qa-mcp",
         "credential-sha",
         json.dumps({"header_names": ["Authorization"]}, ensure_ascii=False),
+        "sealed-envelope",
         "admin-a",
     )
     assert "raw-secret" not in str(params)

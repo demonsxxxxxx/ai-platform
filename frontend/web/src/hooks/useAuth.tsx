@@ -39,6 +39,7 @@ import {
   hasEffectivePermission,
 } from "../components/governance/permissionProjection";
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
+import { clearMcpGatewayJwt } from "../utils/mcpGatewayAuth";
 import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
 
@@ -242,6 +243,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // transition, before any principal hydration can start awaiting.
     publishAuthIncarnationForCurrentMarker(owner);
     clearAuthScopedCaches();
+    clearMcpGatewayJwt();
     setToken(null);
     setUser(null);
     setDynamicPermissions([]);
@@ -472,6 +474,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
+        clearMcpGatewayJwt();
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
         const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!applyAuthenticatedUser(currentUser, owner)) {
@@ -564,6 +567,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
+        clearMcpGatewayJwt();
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
         const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!applyAuthenticatedUser(currentUser, owner)) {

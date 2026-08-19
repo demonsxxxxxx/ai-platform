@@ -13,9 +13,17 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
-from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
+from app.models import (
+    AgentAppRunRequest,
+    ChatStreamRequest,
+    ChatStreamResponse,
+    CreateRunRequest,
+    QueueRunPayload,
+    SandboxLeaseRequest,
+)
 from app.repositories import RepositoryConflictError
 from app.routes import lambchat_compat as lambchat_module
+from app.routes import agent_profiles as agent_profiles_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import (
@@ -74,6 +82,18 @@ def default_create_run_workspace_guard(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def default_replay_source_mcp_lookup(monkeypatch):
+    async def no_source_run(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        no_source_run,
+        raising=False,
+    )
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()
@@ -100,6 +120,54 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+@pytest.mark.asyncio
+async def test_dedicated_agent_run_forwards_mcp_context_to_chat_admission(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def get_session(_conn, **_kwargs):
+        return {"workspace_id": "workspace-a", "agent_id": "agent-a"}
+
+    async def chat_stream(request, *, agent_id, principal):
+        observed["request"] = request
+        observed["agent_id"] = agent_id
+        observed["user_id"] = principal.user_id
+        return ChatStreamResponse(
+            session_id=request.session_id,
+            run_id="run-a",
+            status="queued",
+            submission_id=str(request.submission_id),
+        )
+
+    monkeypatch.setattr(agent_profiles_module, "transaction", fake_transaction)
+    monkeypatch.setattr(
+        agent_profiles_module.repositories,
+        "get_authorized_session_projection",
+        get_session,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
+
+    response = await agent_profiles_module._submit_dedicated_agent_run(
+        agent_id="agent-a",
+        session_id="session-a",
+        request=AgentAppRunRequest(
+            message="Use the selected MCP tool",
+            submission_id="11111111-1111-4111-8111-111111111111",
+            mcp_context_id="mcpctx-profile",
+        ),
+        principal=principal(),
+    )
+
+    request = observed["request"]
+    assert isinstance(request, ChatStreamRequest)
+    assert request.mcp_context_id == "mcpctx-profile"
+    assert observed == {
+        "request": request,
+        "agent_id": "agent-a",
+        "user_id": "user-a",
+    }
+    assert response.run_id == "run-a"
 
 
 def test_selected_skill_contract_is_shared_nested_and_strict():
@@ -2282,7 +2350,10 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
             "agent_id": "general-agent",
             "skill_id": "general-chat",
             "status": "succeeded",
-            "input_json": {},
+            "input_json": {
+                "message": "run with MCP",
+                "mcp_context_id": "mcpctx-private",
+            },
             "result_json": {"message": "done"},
             "error_code": None,
             "error_message": None,
@@ -2321,6 +2392,8 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
     assert payload["skill_id"] is None
     assert "executor_schema_version" not in payload or payload["executor_schema_version"] is None
     assert payload["capability_id"] == "general_chat"
+    assert payload["input"] == {"message": "run with MCP"}
+    assert "mcp_context_id" not in payload["input"]
 
 
 @pytest.mark.asyncio
@@ -3703,6 +3776,7 @@ def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities()
 @pytest.mark.asyncio
 async def test_create_run_capability_distribution_ensures_user_and_binds_auth_snapshot(monkeypatch):
     calls = []
+    preflight_calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return skill()
@@ -3739,6 +3813,20 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         calls.append(("enqueue", payload["user_id"], payload["tenant_id"], payload["run_id"]))
         return 1
 
+    async def fake_preflight(**kwargs):
+        preflight_calls.append(kwargs)
+        return None
+
+    async def fake_bind_mcp_context(conn, **kwargs):
+        calls.append(
+            (
+                "bind_mcp_context",
+                kwargs["tenant_id"],
+                kwargs["run_id"],
+                kwargs["mcp_context_id"],
+            )
+        )
+
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.runs.repositories.ensure_user", fake_ensure_user)
@@ -3751,6 +3839,12 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.run_mcp_tool_ids_for_skill",
+        lambda *_args, **_kwargs: ["legacy-static-tool"],
+    )
+    monkeypatch.setattr("app.routes.runs.preflight_mcp_admission", fake_preflight)
+    monkeypatch.setattr("app.routes.runs.bind_run_mcp_context", fake_bind_mcp_context)
 
     response = await create_run(
         CreateRunRequest(
@@ -3759,6 +3853,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             user_id="forged-user",
             agent_id="qa-word-review",
             capability_id="document_review",
+            mcp_context_id="mcpctx-agent-profile",
         ),
         principal=principal(
             user_id="phaseb-smoke",
@@ -3777,11 +3872,20 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     ]
     assert ("bind_files_to_run", "phaseb-smoke") in calls
     assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
+    assert any(
+        item[0:2] == ("bind_mcp_context", "default")
+        and item[2] == response.run_id
+        and item[3] == "mcpctx-agent-profile"
+        for item in calls
+    )
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
     enqueue_index = next(index for index, item in enumerate(calls) if item[0] == "enqueue")
     assert snapshot_index < event_index < enqueue_index
     assert any(item[0:3] == ("enqueue", "phaseb-smoke", "default") and item[3].startswith("run_") for item in calls)
+    assert len(preflight_calls) == 1
+    assert preflight_calls[0]["context_id"] == "mcpctx-agent-profile"
+    assert preflight_calls[0]["mcp_required"] is True
 
 
 @pytest.mark.asyncio
@@ -3789,6 +3893,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     """A direct create must persist its failure state after the creation commit."""
 
     committed: list[list[tuple[str, str]]] = []
+    invalidated: list[str] = []
 
     class TransactionState:
         def __init__(self) -> None:
@@ -3805,7 +3910,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
             committed.append(list(state.pending))
 
     async def resolve_skill(_conn, **_kwargs):
-        return skill()
+        return skill(backing_mcp_tool_id="inventory-search")
 
     async def ensure_user(_conn, **_kwargs):
         return None
@@ -3819,6 +3924,9 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
 
     async def noop(*_args, **_kwargs):
         return None
+
+    async def invalidate(context_id):
+        invalidated.append(context_id)
 
     async def fail_enqueue(_payload):
         raise RuntimeError("queue unavailable")
@@ -3834,6 +3942,9 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     monkeypatch.setattr("app.routes.runs.repositories.create_run", create_durable_run)
     monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.runs.preflight_mcp_admission", noop)
+    monkeypatch.setattr("app.routes.runs.bind_run_mcp_context", noop)
+    monkeypatch.setattr("app.routes.runs.invalidate_mcp_runtime_context", invalidate)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
 
@@ -3843,6 +3954,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
                 workspace_id="default",
                 agent_id="qa-word-review",
                 capability_id="document_review",
+                mcp_context_id="mcpctx-enqueue-failure",
             ),
             principal=principal(),
         )
@@ -3851,6 +3963,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     assert len(committed) == 2
     assert committed[0] and committed[0][0][0] == "run_created"
     assert committed[1] == [("run_failed", committed[0][0][1])]
+    assert invalidated == ["mcpctx-enqueue-failure"]
 
 
 @pytest.mark.asyncio
@@ -3956,6 +4069,7 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
 @pytest.mark.asyncio
 async def test_create_run_file_admission_denial_precedes_identity_and_run_writes(monkeypatch):
     writes = []
+    invalidated = []
 
     async def active_harness_agent(*args, **kwargs):
         return {"agent_type": "chat"}
@@ -3963,13 +4077,25 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
     async def deny_files(*args, **kwargs):
         raise RepositoryConflictError("file_scope_mismatch")
 
+    async def authorize_mcp(*_args, **_kwargs):
+        return [{"tool_id": "inventory-search"}]
+
+    async def preflight(**_kwargs):
+        return None
+
+    async def invalidate(context_id):
+        invalidated.append(context_id)
+
     async def record_write(*args, **kwargs):
         writes.append(kwargs)
         raise AssertionError("file admission must precede writes")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
+    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
     monkeypatch.setattr(repository_module, "authorize_files_for_run", deny_files, raising=False)
+    monkeypatch.setattr("app.routes.runs.preflight_mcp_admission", preflight)
+    monkeypatch.setattr("app.routes.runs.invalidate_mcp_runtime_context", invalidate)
     monkeypatch.setattr(repository_module, "ensure_user", record_write)
     monkeypatch.setattr(repository_module, "create_session", record_write)
     monkeypatch.setattr(repository_module, "create_run", record_write)
@@ -3981,6 +4107,8 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
                 agent_id="general-agent",
                 capability_id="general_chat",
                 file_ids=["file-forged"],
+                input={"mcp_tool_ids": ["inventory-search"]},
+                mcp_context_id="mcpctx-file-denied",
             ),
             principal=principal(),
         )
@@ -3988,6 +4116,7 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "file_scope_mismatch"
     assert writes == []
+    assert invalidated == ["mcpctx-file-denied"]
 
 
 @pytest.mark.asyncio

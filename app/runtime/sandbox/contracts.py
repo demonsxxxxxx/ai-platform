@@ -21,6 +21,7 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
+MCP_RELAY_CALLBACK_PATH = "/api/ai/mcp/relay"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -54,6 +55,7 @@ class TrustedCallbackTarget:
     callback_url: str
     tool_permission_url: str
     context_retrieval_url: str
+    mcp_relay_url: str
     host: str
 
 
@@ -122,6 +124,7 @@ def build_trusted_callback_target(
         callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
         tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
         context_retrieval_url=f"{normalized_base_url}{EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH}",
+        mcp_relay_url=f"{normalized_base_url}{MCP_RELAY_CALLBACK_PATH}",
         host=host,
     )
 
@@ -177,6 +180,8 @@ class SandboxRuntimeRequest(BaseModel):
     context_manifest: dict[str, Any] = Field(default_factory=dict)
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
+    mcp_relay_url: str = ""
+    mcp_broker_capability: str = Field(default="", repr=False)
     governed_permission_wait: bool = False
     require_selected_skill_invocation: bool = True
     reconciliation_context: dict[str, Any] = Field(default_factory=dict)

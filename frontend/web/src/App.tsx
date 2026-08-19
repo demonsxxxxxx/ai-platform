@@ -25,6 +25,7 @@ import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
 import { APP_ROUTE_PATHS } from "./appRouteManifest";
 import { ChatRouteBoundary } from "./components/common/ChatRouteBoundary";
+import { McpAuthHandoffLifecycle } from "./components/auth/McpAuthHandoffLifecycle";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -328,6 +329,7 @@ function AuthPageWrapper({
 function App() {
   return (
     <ThemeProvider>
+      <McpAuthHandoffLifecycle />
       <ErrorBoundary>
         <Toaster
           position="top-center"
