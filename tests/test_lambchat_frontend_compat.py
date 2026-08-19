@@ -633,6 +633,7 @@ def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tm
         assert principal.user_id == "user-a"
         return SimpleNamespace(
             file_id="file_uploaded",
+            name="sample.docx",
             storage_key="tenants/default/files/file_uploaded/sample.docx",
             sha256="abc123",
             size_bytes=12,
