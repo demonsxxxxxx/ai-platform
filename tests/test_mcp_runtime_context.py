@@ -266,6 +266,28 @@ async def test_discard_unbound_context_preserves_bound_and_other_principal_conte
 
 
 @pytest.mark.asyncio
+async def test_discard_unbound_context_denies_cross_tenant_principal(monkeypatch):
+    now = _settings(monkeypatch)
+    store = InMemoryRuntimeContextStore(clock=lambda: now)
+    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
+    token = _jwt(exp=now + 900)
+    foreign = await manager.create_context(
+        principal=_principal(tenant_id="tenant-b"),
+        bearer_jwt=f"Bearer {token}",
+    )
+
+    discarded = await manager.discard_unbound_context(
+        foreign["mcp_context_id"],
+        _principal(tenant_id="tenant-a"),
+    )
+
+    assert discarded is False
+    assert await store.get(
+        f"ai-platform:mcp:runtime-context:v1:{foreign['mcp_context_id']}"
+    ) is not None
+
+
+@pytest.mark.asyncio
 async def test_runtime_context_ciphertext_cannot_be_relocated_to_another_context_key(
     monkeypatch,
 ):
@@ -335,6 +357,14 @@ def test_static_headers_reject_dynamic_name_and_round_trip_only_in_envelope(monk
 
     with pytest.raises(McpRuntimeContextError, match="mcp_header_duplicate"):
         normalize_static_mcp_headers({"X-API-Key": "a", "x-api-key": "b"})
+
+    assert normalize_static_mcp_headers(
+        {" X-API-Key ": "  static-secret  "}
+    ) == {"X-API-Key": "static-secret"}
+    assert normalize_static_mcp_headers({"X-Empty": "   "}) == {"X-Empty": ""}
+    for value in ("secret\x00value", "secret\x1fvalue", "secret\x7fvalue"):
+        with pytest.raises(McpRuntimeContextError, match="mcp_header_invalid"):
+            normalize_static_mcp_headers({"X-API-Key": value})
 
     envelope = seal_mcp_server_credentials(
         tenant_id="tenant-a",
@@ -861,7 +891,7 @@ async def test_preflight_requires_and_binds_context_before_mcp_admission(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_preflight_ignores_context_when_resolved_run_has_no_mcp(monkeypatch):
+async def test_preflight_discards_unbound_context_when_resolved_run_has_no_mcp(monkeypatch):
     now = _settings(monkeypatch)
     manager = McpRuntimeContextManager(
         store=InMemoryRuntimeContextStore(clock=lambda: now), clock=lambda: now
@@ -880,8 +910,30 @@ async def test_preflight_ignores_context_when_resolved_run_has_no_mcp(monkeypatc
     )
 
     assert result is None
-    record = await manager._read(context["mcp_context_id"])
-    assert record.bound_run_id is None
+    with pytest.raises(McpRuntimeContextError, match="mcp_context_not_found"):
+        await manager._read(context["mcp_context_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "preflight",
+    [preflight_mcp_admission, mcp_api.preflight_mcp_admission],
+)
+async def test_no_mcp_preflight_ignores_context_cleanup_infrastructure_failure(preflight):
+    class FailingContextManager:
+        async def discard_unbound_context(self, context_id, principal):
+            raise OSError("redis unavailable")
+
+    result = await preflight(
+        context_id="mcpctx-cleanup-failure",
+        principal=_principal(),
+        run_id="run-without-mcp",
+        selected_tool_names=(),
+        mcp_required=False,
+        context_manager=FailingContextManager(),
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio

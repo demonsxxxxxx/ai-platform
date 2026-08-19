@@ -8,6 +8,7 @@ import {
   getMcpGatewayJwt,
   isMcpAuthHandoffMessage,
   installMcpAuthHandoffLifecycle,
+  mcpGatewayAuthorizationHeaders,
   setMcpGatewayJwt,
 } from "../mcpGatewayAuth.ts";
 import { BROWSER_AUTH_INCARNATION_EVENT } from "../../hooks/browserAuthCoordinator.ts";
@@ -26,9 +27,13 @@ test("MCP JWT storage is isolated under its dedicated localStorage key", () => {
   setMcpGatewayJwt("  company.jwt  ");
   assert.equal(values.get(MCP_GATEWAY_JWT_STORAGE_KEY), "company.jwt");
   assert.equal(getMcpGatewayJwt(), "company.jwt");
+  assert.deepEqual(mcpGatewayAuthorizationHeaders(), {
+    "JWT-Authorization": "Bearer company.jwt",
+  });
   assert.equal(values.has("access_token"), false);
   clearMcpGatewayJwt();
   assert.equal(getMcpGatewayJwt(), null);
+  assert.deepEqual(mcpGatewayAuthorizationHeaders(), {});
 });
 
 test("handoff accepts only the exact message type, nonce, and non-empty token", () => {

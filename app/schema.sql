@@ -175,6 +175,9 @@ begin
 end $$;
 
 alter table mcp_servers
+  validate constraint mcp_servers_endpoint_not_persisted;
+
+alter table mcp_servers
   add column if not exists catalog_generation bigint not null default 0,
   add column if not exists catalog_sync_attempt bigint not null default 0,
   add column if not exists catalog_sync_lease_expires_at timestamptz,
@@ -364,6 +367,9 @@ begin
       check (endpoint = '') not valid;
   end if;
 end $$;
+
+alter table mcp_tools
+  validate constraint mcp_tools_endpoint_not_persisted;
 
 create table if not exists tool_policies (
   tenant_id text not null references tenants(id),

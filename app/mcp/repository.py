@@ -459,7 +459,6 @@ async def publish_mcp_tool_catalog(
     server_name: str,
     observed_generation: int,
     observed_attempt: int,
-    endpoint: str,
     tools: tuple[Any, ...],
     actor_id: str,
 ) -> dict[str, Any]:
@@ -874,7 +873,6 @@ class PostgresMcpCatalogStore:
                     server_name=command.server_name,
                     observed_generation=command.observed_generation,
                     observed_attempt=observed_attempt,
-                    endpoint=command.endpoint or "",
                     tools=tools,
                     actor_id=command.actor_id,
                 )

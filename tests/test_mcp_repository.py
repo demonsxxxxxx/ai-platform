@@ -87,7 +87,6 @@ async def test_expired_sync_takeover_claims_new_attempt_and_fences_old_attempt(m
         server_name="knowledge",
         observed_generation=7,
         observed_attempt=2,
-        endpoint="https://mcp.example/tools",
         tools=(),
         actor_id="admin-a",
     )
@@ -131,7 +130,6 @@ async def test_expired_sync_lease_rejects_outcome_and_publication_before_mutatio
         server_name="knowledge",
         observed_generation=7,
         observed_attempt=3,
-        endpoint="https://mcp.example/tools",
         tools=(),
         actor_id="admin-a",
     )
@@ -199,7 +197,6 @@ async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_
         server_name="compatible-server",
         observed_generation=7,
         observed_attempt=3,
-        endpoint="https://mcp.example/tools",
         tools=(
             McpDiscoveredTool("read_tool", "schema-read", True, MCP_TOOL_ANNOTATION_READ_ONLY),
             McpDiscoveredTool("write_tool", "schema-write", False, MCP_TOOL_ANNOTATION_WRITE_CAPABLE),
@@ -215,7 +212,7 @@ async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_
 
     assert result["catalog_status"] == "available"
     assert result["catalog_selectable_count"] == 3
-    assert all("https://mcp.example/tools" not in params for params in registry_writes)
+    assert all(len(params) == 8 for params in registry_writes)
     assert registry_by_remote_name == {
         "read_tool": ("active", False, "low"),
         "write_tool": ("active", True, "high"),
@@ -330,7 +327,6 @@ async def test_catalog_publication_is_idempotent_after_an_admin_owned_policy_and
         server_name="compatible-server",
         observed_generation=7,
         observed_attempt=4,
-        endpoint="https://mcp.example/tools",
         tools=(McpDiscoveredTool("unknown_tool", "schema-unknown", False, MCP_TOOL_ANNOTATION_UNKNOWN),),
         actor_id="admin-a",
     )
@@ -411,6 +407,7 @@ def test_catalog_runtime_metadata_rejects_persisted_plaintext_endpoint():
     }
 
     assert mcp_repository.mcp_runtime_metadata_usable(tool) is False
+    assert mcp_repository.mcp_runtime_metadata_usable({**tool, "endpoint": ""}) is True
 
 
 def test_only_the_code_owned_ragflow_builtin_has_legacy_catalog_authority():

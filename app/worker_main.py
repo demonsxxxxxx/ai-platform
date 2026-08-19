@@ -24,7 +24,6 @@ from app.db import close_pool, transaction
 from app.mcp.api import (
     invalidate_committed_terminal_run_mcp_context,
     invalidate_terminal_mcp_runtime_context,
-    migrate_legacy_mcp_credentials,
     persisted_mcp_context_id,
 )
 from app.executors.registry import AdapterRegistry
@@ -784,7 +783,6 @@ def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
 
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
     configure_mcp_runtime()
-    await migrate_legacy_mcp_credentials()
     await require_schema_current()
     registry = AdapterRegistry()
     worker_id = default_worker_id()
@@ -860,7 +858,6 @@ async def run_worker_pool(
         return
 
     configure_mcp_runtime()
-    await migrate_legacy_mcp_credentials()
     await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -909,7 +906,7 @@ async def run_worker_pool(
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     try:
         configure_mcp_runtime()
-        await migrate_legacy_mcp_credentials()
+        await require_schema_current()
         return await run_once(timeout_seconds=timeout_seconds)
     finally:
         await _close_runtime_clients()

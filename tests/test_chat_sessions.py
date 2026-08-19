@@ -33,12 +33,12 @@ def chat_submission_client(monkeypatch):
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
 
-    async def skip_mcp_credential_migration():
-        return {}
+    async def require_schema_current():
+        return {"ready": True}
 
     monkeypatch.setattr(
-        "app.main.migrate_legacy_mcp_credentials",
-        skip_mcp_credential_migration,
+        "app.main.require_schema_current",
+        require_schema_current,
     )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client

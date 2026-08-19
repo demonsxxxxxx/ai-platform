@@ -199,7 +199,6 @@ async def test_mcp_catalog_postgres_expiry_tenant_scope_and_rollback(monkeypatch
                 server_name="lease-server",
                 observed_generation=7,
                 observed_attempt=2,
-                endpoint="https://mcp.example.test/v1",
                 tools=(McpDiscoveredTool("stale_tool", "stale-schema", True),),
                 actor_id="admin-tenant-a",
             )
@@ -352,7 +351,6 @@ async def test_mcp_catalog_postgres_preserves_annotation_classification_distribu
                 server_name="compatible-server",
                 observed_generation=9,
                 observed_attempt=1,
-                endpoint="https://mcp.example.test/v1",
                 tools=tools,
                 actor_id="admin-a",
             )
@@ -462,7 +460,6 @@ async def test_mcp_catalog_postgres_preserves_annotation_classification_distribu
                 server_name="compatible-server",
                 observed_generation=9,
                 observed_attempt=2,
-                endpoint="https://mcp.example.test/v1",
                 tools=(tools[2],),
                 actor_id="admin-a",
             )
@@ -508,7 +505,6 @@ async def test_mcp_catalog_postgres_preserves_annotation_classification_distribu
                 server_name="compatible-server",
                 observed_generation=9,
                 observed_attempt=3,
-                endpoint="https://mcp.example.test/v1",
                 tools=(tools[2],),
                 actor_id="admin-a",
             )

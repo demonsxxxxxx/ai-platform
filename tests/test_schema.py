@@ -478,6 +478,7 @@ def test_schema_declares_user_skill_files():
 
 def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    normalized = " ".join(schema.split())
 
     assert "create table if not exists mcp_servers" in schema
     assert "tenant_id text not null references tenants(id)" in schema
@@ -485,11 +486,11 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "transport text not null default 'streamable_http'" in schema
     assert "endpoint_redacted text not null default ''" in schema
     assert "mcp_servers_endpoint_not_persisted" in schema
-    assert "check (endpoint_redacted = '')" in schema
-    assert "update mcp_servers set endpoint_redacted = ''" not in " ".join(schema.split())
+    assert "check (endpoint_redacted = '')" in normalized
+    assert "update mcp_servers set endpoint_redacted = ''" not in normalized
     assert (
         "alter table mcp_servers validate constraint mcp_servers_endpoint_not_persisted"
-        not in " ".join(schema.split())
+        in normalized
     )
     assert "credential_state text not null default 'not_configured'" in schema
     assert "credential_fingerprint text not null default ''" in schema
@@ -502,14 +503,14 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "primary key (tenant_id, server_name)" in schema
     assert "idx_mcp_servers_tenant_status" in schema
     assert "mcp_tools_endpoint_not_persisted" in schema
-    assert "update mcp_tools set endpoint = ''" not in " ".join(schema.split())
-    assert "endpoint = excluded.endpoint" not in schema
-    assert "where mcp_tools.endpoint = ''" in schema
+    assert "update mcp_tools set endpoint = ''" not in normalized
+    assert "endpoint = excluded.endpoint" not in normalized
+    assert "where mcp_tools.endpoint = ''" in normalized
     assert (
         "alter table mcp_tools validate constraint mcp_tools_endpoint_not_persisted"
-        not in " ".join(schema.split())
+        in normalized
     )
-    assert "check (endpoint = '')" in schema
+    assert "check (endpoint = '')" in normalized
 
 
 def test_schema_declares_tool_permission_inbox_index():

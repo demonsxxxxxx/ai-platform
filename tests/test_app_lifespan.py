@@ -18,17 +18,17 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
     async def fake_close_pool():
         calls.append("close_pool")
 
-    async def fake_migrate_legacy_mcp_credentials():
-        calls.append("migrate_mcp_credentials")
-        return {}
+    async def fake_require_schema_current():
+        calls.append("require_schema_current")
+        return {"ready": True}
 
     monkeypatch.setattr(main, "build_run_stream_runtime", lambda: runtime)
     monkeypatch.setattr(main, "close_redis_client", fake_close_redis_client)
     monkeypatch.setattr(main, "close_pool", fake_close_pool)
     monkeypatch.setattr(
         main,
-        "migrate_legacy_mcp_credentials",
-        fake_migrate_legacy_mcp_credentials,
+        "require_schema_current",
+        fake_require_schema_current,
     )
 
     app = main.create_app()
@@ -36,7 +36,7 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
         assert app.state.run_stream_runtime is runtime
 
     assert calls == [
-        "migrate_mcp_credentials",
+        "require_schema_current",
         "run_stream_runtime",
         "redis_client",
         "close_pool",

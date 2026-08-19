@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
 
 import pytest
 
@@ -190,29 +191,21 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 @pytest.mark.asyncio
-async def test_apply_schema_runs_mcp_credential_migration_after_core_schema(monkeypatch):
+async def test_apply_schema_runs_only_the_one_shot_schema_migration(monkeypatch):
     calls = []
 
     async def apply_core_schema():
         calls.append("core_schema")
 
-    async def migrate_mcp_credentials():
-        calls.append("mcp_credentials")
-        return {}
-
     monkeypatch.setattr(schema_migrations, "apply_migrations", apply_core_schema)
-    monkeypatch.setattr(
-        "app.mcp.api.migrate_legacy_mcp_credentials",
-        migrate_mcp_credentials,
-    )
 
     await db.apply_schema()
 
-    assert calls == ["core_schema", "mcp_credentials"]
+    assert calls == ["core_schema"]
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.18.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.19.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -389,6 +382,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'retry'::text, 'finalized'::text]))",
         ),
     )
+    source = Path("app/schema_migrations.py").read_text(encoding="utf-8")
+    normalized_source = " ".join(source.split())
+    assert r"^check\\(\\((.*)\\)\\)$" in normalized_source
+    assert r"'check(\\1)'" in normalized_source
     assert (
         "object_deletion_outbox",
         "lease_generation",
@@ -445,7 +442,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "6bcb8eff6adf840126cee4954035dd15ca26a0ed61fe5f628ad95f897c5298f3"
+        "83cd476628e2a7814da471b600804fde3f4c3fc2204426663718bef3b46235d5"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

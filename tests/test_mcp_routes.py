@@ -243,7 +243,16 @@ def install_mcp_route_fakes(
 
     class FakeCatalogSynchronizer:
         async def synchronize(self, command):
-            calls.append(("catalog_sync", {"server_name": command.server_name, "generation": command.observed_generation}))
+            calls.append(
+                (
+                    "catalog_sync",
+                    {
+                        "server_name": command.server_name,
+                        "generation": command.observed_generation,
+                        "jwt_authorization": command.jwt_authorization,
+                    },
+                )
+            )
 
             class Result:
                 def public_payload(self):
@@ -415,7 +424,10 @@ def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_re
     response = client.post(
         "/api/mcp/ragflow/catalog/sync",
         json={"url": "https://mcp.example/tools"},
-        headers=headers(roles="admin"),
+        headers={
+            **headers(roles="admin"),
+            "JWT-Authorization": "Bearer current-user.jwt",
+        },
     )
 
     assert response.status_code == 200
@@ -811,11 +823,11 @@ def test_command_mcp_without_connection_material_skips_credential_sealing(monkey
         for name, payload in calls
         if name == "record_credential" and payload["server_name"] == "command-only"
     )
-    assert credential_write["credential_envelope"] is None
+    assert credential_write["credential_envelope"] == ""
 
 
 def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
-    install_mcp_route_fakes(monkeypatch)
+    calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
     create_denied = client.post(
@@ -838,7 +850,10 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
             "allowed_roles": [" QA-Operator ", "qa-operator"],
             "department_ids": [" QA ", "qa"],
         },
-        headers=headers(roles="admin"),
+        headers={
+            **headers(roles="admin"),
+            "JWT-Authorization": "Bearer current-user.jwt",
+        },
     )
     assert create_response.status_code == 200
     created = create_response.json()
@@ -852,6 +867,24 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
     assert "plain-secret" not in str(created)
     assert "Bearer" not in str(created)
     assert "https://mcp.example" not in str(created)
+    registry_write = next(
+        payload
+        for name, payload in calls
+        if name == "upsert_server" and payload["name"] == "custom"
+    )
+    credential_write = next(
+        payload
+        for name, payload in calls
+        if name == "record_credential" and payload["server_name"] == "custom"
+    )
+    assert registry_write["endpoint_redacted"] == ""
+    assert credential_write["credential_envelope"] == "sealed-mcp-credential-envelope"
+    catalog_sync = next(
+        payload
+        for name, payload in calls
+        if name == "catalog_sync" and payload["server_name"] == "custom"
+    )
+    assert catalog_sync["jwt_authorization"] == "Bearer current-user.jwt"
 
     toggle_response = client.patch("/api/mcp/ragflow/toggle", headers=headers(roles="admin"))
     assert toggle_response.status_code == 200

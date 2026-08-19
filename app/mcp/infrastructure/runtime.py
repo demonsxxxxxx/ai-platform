@@ -1461,6 +1461,12 @@ async def preflight_mcp_admission(
     """Fail before persistence whenever an admitted Run requires MCP."""
 
     if not mcp_required:
+        if context_id:
+            manager = context_manager or get_mcp_runtime_context_manager()
+            try:
+                await manager.discard_unbound_context(context_id, principal)
+            except Exception:  # noqa: BLE001 - expiry remains the final cleanup fence.
+                pass
         return None
     if not context_id:
         raise McpRuntimeContextError("mcp_context_required", status_code=409)

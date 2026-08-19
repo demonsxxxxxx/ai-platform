@@ -20,6 +20,11 @@ export function getMcpGatewayJwt(): string | null {
   return browserLocalStorage()?.getItem(MCP_GATEWAY_JWT_STORAGE_KEY) ?? null;
 }
 
+export function mcpGatewayAuthorizationHeaders(): Record<string, string> {
+  const jwt = getMcpGatewayJwt()?.trim();
+  return jwt ? { "JWT-Authorization": `Bearer ${jwt}` } : {};
+}
+
 export function setMcpGatewayJwt(jwt: string): void {
   const normalized = jwt.trim();
   if (!normalized) {

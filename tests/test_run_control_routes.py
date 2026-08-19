@@ -130,7 +130,7 @@ def stub_run_event_append(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypatch):
+def _stub_run_control_route_dependencies(monkeypatch):
     async def update_auth_snapshot(*_args, **_kwargs):
         return None
 
@@ -175,7 +175,9 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
 
-    async def get_authorized_source_run(*_args, **_kwargs):
+    # Autouse fixtures run before each test body, so a test-specific stub can
+    # replace this neutral default when it needs an authorized source row.
+    async def get_authorized_run(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(
@@ -235,7 +237,7 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     )
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_authorized_run",
-        get_authorized_source_run,
+        get_authorized_run,
         raising=False,
     )
 
@@ -6006,8 +6008,7 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
 
     async def invalidate(*, tenant_id, run_id, status, transaction_factory):
         assert transaction_factory is not None
-        if status in {"succeeded", "failed", "cancelled"}:
-            invalidated.append((tenant_id, run_id, status))
+        invalidated.append((tenant_id, run_id, status))
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)

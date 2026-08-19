@@ -21,7 +21,8 @@ def normalize_static_mcp_headers(
         name = raw_name.strip()
         if not _HTTP_HEADER_NAME_PATTERN.fullmatch(name):
             raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
-        if "\r" in raw_value or "\n" in raw_value or "\x00" in raw_value:
+        value = raw_value.strip()
+        if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
             raise McpRuntimeContextError("mcp_header_invalid", status_code=400)
         folded = name.casefold()
         if folded == MCP_JWT_AUTHORIZATION_HEADER.casefold():
@@ -29,5 +30,5 @@ def normalize_static_mcp_headers(
         if folded in names_by_folded:
             raise McpRuntimeContextError("mcp_header_duplicate", status_code=400)
         names_by_folded.add(folded)
-        normalized[name] = raw_value
+        normalized[name] = value
     return normalized
