@@ -48,6 +48,8 @@ def test_reconciler_restores_top_level_run_payload_context():
             "trace_id": "trace-a",
             "schema_version": "ai-platform.run-payload.v2",
             "skill_manifests": [],
+            "agent_profile": {},
+            "agent_profile_expected": True,
         },
         "adapter_context": {},
     }
@@ -57,6 +59,7 @@ def test_reconciler_restores_top_level_run_payload_context():
     assert context["adapter_context"] == {}
     assert payload.run_id == "run-a"
     assert payload.attempt_id == "attempt-a"
+    assert row["executor_terminal_json"]["diagnostics"] == ["agent_profile_transport_lost"]
 
 
 def _result() -> ExecutorResult:

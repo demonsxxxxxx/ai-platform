@@ -11,6 +11,7 @@ from dataclasses import replace
 
 from app import repositories
 from app.db import transaction
+from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
@@ -71,7 +72,9 @@ def _context_payload(lease_row: dict[str, Any]) -> tuple[dict[str, Any], RunPayl
     run_payload_data = context.get("run_payload")
     if not isinstance(run_payload_data, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
-    return context, RunPayload(**run_payload_data)
+    terminal_result = lease_row.get("executor_terminal_json")
+    result = terminal_result if isinstance(terminal_result, dict) else {}
+    return context, restored_sandbox_run_payload(run_payload_data, RunPayload, result)
 
 
 def _context_and_payload(lease_row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], RunPayload]:
@@ -328,6 +331,14 @@ async def reconcile_pending_executor_terminals_once(
                 )
             raise
         except Exception as exc:  # noqa: BLE001 - durable retry boundary.
+            _logger.exception(
+                "executor_terminal_reconciliation_failed",
+                extra={
+                    "lease_id": str(lease_row["id"]),
+                    "run_id": str(lease_row["run_id"]),
+                    "error_type": type(exc).__name__,
+                },
+            )
             async with transaction() as conn:
                 await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
                     conn,
