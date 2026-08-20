@@ -12,7 +12,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
+from app import agent_conversation_repository, repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_AGENT_PROFILE_TEST_DSN"
@@ -762,6 +762,7 @@ async def test_postgres_agent_history_projects_only_legacy_default_titles():
         ):
             await create_history_session(session_id, title, title_source)
 
+        blank_task = " \n\t "
         first_task = "Investigate\nbatch variance and prepare a detailed remediation plan"
         await conn.execute(
             """
@@ -771,6 +772,8 @@ async def test_postgres_agent_history_projects_only_legacy_default_titles():
               ('msg-legacy-assistant', 'tenant-profile-chat', 'ses-legacy-default', null,
                'assistant', 'Assistant text must not become the title', '{}'::jsonb,
                '2026-08-20T00:00:00Z'::timestamptz),
+              ('msg-legacy-blank', 'tenant-profile-chat', 'ses-legacy-default', null,
+               'user', %s, '{}'::jsonb, '2026-08-20T00:00:30Z'::timestamptz),
               ('msg-legacy-first', 'tenant-profile-chat', 'ses-legacy-default', null,
                'user', %s, '{}'::jsonb, '2026-08-20T00:01:00Z'::timestamptz),
               ('msg-legacy-later', 'tenant-profile-chat', 'ses-legacy-default', null,
@@ -786,10 +789,10 @@ async def test_postgres_agent_history_projects_only_legacy_default_titles():
                'user', 'A migrated custom title must win', '{}'::jsonb,
                '2026-08-20T00:05:00Z'::timestamptz)
             """,
-            (first_task,),
+            (blank_task, first_task),
         )
 
-        rows = await repositories.list_authorized_agent_conversations(
+        rows = await agent_conversation_repository.list_authorized_agent_conversations(
             conn,
             tenant_id="tenant-profile-chat",
             user_id="user-profile-chat",
