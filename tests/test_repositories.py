@@ -29,6 +29,7 @@ from app.platform.postgres.sandbox_leases import (
     fence_sandbox_lease_release,
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
+    record_sandbox_executor_terminal_diagnostics,
 )
 from app.streaming import redis as streaming_redis
 from app.repositories import (
@@ -174,7 +175,7 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
     assert "not exists ( select 1 from sandbox_leases" in conn.sql
     assert "sandbox_leases.status = 'active'" in conn.sql
     assert "sandbox_leases.executor_terminal_json is not null" in conn.sql
-    assert "sandbox_leases.executor_reconciliation_status <> 'finalized'" in conn.sql
+    assert "sandbox_leases.executor_reconciliation_status is distinct from 'finalized'" in conn.sql
     assert "for update of runs skip locked" not in conn.sql
     assert conn.params == (900, 900, 25)
 
@@ -244,6 +245,8 @@ async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_can
     assert "status = %s" in update_sql
     assert "cancel_requested_at is not null" in update_sql
     assert "not exists ( select 1 from sandbox_leases" in update_sql
+    assert "sandbox_leases.executor_terminal_json is not null" in update_sql
+    assert "sandbox_leases.executor_reconciliation_status is distinct from 'finalized'" in update_sql
     assert "greatest( coalesce((select max(created_at)" in update_sql
     assert update_params[4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
     assert update_params[-3:] == (
@@ -9752,6 +9755,27 @@ async def test_sandbox_executor_terminal_receipt_is_attempt_fenced_and_idempoten
             executor_status="failed",
             terminal_result={"status": "failed", "run_id": "run-a"},
         )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_executor_terminal_diagnostics_are_claim_fenced():
+    conn = SingleRowConnection({"id": "lease-a"})
+
+    persisted = await record_sandbox_executor_terminal_diagnostics(
+        conn,
+        lease_id="lease-a",
+        claim_token="claim-a",
+        diagnostics=["agent_profile_transport_lost"],
+    )
+
+    assert persisted is True
+    assert "jsonb_set(executor_terminal_json" in conn.sql
+    assert "executor_reconciliation_claim_token = %s" in conn.sql
+    assert conn.params == (
+        json.dumps(["agent_profile_transport_lost"], ensure_ascii=False),
+        "lease-a",
+        "claim-a",
+    )
 
 
 @pytest.mark.asyncio

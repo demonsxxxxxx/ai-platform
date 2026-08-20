@@ -401,6 +401,13 @@ export function processMessageEvent(
           .filter((part) => part.type === "text" && !part.depth)
           .map((part) => (part.type === "text" ? part.content : ""))
           .join("");
+      const terminalMessage =
+        detailCode === "terminal_reconciliation_failed" && data.run_id
+          ? `${terminal.message} ${i18n.t("chat.runTerminal.runReference", {
+              defaultValue: "任务编号：{{runId}}",
+              runId: data.run_id,
+            })}`
+          : terminal.message;
       result.content = partialContent || terminal.message;
       result.cancelled = terminal.detailKind === "cancelled";
       result.parts = upsertRunStatusPart(parts, {
@@ -408,7 +415,7 @@ export function processMessageEvent(
         event_id: `terminal-detail:${data.run_id || messageId || detailCode}`,
         event_type: detailCode,
         stage: terminal.stage,
-        message: terminal.message,
+        message: terminalMessage,
         severity: terminal.severity,
         created_at: data.timestamp,
       });

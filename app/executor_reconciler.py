@@ -94,8 +94,20 @@ async def _collect_workspace_and_convert_result(
     lease_row: dict[str, Any],
     *,
     registry: AdapterRegistry,
+    claim_token: str,
 ) -> tuple[ExecutorResult, Any, Any]:
     context, terminal_result, run_payload = _context_and_payload(lease_row)
+    diagnostics = terminal_result.get("diagnostics")
+    if isinstance(diagnostics, list) and diagnostics:
+        async with transaction() as conn:
+            persisted = await sandbox_lease_repository.record_sandbox_executor_terminal_diagnostics(
+                conn,
+                lease_id=str(lease_row["id"]),
+                claim_token=claim_token,
+                diagnostics=[str(item) for item in diagnostics],
+            )
+        if not persisted:
+            raise RuntimeError("executor_reconciliation_claim_lost")
     adapter_name = str(context.get("adapter_name") or "").strip()
     adapter = registry.get(adapter_name)
     request = _reconciliation_request(lease_row, run_payload)
@@ -312,6 +324,7 @@ async def reconcile_pending_executor_terminals_once(
                 result, provider, lease = await _collect_workspace_and_convert_result(
                     lease_row,
                     registry=adapter_registry,
+                    claim_token=claim_token,
                 )
                 await reconcile_executor_terminal_result(
                     lease_row=lease_row,

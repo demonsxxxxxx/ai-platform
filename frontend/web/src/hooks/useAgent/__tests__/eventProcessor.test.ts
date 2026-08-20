@@ -92,6 +92,7 @@ test("projects terminal reconciliation failures as a specific safe terminal", ()
   assert.equal(terminal.event_type, "terminal_reconciliation_failed");
   assert.equal(terminal.stage, "terminal_reconciliation");
   assert.match(terminal.message, /terminal_reconciliation_failed/);
+  assert.match(terminal.message, /run-terminal-reconciliation/);
   assert.doesNotMatch(JSON.stringify(result), /workspace|private-token|TypeError/);
 });
 
