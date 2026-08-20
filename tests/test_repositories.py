@@ -11,7 +11,8 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import agent_conversation_repository, repositories, run_stale_terminalization
+from app import agent_conversation_repository, repositories
+from app.execution.application import stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
@@ -325,10 +326,7 @@ async def test_receipt_fenced_stale_terminalization_never_cancels_completed_exec
             calls.append((" ".join(sql.split()), params))
             return SingleRowCursor(None)
 
-    monkeypatch.setattr(run_stale_terminalization.repositories, "append_event", _record_noop_event)
-    monkeypatch.setattr(run_stale_terminalization.repositories, "append_audit_log", _record_noop_event)
-
-    staged = await run_stale_terminalization.stage_stale_run_reconciliation(
+    staged = await stale_terminalization.stage_stale_run_reconciliation(
         Connection(),
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -339,6 +337,8 @@ async def test_receipt_fenced_stale_terminalization_never_cancels_completed_exec
         terminal_status="failed",
         error_code="stale_run_interrupted",
         error_message="Run interrupted because no live execution owner remains.",
+        append_event=_record_noop_event,
+        append_audit_log=_record_noop_event,
     )
 
     assert staged is None

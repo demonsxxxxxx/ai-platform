@@ -1,16 +1,13 @@
-"""Receipt-aware stale-run terminalization for worker maintenance."""
+"""Receipt-aware stale-run terminalization application service."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
-
-from psycopg import AsyncConnection
-
-from app import repositories
 
 
 async def stage_stale_run_reconciliation(
-    conn: AsyncConnection,
+    conn: Any,
     *,
     tenant_id: str,
     workspace_id: str,
@@ -22,6 +19,8 @@ async def stage_stale_run_reconciliation(
     terminal_status: str,
     error_code: str | None,
     error_message: str | None,
+    append_event: Any,
+    append_audit_log: Any,
 ) -> dict[str, Any] | None:
     """CAS an ownerless stale run only when no executor terminal receipt exists."""
 
@@ -84,7 +83,7 @@ async def stage_stale_run_reconciliation(
         """,
         (
             terminal_status,
-            repositories.dumps_json(target_result),
+            json.dumps(target_result, ensure_ascii=False, separators=(",", ":")),
             error_code,
             error_message,
             tenant_id,
@@ -112,7 +111,7 @@ async def stage_stale_run_reconciliation(
     }
     if error_code:
         event_payload["error_code"] = error_code
-    await repositories.append_event(
+    await append_event(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -127,7 +126,7 @@ async def stage_stale_run_reconciliation(
         payload=event_payload,
         error_code=error_code,
     )
-    await repositories.append_audit_log(
+    await append_audit_log(
         conn,
         tenant_id=tenant_id,
         user_id=None,
