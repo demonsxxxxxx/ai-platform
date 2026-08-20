@@ -96,7 +96,7 @@ test("projects terminal reconciliation failures as a specific safe terminal", ()
   assert.doesNotMatch(JSON.stringify(result), /workspace|private-token|TypeError/);
 });
 
-
+test("projects oversized context files as a specific safe terminal", () => {
   const result = processMessageEvent(
     "final_detail",
     {
