@@ -3378,6 +3378,13 @@ async def reconcile_executor_terminal_result(
     if not isinstance(run_payload_value, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
     run_payload = RunPayload(**run_payload_value)
+    if (
+        context.get("agent_profile_expected") is True
+        and not run_payload.agent_profile
+    ):
+        diagnostics = result.result.setdefault("diagnostics", [])
+        if isinstance(diagnostics, list) and "agent_profile_transport_lost" not in diagnostics:
+            diagnostics.append("agent_profile_transport_lost")
     adapter_name = str(context.get("adapter_name") or "").strip()
     if not adapter_name:
         raise ValueError("executor_reconciliation_adapter_name_missing")

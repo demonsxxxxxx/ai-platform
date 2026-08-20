@@ -1434,7 +1434,7 @@ class ClaudeAgentWorkerAdapter:
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),
             governed_permission_wait=False,
-            require_selected_skill_invocation=not bool(payload.agent_profile),
+            require_selected_skill_invocation=False,
             reconciliation_context=reconciliation_context,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
@@ -2218,7 +2218,7 @@ class ClaudeAgentWorkerAdapter:
                     payload,
                     _context_manifest_from_pack(context_pack),
                 ),
-                "require_selected_skill_invocation": not autonomous_agent_profile,
+                "require_selected_skill_invocation": False,
             }
             if system_prompt:
                 sdk_kwargs["system_prompt"] = system_prompt
@@ -2681,6 +2681,34 @@ def _pin_manifests_for_result(pins: dict[str, dict[str, Any]], allowed_skill_nam
     return manifests
 
 
+def _non_secret_agent_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    """Return a non-secret agent_profile snapshot for reconciliation context.
+
+    Excludes `instructions` (system prompt) and any private fields; keeps
+    identity/version metadata sufficient to tell expert runs apart and to
+    detect transport loss.
+    """
+    if not isinstance(profile, dict) or not profile:
+        return {}
+    return {
+        "agent_id": str(profile.get("agent_id") or ""),
+        "revision": (
+            int(profile["revision"])
+            if isinstance(profile.get("revision"), int) and not isinstance(profile.get("revision"), bool)
+            else 0
+        ),
+        "content_hash": str(profile.get("content_hash") or ""),
+        "skill_set": [
+            {
+                "skill_id": str(item.get("skill_id") or ""),
+                "expected_version": str(item.get("expected_version") or ""),
+            }
+            for item in profile.get("skill_set") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def _sandbox_reconciliation_payload(payload: RunPayload) -> dict[str, Any]:
     """Persist only non-secret fields required by durable terminalization."""
 
@@ -2709,6 +2737,8 @@ def _sandbox_reconciliation_payload(payload: RunPayload) -> dict[str, Any]:
         "model_id": payload.model_id,
         "model_value": payload.model_value,
         "schema_version": payload.schema_version,
+        "agent_profile": _non_secret_agent_profile(payload.agent_profile),
+        "agent_profile_expected": bool(payload.agent_profile),
     }
 
 

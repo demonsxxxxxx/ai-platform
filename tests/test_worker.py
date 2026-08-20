@@ -2573,16 +2573,58 @@ async def test_sandbox_reconciliation_payload_excludes_prompt_and_private_contex
     )
 
     stored = _sandbox_reconciliation_payload(payload)
-    restored = RunPayload(**stored)
+    restored = RunPayload(
+        **{key: value for key, value in stored.items() if key not in {"agent_profile", "agent_profile_expected"}}
+    )
 
     assert restored.run_id == payload.run_id
     assert stored["input"] == {"platform_model_id": "model-1"}
     assert stored["file_ids"] == []
     assert "context_snapshot" not in stored
     assert "context_pack" not in stored
-    assert "agent_profile" not in stored
+    assert stored["agent_profile"] == {}
+    assert stored["agent_profile_expected"] is False
     assert "private prompt" not in json.dumps(stored)
     assert "private key" not in json.dumps(stored)
+
+
+async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile():
+    payload = RunPayload(
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        session_id="session-1",
+        run_id="run-1",
+        attempt_id="attempt-1",
+        agent_id="agent-1",
+        skill_id=None,
+        file_ids=[],
+        input={},
+        execution_kind=RUN_EXECUTION_KIND_HARNESS_CHAT,
+        trace_id="trace-1",
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        model_id="model-1",
+        model_value="provider-model",
+        agent_profile={
+            "agent_id": "agent-1",
+            "revision": 3,
+            "content_hash": "a" * 64,
+            "instructions": "private system prompt text",
+            "skill_set": [{"skill_id": "general-chat", "expected_version": "v2"}],
+        },
+    )
+
+    stored = _sandbox_reconciliation_payload(payload)
+
+    assert stored["agent_profile_expected"] is True
+    assert stored["agent_profile"] == {
+        "agent_id": "agent-1",
+        "revision": 3,
+        "content_hash": "a" * 64,
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "v2"}],
+    }
+    assert "private system prompt text" not in json.dumps(stored)
+    assert "instructions" not in stored["agent_profile"]
 
 
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):

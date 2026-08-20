@@ -5035,7 +5035,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
     assert result.error is None
     assert captured["model_id"] == "deepseek-v4-pro"
     assert captured["public_skill_metadata"] is None
-    assert captured["require_selected_skill_invocation"] is True
+    assert captured["require_selected_skill_invocation"] is False
 
 
 @pytest.mark.asyncio
