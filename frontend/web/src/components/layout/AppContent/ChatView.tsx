@@ -95,7 +95,6 @@ import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistory
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi } from "../../../services/api";
-import type { SessionInputFile } from "../../../services/api";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 import type { ModelOption } from "../../../services/api/modelPublic";
 import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
@@ -105,9 +104,13 @@ import {
   createArtifactDownloadScopeContext,
 } from "../../chat/ChatMessage/items/artifactDownloadRegistry";
 import {
-  mergeProjectedSessionFiles,
-  sessionInputFileToAttachment,
-} from "./sessionInputFiles";
+  projectSessionWorkspaceFiles,
+  sessionWorkspaceFileToAttachment,
+  sessionWorkspaceProjectionForRender,
+  type SessionWorkspaceFile,
+  type SessionWorkspaceProjection,
+} from "./sessionWorkspaceFiles";
+import { mergeProjectedSessionFiles } from "./sessionInputFiles";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -202,7 +205,6 @@ export function ChatView({
   toolsLoading,
   enabledToolsCount,
   totalToolsCount,
-  skills,
   taskSkills,
   selectedSkillState,
   onSelectSkill,
@@ -254,10 +256,17 @@ export function ChatView({
   const previousArtifactDownloadScopeRef = useRef(artifactDownloadScopeContext);
   const [composerDraft, setComposerDraft] = useState("");
   const appliedInitialDraftKeyRef = useRef<string | null>(null);
-  const [sessionFiles, setSessionFiles] = useState<SessionInputFile[]>([]);
-  const [sessionFilesStatus, setSessionFilesStatus] = useState<
-    "idle" | "loading" | "ready" | "error"
-  >("idle");
+  const [workspaceProjection, setWorkspaceProjection] =
+    useState<SessionWorkspaceProjection>({
+      session_id: null,
+      inputFiles: [],
+      files: [],
+      status: "idle",
+    });
+  const visibleWorkspaceProjection = sessionWorkspaceProjectionForRender(
+    workspaceProjection,
+    sessionId,
+  );
   const sessionRunning = isSessionRunning(messages, isLoading);
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
@@ -349,34 +358,47 @@ export function ChatView({
   useEffect(() => {
     let current = true;
     if (!sessionId) {
-      setSessionFiles([]);
-      setSessionFilesStatus("ready");
+      setWorkspaceProjection({
+        session_id: null,
+        inputFiles: [],
+        files: [],
+        status: "ready",
+      });
       return () => {
         current = false;
       };
     }
-    setSessionFiles([]);
-    setSessionFilesStatus("loading");
-    void sessionApi
-      .getInputFiles(sessionId)
-      .then((projection) => {
-        if (!current || projection.session_id !== sessionId) return;
-        setSessionFiles(projection.files);
-        setSessionFilesStatus("ready");
-      })
-      .catch(() => {
-        if (!current) return;
-        setSessionFiles([]);
-        setSessionFilesStatus("error");
-      });
+    setWorkspaceProjection((projection) =>
+      projection.session_id === sessionId
+        ? projection
+        : {
+            session_id: sessionId,
+            inputFiles: [],
+            files: [],
+            status: "loading",
+          },
+    );
+    void Promise.allSettled([
+      sessionApi.getInputFiles(sessionId),
+      sessionApi.getArtifactFiles(sessionId),
+    ]).then(([inputResult, artifactResult]) => {
+      if (!current) return;
+      setWorkspaceProjection(
+        projectSessionWorkspaceFiles(sessionId, inputResult, artifactResult),
+      );
+    });
     return () => {
       current = false;
     };
   }, [sessionId, currentRunId, messages.length, attachments.length]);
 
   const displayMessages = useMemo(
-    () => mergeProjectedSessionFiles(messages, sessionFiles),
-    [messages, sessionFiles],
+    () =>
+      mergeProjectedSessionFiles(
+        messages,
+        visibleWorkspaceProjection.inputFiles,
+      ),
+    [messages, visibleWorkspaceProjection.inputFiles],
   );
 
   const activeOutlineId = useMemo(() => {
@@ -622,9 +644,10 @@ export function ChatView({
     [navigate, sessionId, sessionRouteBasePath, t],
   );
 
-  const handleOpenSessionFile = useCallback(
-    (file: SessionInputFile) => {
+  const handleOpenWorkspaceFile = useCallback(
+    (file: SessionWorkspaceFile) => {
       if (!file.preview_url) {
+        if (!file.download_url) return;
         void downloadPreviewUrl({
           url: file.download_url,
           fileName: file.name,
@@ -633,13 +656,17 @@ export function ChatView({
         );
         return;
       }
-      openAttachmentPreview(sessionInputFileToAttachment(file), "session-files");
+      openAttachmentPreview(
+        sessionWorkspaceFileToAttachment(file),
+        "session-files",
+      );
     },
     [t],
   );
 
-  const handleDownloadSessionFile = useCallback(
-    (file: SessionInputFile) => {
+  const handleDownloadWorkspaceFile = useCallback(
+    (file: SessionWorkspaceFile) => {
+      if (!file.download_url) return;
       void downloadPreviewUrl({
         url: file.download_url,
         fileName: file.name,
@@ -767,16 +794,10 @@ export function ChatView({
 
   const rightPanel = (
     <WorkbenchRightPanel
-      sessionId={sessionId}
-      currentRunId={currentRunId}
-      messageCount={messages.length}
-      skills={skills}
-      tools={tools}
-      sessionFiles={sessionFiles}
-      sessionFilesStatus={sessionFilesStatus}
-      onOpenSessionFile={handleOpenSessionFile}
-      onDownloadSessionFile={handleDownloadSessionFile}
-      approvals={approvals}
+      files={visibleWorkspaceProjection.files}
+      filesStatus={visibleWorkspaceProjection.status}
+      onOpenFile={handleOpenWorkspaceFile}
+      onDownloadFile={handleDownloadWorkspaceFile}
     />
   );
 
