@@ -90,7 +90,9 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
 
     assert context["adapter_context"] == {}
     assert payload.run_id == "run-a"
-    assert row["executor_terminal_json"]["diagnostics"] == ["agent_profile_transport_lost"]
+    assert row["executor_terminal_json"]["diagnostics"] == [
+        "agent_profile_transport_lost"
+    ]
 
 
     return ExecutorResult(

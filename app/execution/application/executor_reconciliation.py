@@ -2,7 +2,9 @@ from collections.abc import Callable
 from typing import Any
 
 
-RECONCILIATION_SNAPSHOT_SCHEMA_VERSION = "ai-platform.executor-reconciliation-snapshot.v2"
+RECONCILIATION_SNAPSHOT_SCHEMA_VERSION = (
+    "ai-platform.executor-reconciliation-snapshot.v2"
+)
 
 
 def _non_secret_agent_profile(profile: object) -> dict[str, Any]:
