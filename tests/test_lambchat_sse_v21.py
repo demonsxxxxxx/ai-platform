@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -90,6 +92,19 @@ class ClosedSubscription:
         self.closed = True
 
 
+class BlockingSubscription:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def next(self, *, timeout_seconds=None):
+        self.started.set()
+        await asyncio.Event().wait()
+
+    async def aclose(self):
+        self.closed = True
+
+
 class FakeBridge:
     def __init__(self, rows, *, resume=None, resolve_error=None):
         self.rows = list(rows)
@@ -127,11 +142,11 @@ class FakeBridge:
 
 
 class FakeHub:
-    def __init__(self, bridge, *, on_subscribe=None):
+    def __init__(self, bridge, *, on_subscribe=None, subscription=None):
         self.bridge = bridge
         self.on_subscribe = on_subscribe
         self.calls = []
-        self.subscription = ClosedSubscription()
+        self.subscription = subscription or ClosedSubscription()
 
     async def subscribe(self, channel):
         self.calls.append("subscribe")
@@ -141,15 +156,17 @@ class FakeHub:
         return self.subscription
 
 
-def request_for(bridge, *, on_subscribe=None):
+def request_for(bridge, *, on_subscribe=None, subscription=None):
     runtime = SimpleNamespace(
         bridge=bridge,
-        hub=FakeHub(bridge, on_subscribe=on_subscribe),
+        hub=FakeHub(
+            bridge, on_subscribe=on_subscribe, subscription=subscription
+        ),
     )
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=runtime)))
 
 
-def patch_authority(monkeypatch, *, run=None):
+def patch_authority(monkeypatch, *, run=None, close_result=True):
     async def get_run(conn, *, tenant_id, user_id, run_id):
         return run or {"id": run_id, "session_id": "session-a", "status": "running"}
 
@@ -160,7 +177,7 @@ def patch_authority(monkeypatch, *, run=None):
         return lease()
 
     async def close(conn, **kwargs):
-        return True
+        return close_result
 
     async def get_intent(conn, *, tenant_id, run_id):
         return None
@@ -480,3 +497,51 @@ async def test_v3_redis_admission_outage_fails_before_response(monkeypatch):
             ),
         )
     assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_v3_admitted_terminal_body_records_one_safe_exit_with_lease_result(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch, close_result=False)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+
+    response, body = await connect(FakeBridge(terminal_rows()))
+
+    assert "event: end\n" in body
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "terminal_completed"
+    assert records[0].lease_released is False
+    assert records[0].run_id_prefix == "run-a"
+    assert records[0].attempt_id_prefix == "attempt-a"
+    assert response.body_iterator is not None
+
+
+@pytest.mark.asyncio
+async def test_v3_admitted_body_cancellation_closes_subscription_and_records_once(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+    subscription = BlockingSubscription()
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        request_for(FakeBridge([open_entry()]), subscription=subscription),
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    iterator = response.body_iterator
+    assert "event: stream_open" in await iterator.__anext__()
+    pending = asyncio.create_task(iterator.__anext__())
+    await subscription.started.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "client_disconnected"
+    assert subscription.closed is True

@@ -719,6 +719,43 @@ def test_stream_projector_withholds_identifier_until_split_token_is_complete():
     assert projector.flush() == ""
 
 
+@pytest.mark.parametrize(
+    ("secret_text", "split"),
+    [
+        ("api_key=sk-abcdefghi12", 9),
+        ("Bearer abcdefgh1", 7),
+        ("abcdefghij.klmnopqrst.uvwxyzabcd", 21),
+    ],
+)
+def test_stream_projector_matches_terminal_projection_at_secret_split_boundaries(
+    secret_text, split
+):
+    run = {
+        "id": "run-secret-parity",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    projector = PublicChatAnswerStreamProjector(run)
+    full_answer = f"ordinary {secret_text} after"
+
+    streamed = "".join(
+        (
+            projector.push(full_answer[: len("ordinary ") + split]),
+            projector.push(full_answer[len("ordinary ") + split :]),
+            projector.flush(),
+        )
+    )
+    terminal = public_chat_terminal_projection(
+        {**run, "status": "succeeded", "result_json": {"message": full_answer}}
+    )
+
+    assert terminal is not None
+    assert streamed == terminal["payload"]["content"]
+    assert secret_text not in streamed
+    assert "ordinary" in streamed
+
+
 def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
     run = {
         "id": "run-a",

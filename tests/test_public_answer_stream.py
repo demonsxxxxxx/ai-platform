@@ -1,6 +1,7 @@
 import pytest
 
 from app.executors.public_answer_stream import PublicAnswerStreamGate
+from app.platform.public_payload import sanitize_public_text
 
 
 IDENTITY = "mcp__tenant-server__search"
@@ -35,6 +36,33 @@ def test_unsealed_stream_emits_ordinary_text_and_redacts_full_known_identity():
     assert finished.chunks == ()
     assert finished.final_text == "ordinary answer. Used external tool safely."
     assert IDENTITY not in "".join((*first, *second, *finished.chunks))
+
+
+@pytest.mark.parametrize(
+    ("secret", "split"),
+    [
+        ("api_key=sk-abcdefghi12", 9),
+        ("Bearer abcdefgh1", 7),
+        ("abcdefghij.klmnopqrst.uvwxyzabcd", 21),
+    ],
+)
+def test_sanitizer_owned_secret_split_across_chunks_is_never_published(secret, split):
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=sanitize_public_text,
+        max_private_token_chars=64,
+        max_sealed_chars=256,
+    )
+
+    first = gate.accept(f"Before {secret[:split]}")
+    second = gate.accept(f"{secret[split:]} after")
+    finished = gate.finish(final_text=f"Before {secret} after", release=True)
+
+    public_text = "".join((*first, *second, *finished.chunks))
+    assert secret not in public_text
+    assert "Before" in public_text
+    assert "after" in public_text
+    assert "[redacted-secret]" in public_text
 
 
 def test_unsealed_stream_withholds_only_a_possible_private_token_prefix():

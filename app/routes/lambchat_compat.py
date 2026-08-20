@@ -1,6 +1,8 @@
 # ruff: noqa: B008
 
+import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -76,10 +78,24 @@ from app.streaming.redis import (
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
 _SSE_RETRYABLE_STARTUP_CODES = frozenset(
     {"sse_stream_not_admitted", "sse_stream_not_confirmed"}
 )
+_SSE_EXIT_REASONS = frozenset(
+    {
+        "terminal_completed",
+        "client_disconnected",
+        "live_source_closed",
+        "transport_failure",
+        "stream_contract_failure",
+    }
+)
+
+
+def _safe_sse_correlation(value: object) -> str:
+    return str(value or "")[:12]
 
 
 def _sse_conflict(code: str) -> HTTPException:
@@ -1623,18 +1639,20 @@ async def chat_session_stream(
     if lease is None:
         raise _sse_conflict("sse_authority_lease_unavailable")
 
-    async def release_lease() -> None:
+    async def release_lease(*, reason: str) -> bool:
         try:
             async with transaction() as conn:
-                await close_sse_authority_lease(
-                    conn, lease_id=lease.lease_id, reason="connection_closed"
+                return bool(
+                    await close_sse_authority_lease(
+                        conn, lease_id=lease.lease_id, reason=reason
+                    )
                 )
         except Exception:
-            pass
+            return False
 
     runtime = getattr(request.app.state, "run_stream_runtime", None)
     if runtime is None:
-        await release_lease()
+        await release_lease(reason="stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
     channel = stream_live_channel(
@@ -1679,18 +1697,39 @@ async def chat_session_stream(
     except StreamContractError as exc:
         if subscription is not None:
             await subscription.aclose()
-        await release_lease()
+        await release_lease(reason="stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
         if subscription is not None:
             await subscription.aclose()
-        await release_lease()
+        await release_lease(reason="transport_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
         terminal_event_id: str | None = restored_terminal_event_id
+        exit_reason = "transport_failure"
+        exit_recorded = False
+
+        async def record_exit() -> None:
+            nonlocal exit_recorded
+            if exit_recorded:
+                return
+            exit_recorded = True
+            if exit_reason not in _SSE_EXIT_REASONS:
+                raise RuntimeError("sse_exit_reason_invalid")
+            lease_released = await release_lease(reason=exit_reason)
+            logger.info(
+                "sse_stream_exit",
+                extra={
+                    "reason": exit_reason,
+                    "run_id_prefix": _safe_sse_correlation(run_id),
+                    "attempt_id_prefix": _safe_sse_correlation(authority.attempt_id),
+                    "stream_incarnation": authority.stream_incarnation,
+                    "lease_released": lease_released,
+                },
+            )
 
         async def refresh_lease() -> bool:
             nonlocal lease
@@ -1777,11 +1816,14 @@ async def chat_session_stream(
 
         try:
             if resume.gap is not None:
+                exit_reason = "stream_contract_failure"
                 yield _sse("gap", resume.gap.as_public_dict())
                 return
             if resume_already_ended:
+                exit_reason = "terminal_completed"
                 return
             if not await refresh_lease():
+                exit_reason = "transport_failure"
                 return
             await publish_pending_terminal()
             while after != replay_tail:
@@ -1797,17 +1839,20 @@ async def chat_session_stream(
                     raise StreamContractError("stream_replay_history_unavailable")
                 for entry in entries:
                     if not await refresh_lease():
+                        exit_reason = "transport_failure"
                         return
                     after = entry.cursor.redis_id
                     frame, ended = project_entry(entry)
                     if frame is not None:
                         yield frame
                     if ended:
+                        exit_reason = "terminal_completed"
                         return
                 if after == previous_after:
                     raise StreamContractError("stream_replay_history_unavailable")
             while True:
                 if not await refresh_lease():
+                    exit_reason = "transport_failure"
                     return
                 await publish_pending_terminal()
                 try:
@@ -1816,6 +1861,7 @@ async def chat_session_stream(
                     yield ": heartbeat\n\n"
                     continue
                 except LiveSubscriptionClosed:
+                    exit_reason = "live_source_closed"
                     return
                 if publication.channel != channel:
                     raise StreamContractError("stream_live_channel_mismatch")
@@ -1832,12 +1878,22 @@ async def chat_session_stream(
                 if frame is not None:
                     yield frame
                 if ended:
+                    exit_reason = "terminal_completed"
                     return
-        except (StreamTransportUnavailable, StreamContractError):
+        except asyncio.CancelledError:
+            exit_reason = "client_disconnected"
+            raise
+        except StreamTransportUnavailable:
+            exit_reason = "transport_failure"
+            return
+        except StreamContractError:
+            exit_reason = "stream_contract_failure"
             return
         finally:
-            await subscription.aclose()
-            await release_lease()
+            try:
+                await subscription.aclose()
+            finally:
+                await record_exit()
 
     return StreamingResponse(
         stream(),

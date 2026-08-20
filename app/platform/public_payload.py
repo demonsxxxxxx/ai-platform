@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.memory_redaction import is_sensitive_redaction_key, redact_memory_text
+from app.memory_redaction import (
+    MEMORY_REDACTION_MODE_STRICT,
+    is_sensitive_redaction_key,
+    redact_memory_text,
+)
 
 
 FORBIDDEN_PUBLIC_MARKERS = (
@@ -136,7 +140,7 @@ def sanitize_public_payload(value: Any, *, preserve_sensitive_keys: bool = False
     if isinstance(value, str):
         if _has_forbidden_public_marker(value):
             return None
-        return redact_memory_text(value)
+        return redact_memory_text(value, mode=MEMORY_REDACTION_MODE_STRICT)
     return value
 
 
