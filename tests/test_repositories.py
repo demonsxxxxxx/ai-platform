@@ -27,6 +27,7 @@ from app.platform.postgres.sandbox_leases import (
     SandboxLeaseReleaseScopeMismatchError,
     create_sandbox_lease,
     fence_sandbox_lease_release,
+    record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
 from app.streaming import redis as streaming_redis
@@ -9641,6 +9642,44 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
     assert "status = 'active'" in renew_sql
     assert "(expires_at is null or expires_at > now())" in renew_sql
     assert renew_params == (900, "tenant-a", "user-a", "run-a", "lease-a")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
+    class NoMatchConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    conn = NoMatchConnection()
+
+    recorded = await record_sandbox_executor_heartbeat(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="running",
+        ttl_seconds=731,
+    )
+
+    heartbeat_sql, heartbeat_params = conn.calls[0]
+    assert recorded is None
+    assert "expires_at = now() + make_interval(secs => %s)" in heartbeat_sql
+    assert "(expires_at is null or expires_at > now())" in heartbeat_sql
+    assert "executor_terminal_json is null" in heartbeat_sql
+    assert heartbeat_params == (
+        "running",
+        "running",
+        731,
+        "lease-a",
+        "tenant-a",
+        "run-a",
+        "attempt-a",
+    )
 
 
 @pytest.mark.asyncio

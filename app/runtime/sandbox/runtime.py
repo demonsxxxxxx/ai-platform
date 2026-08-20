@@ -334,7 +334,7 @@ class SandboxRuntime:
                     sandbox_mode=lease.sandbox_mode,
                     provider=lease.provider,
                     browser_enabled=lease.browser_enabled,
-                    ttl_seconds=1800,
+                    ttl_seconds=self.settings.sandbox_lease_ttl_seconds,
                     resource_limits_json=request.resource_limits,
                     user_visible_payload_json=workspace.user_visible_payload(),
                     lease_payload_json=lease_payload,
@@ -838,6 +838,7 @@ class SandboxRuntime:
                             attempt_id=request.attempt_id,
                             lease_id=lease_record_id,
                             reconciliation_context=request.reconciliation_context,
+                            ttl_seconds=self.settings.sandbox_lease_ttl_seconds,
                         )
                 return build_runtime_result(response)
             response = normalize_executor_reported_failure(

@@ -51,8 +51,15 @@ def callback_payload(**overrides):
     return payload
 
 
-def callback_settings(token: str):
-    return type("S", (), {"sandbox_callback_token": token})()
+def callback_settings(token: str, *, lease_ttl_seconds: int = 1800):
+    return type(
+        "S",
+        (),
+        {
+            "sandbox_callback_token": token,
+            "sandbox_lease_ttl_seconds": lease_ttl_seconds,
+        },
+    )()
 
 
 def patch_callback_settings(monkeypatch, settings_obj):
@@ -1303,3 +1310,52 @@ def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
     }
     assert [event["event_type"] for event in persisted] == ["executor_callback"]
     assert published[0].payload == {"delta": "text fallback"}
+
+
+def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
+    patch_callback_settings(
+        monkeypatch,
+        callback_settings("secret", lease_ttl_seconds=731),
+    )
+    heartbeat_calls = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        return [{"id": f"lease-{attempt_id}", "lease_payload_json": {"attempt_id": attempt_id}}]
+
+    async def fake_heartbeat(conn, **kwargs):
+        heartbeat_calls.append(kwargs)
+        return {"id": kwargs["lease_id"], "executor_status": "running"}
+
+    async def fake_append(conn, **kwargs):
+        return f"evt-{len(heartbeat_calls)}"
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_heartbeat",
+        fake_heartbeat,
+    )
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={}),
+    )
+    assert response.status_code == 200
+    assert heartbeat_calls
+    assert heartbeat_calls[0]["ttl_seconds"] == 731
+    assert heartbeat_calls[0]["executor_status"] == "running"
