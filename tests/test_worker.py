@@ -1715,6 +1715,111 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     )
 
 
+@pytest.mark.asyncio
+async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_message(
+    monkeypatch,
+):
+    persisted = base_payload(
+        _leased=False,
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "hello"},
+        executor_type="claude-agent-worker",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        agent_profile=None,
+    )
+    locked_run = locked_run_from_payload(persisted)
+    locked_run["status"] = "running"
+    calls = []
+    messages = []
+
+    async def get_run(_conn, *, tenant_id, run_id, for_update=False):
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        return dict(locked_run)
+
+    async def append_message(_conn, **kwargs):
+        messages.append(kwargs["content"])
+        return "message-a"
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "event-a"
+
+    async def complete_run(_conn, **kwargs):
+        calls.append(("complete", kwargs["run_id"]))
+        return True
+
+    async def has_reconciliation_claim(_conn, **kwargs):
+        return kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        has_reconciliation_claim,
+    )
+
+    queue_payload = QueueRunPayload.model_validate(persisted)
+    run_payload = RunPayload(
+        tenant_id=queue_payload.tenant_id,
+        workspace_id=queue_payload.workspace_id,
+        user_id=queue_payload.user_id,
+        session_id=queue_payload.session_id,
+        run_id=queue_payload.run_id,
+        attempt_id="attempt-a",
+        agent_id=queue_payload.agent_id,
+        execution_kind=queue_payload.execution_kind,
+        skill_id=queue_payload.skill_id,
+        file_ids=queue_payload.file_ids,
+        input=queue_payload.input,
+        trace_id="trace-a",
+        skill_manifests=queue_payload.skill_manifests,
+        release_decision=queue_payload.release_decision,
+        schema_version=queue_payload.schema_version,
+        agent_profile={},
+    )
+    lease_row = {
+        "id": "lease-a",
+        "attempt_id": "attempt-a",
+        "executor_reconciliation_context_json": {
+            "adapter_name": "claude-agent-worker",
+            "adapter_context": {},
+            "run_payload": sandbox_reconciliation_payload(run_payload),
+        },
+    }
+    result = ExecutorResult(
+        status="succeeded",
+        adapter_version="opensandbox/1",
+        executor_type="claude_agent_sdk",
+        executor_version="1",
+        capabilities={},
+        result={"message": "done"},
+        executor_payload={},
+    )
+
+    outcome = await worker_module.reconcile_executor_terminal_result(
+        lease_row=lease_row,
+        result=result,
+        registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
+        worker_id="worker-a",
+        claim_token="claim-a",
+    )
+
+    assert outcome == WorkerOutcome("succeeded", "run-a")
+    assert messages == ["done"]
+    assert ("complete", "run-a") in calls
+    assert ("event", "assistant_message_created") in calls
+    assert ("event", "run_succeeded") in calls
+
+
 def test_run_payload_accepts_only_complete_pinned_harness_profile():
     profile = {
         "agent_id": "agt_support",
@@ -2629,6 +2734,11 @@ async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile(
     }
     assert "private system prompt text" not in json.dumps(stored)
     assert "instructions" not in execution_payload["agent_profile"]
+
+    result = {}
+    restored = restored_sandbox_run_payload(stored, RunPayload, result)
+    assert restored.agent_profile == {}
+    assert result["diagnostics"] == ["agent_profile_transport_lost"]
 
 
 def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
