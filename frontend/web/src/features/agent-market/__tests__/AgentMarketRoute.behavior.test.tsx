@@ -820,7 +820,6 @@ test("Marketplace Start and workspace Start New Task each submit on the first ac
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const mcpRuntime = installSuccessfulMcpRuntimeContext(
-    dom.window.localStorage,
     "mcpctx-market-profile",
   );
   agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });

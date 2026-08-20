@@ -35,6 +35,7 @@ from app.mcp.api import (
     get_mcp_runtime_context_manager,
     normalize_static_mcp_headers,
     open_mcp_server_credentials,
+    read_mcp_principal_jwt,
     record_mcp_server_credential,
     seal_mcp_server_credentials,
 )
@@ -176,8 +177,11 @@ async def _synchronize_catalog(
     endpoint: str | None,
     credentialed: bool,
     static_headers: dict[str, str] | None = None,
-    jwt_authorization: str | None = None,
 ) -> dict[str, Any]:
+    try:
+        company_jwt = await read_mcp_principal_jwt(principal)
+    except McpRuntimeContextError as exc:
+        raise _mcp_runtime_http_error(exc) from exc
     result = await MCP_TOOL_CATALOG_SYNCHRONIZER.synchronize(
         McpToolCatalogSyncCommand(
             tenant_id=principal.tenant_id,
@@ -188,7 +192,7 @@ async def _synchronize_catalog(
             credentialed=credentialed,
             actor_id=principal.user_id,
             static_headers=dict(static_headers or {}),
-            jwt_authorization=jwt_authorization or "",
+            jwt_authorization=f"Bearer {company_jwt}",
         )
     )
     return result.public_payload()
@@ -571,7 +575,6 @@ async def _write_server(
     name: str,
     is_system: bool,
     action: str,
-    jwt_authorization: str | None,
 ) -> dict[str, Any]:
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
@@ -691,7 +694,6 @@ async def _write_server(
             endpoint=request.url,
             credentialed=bool(request.env_keys or request.command),
             static_headers=request.headers,
-            jwt_authorization=jwt_authorization,
         )
     else:
         server["catalog_sync"] = _catalog_sync_payload(row)
@@ -768,15 +770,15 @@ async def list_chat_mcp_tools(
 @router.post("/ai/mcp/runtime-contexts")
 async def create_mcp_runtime_context(
     response: Response,
-    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
-    """Create one opaque MCP-only context from the dedicated JWT header."""
+    """Create one opaque MCP-only context from the Principal's stored JWT."""
 
     try:
+        company_jwt = await read_mcp_principal_jwt(principal)
         result = await MCP_RUNTIME_CONTEXT_MANAGER.create_context(
             principal=principal,
-            bearer_jwt=jwt_authorization or "",
+            bearer_jwt=f"Bearer {company_jwt}",
         )
     except McpRuntimeContextError as exc:
         raise _mcp_runtime_http_error(exc) from exc
@@ -862,7 +864,6 @@ async def relay_mcp_jsonrpc(
 async def create_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
-    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Create a tenant-scoped MCP server registry entry without exposing credentials."""
 
@@ -876,7 +877,6 @@ async def create_mcp_server(
         name=request.name,
         is_system=False,
         action="mcp.server.created",
-        jwt_authorization=jwt_authorization,
     )
 
 
@@ -931,7 +931,6 @@ async def update_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
-    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Update a tenant-scoped MCP server registry entry without exposing credentials."""
 
@@ -944,7 +943,6 @@ async def update_mcp_server(
         name=safe_name,
         is_system=False,
         action="mcp.server.updated",
-        jwt_authorization=jwt_authorization,
     )
 
 
@@ -1058,7 +1056,6 @@ async def synchronize_mcp_server_catalog(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
-    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Run one explicit, generation-fenced discovery without retaining the request endpoint in public state."""
 
@@ -1109,7 +1106,6 @@ async def synchronize_mcp_server_catalog(
         endpoint=raw_url,
         credentialed=credentialed,
         static_headers=static_headers,
-        jwt_authorization=jwt_authorization,
     )
     return {
         "server_name": safe_name,
@@ -1194,7 +1190,6 @@ async def toggle_mcp_tool(
 async def create_admin_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
-    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Create a platform-admin managed MCP server registry entry."""
 
@@ -1208,7 +1203,6 @@ async def create_admin_mcp_server(
         name=request.name,
         is_system=True,
         action="admin.mcp.server.created",
-        jwt_authorization=jwt_authorization,
     )
 
 
@@ -1217,7 +1211,6 @@ async def update_admin_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
-    jwt_authorization: str | None = Header(default=None, alias="JWT-Authorization"),
 ) -> dict[str, Any]:
     """Update a platform-admin managed MCP server registry entry."""
 
@@ -1230,7 +1223,6 @@ async def update_admin_mcp_server(
         name=safe_name,
         is_system=True,
         action="admin.mcp.server.updated",
-        jwt_authorization=jwt_authorization,
     )
 
 

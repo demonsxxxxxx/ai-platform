@@ -39,6 +39,18 @@ def get_mcp_relay_auth_failure_limiter() -> RelayAuthFailureLimiterProxy:
     return _FAILURE_LIMITER_PROXY
 
 
+async def store_mcp_principal_jwt(principal: Any, jwt: str) -> None:
+    """Replace the encrypted company JWT bound to one Principal."""
+
+    await mcp_runtime_services().principal_jwt_store.put(principal, jwt)
+
+
+async def read_mcp_principal_jwt(principal: Any) -> str:
+    """Read the current unexpired company JWT bound to one Principal."""
+
+    return await mcp_runtime_services().principal_jwt_store.get(principal)
+
+
 def queue_input_with_mcp_context(
     input_payload: dict[str, Any],
     context_id: str | None,
@@ -187,6 +199,7 @@ __all__ = [
     "discard_unbound_mcp_runtime_context",
     "get_mcp_relay_auth_failure_limiter",
     "get_mcp_runtime_context_manager",
+    "read_mcp_principal_jwt",
     "invalidate_committed_terminal_run_mcp_context",
     "invalidate_mcp_runtime_context",
     "invalidate_terminal_mcp_runtime_context",
@@ -199,4 +212,5 @@ __all__ = [
     "queue_input_with_mcp_context",
     "record_mcp_server_credential",
     "seal_mcp_server_credentials",
+    "store_mcp_principal_jwt",
 ]

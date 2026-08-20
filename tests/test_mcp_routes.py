@@ -295,6 +295,15 @@ def install_mcp_route_fakes(
         calls.append(("audit", dict(kwargs)))
         return "aud-test"
 
+    async def fake_read_mcp_principal_jwt(principal):
+        calls.append(
+            (
+                "principal_jwt",
+                {"tenant_id": principal.tenant_id, "user_id": principal.user_id},
+            )
+        )
+        return "current-user.jwt"
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(
         mcp,
@@ -355,6 +364,7 @@ def install_mcp_route_fakes(
     )
     monkeypatch.setattr(mcp.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(mcp.repositories, "append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(mcp, "read_mcp_principal_jwt", fake_read_mcp_principal_jwt)
     monkeypatch.setattr(mcp, "MCP_TOOL_CATALOG_SYNCHRONIZER", FakeCatalogSynchronizer())
     return calls
 
@@ -424,10 +434,7 @@ def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_re
     response = client.post(
         "/api/mcp/ragflow/catalog/sync",
         json={"url": "https://mcp.example/tools"},
-        headers={
-            **headers(roles="admin"),
-            "JWT-Authorization": "Bearer current-user.jwt",
-        },
+        headers=headers(roles="admin"),
     )
 
     assert response.status_code == 200
@@ -449,6 +456,7 @@ def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_re
     }
     assert "mcp.example" not in response.text
     assert any(name == "catalog_sync" for name, _ in calls)
+    assert ("principal_jwt", {"tenant_id": "default", "user_id": "ordinary"}) in calls
 
 
 def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):
@@ -850,10 +858,7 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
             "allowed_roles": [" QA-Operator ", "qa-operator"],
             "department_ids": [" QA ", "qa"],
         },
-        headers={
-            **headers(roles="admin"),
-            "JWT-Authorization": "Bearer current-user.jwt",
-        },
+        headers=headers(roles="admin"),
     )
     assert create_response.status_code == 200
     created = create_response.json()

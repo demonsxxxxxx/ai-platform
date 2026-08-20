@@ -21,6 +21,7 @@ class _McpRuntimeServices:
             relay_target_reader=target_reader,
         )
         self.context_manager = mcp_runtime.get_mcp_runtime_context_manager()
+        self.principal_jwt_store = mcp_runtime.get_mcp_principal_jwt_store()
         self.relay_auth_failure_limiter = mcp_runtime.McpRelayAuthFailureLimiter()
 
     def create_host_relay(self, *, context_manager: Any | None = None) -> Any:

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MCP_GATEWAY_JWT_STORAGE_KEY } from "../../../utils/mcpGatewayAuth.ts";
 import type { UseAgentReturn } from "../types.ts";
 import { installTestDom } from "./testDom.ts";
 
@@ -110,7 +109,6 @@ test("auth changes during MCP context creation prevent chat submission", async (
   const requests: Array<{ url: string; init?: RequestInit }> = [];
 
   try {
-    dom.window.localStorage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, "company.jwt");
     globalThis.fetch = (async (input, init) => {
       requests.push({ url: String(input), init });
       if (init?.method === "DELETE") {
@@ -160,7 +158,7 @@ test("auth changes during MCP context creation prevent chat submission", async (
     assert.equal(mcpRequests[0]?.init?.method, "POST");
     assert.equal(
       new Headers(mcpRequests[0]?.init?.headers).get("JWT-Authorization"),
-      "Bearer company.jwt",
+      null,
     );
     assert.equal(
       mcpRequests[1]?.url,
@@ -174,7 +172,7 @@ test("auth changes during MCP context creation prevent chat submission", async (
   }
 });
 
-test("expired MCP context does not clear the gateway JWT", async () => {
+test("expired MCP context remains a backend-owned credential failure", async () => {
   const harness = await loadMcpSubmissionHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -183,7 +181,6 @@ test("expired MCP context does not clear the gateway JWT", async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
 
   try {
-    dom.window.localStorage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, "company.jwt");
     globalThis.fetch = (async (input, init) => {
       requests.push({ url: String(input), init });
       return new Response(JSON.stringify({ detail: "mcp_context_expired" }), {
@@ -202,10 +199,6 @@ test("expired MCP context does not clear the gateway JWT", async () => {
 
     assert.deepEqual(outcome, { status: "failed" });
     assert.equal(submissions, 0);
-    assert.equal(
-      dom.window.localStorage.getItem(MCP_GATEWAY_JWT_STORAGE_KEY),
-      "company.jwt",
-    );
     const mcpRequests = requests.filter(
       (request) => request.url === "/api/ai/mcp/runtime-contexts",
     );
@@ -213,7 +206,7 @@ test("expired MCP context does not clear the gateway JWT", async () => {
     assert.equal(mcpRequests[0]?.init?.method, "POST");
     assert.equal(
       new Headers(mcpRequests[0]?.init?.headers).get("JWT-Authorization"),
-      "Bearer company.jwt",
+      null,
     );
   } finally {
     sessionApi.submitChat = originalSubmitChat;

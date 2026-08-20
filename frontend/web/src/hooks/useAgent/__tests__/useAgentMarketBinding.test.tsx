@@ -4,7 +4,6 @@ import test from "node:test";
 import type { UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { Permission } from "../../../types/auth.ts";
-import { MCP_GATEWAY_JWT_STORAGE_KEY } from "../../../utils/mcpGatewayAuth.ts";
 import { installSuccessfulMcpRuntimeContext } from "./mcpRuntimeTestHarness.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
@@ -228,27 +227,6 @@ function installDom() {
 
 const dom = installDom();
 
-test("MCP runtime harness restores the JWT that existed before installation", () => {
-  const storage = dom.window.localStorage;
-  const originalJwt = storage.getItem(MCP_GATEWAY_JWT_STORAGE_KEY);
-  try {
-    storage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, "previous.jwt");
-    const runtime = installSuccessfulMcpRuntimeContext(storage);
-    try {
-      assert.equal(storage.getItem(MCP_GATEWAY_JWT_STORAGE_KEY), "company.jwt");
-    } finally {
-      runtime.restore();
-    }
-    assert.equal(storage.getItem(MCP_GATEWAY_JWT_STORAGE_KEY), "previous.jwt");
-  } finally {
-    if (originalJwt === null) {
-      storage.removeItem(MCP_GATEWAY_JWT_STORAGE_KEY);
-    } else {
-      storage.setItem(MCP_GATEWAY_JWT_STORAGE_KEY, originalJwt);
-    }
-  }
-});
-
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
     const key = dom.window.localStorage.key(index);
@@ -332,7 +310,6 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
 
   const harness = await loadHarness();
   const mcpRuntime = installSuccessfulMcpRuntimeContext(
-    dom.window.localStorage,
     "mcpctx-explicit-profile",
   );
   const submissions: unknown[][] = [];
@@ -432,7 +409,6 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
   const originalGetEvents = sessionApi.getEvents;
   const harness = await loadHarness();
   const mcpRuntime = installSuccessfulMcpRuntimeContext(
-    dom.window.localStorage,
     "mcpctx-bound-profile",
   );
   const submissions: unknown[][] = [];

@@ -60,6 +60,7 @@ EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
     "notification:admin",
     "notification:manage",
 ]
+COMPANY_JWT = "company.header.signature"
 
 
 def auth_settings(**overrides):
@@ -120,9 +121,13 @@ def fake_browser_auth_context(monkeypatch):
     async def fake_principal(context_handle, _settings):
         return principals.get(context_handle)
 
+    async def fake_store_mcp_principal_jwt(_principal, _jwt):
+        return None
+
     monkeypatch.setattr("app.routes.auth.bootstrap_auth_context", fake_bootstrap)
     monkeypatch.setattr("app.routes.auth.begin_auth_operation", fake_begin)
     monkeypatch.setattr("app.routes.auth.commit_auth_operation", fake_commit)
+    monkeypatch.setattr("app.routes.auth.store_mcp_principal_jwt", fake_store_mcp_principal_jwt)
     monkeypatch.setattr("app.auth.principal_for_context", fake_principal)
 
 
@@ -131,6 +136,60 @@ def browser_client() -> TestClient:
     response = client.post("/api/ai/auth/bootstrap", json={"nonce": "A" * 43})
     assert response.status_code == 200
     return client
+
+
+@pytest.mark.asyncio
+async def test_existing_login_uses_compatible_api_login_contract_and_preserves_token(monkeypatch):
+    from app.routes import auth as auth_routes
+
+    observed = {}
+    upstream_payload = {
+        "status": "success",
+        "workId": "W001",
+        "userName": "user001",
+        "token": COMPANY_JWT,
+    }
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return upstream_payload
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, json):
+            observed.update(url=url, body=json)
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        auth_routes,
+        "get_settings",
+        lambda: auth_settings(
+            existing_auth_base_url="http://company-auth.internal/",
+            existing_auth_timeout_seconds=15.0,
+        ),
+    )
+    monkeypatch.setattr(auth_routes.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    payload = await auth_routes.call_existing_login("user001", "pw")
+
+    assert observed == {
+        "url": "http://company-auth.internal/api/Login/",
+        "body": {
+            "userName": "user001",
+            "username": "user001",
+            "user_name": "user001",
+            "password": "pw",
+        },
+    }
+    assert payload["token"] == COMPANY_JWT
 
 
 def test_ai_admin_maps_admin_and_developer_roles():
@@ -240,10 +299,17 @@ def test_require_principal_accepts_signed_session_bearer(monkeypatch):
 
 
 def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
+    events = []
+
     async def fake_login(username, password):
         assert username == "dev001"
         assert password == "pw"
-        return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
+        return {
+            "workId": "dev001",
+            "userName": "dev001",
+            "cnName": "Developer",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         assert work_id == "dev001"
@@ -267,6 +333,16 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
         assert kwargs["payload_json"]["is_admin"] is True
         return "aud_1"
 
+    stored_jwts = []
+
+    async def fake_store_mcp_principal_jwt(principal, jwt):
+        events.append("store_jwt")
+        stored_jwts.append((principal.tenant_id, principal.user_id, jwt))
+
+    async def fake_commit_auth_operation(_operation, _principal):
+        events.append("commit_principal")
+        return "committed"
+
     settings = auth_settings(ai_session_cookie_secure=True)
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
@@ -275,6 +351,8 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.auth.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.routes.auth.store_mcp_principal_jwt", fake_store_mcp_principal_jwt)
+    monkeypatch.setattr("app.routes.auth.commit_auth_operation", fake_commit_auth_operation)
 
     client = browser_client()
     response = client.post("/api/ai/auth/login", json={"user_name": "dev001", "password": "pw"})
@@ -285,11 +363,18 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     assert response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
     assert response.json()["user_id"] == "dev001"
     assert "set-cookie" not in response.headers
+    assert stored_jwts == [("default", "dev001", COMPANY_JWT)]
+    assert events == ["store_jwt", "commit_principal"]
 
 
 def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+        return {
+            "workId": "user001",
+            "userName": "user001",
+            "cnName": "Normal User",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         return {
@@ -349,7 +434,12 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
 
 def test_company_login_projects_principal_denial_as_existing_safe_failure(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+        return {
+            "workId": "user001",
+            "userName": "user001",
+            "cnName": "Normal User",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         return {"roles": ["user"]}
@@ -374,7 +464,12 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
     async def fake_login(username, password):
         assert username == "user001"
         assert password == "pw"
-        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+        return {
+            "workId": "user001",
+            "userName": "user001",
+            "cnName": "Normal User",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         assert work_id == "user001"
@@ -585,7 +680,12 @@ def test_company_login_invalid_or_ambiguous_department_fails_closed(monkeypatch,
 
 def test_company_login_does_not_project_large_enterprise_permissions_into_session(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+        return {
+            "workId": "user001",
+            "userName": "user001",
+            "cnName": "Normal User",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         return {
@@ -623,7 +723,12 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
 
 def test_compat_login_projects_user_info_failure_as_existing_safe_failure(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+        return {
+            "workId": "user001",
+            "userName": "user001",
+            "cnName": "Normal User",
+            "token": COMPANY_JWT,
+        }
 
     async def failing_user_info(work_id):
         raise RuntimeError("user-info unavailable")
@@ -641,7 +746,12 @@ def test_compat_login_projects_user_info_failure_as_existing_safe_failure(monkey
 
 def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
+        return {
+            "workId": "dev001",
+            "userName": "dev001",
+            "cnName": "Developer",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         return {
@@ -680,7 +790,12 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
 
 def test_company_login_submitted_username_does_not_bypass_trusted_workid_admin_allowlist(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "W001", "userName": username, "cnName": "Developer"}
+        return {
+            "workId": "W001",
+            "userName": username,
+            "cnName": "Developer",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         assert work_id == "W001"
@@ -733,9 +848,133 @@ def test_company_unsuccessful_login_status_returns_401(monkeypatch):
     assert response.json()["detail"] == "company_login_failed"
 
 
+def test_company_success_payload_without_token_fails_closed(monkeypatch):
+    settings = auth_settings()
+    monkeypatch.setattr("app.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+    client = browser_client()
+
+    async def fake_login(username, password):
+        return {"workId": "user001", "userName": "user001", "status": "success"}
+
+    async def unexpected_user_info(_work_id):
+        raise AssertionError("missing login token must fail before user-info lookup")
+
+    async def unexpected_commit(*_args, **_kwargs):
+        raise AssertionError("missing login token must fail before Principal commit")
+
+    @asynccontextmanager
+    async def unexpected_transaction():
+        raise AssertionError("missing login token must fail before persistence")
+        yield
+
+    monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", unexpected_user_info)
+    monkeypatch.setattr("app.routes.auth.commit_auth_operation", unexpected_commit)
+    monkeypatch.setattr("app.routes.auth.transaction", unexpected_transaction)
+
+    response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "login_missing_token"}
+
+
+@pytest.mark.parametrize(
+    ("error_code", "error_status", "expected_status", "expected_detail"),
+    [
+        ("mcp_jwt_invalid", 401, 502, "login_invalid_token"),
+        (
+            "mcp_principal_jwt_unavailable",
+            503,
+            503,
+            "mcp_principal_jwt_unavailable",
+        ),
+    ],
+)
+def test_company_jwt_rejection_or_save_failure_does_not_commit_principal(
+    monkeypatch,
+    error_code,
+    error_status,
+    expected_status,
+    expected_detail,
+):
+    from app.mcp.api import McpRuntimeContextError
+
+    events = []
+
+    async def fake_login(_username, _password):
+        return {
+            "workId": "user001",
+            "userName": "user001",
+            "cnName": "Normal User",
+            "token": COMPANY_JWT,
+        }
+
+    async def fake_user_info(work_id):
+        return {"workid": work_id, "roles": ["user"]}
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        events.append("transaction_enter")
+        try:
+            yield object()
+        except Exception:
+            events.append("transaction_rollback")
+            raise
+        else:
+            events.append("transaction_commit")
+
+    async def fake_ensure_user(*_args, **_kwargs):
+        events.append("persist_user")
+
+    async def fake_append_audit_log(*_args, **_kwargs):
+        events.append("persist_audit")
+
+    async def failing_store(_principal, _jwt):
+        events.append("store_jwt")
+        raise McpRuntimeContextError(error_code, status_code=error_status)
+
+    async def unexpected_commit(*_args, **_kwargs):
+        events.append("commit_principal")
+        return "committed"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
+    monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
+    monkeypatch.setattr("app.routes.auth.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.auth.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.auth.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.routes.auth.store_mcp_principal_jwt", failing_store)
+    monkeypatch.setattr("app.routes.auth.commit_auth_operation", unexpected_commit)
+
+    response = browser_client().post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert response.status_code == expected_status
+    assert response.json() == {"detail": expected_detail}
+    assert events == [
+        "transaction_enter",
+        "persist_user",
+        "persist_audit",
+        "store_jwt",
+        "transaction_rollback",
+    ]
+
+
 def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
+        return {
+            "workId": "dev001",
+            "userName": "dev001",
+            "cnName": "Developer",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         return {
@@ -797,7 +1036,12 @@ def test_auth_me_returns_bearer_principal(monkeypatch):
 
 def test_lambchat_auth_aliases_return_bearer_token(monkeypatch):
     async def fake_login(username, password):
-        return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
+        return {
+            "workId": "dev001",
+            "userName": "dev001",
+            "cnName": "Developer",
+            "token": COMPANY_JWT,
+        }
 
     async def fake_user_info(work_id):
         return {

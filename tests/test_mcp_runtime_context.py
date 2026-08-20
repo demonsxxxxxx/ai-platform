@@ -24,6 +24,7 @@ from app.mcp.infrastructure.runtime import (
     MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
     HostMcpRelay,
     InMemoryRuntimeContextStore,
+    McpPrincipalJwtStore,
     McpRelayAuthFailureLimiter,
     McpRelayAuthFailureCounts,
     McpRelayError,
@@ -154,6 +155,42 @@ def _settings(
     return now
 
 
+@pytest.mark.asyncio
+async def test_principal_jwt_store_seals_overwrites_and_expires_at_jwt_exp(monkeypatch):
+    now = [_settings(monkeypatch)]
+    store = InMemoryRuntimeContextStore(clock=lambda: now[0])
+    jwt_store = McpPrincipalJwtStore(store=store, clock=lambda: now[0])
+    principal = _principal()
+    first = _jwt(exp=now[0] + 900)
+    second = _jwt(exp=now[0] + 600)
+
+    await jwt_store.put(principal, first)
+
+    assert len(store._values) == 1
+    key, (expires_at, sealed) = next(iter(store._values.items()))
+    assert key.startswith("ai-platform:mcp:principal-jwt:v1:")
+    assert "tenant-a" not in key
+    assert "user-a" not in key
+    assert first not in sealed
+    assert expires_at == now[0] + 900
+    assert await jwt_store.get(principal) == first
+
+    await jwt_store.put(principal, second)
+
+    assert len(store._values) == 1
+    _, (expires_at, sealed) = next(iter(store._values.items()))
+    assert first not in sealed
+    assert second not in sealed
+    assert expires_at == now[0] + 600
+    assert await jwt_store.get(principal) == second
+    with pytest.raises(McpRuntimeContextError, match="mcp_principal_jwt_missing"):
+        await jwt_store.get(_principal(user_id="user-b"))
+
+    now[0] += 601
+    with pytest.raises(McpRuntimeContextError, match="mcp_principal_jwt_missing"):
+        await jwt_store.get(principal)
+
+
 class _Client:
     def __init__(self, handler, **kwargs):
         self.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)
@@ -218,10 +255,44 @@ async def test_runtime_context_is_sealed_and_capability_contains_only_server_too
         "inventory-mcp": ("search",),
         "project-mcp": ("get-project",),
     }
-    assert capability.expires_at == now + 900
+    assert capability.expires_at == now + 300
     resolved = await manager.resolve_capability(capability.token)
     assert resolved.jwt == token
     assert resolved.capability.targets == capability.targets
+
+
+@pytest.mark.asyncio
+async def test_run_binding_never_extends_the_original_context_deadline(monkeypatch):
+    now = [_settings(monkeypatch)]
+    store = InMemoryRuntimeContextStore(clock=lambda: now[0])
+    manager = McpRuntimeContextManager(store=store, clock=lambda: now[0])
+    context = await manager.create_context(
+        principal=_principal(),
+        bearer_jwt=f"Bearer {_jwt(exp=now[0] + 900)}",
+    )
+    initial_deadline = now[0] + 300
+
+    now[0] += 120
+    bound = await manager.bind_to_run(
+        context_id=context["mcp_context_id"],
+        principal=_principal(),
+        run_id="run-a",
+    )
+    capability = await manager.claim_attempt_lease(
+        context_id=context["mcp_context_id"],
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        targets={"inventory-mcp": ("search",)},
+    )
+
+    assert bound.expires_at == initial_deadline
+    assert capability.expires_at == initial_deadline
+
+    now[0] = initial_deadline + 1
+    with pytest.raises(McpRelayError, match="mcp_capability_invalid"):
+        await manager.resolve_capability(capability.token)
 
 
 @pytest.mark.asyncio
@@ -985,16 +1056,22 @@ async def test_context_binding_and_attempt_leases_are_race_safe(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runtime_context_route_reads_only_jwt_authorization_and_sets_no_store(monkeypatch):
+async def test_runtime_context_route_reads_principal_jwt_and_sets_no_store(monkeypatch):
     now = _settings(monkeypatch)
     manager = McpRuntimeContextManager(
         store=InMemoryRuntimeContextStore(clock=lambda: now), clock=lambda: now
     )
+    token = _jwt(exp=now + 900)
+
+    async def read_principal_jwt(principal):
+        assert principal == _principal()
+        return token
+
     monkeypatch.setattr(mcp_routes, "MCP_RUNTIME_CONTEXT_MANAGER", manager)
+    monkeypatch.setattr(mcp_routes, "read_mcp_principal_jwt", read_principal_jwt)
     response = Response()
     result = await mcp_routes.create_mcp_runtime_context(
         response=response,
-        jwt_authorization=f"Bearer {_jwt(exp=now + 900)}",
         principal=_principal(),
     )
     assert result["mcp_context_id"].startswith("mcpctx_")

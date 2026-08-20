@@ -7,6 +7,7 @@ from app.mcp.domain.errors import McpRuntimeContextError
 
 class McpRuntimeServices(Protocol):
     context_manager: Any
+    principal_jwt_store: Any
     relay_auth_failure_limiter: Any
 
     def create_host_relay(self, *, context_manager: Any | None = None) -> Any: ...

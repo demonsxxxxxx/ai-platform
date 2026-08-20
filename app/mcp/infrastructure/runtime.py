@@ -39,6 +39,7 @@ MCP_MAX_TOOLS_PER_RUN = 40
 MCP_MAX_SCHEMA_BYTES = 256 * 1024
 MCP_CONTEXT_KEY_PREFIX = "ai-platform:mcp:runtime-context:v1:"
 MCP_CONTEXT_LOCK_PREFIX = "ai-platform:mcp:runtime-context-lock:v1:"
+MCP_PRINCIPAL_JWT_KEY_PREFIX = "ai-platform:mcp:principal-jwt:v1:"
 MCP_CONTEXT_LOCK_TTL_SECONDS = 120
 MCP_RELAY_AUTH_FAILURE_KEY_PREFIX = "ai-platform:mcp:relay-auth-failure:v1:"
 MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT = 10
@@ -46,6 +47,7 @@ MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT = 1000
 MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS = 60
 MCP_CAPABILITY_HEADER = "X-MCP-Broker-Capability"
 _MCP_CONTEXT_AAD_PREFIX = b"ai-platform:mcp-runtime-context:v1:"
+_MCP_PRINCIPAL_JWT_AAD_PREFIX = b"ai-platform:mcp-principal-jwt:v1:"
 _MCP_SERVER_CREDENTIAL_AAD_PREFIX = b"ai-platform:mcp-server-credential:v1:"
 _RELAY_FORWARD_HEADERS = frozenset(
     {
@@ -172,6 +174,14 @@ class _RuntimeContextRecord:
     expires_at: int
     bound_run_id: str | None = None
     active_lease: _ActiveLease | None = None
+
+
+@dataclass(frozen=True)
+class _PrincipalJwtRecord:
+    tenant_id: str
+    user_id: str
+    jwt: str = field(repr=False)
+    jwt_exp: int
 
 
 @dataclass(frozen=True)
@@ -508,6 +518,162 @@ def extract_bearer_jwt(value: str | None) -> str:
     if not separator or scheme.casefold() != "bearer" or not token.strip():
         raise McpRuntimeContextError("mcp_jwt_missing", status_code=401)
     return token.strip()
+
+
+def _principal_jwt_key(principal: McpContextPrincipal) -> str:
+    identity = json.dumps(
+        [principal.tenant_id, principal.user_id],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"{MCP_PRINCIPAL_JWT_KEY_PREFIX}{hashlib.sha256(identity).hexdigest()}"
+
+
+def _principal_jwt_aad(key_id: str, principal: McpContextPrincipal) -> bytes:
+    identity = json.dumps(
+        [key_id, principal.tenant_id, principal.user_id],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return _MCP_PRINCIPAL_JWT_AAD_PREFIX + identity
+
+
+def _seal_principal_jwt(record: _PrincipalJwtRecord) -> str:
+    principal = McpContextPrincipal(record.tenant_id, record.user_id)
+    current_id, keyring = _configured_keyring()
+    nonce = secrets.token_bytes(12)
+    plaintext = json.dumps(
+        {
+            "tenant_id": record.tenant_id,
+            "user_id": record.user_id,
+            "jwt": record.jwt,
+            "jwt_exp": record.jwt_exp,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    ciphertext = AESGCM(keyring[current_id]).encrypt(
+        nonce,
+        plaintext,
+        _principal_jwt_aad(current_id, principal),
+    )
+    return json.dumps(
+        {
+            "v": 1,
+            "key_id": current_id,
+            "nonce": _b64url_encode(nonce),
+            "ciphertext": _b64url_encode(ciphertext),
+        },
+        separators=(",", ":"),
+    )
+
+
+def _open_principal_jwt(value: str, principal: McpContextPrincipal) -> _PrincipalJwtRecord:
+    try:
+        envelope = json.loads(value)
+        if not isinstance(envelope, dict) or envelope.get("v") != 1:
+            raise ValueError("principal JWT envelope version is invalid")
+        key_id = str(envelope["key_id"])
+        nonce = _b64url_decode(str(envelope["nonce"]))
+        ciphertext = _b64url_decode(str(envelope["ciphertext"]))
+        _, keyring = _configured_keyring()
+        plaintext = AESGCM(keyring[key_id]).decrypt(
+            nonce,
+            ciphertext,
+            _principal_jwt_aad(key_id, principal),
+        )
+        payload = json.loads(plaintext.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("principal JWT payload is not an object")
+        record = _PrincipalJwtRecord(
+            tenant_id=assert_safe_id(str(payload.get("tenant_id") or ""), "tenant_id"),
+            user_id=assert_safe_principal_user_id(str(payload.get("user_id") or "")),
+            jwt=str(payload.get("jwt") or ""),
+            jwt_exp=int(payload.get("jwt_exp") or 0),
+        )
+        if (record.tenant_id, record.user_id) != (principal.tenant_id, principal.user_id):
+            raise ValueError("principal JWT binding does not match")
+        return record
+    except McpRuntimeContextError:
+        raise
+    except (
+        InvalidTag,
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503) from exc
+
+
+class McpPrincipalJwtStore:
+    """Own one encrypted company JWT for each tenant-scoped Principal."""
+
+    def __init__(
+        self,
+        *,
+        store: RuntimeContextStore | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.store = store or RedisRuntimeContextStore()
+        self.clock = clock
+
+    def _now(self) -> int:
+        return int(self.clock())
+
+    async def put(self, principal: McpPrincipal, jwt: str) -> None:
+        binding = McpContextPrincipal.from_principal(principal)
+        now = self._now()
+        token = str(jwt or "").strip()
+        payload = _jwt_payload(token, now=now)
+        record = _PrincipalJwtRecord(
+            tenant_id=binding.tenant_id,
+            user_id=binding.user_id,
+            jwt=token,
+            jwt_exp=int(payload["exp"]),
+        )
+        try:
+            await self.store.set(
+                _principal_jwt_key(binding),
+                _seal_principal_jwt(record),
+                ttl_seconds=record.jwt_exp - now,
+            )
+        except McpRuntimeContextError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - credential storage must fail closed.
+            raise McpRuntimeContextError(
+                "mcp_principal_jwt_unavailable",
+                status_code=503,
+            ) from exc
+
+    async def get(self, principal: McpPrincipal) -> str:
+        binding = McpContextPrincipal.from_principal(principal)
+        key = _principal_jwt_key(binding)
+        try:
+            value = await self.store.get(key)
+        except Exception as exc:  # noqa: BLE001 - credential reads must fail closed.
+            raise McpRuntimeContextError(
+                "mcp_principal_jwt_unavailable",
+                status_code=503,
+            ) from exc
+        if value is None:
+            raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+        record = _open_principal_jwt(value, binding)
+        now = self._now()
+        if record.jwt_exp <= now:
+            try:
+                await self.store.delete(key)
+            except Exception:
+                pass
+            raise McpRuntimeContextError("mcp_principal_jwt_expired", status_code=401)
+        try:
+            payload = _jwt_payload(record.jwt, now=now)
+        except McpRuntimeContextError as exc:
+            raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503) from exc
+        if int(payload["exp"]) != record.jwt_exp:
+            raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503)
+        return record.jwt
 
 
 def _mcp_server_credential_aad(*, tenant_id: str, server_id: str) -> bytes:
@@ -854,7 +1020,11 @@ class McpRuntimeContextManager:
                 return record
             now = self._now()
             lease_seconds = self._bounded_lease_seconds()
-            credential_expires_at = min(record.jwt_exp, now + lease_seconds)
+            credential_expires_at = min(
+                record.bind_expires_at,
+                record.jwt_exp,
+                now + lease_seconds,
+            )
             if credential_expires_at <= now:
                 raise McpRuntimeContextError("mcp_context_expired", status_code=401)
             updated = replace(
@@ -1025,7 +1195,15 @@ class McpRuntimeContextManager:
             return True
 
 
+_DEFAULT_PRINCIPAL_JWT_STORE: McpPrincipalJwtStore | None = None
 _DEFAULT_RUNTIME_CONTEXT_MANAGER: McpRuntimeContextManager | None = None
+
+
+def get_mcp_principal_jwt_store() -> McpPrincipalJwtStore:
+    global _DEFAULT_PRINCIPAL_JWT_STORE
+    if _DEFAULT_PRINCIPAL_JWT_STORE is None:
+        _DEFAULT_PRINCIPAL_JWT_STORE = McpPrincipalJwtStore()
+    return _DEFAULT_PRINCIPAL_JWT_STORE
 
 
 def get_mcp_runtime_context_manager() -> McpRuntimeContextManager:

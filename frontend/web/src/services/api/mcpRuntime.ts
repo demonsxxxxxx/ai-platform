@@ -1,25 +1,14 @@
 import { API_BASE } from "./config";
 import {
-  ApiRequestError,
   apiRequestErrorFromResponse,
   cookieSessionFetch,
 } from "./fetch";
-import {
-  clearMcpGatewayJwt,
-  getMcpGatewayJwt,
-} from "../../utils/mcpGatewayAuth";
 
 export interface McpRuntimeContextResponse {
   mcp_context_id: string;
   expires_at: string;
 }
 
-const MCP_JWT_REJECTION_CODES = new Set([
-  "mcp_gateway_unauthorized",
-  "mcp_jwt_missing",
-  "mcp_jwt_invalid",
-  "mcp_jwt_expired_or_missing",
-]);
 const MCP_RUNTIME_CONTEXT_DISCARD_TIMEOUT_MS = 1_000;
 
 function projectRuntimeContext(value: unknown): McpRuntimeContextResponse {
@@ -41,41 +30,17 @@ function projectRuntimeContext(value: unknown): McpRuntimeContextResponse {
   };
 }
 
-function requiredMcpJwt(): string {
-  const jwt = getMcpGatewayJwt();
-  if (jwt) return jwt;
-  throw new ApiRequestError(
-    "MCP credential is unavailable",
-    401,
-    "mcp_jwt_missing",
-    "rejected_before_persist",
-  );
-}
-
 export async function createMcpRuntimeContext(
   options: { signal?: AbortSignal } = {},
 ): Promise<McpRuntimeContextResponse> {
-  const jwt = requiredMcpJwt();
-
   const response = await cookieSessionFetch(`${API_BASE}/api/ai/mcp/runtime-contexts`, {
     method: "POST",
     cache: "no-store",
     redirect: "error",
     signal: options.signal,
-    headers: {
-      "JWT-Authorization": `Bearer ${jwt}`,
-    },
   });
   if (!response.ok) {
-    const error = await apiRequestErrorFromResponse(response);
-    if (
-      response.status === 401 &&
-      typeof error.code === "string" &&
-      MCP_JWT_REJECTION_CODES.has(error.code)
-    ) {
-      clearMcpGatewayJwt();
-    }
-    throw error;
+    throw await apiRequestErrorFromResponse(response);
   }
   return projectRuntimeContext(await response.json().catch(() => null));
 }

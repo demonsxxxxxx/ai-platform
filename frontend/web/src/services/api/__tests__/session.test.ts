@@ -20,22 +20,6 @@ import {
   resolveChatSessionAgentId,
   sessionApi,
 } from "../session.ts";
-import {
-  clearMcpGatewayJwt,
-  setMcpGatewayJwt,
-} from "../../../utils/mcpGatewayAuth.ts";
-
-function installStorage(): void {
-  const values = new Map<string, string>();
-  Object.defineProperty(globalThis, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => values.set(key, value),
-      removeItem: (key: string) => values.delete(key),
-    },
-  });
-}
 
 const defaultEnterpriseProjection = {
   welcome_message: "",
@@ -249,10 +233,6 @@ test("run-control mutations use the shared cookie-session transport and forward 
 
 test("MCP retry obtains a fresh context and reuses the exact operation id", async () => {
   const originalFetch = globalThis.fetch;
-  const originalLocalStorage = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "localStorage",
-  );
   const controller = new AbortController();
   const calls: Array<{
     url: string;
@@ -260,8 +240,6 @@ test("MCP retry obtains a fresh context and reuses the exact operation id", asyn
     signal?: AbortSignal | null;
     jwt?: string | null;
   }> = [];
-  installStorage();
-  setMcpGatewayJwt("company.jwt");
   globalThis.fetch = (async (input, init) => {
     calls.push({
       url: String(input),
@@ -305,19 +283,13 @@ test("MCP retry obtains a fresh context and reuses the exact operation id", asyn
       calls[1]?.url,
       "/api/ai/mcp/runtime-contexts",
     );
-    assert.equal(calls[1]?.jwt, "Bearer company.jwt");
+    assert.equal(calls[1]?.jwt, null);
     assert.deepEqual(JSON.parse(calls[2]?.body ?? "{}"), {
       mcp_context_id: "mcpctx-fresh",
     });
     assert.ok(calls.every((call) => call.signal === controller.signal));
   } finally {
     globalThis.fetch = originalFetch;
-    clearMcpGatewayJwt();
-    if (originalLocalStorage) {
-      Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    } else {
-      Reflect.deleteProperty(globalThis, "localStorage");
-    }
   }
 });
 

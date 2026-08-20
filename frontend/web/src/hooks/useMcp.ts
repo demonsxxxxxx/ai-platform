@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { authFetch } from "../services/api/fetch";
-import { mcpGatewayAuthorizationHeaders } from "../utils/mcpGatewayAuth";
 import type {
   MCPServerResponse,
   MCPServersResponse,
@@ -385,7 +384,6 @@ export function useMCP(options?: {
         const baseUrl = isSystem ? "/api/admin/mcp" : API_BASE;
         const data: MCPServerResponse = await authFetch(`${baseUrl}/`, {
           method: "POST",
-          headers: mcpGatewayAuthorizationHeaders(),
           body: JSON.stringify(server),
         });
         await fetchServers();
@@ -418,7 +416,6 @@ export function useMCP(options?: {
           `${baseUrl}/${encodeURIComponent(name)}`,
           {
             method: "PUT",
-            headers: mcpGatewayAuthorizationHeaders(),
             body: JSON.stringify(updates),
           },
         );

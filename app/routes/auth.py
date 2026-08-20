@@ -22,6 +22,7 @@ from app.auth_sessions import (
     principal_snapshot,
 )
 from app.db import transaction
+from app.mcp.api import McpRuntimeContextError, store_mcp_principal_jwt
 from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
 from app.principal_authority import (
     PrincipalAuthorityDenied,
@@ -243,9 +244,10 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
     """Commit company-authenticated identity only through the current context lease."""
 
     operation = await _begin_browser_operation(http_request, "login")
-    principal = await _resolve_login_principal(request)
+    principal, company_jwt = await _resolve_login_principal(request)
     async with transaction() as conn:
         await _persist_login_principal(conn, principal)
+        await _store_login_jwt(principal, company_jwt)
         # Keep durable login side effects inside this transaction so a stale
         # Redis operation rolls them back. A database commit failure after this
         # Redis commit remains intentionally uncompensated: an unfenced logout
@@ -256,13 +258,16 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
     return PrincipalResponse.model_validate(principal_to_response(principal))
 
 
-async def _resolve_login_principal(request: LoginRequest) -> AuthPrincipal:
+async def _resolve_login_principal(request: LoginRequest) -> tuple[AuthPrincipal, str]:
     try:
         login_payload = await call_existing_login(request.user_name, request.password)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
     if _is_failed_login_payload(login_payload):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed")
+    company_jwt = login_payload.get("token")
+    if not isinstance(company_jwt, str) or not company_jwt.strip():
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="login_missing_token")
     work_id = str(login_payload.get("workId") or login_payload.get("workid") or login_payload.get("userName") or "").strip()
     if not work_id:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="login_missing_work_id")
@@ -276,7 +281,22 @@ async def _resolve_login_principal(request: LoginRequest) -> AuthPrincipal:
         )
     except PrincipalAuthorityDenied as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
-    return principal
+    return principal, company_jwt.strip()
+
+
+async def _store_login_jwt(principal: AuthPrincipal, company_jwt: str) -> None:
+    try:
+        await store_mcp_principal_jwt(principal, company_jwt)
+    except McpRuntimeContextError as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="login_invalid_token",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="mcp_principal_jwt_unavailable",
+        ) from exc
 
 
 async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
@@ -312,7 +332,8 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
 async def _login_principal(request: LoginRequest) -> AuthPrincipal:
     """Resolve and persist the explicit Bearer compatibility login principal."""
 
-    principal = await _resolve_login_principal(request)
+    principal, company_jwt = await _resolve_login_principal(request)
+    await _store_login_jwt(principal, company_jwt)
     async with transaction() as conn:
         await _persist_login_principal(conn, principal)
     return principal
