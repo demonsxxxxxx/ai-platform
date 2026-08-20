@@ -82,6 +82,9 @@ async def test_publish_pending_run_terminal_rejects_stale_attempt_fence(monkeypa
     record = next(record for record in caplog.records if record.message == "terminal_intent_publish_failed")
     assert record.reason_code == "attempt_fence_rejected"
 
+
+@pytest.mark.asyncio
+async def test_publish_pending_run_terminal_logs_bounded_transport_failure(monkeypatch, caplog):
     intent = SimpleNamespace(state="pending")
 
     class Bridge:
@@ -112,3 +115,71 @@ async def test_publish_pending_run_terminal_rejects_stale_attempt_fence(monkeypa
     assert record.reason_code == "redis_publication_failed"
     assert record.tenant_id == "tenant-a"
     assert record.run_id == "run-a"
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_run_terminal_logs_bridge_close_failure(monkeypatch, caplog):
+    intent = SimpleNamespace(state="pending")
+
+    class Bridge:
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    async def authority(_conn, *, tenant_id, run_id):
+        return SimpleNamespace()
+
+    async def get_intent(_conn, *, tenant_id, run_id):
+        return intent
+
+    async def publish(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(worker_projection, "RedisStreamBridge", Bridge)
+    monkeypatch.setattr(worker_projection, "get_stream_authority", authority)
+    monkeypatch.setattr(worker_projection, "get_terminal_intent", get_intent)
+    monkeypatch.setattr(worker_projection, "publish_terminal_intent", publish)
+    caplog.set_level("WARNING")
+
+    assert await worker_projection.publish_pending_run_terminal(
+        _Transaction,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    ) is False
+    record = next(record for record in caplog.records if record.message == "terminal_intent_publish_failed")
+    assert record.reason_code == "redis_close_failed"
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_run_terminal_logs_ack_failure(monkeypatch, caplog):
+    intent = SimpleNamespace(state="pending")
+
+    class Bridge:
+        async def aclose(self):
+            return None
+
+    async def authority(_conn, *, tenant_id, run_id):
+        return SimpleNamespace()
+
+    async def get_intent(_conn, *, tenant_id, run_id):
+        return intent
+
+    async def publish(*_args, **_kwargs):
+        return None
+
+    async def mark(*_args, **_kwargs):
+        raise RuntimeError("ack failed")
+
+    monkeypatch.setattr(worker_projection, "RedisStreamBridge", Bridge)
+    monkeypatch.setattr(worker_projection, "get_stream_authority", authority)
+    monkeypatch.setattr(worker_projection, "get_terminal_intent", get_intent)
+    monkeypatch.setattr(worker_projection, "publish_terminal_intent", publish)
+    monkeypatch.setattr(worker_projection, "mark_terminal_intent_published", mark)
+    caplog.set_level("WARNING")
+
+    assert await worker_projection.publish_pending_run_terminal(
+        _Transaction,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    ) is False
+    record = next(record for record in caplog.records if record.message == "terminal_intent_publish_failed")
+    assert record.reason_code == "intent_ack_failed"
