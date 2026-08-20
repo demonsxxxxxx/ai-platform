@@ -495,7 +495,13 @@ async def list_authorized_agent_conversations(
          and profile.content_hash = sessions.admitted_agent_profile_hash
         left join lateral (
           select left(
-            btrim(translate(messages.content, E'\\r\\n\\t\\v\\f', '     ')),
+            btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ),
             32
           ) as title
           from messages
@@ -504,7 +510,13 @@ async def list_authorized_agent_conversations(
             and messages.tenant_id = sessions.tenant_id
             and messages.session_id = sessions.id
             and messages.role = 'user'
-            and btrim(translate(messages.content, E'\\r\\n\\t\\v\\f', '     ')) <> ''
+            and btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ) <> ''
           order by messages.created_at asc, messages.id asc
           limit 1
         ) legacy_first_user on true

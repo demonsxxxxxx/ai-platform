@@ -13809,9 +13809,14 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
     assert "messages.tenant_id = sessions.tenant_id" in sql
     assert "messages.session_id = sessions.id" in sql
     assert "messages.role = 'user'" in sql
-    assert "btrim(translate(messages.content, e'\\r\\n\\t\\v\\f', ' ')) <> ''" in sql
-    assert "left( btrim(translate(messages.content, e'\\r\\n\\t\\v\\f'" in sql
-    assert ")), 32 )" in sql
+    normalizer = (
+        "translate( messages.content, "
+        "chr(13) || chr(10) || chr(9) || chr(11) || chr(12), ' ' )"
+    )
+    assert sql.count(normalizer) == 2
+    assert f"btrim( {normalizer} ) <> ''" in sql
+    assert f"left( btrim( {normalizer} ), 32 )" in sql
+    assert "e'\\r\\n\\t\\v\\f'" not in sql
     assert "order by messages.created_at asc, messages.id asc limit 1" in sql
     assert "sessions.updated_at < %s" in sql
     assert "sessions.id < %s" in sql
