@@ -127,5 +127,31 @@ test("renders a specific safe file-size failure instead of a generic failure", a
 
   assert.match(markup, /文件超过处理上限/);
   assert.match(markup, /文件超过 32 MB 处理上限/);
-  assert.doesNotMatch(markup, /private|token-bearing|storage stage/);
+  assert.doesNotMatch(markup, /private storage stage|private token-bearing/);
+});
+
+test("renders actionable recovery copy for every unavailable run status", () => {
+  for (const [event_type, expectedCopy] of [
+    ["result_unavailable", "任务终态已确认，但结果暂时无法加载。请刷新会话。"],
+    ["terminal_result_unavailable", "任务终态已确认，但结果暂时无法加载。请刷新会话。"],
+    ["status_unavailable", "任务状态暂时无法同步。请刷新当前会话后重试。"],
+  ] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(MessagePartRenderer, {
+        part: {
+          type: "run_status",
+          event_id: `evt-${event_type}`,
+          event_type,
+          stage: "private backend stage",
+          message: "private backend detail",
+          severity: "warning",
+        },
+        isLast: true,
+      }),
+    );
+
+    assert.match(markup, /role="alert"/);
+    assert.match(markup, new RegExp(expectedCopy));
+    assert.doesNotMatch(markup, /private backend|private|backend detail/);
+  }
 });
