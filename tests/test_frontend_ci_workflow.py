@@ -135,6 +135,8 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
+    assert "group: ai-platform-frontend-${{ github.event.pull_request.number || github.run_id }}" in workflow
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()
     assert contract["on"] == {
         "pull_request": {"branches": ["main"]},
@@ -145,6 +147,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
     assert jobs["frontend-image"]["runs-on"] == "ubuntu-latest"
+    assert "needs" not in jobs["frontend-image"]
     required = jobs["required"]
     assert isinstance(required, dict)
     assert required["name"] == "frontend required"
