@@ -92,6 +92,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
 
+        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         sent.append((executor_url, task_request))
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
@@ -175,6 +176,7 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class RecordingProvider(FakeContainerProvider):
         async def create_or_reuse(self, runtime_request, workspace):
             steps.append("create")
@@ -230,6 +232,7 @@ async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class FailingTransferProvider(FakeContainerProvider):
         async def stage_workspace(self, lease, runtime_request, workspace):
             calls.append("stage")
@@ -298,6 +301,7 @@ async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_on
         opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
         opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
+        sandbox_lease_ttl_seconds = 1800
     class TrustedOpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, runtime_request, workspace):
             lease = await super().create_or_reuse(runtime_request, workspace)
@@ -346,6 +350,7 @@ async def test_runtime_and_execution_owner_elect_one_stop_terminator(tmp_path, m
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class SlowStopProvider(FakeContainerProvider):
         async def stop(self, lease, *, reason):
             stop_calls.append(reason)
@@ -401,6 +406,7 @@ async def test_runtime_logs_only_safe_opensandbox_startup_evidence(tmp_path, mon
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     raw_provider_message = "private endpoint https://secret.test path C:\\runtime\\secret token-private"
     startup_error = container_provider.OpenSandboxStartupFailedError(
         OpenSandboxStartupEvidence(
@@ -461,6 +467,7 @@ async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     raw_exception = "private health failure at C:\\runtime\\secret with token-private"
     evidence = ExecutorReadinessEvidence(
         readiness_phase="health_probe",
@@ -562,6 +569,7 @@ async def test_runtime_logs_opensandbox_health_stage_without_expanding_readiness
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     readiness = ExecutorReadinessEvidence(
         readiness_phase="health_probe",
         container_state="unknown",
@@ -624,6 +632,7 @@ async def test_runtime_readiness_sink_failure_does_not_mask_original_error(tmp_p
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     evidence = ExecutorReadinessEvidence(
         readiness_phase="publish_wait",
         container_state="exited",
@@ -674,6 +683,7 @@ async def test_readiness_emit_propagates_cancel(tmp_path, monkeypatch):
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     evidence = ExecutorReadinessEvidence(
         readiness_phase="health_probe",
         container_state="running",
@@ -740,6 +750,7 @@ async def test_readiness_cleanup_failure_keeps_precedence(
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     evidence = ExecutorReadinessEvidence(
         readiness_phase=phase,
         container_state=state,
@@ -805,6 +816,7 @@ async def test_no_readiness_event_for_proof_or_untyped_cleanup(
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     proof_error = container_provider.GovernedEgressAdmissionError()
     provider_error = (
         container_provider.ContainerCleanupFailedError() if cleanup_fails else proof_error
@@ -849,6 +861,7 @@ async def test_runtime_uses_opensandbox_external_bridge_callback_without_changin
         opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
         opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
+        sandbox_lease_ttl_seconds = 1800
     class OpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, runtime_request, workspace):
             lease = await super().create_or_reuse(runtime_request, workspace)
@@ -901,6 +914,7 @@ async def test_runtime_revalidates_provider_evidence_immediately_before_dispatch
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class DriftedProvider(FakeContainerProvider):
         async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
             calls.append(("validate", lease.container_id))
@@ -948,6 +962,7 @@ async def test_runtime_validation_cleanup_failure_keeps_persistent_lease_fail_cl
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class StopFailedProvider(FakeContainerProvider):
         async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
             raise RuntimeError("governed egress changed after acquisition")
@@ -983,6 +998,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         sent.append(task_request)
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
@@ -1034,6 +1050,7 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class Clock:
         def __init__(self):
             self.values = iter([1.0, 1.01, 1.07, 1.08, 1.105, 1.110, 1.125, 1.130])
@@ -1149,6 +1166,7 @@ async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         return {
             "status": "failed",
@@ -1202,6 +1220,7 @@ async def test_runtime_preserves_typed_executor_http_error_and_cleanup_order(tmp
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     class OrderedProvider(FakeContainerProvider):
         async def stop(self, lease, reason):
             calls.append(("stop", reason))
@@ -1244,6 +1263,7 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
 
@@ -1404,6 +1424,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
         opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
+        sandbox_lease_ttl_seconds = 1800
     class OpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
             lease = await super().create_or_reuse(request, workspace)
@@ -1496,6 +1517,7 @@ async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_with
         sandbox_executor_image = image
         sandbox_runtime_subject = "runtime-subject-fixed-sha"
 
+        sandbox_lease_ttl_seconds = 1800
     async def create_sandbox_lease(_conn, **kwargs):
         captured.append(kwargs)
         return {"id": "lease-internal-test"}
@@ -1549,6 +1571,7 @@ async def test_runtime_rejects_retired_opensandbox_profile_before_persistence(tm
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     labels = {
         "ai-platform.owner": "sandbox-runtime",
         "ai-platform.tenant_id": runtime_request.tenant_id,
@@ -1614,6 +1637,7 @@ async def test_runtime_rejects_signed_proof_replayed_across_request_bindings(
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = signing_key
 
+        sandbox_lease_ttl_seconds = 1800
     runtime_request = request(sandbox_mode="ephemeral")
     image = "registry.example/ai-platform@sha256:" + "a" * 64
     proof_scope = {
@@ -1703,6 +1727,7 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
         opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
         opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
+        sandbox_lease_ttl_seconds = 1800
     class IncompleteProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
             lease = await super().create_or_reuse(request, workspace)
@@ -1827,6 +1852,7 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
         opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
         opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
+        sandbox_lease_ttl_seconds = 1800
     class HeaderProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
             from app.execution_boundary import (
@@ -2150,6 +2176,7 @@ async def test_runtime_fences_default_lease_when_commit_confirmation_is_lost(tmp
         sandbox_callback_token = "settings-token"
         sandbox_container_provider = "fake"
 
+        sandbox_lease_ttl_seconds = 1800
     async def create_sandbox_lease(_conn, **kwargs):
         calls.append(("commit_lost", kwargs["lease_id"]))
         raise RuntimeError("commit confirmation lost")
@@ -2217,6 +2244,7 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
         sandbox_container_start_timeout_seconds = 60
         sandbox_cleanup_timeout_seconds = 0.01
 
+        sandbox_lease_ttl_seconds = 1800
     async def create_sandbox_lease(_conn, **kwargs):
         record_started.set()
         try:
@@ -2383,6 +2411,7 @@ async def test_runtime_default_callback_token_is_hmac_scoped_to_token_id(tmp_pat
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         sent.append(task_request)
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
@@ -2412,6 +2441,7 @@ async def test_runtime_ignores_untrusted_callback_input_and_uses_trusted_platfor
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
 
+        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         sent.append(task_request)
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}

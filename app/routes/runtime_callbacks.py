@@ -273,6 +273,7 @@ async def record_executor_callback(
                 attempt_id=callback.attempt_id,
                 lease_id=lease_id,
                 executor_status="running",
+                ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
             )
             if heartbeat is None:
                 raise HTTPException(
