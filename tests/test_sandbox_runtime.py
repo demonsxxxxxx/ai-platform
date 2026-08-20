@@ -43,6 +43,11 @@ async def fake_transaction():
     yield FakeConnection()
 
 
+def _short_sandbox_workspace_root(tmp_path: Path) -> Path:
+    short_id = hashlib.sha256(str(tmp_path).encode("utf-8")).hexdigest()[:8]
+    return Path(".pytest-tmp") / f"sandbox-runtime-{short_id}"
+
+
 def request(**overrides) -> SandboxRuntimeRequest:
     values = {
         "tenant_id": "tenant-a",
@@ -1258,12 +1263,13 @@ async def test_runtime_preserves_typed_executor_http_error_and_cleanup_order(tmp
 @pytest.mark.asyncio
 async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, monkeypatch):
     calls = []
+    workspace_root = _short_sandbox_workspace_root(tmp_path)
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
 
-        sandbox_lease_ttl_seconds = 1800
     async def execute(executor_url, task_request):
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
 
@@ -1273,6 +1279,7 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
                 "create",
                 kwargs["run_id"],
                 kwargs["trace_id"],
+                kwargs["ttl_seconds"],
                 kwargs["lease_payload_json"],
                 {
                     "runtime_container_id": kwargs.get("runtime_container_id"),
@@ -1314,7 +1321,7 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
     )
 
     runtime = SandboxRuntime(
-        workspace_root=tmp_path,
+        workspace_root=workspace_root,
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -1324,45 +1331,46 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
 
     assert calls == [
         (
-                "create",
-                "run-a",
-                "trace-run-a",
-                    {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                        "security_profile": "governed",
-                        "attempt_id": "qat_test-runtime-attempt",
-                        "container_id": "exec-run-a",
-                        "container_name": "executor-exec-run-a",
-                        "executor_url": "http://executor.test",
-                        "workspace_host_path": str(
-                        tmp_path
-                        / "tenants"
-                        / "tenant-a"
-                        / "workspaces"
-                        / "workspace-a"
-                        / "users"
-                        / "user-a"
-                        / "sessions"
-                        / "session-a"
-                        / "runs"
-                        / "run-a"
-                        / "attempts"
-                        / "qat_test-runtime-attempt"
-                        / "workspace"
-                    ),
-                    "workspace_container_path": "/workspace",
-                    "labels": {
-                        "ai-platform.run_id": "run-a",
-                        "ai-platform.attempt_id": "qat_test-runtime-attempt",
-                    },
+            "create",
+            "run-a",
+            "trace-run-a",
+            733,
+            {
+                "source": "sandbox_runtime",
+                "evidence_class": "runtime_lease_projection",
+                "security_profile": "governed",
+                "attempt_id": "qat_test-runtime-attempt",
+                "container_id": "exec-run-a",
+                "container_name": "executor-exec-run-a",
+                "executor_url": "http://executor.test",
+                "workspace_host_path": str(
+                    workspace_root
+                    / "tenants"
+                    / "tenant-a"
+                    / "workspaces"
+                    / "workspace-a"
+                    / "users"
+                    / "user-a"
+                    / "sessions"
+                    / "session-a"
+                    / "runs"
+                    / "run-a"
+                    / "attempts"
+                    / "qat_test-runtime-attempt"
+                    / "workspace"
+                ),
+                "workspace_container_path": "/workspace",
+                "labels": {
+                    "ai-platform.run_id": "run-a",
+                    "ai-platform.attempt_id": "qat_test-runtime-attempt",
                 },
-                {
-                    "runtime_container_id": "exec-run-a",
-                    "runtime_container_name": "executor-exec-run-a",
-                    "runtime_executor_url": "http://executor.test",
-                    "runtime_workspace_container_path": "/workspace",
-                },
+            },
+            {
+                "runtime_container_id": "exec-run-a",
+                "runtime_container_name": "executor-exec-run-a",
+                "runtime_executor_url": "http://executor.test",
+                "runtime_workspace_container_path": "/workspace",
+            },
         ),
         (
             "acceptance",

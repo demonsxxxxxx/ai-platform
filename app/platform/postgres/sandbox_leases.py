@@ -184,6 +184,7 @@ async def record_sandbox_executor_heartbeat(
           and run_id = %s
           and attempt_id = %s
           and status = 'active'
+          and (expires_at is null or expires_at > now())
           and executor_terminal_json is null
         returning *
         """,

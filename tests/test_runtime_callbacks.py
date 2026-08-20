@@ -51,13 +51,13 @@ def callback_payload(**overrides):
     return payload
 
 
-def callback_settings(token: str):
+def callback_settings(token: str, *, lease_ttl_seconds: int = 1800):
     return type(
         "S",
         (),
         {
             "sandbox_callback_token": token,
-            "sandbox_lease_ttl_seconds": 1800,
+            "sandbox_lease_ttl_seconds": lease_ttl_seconds,
         },
     )()
 
@@ -1313,7 +1313,10 @@ def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
 
 
 def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    patch_callback_settings(
+        monkeypatch,
+        callback_settings("secret", lease_ttl_seconds=731),
+    )
     heartbeat_calls = []
 
     class FakeTransaction:
@@ -1354,5 +1357,5 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
     )
     assert response.status_code == 200
     assert heartbeat_calls
-    assert heartbeat_calls[0]["ttl_seconds"] == 1800
+    assert heartbeat_calls[0]["ttl_seconds"] == 731
     assert heartbeat_calls[0]["executor_status"] == "running"
