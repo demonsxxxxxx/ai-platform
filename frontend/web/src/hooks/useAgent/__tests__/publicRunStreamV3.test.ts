@@ -5,7 +5,10 @@ import {
   PUBLIC_RUN_STREAM_SCHEMA,
   STREAM_DESIGN_ID,
 } from "../../../generated/publicRunStreamV3.ts";
-import { adaptPublicRunStreamEventV3 } from "../publicRunStreamV3.ts";
+import {
+  adaptPublicRunStreamEventV3,
+  comparePublicRunStreamCursors,
+} from "../publicRunStreamV3.ts";
 
 function envelope(
   eventType: string,
@@ -37,6 +40,17 @@ test("adapts a schema-valid assistant delta and preserves transport fencing", ()
   assert.equal(adapted?.data.content, "hello");
   assert.equal(adapted?.data.event_id, "semantic-1");
   assert.equal(adapted?.streamIncarnation, 2);
+});
+
+test("compares Redis stream cursor components numerically", () => {
+  assert.equal(
+    comparePublicRunStreamCursors("run-1:2:10-0", "run-1:2:9-99"),
+    1,
+  );
+  assert.equal(
+    comparePublicRunStreamCursors("run-1:2:9-99", "run-1:2:10-0"),
+    -1,
+  );
 });
 
 test("rejects foreign runs, incarnations, cursors, headers, and extra fields", () => {

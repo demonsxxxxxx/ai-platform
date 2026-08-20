@@ -114,9 +114,15 @@ async def test_v3_does_not_emit_replay_gap_after_delayed_resume_lease_refresh_fa
         allow_calls += 1
         return False
 
-    monkeypatch.setattr(route.SseAuthorityLease, "allows_frame", allows_frame)
+    monkeypatch.setattr(SseAuthorityLease, "allows_frame", allows_frame)
+
+    acquire_calls = 0
 
     async def renewal_rejected(conn, **kwargs):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            return lease()
         raise SseAuthorityConflictError("sse_authority_revoked")
 
     monkeypatch.setattr(route, "acquire_sse_authority_lease", renewal_rejected)
@@ -151,9 +157,15 @@ async def test_v3_rechecks_lease_after_wait_before_heartbeat(
         allow_calls += 1
         return allow_calls == 1
 
-    monkeypatch.setattr(route.SseAuthorityLease, "allows_frame", allows_frame)
+    monkeypatch.setattr(SseAuthorityLease, "allows_frame", allows_frame)
+
+    acquire_calls = 0
 
     async def renewal_rejected(conn, **kwargs):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            return lease()
         raise SseAuthorityConflictError("sse_authority_revoked")
 
     monkeypatch.setattr(route, "acquire_sse_authority_lease", renewal_rejected)
@@ -182,9 +194,15 @@ async def test_v3_rechecks_lease_after_wait_before_live_payload(
         allow_calls += 1
         return allow_calls == 1
 
-    monkeypatch.setattr(route.SseAuthorityLease, "allows_frame", allows_frame)
+    monkeypatch.setattr(SseAuthorityLease, "allows_frame", allows_frame)
+
+    acquire_calls = 0
 
     async def renewal_rejected(conn, **kwargs):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            return lease()
         raise SseAuthorityConflictError("sse_authority_revoked")
 
     monkeypatch.setattr(route, "acquire_sse_authority_lease", renewal_rejected)
@@ -202,6 +220,9 @@ async def test_v3_rechecks_lease_after_wait_before_live_payload(
     assert records[0].lease_released is True
     assert allow_calls == 2
 
+
+@pytest.mark.asyncio
+async def test_v3_classifies_live_close_reason(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level("INFO", logger=route._sse_logger.name)
 
@@ -210,7 +231,7 @@ async def test_v3_rechecks_lease_after_wait_before_live_payload(
         subscription=ClosedSubscription("live_transport_unavailable"),
     )
 
-    assert body == ""
+    assert "event: stream_open\n" in body
     records = [item for item in caplog.records if item.message == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason_code == "hub_source_failure"
@@ -493,7 +514,16 @@ async def test_v3_missing_authority_distinguishes_startup_from_terminal_run(
 
 @pytest.mark.asyncio
 async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
-    patch_authority(monkeypatch)
+    patch_authority(
+        monkeypatch,
+        run={
+            "id": "run-a",
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        },
+    )
 
     async def forbidden(*args, **kwargs):
         raise AssertionError("PG run_events must not drive live SSE")
@@ -512,7 +542,16 @@ async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_v3_subscribes_before_capturing_replay_tail(monkeypatch):
-    patch_authority(monkeypatch)
+    patch_authority(
+        monkeypatch,
+        run={
+            "id": "run-a",
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        },
+    )
     bridge = FakeBridge([open_entry()])
 
     def append_after_subscribe():

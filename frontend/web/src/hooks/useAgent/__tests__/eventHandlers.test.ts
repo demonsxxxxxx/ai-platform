@@ -871,7 +871,8 @@ test("does not move the accepted sequence backward when a delayed step follows a
     true,
   );
   assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 4);
-  delayedProgress?.();
+  assert.equal(typeof delayedProgress, "function");
+  (delayedProgress as unknown as () => void)();
   assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 4);
 });
 

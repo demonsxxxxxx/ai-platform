@@ -57,6 +57,7 @@ async function loadReactHarness({
   const { AuthProvider, useAuth } = await import("../../useAuth.tsx");
   const { useAgent } = await import("../../useAgent.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
   const {
     MemoryRouter,
     Route,
@@ -84,6 +85,18 @@ async function loadReactHarness({
   const root = createRoot(container as never);
   const originalGetCurrentUser = authApi.getCurrentUser;
   const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  sessionApi.getAuthoritative = async (sessionId) => {
+    const session = await sessionApi.get(sessionId);
+    return {
+      session_id: sessionId,
+      workspace_id: "default",
+      agent_id: session?.agent_id || "general-agent",
+      title: "",
+      purpose: "conversation",
+      agent_conversation: null,
+    };
+  };
   let currentAuthUser = {
     id: "user-a",
     tenant_id: "tenant-a",
@@ -333,6 +346,7 @@ async function loadReactHarness({
         await unmount();
       } finally {
         restoreAuthApi();
+        sessionApi.getAuthoritative = originalGetAuthoritative;
       }
     },
   };

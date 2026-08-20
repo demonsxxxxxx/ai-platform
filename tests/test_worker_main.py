@@ -217,6 +217,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
+    monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_parent_runs_requiring_finalization", parent_recovery_candidates)
     async def pending_intents(_conn, *, limit):
         calls.append(("pending", limit))
         return [{"tenant_id": "tenant-c", "run_id": "run-c", "attempt_id": "attempt-c", "stream_incarnation": 4}]
@@ -227,6 +228,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
             return True
         return False
 
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.repositories.list_pending_sse_terminal_publication_intents", pending_intents)
     monkeypatch.setattr("app.worker_main.publish_pending_run_terminal", publish_pending)
 
