@@ -76,7 +76,8 @@ def restored_sandbox_run_payload(
 
     serialized = dict(value)
     snapshot_schema_version = serialized.get("schema_version")
-    if snapshot_schema_version == RECONCILIATION_SNAPSHOT_SCHEMA_VERSION:
+    is_versioned_snapshot = snapshot_schema_version == RECONCILIATION_SNAPSHOT_SCHEMA_VERSION
+    if is_versioned_snapshot:
         execution_payload = serialized.get("execution_payload")
         metadata = serialized.get("metadata")
         if not isinstance(execution_payload, dict) or not isinstance(metadata, dict):
@@ -87,6 +88,9 @@ def restored_sandbox_run_payload(
         agent_profile_expected = serialized.pop("agent_profile_expected", False)
     if not isinstance(agent_profile_expected, bool):
         raise ValueError("executor_reconciliation_agent_profile_expected_invalid")
+    if is_versioned_snapshot and agent_profile_expected:
+        # v2 snapshots intentionally carry identity-only profile metadata, never executable instructions.
+        serialized["agent_profile"] = {}
     run_payload = run_payload_factory(**serialized)
     if agent_profile_expected and not run_payload.agent_profile:
         diagnostics = result.get("diagnostics")
