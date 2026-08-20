@@ -72,10 +72,10 @@ def restored_sandbox_run_payload(
         raise ValueError("executor_reconciliation_agent_profile_expected_invalid")
     run_payload = run_payload_factory(**serialized)
     if agent_profile_expected and not run_payload.agent_profile:
-        diagnostics = result.setdefault("diagnostics", [])
-        if (
-            isinstance(diagnostics, list)
-            and "agent_profile_transport_lost" not in diagnostics
-        ):
+        diagnostics = result.get("diagnostics")
+        if not isinstance(diagnostics, list):
+            diagnostics = []
+            result["diagnostics"] = diagnostics
+        if "agent_profile_transport_lost" not in diagnostics:
             diagnostics.append("agent_profile_transport_lost")
     return run_payload

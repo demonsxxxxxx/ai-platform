@@ -201,12 +201,14 @@ def _capability_execution_error(
     payload: RunPayload,
     evidence: object,
     *,
+    required_skill_identity: object = None,
     available_skill_identities: object = (),
 ) -> str | None:
     """Validate only the authorized capability invocations that actually occurred."""
 
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
+        required_skill_identity=required_skill_identity,
         available_skill_identities=available_skill_identities,
     )
     decision = _capability_completion_decision(
@@ -1586,9 +1588,25 @@ class ClaudeAgentWorkerAdapter:
             if isinstance(executor_response.get("capability_evidence"), list)
             else []
         )
+        runtime_sdk_result = type(
+            "RuntimeSdkResult",
+            (),
+            {
+                "used_skills": executor_response.get("used_skills"),
+                "used_skills_source": executor_response.get("used_skills_source", ""),
+            },
+        )()
+        reported_used_skill_names = _sdk_used_skill_names(
+            runtime_sdk_result,
+            prepared.staged_skill_names,
+            allow_platform_controlled_runner=True,
+        )
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
+            required_skill_identity=(
+                payload.skill_id if payload.skill_id in reported_used_skill_names else None
+            ),
             available_skill_identities=prepared.allowed_skill_names,
         )
         runtime_tool_evidence = validate_runtime_tool_evidence(
@@ -1605,14 +1623,6 @@ class ClaudeAgentWorkerAdapter:
             capability_error=selected_capability_error,
         )
         selected_capability_error = runtime_tool_evidence.error_code
-        runtime_sdk_result = type(
-            "RuntimeSdkResult",
-            (),
-            {
-                "used_skills": executor_response.get("used_skills"),
-                "used_skills_source": executor_response.get("used_skills_source", ""),
-            },
-        )()
         used_skill_names = _sdk_used_skill_names(
             runtime_sdk_result,
             prepared.staged_skill_names,
@@ -1867,6 +1877,9 @@ class ClaudeAgentWorkerAdapter:
             selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
+                required_skill_identity=(
+                    payload.skill_id if payload.skill_id in used_skill_names else None
+                ),
                 available_skill_identities=prepared.allowed_skill_names,
             )
             if selected_skill_error is not None:

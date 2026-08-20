@@ -2653,6 +2653,11 @@ def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
     assert restored.agent_profile == {}
     assert result["diagnostics"] == ["agent_profile_transport_lost"]
 
+    invalid_result = {"diagnostics": "invalid"}
+    restored_sandbox_run_payload(stored, RunPayload, invalid_result)
+
+    assert invalid_result["diagnostics"] == ["agent_profile_transport_lost"]
+
 
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):
     calls = []

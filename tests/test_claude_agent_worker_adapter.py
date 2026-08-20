@@ -1978,7 +1978,26 @@ async def test_sandbox_runtime_accepts_only_proven_controlled_skill_use(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("used_skills", "used_skills_source", "expected_status", "expected_error"),
+    [
+        ([], "none", "succeeded", None),
+        (
+            ["qa-file-reviewer"],
+            "platform_controlled_runner",
+            "failed",
+            "required_tool_completion_evidence_missing",
+        ),
+    ],
+)
+async def test_sandbox_selected_skill_validates_only_reported_invocation(
+    monkeypatch,
+    tmp_path,
+    used_skills,
+    used_skills_source,
+    expected_status,
+    expected_error,
+):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
@@ -1994,10 +2013,10 @@ async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkey
         monkeypatch,
         executor_response={
             "status": "completed",
-            "message": "unproven controlled runner claim",
+            "message": "autonomous response",
             "sdk_used": False,
-            "used_skills": ["qa-file-reviewer"],
-            "used_skills_source": "platform_controlled_runner",
+            "used_skills": used_skills,
+            "used_skills_source": used_skills_source,
         },
     )
 
@@ -2012,8 +2031,8 @@ async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkey
         )
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "required_tool_completion_evidence_missing"
+    assert result.status == expected_status
+    assert result.result.get("error_code") == expected_error
     assert result.result["used_skills"] == []
     assert result.executor_payload["used_skills_source"] == "none"
 
@@ -2410,8 +2429,10 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
         tool_policy_subjects=subjects,
     )
     evidence = _selected_capability_evidence(request)
-    if case in {"unused", "skill_missing"}:
+    if case == "unused":
         evidence = []
+    elif case == "skill_missing":
+        evidence = [item for item in evidence if item["capability_kind"] == "mcp"]
     elif case == "started":
         evidence = evidence[:1]
     elif case == "failed":
@@ -2459,6 +2480,9 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
     assert claude_agent_worker._capability_execution_error(
         current_payload,
         evidence,
+        required_skill_identity=(
+            skill_id if case in {"skill_completed", "skill_mcp_call_id"} else None
+        ),
         available_skill_identities=[skill_id],
     ) == expected_error
 
@@ -4008,7 +4032,12 @@ async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evide
         fields = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
         assert tuple(getattr(record, field) for field in fields) == ("default", "default", "user-a", "ses_1", "run_1", "qat-test-attempt")
         assert (record.evidence_source, record.trust_basis) == ("claude_agent_sdk_hook", "tool_call_bound_invocation")
-    assert claude_agent_worker._capability_execution_error(current_payload, result.capability_evidence) is None
+    assert claude_agent_worker._capability_execution_error(
+        current_payload,
+        result.capability_evidence,
+        required_skill_identity=current_payload.skill_id,
+        available_skill_identities=[current_payload.skill_id],
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -4041,7 +4070,10 @@ async def test_worker_local_selected_skill_rejects_incomplete_or_invalid_evidenc
     assert tuple(item is True for item in acknowledgements) == expected_acknowledged
     assert tuple(item["lifecycle_phase"] for item in result.capability_evidence) == expected_phases
     assert claude_agent_worker._capability_execution_error(
-        current_payload, result.capability_evidence
+        current_payload,
+        result.capability_evidence,
+        required_skill_identity=current_payload.skill_id,
+        available_skill_identities=[current_payload.skill_id],
     ) == expected_error
 
 
