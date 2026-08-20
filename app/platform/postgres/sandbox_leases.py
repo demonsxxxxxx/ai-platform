@@ -279,6 +279,37 @@ async def record_sandbox_executor_terminal(
     return dict(row)
 
 
+async def record_sandbox_executor_terminal_diagnostics(
+    connection: Any,
+    *,
+    lease_id: str,
+    claim_token: str,
+    diagnostics: list[str],
+) -> bool:
+    """Durably retain safe reconciliation diagnostics for the active claim."""
+
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set executor_terminal_json = jsonb_set(
+              executor_terminal_json,
+              '{diagnostics}',
+              %s::jsonb,
+              true
+            ),
+            updated_at = now()
+        where id = %s
+          and status = 'active'
+          and executor_terminal_json is not null
+          and executor_reconciliation_status = 'claimed'
+          and executor_reconciliation_claim_token = %s
+        returning id
+        """,
+        (json.dumps(diagnostics, ensure_ascii=False), lease_id, claim_token),
+    )
+    return await cursor.fetchone() is not None
+
+
 async def record_sandbox_executor_reconciliation_context(
     connection: Any,
     *,

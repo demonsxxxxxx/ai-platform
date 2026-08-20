@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
+from app.execution.application import stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
@@ -315,6 +316,36 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
 
     assert lost is None
     assert [call[0] for call in calls] == ["sql"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_fenced_stale_terminalization_never_cancels_completed_executor(monkeypatch):
+    calls = []
+
+    class Connection:
+        async def execute(self, sql, params):
+            calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    staged = await stale_terminalization.stage_stale_run_reconciliation(
+        Connection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        run_id="run-a",
+        expected_status="running",
+        stale_before="2026-07-21T11:00:00Z",
+        terminal_status="failed",
+        error_code="stale_run_interrupted",
+        error_message="Run interrupted because no live execution owner remains.",
+        append_event=_record_noop_event,
+        append_audit_log=_record_noop_event,
+    )
+
+    assert staged is None
+    assert "executor_terminal_json is not null" in calls[0][0]
+    assert "executor_reconciliation_status is distinct from 'finalized'" in calls[0][0]
+    assert calls[0][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
 
 
 class FakeCursor:

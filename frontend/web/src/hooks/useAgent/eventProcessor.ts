@@ -202,6 +202,13 @@ function publicTerminalPresentation(
       stage: "terminal",
       severity: "warning",
     },
+    terminal_reconciliation_failed: failed(
+      i18n.t("chat.runTerminal.terminalReconciliationFailed", {
+        defaultValue:
+          "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
+      }),
+      "terminal_reconciliation",
+    ),
     result_unavailable: {
       detailKind: "result_unavailable",
       message: i18n.t("chat.runTerminal.resultUnavailable", {
@@ -394,6 +401,13 @@ export function processMessageEvent(
           .filter((part) => part.type === "text" && !part.depth)
           .map((part) => (part.type === "text" ? part.content : ""))
           .join("");
+      const terminalMessage =
+        detailCode === "terminal_reconciliation_failed" && data.run_id
+          ? `${terminal.message} ${i18n.t("chat.runTerminal.runReference", {
+              defaultValue: "任务编号：{{runId}}",
+              runId: data.run_id,
+            })}`
+          : terminal.message;
       result.content = partialContent || terminal.message;
       result.cancelled = terminal.detailKind === "cancelled";
       result.parts = upsertRunStatusPart(parts, {
@@ -401,7 +415,7 @@ export function processMessageEvent(
         event_id: `terminal-detail:${data.run_id || messageId || detailCode}`,
         event_type: detailCode,
         stage: terminal.stage,
-        message: terminal.message,
+        message: terminalMessage,
         severity: terminal.severity,
         created_at: data.timestamp,
       });

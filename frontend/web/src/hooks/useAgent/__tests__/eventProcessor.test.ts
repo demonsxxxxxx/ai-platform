@@ -67,7 +67,36 @@ test("projects tool evidence mismatch as a specific safe terminal without backen
   assert.doesNotMatch(JSON.stringify(result), /workspace|private-token/);
 });
 
-test("projects an actionable bounded file-size terminal without backend detail", () => {
+test("projects terminal reconciliation failures as a specific safe terminal", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-terminal-reconciliation",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "terminal_reconciliation_failed",
+      message: "TypeError at /workspace/private with private-token",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-terminal-reconciliation",
+  );
+
+  const terminal = result.parts[0];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "terminal_reconciliation_failed");
+  assert.equal(terminal.stage, "terminal_reconciliation");
+  assert.match(terminal.message, /terminal_reconciliation_failed/);
+  assert.match(terminal.message, /run-terminal-reconciliation/);
+  assert.doesNotMatch(JSON.stringify(result), /workspace|private-token|TypeError/);
+});
+
+test("projects oversized context files as a specific safe terminal", () => {
   const result = processMessageEvent(
     "final_detail",
     {

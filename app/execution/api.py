@@ -16,6 +16,9 @@ from app.execution.application.executor_reconciliation import (
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
 )
+from app.execution.application.stale_terminalization import (
+    stage_stale_run_reconciliation,
+)
 
 __all__ = [
     "SkillInvocationEvidenceBinder",
@@ -25,6 +28,7 @@ __all__ = [
     "context_file_failure_log_extra",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
+    "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "time",
     "validated_context_file_diagnostic",
