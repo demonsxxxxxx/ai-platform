@@ -95,6 +95,7 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
     ]
 
 
+def _result() -> ExecutorResult:
     return ExecutorResult(
         status="succeeded",
         adapter_version="opensandbox/1",
