@@ -1693,11 +1693,11 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
 
 
 @pytest.mark.asyncio
-async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_text_once(
+async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_releases_once(
     monkeypatch,
     tmp_path,
 ):
-    captured, deltas, published_before_hook, published_after_hook = {}, [], [], []
+    captured, deltas, published_before_hook, published_before_terminal = {}, [], [], []
     subject = _subject()
     call_id = "mcp-call-1"
     before = f"Before {subject['identity']}."
@@ -1707,7 +1707,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         ("probe", lambda: published_before_hook.extend(deltas)),
         *_mcp_hook_steps(subject, call_id=call_id),
         *_stream_steps(after, index=1),
-        ("probe", lambda: published_after_hook.extend(deltas)),
+        ("probe", lambda: published_before_terminal.extend(deltas)),
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -1729,11 +1729,13 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    joined = "".join(deltas)
     assert "".join(published_before_hook) == "Before external tool."
-    assert published_after_hook[len(published_before_hook):] == [" After ", "tool invocation."]
+    assert published_before_terminal[len(published_before_hook):] == [" After ", "tool "]
+    terminal_chunks = deltas[len(published_before_terminal):]
+    assert terminal_chunks == ["invocation."]
+    assert "".join(deltas) == "Before external tool. After tool invocation."
+    assert "".join(deltas).count("tool invocation.") == 1
     assert result.error is None
-    assert joined == "Before external tool. After tool invocation."
     assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
@@ -1741,7 +1743,50 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         call_id,
         "safe-synthetic-value",
     ):
-        assert private_value not in joined
+        assert private_value not in "".join(deltas)
+
+
+@pytest.mark.asyncio
+async def test_sdk_effectful_mcp_discards_provisional_body_on_failed_terminal(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas = {}, []
+    subject = _subject()
+    subject["write_capable"] = True
+    call_id = "mcp-call-1"
+    steps = [
+        *_mcp_hook_steps(subject, call_id=call_id),
+        *_stream_steps("provisional answer must not escape"),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text="provisional answer must not escape",
+            result_error="simulated terminal failure",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error is not None
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
