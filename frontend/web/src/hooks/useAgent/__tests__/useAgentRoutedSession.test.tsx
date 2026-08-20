@@ -3364,7 +3364,80 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   }
 });
 
-test("useAgent consumes lambchat's runless error then done fallback exactly once", async () => {
+test("useAgent replaces a partial live answer with one exact terminal hydration", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalFetch = dom.window.fetch;
+  let exactRunQueries = 0;
+
+  dom.window.fetch = async () =>
+    sseFramesResponse([
+      {
+        event: "message:chunk",
+        data: { run_id: "run-live-terminal", content: "临时答案" },
+      },
+      {
+        event: "run_event",
+        data: { run_id: "run-live-terminal", event_type: "run_succeeded" },
+      },
+    ]);
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    if (options?.run_id === "run-live-terminal") {
+      exactRunQueries += 1;
+      return {
+        current_run_id: "run-live-terminal",
+        events: [
+          {
+            id: "run-live-terminal:final",
+            event_type: "message:chunk",
+            run_id: "run-live-terminal",
+            timestamp: "2026-07-15T00:00:03Z",
+            data: { run_id: "run-live-terminal", content: "权威终态答案" },
+          },
+        ],
+      };
+    }
+    return { current_run_id: "run-live-terminal", events: [] };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "实时终态会话",
+    session_id: "session-live-terminal",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-live-terminal",
+    run_id: "run-live-terminal",
+    trace_id: "trace-live-terminal",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("生成终态答案");
+    });
+    await settle(harness.act);
+
+    const assistants = harness.hook.messages.filter(
+      (message) => message.role === "assistant" && message.runId === "run-live-terminal",
+    );
+    assert.equal(exactRunQueries, 1);
+    assert.equal(assistants.length, 1);
+    assert.equal(assistants[0]?.content, "权威终态答案");
+    assert.doesNotMatch(JSON.stringify(harness.hook.messages), /临时答案临时答案/);
+  } finally {
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.submitChat = originalSubmitChat;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
