@@ -470,7 +470,8 @@ async def list_authorized_agent_conversations(
     params.append(limit)
     result = await conn.execute(
         f"""
-        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
+        select sessions.id, sessions.workspace_id, sessions.agent_id,
+               coalesce(legacy_first_user.title, sessions.title) as title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                profile.name as agent_profile_name,
@@ -492,6 +493,23 @@ async def list_authorized_agent_conversations(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
+        left join lateral (
+          select nullif(
+            left(
+              btrim(translate(messages.content, E'\\r\\n\\t\\v\\f', '     ')),
+              32
+            ),
+            ''
+          ) as title
+          from messages
+          where sessions.title_source = 'initial'
+            and sessions.title = profile.name
+            and messages.tenant_id = sessions.tenant_id
+            and messages.session_id = sessions.id
+            and messages.role = 'user'
+          order by messages.created_at asc, messages.id asc
+          limit 1
+        ) legacy_first_user on true
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.agent_id = %s

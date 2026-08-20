@@ -13802,6 +13802,16 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
     assert "sessions.status = 'active'" in sql
     assert "join agent_profile_revisions profile" in sql
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
+    assert "coalesce(legacy_first_user.title, sessions.title) as title" in sql
+    assert "left join lateral" in sql
+    assert "sessions.title_source = 'initial'" in sql
+    assert "sessions.title = profile.name" in sql
+    assert "messages.tenant_id = sessions.tenant_id" in sql
+    assert "messages.session_id = sessions.id" in sql
+    assert "messages.role = 'user'" in sql
+    assert "left( btrim(translate(messages.content, e'\\r\\n\\t\\v\\f'" in sql
+    assert ")), 32 )" in sql
+    assert "order by messages.created_at asc, messages.id asc limit 1" in sql
     assert "sessions.updated_at < %s" in sql
     assert "sessions.id < %s" in sql
     assert (
