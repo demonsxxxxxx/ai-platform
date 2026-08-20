@@ -217,8 +217,18 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
-    monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_parent_runs_requiring_finalization", parent_recovery_candidates)
-    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+    async def pending_intents(_conn, *, limit):
+        calls.append(("pending", limit))
+        return [{"tenant_id": "tenant-c", "run_id": "run-c", "attempt_id": "attempt-c", "stream_incarnation": 4}]
+
+    async def publish_pending(*_args, **kwargs):
+        if "attempt_id" in kwargs:
+            calls.append(("publish", kwargs["tenant_id"], kwargs["run_id"], kwargs["attempt_id"], kwargs["stream_incarnation"]))
+            return True
+        return False
+
+    monkeypatch.setattr("app.worker_main.repositories.list_pending_sse_terminal_publication_intents", pending_intents)
+    monkeypatch.setattr("app.worker_main.publish_pending_run_terminal", publish_pending)
 
     rows = await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
 
@@ -228,10 +238,12 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         ("drain", "tenant-b", "run-b", 4),
         ("recovery", 2),
         ("parent_recovery", 2),
+        ("pending", 2),
+        ("publish", "tenant-c", "run-c", "attempt-c", 4),
     ]
     assert rows == [
-        {"tenant_id": "tenant-a", "run_id": "run-a", "completed": True, "status": "failed", "did_transition": False, "needs_reconcile": False},
-        {"tenant_id": "tenant-b", "run_id": "run-b", "completed": False, "status": "failed", "did_transition": False, "needs_reconcile": False},
+        {"tenant_id": "tenant-a", "run_id": "run-a", "completed": True, "status": "failed", "did_transition": False, "needs_reconcile": False, "terminal_published": False},
+        {"tenant_id": "tenant-b", "run_id": "run-b", "completed": False, "status": "failed", "did_transition": False, "needs_reconcile": False, "terminal_published": False},
     ]
 
 

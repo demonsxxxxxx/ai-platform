@@ -817,12 +817,19 @@ async def ensure_run_terminal_intent(
 
 
 async def get_terminal_intent(
-    conn: AsyncConnection[dict[str, object]], *, tenant_id: str, run_id: str
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str | None = None,
 ) -> TerminalPublicationIntent | None:
-    result = await conn.execute(
-        "select * from sse_terminal_publication_intents where tenant_id=%s and run_id=%s",
-        (tenant_id, run_id),
-    )
+    query = "select * from sse_terminal_publication_intents where tenant_id=%s and run_id=%s"
+    params: tuple[object, ...] = (tenant_id, run_id)
+    if attempt_id is not None:
+        query += " and attempt_id=%s"
+        params += (attempt_id,)
+    query += " order by emitted_at asc, id asc limit 1"
+    result = await conn.execute(query, params)
     row = await result.fetchone()
     return _intent(row) if row is not None else None
 

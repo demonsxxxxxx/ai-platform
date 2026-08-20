@@ -176,6 +176,8 @@ async def publish_pending_run_terminal(
     *,
     tenant_id: str,
     run_id: str,
+    attempt_id: str | None = None,
+    stream_incarnation: int | None = None,
 ) -> bool:
     """Best-effort post-commit terminal publish; durable intent remains retryable."""
 
@@ -184,21 +186,101 @@ async def publish_pending_run_terminal(
             authority = await get_stream_authority(
                 conn, tenant_id=tenant_id, run_id=run_id
             )
-            intent = await get_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id)
+            if attempt_id is None:
+                intent = await get_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id)
+            else:
+                intent = await get_terminal_intent(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                )
     except Exception:  # noqa: BLE001 - the durable pending intent owns retry.
+        logger.warning(
+            "terminal_intent_publish_failed",
+            extra={
+                "reason_code": "authority_lookup_failed",
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+            },
+            exc_info=True,
+        )
         return False
     if authority is None or intent is None or intent.state != "pending":
         return False
+    if (
+        attempt_id is not None
+        and (intent.attempt_id != attempt_id or authority.attempt_id != attempt_id)
+    ):
+        logger.warning(
+            "terminal_intent_publish_failed",
+            extra={
+                "reason_code": "attempt_fence_rejected",
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+            },
+        )
+        return False
+    if (
+        stream_incarnation is not None
+        and (
+            intent.stream_incarnation != stream_incarnation
+            or authority.stream_incarnation != stream_incarnation
+        )
+    ):
+        logger.warning(
+            "terminal_intent_publish_failed",
+            extra={
+                "reason_code": "incarnation_fence_rejected",
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+            },
+        )
+        return False
+
     bridge = RedisStreamBridge()
+    publication_failed = False
     try:
         await publish_terminal_intent(bridge, authority=authority, intent=intent)
     except (StreamContractError, StreamTransportUnavailable):
-        return False
+        publication_failed = True
+        logger.warning(
+            "terminal_intent_publish_failed",
+            extra={
+                "reason_code": "redis_publication_failed",
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+            },
+            exc_info=True,
+        )
     finally:
-        await bridge.aclose()
+        try:
+            await bridge.aclose()
+        except Exception:
+            publication_failed = True
+            logger.warning(
+                "terminal_intent_publish_failed",
+                extra={
+                    "reason_code": "redis_close_failed",
+                    "tenant_id": tenant_id,
+                    "run_id": run_id,
+                },
+                exc_info=True,
+            )
+    if publication_failed:
+        return False
     try:
         async with transaction_factory() as conn:
             await mark_terminal_intent_published(conn, intent=intent)
     except Exception:  # noqa: BLE001 - exact Redis IDs make the next retry safe.
+        logger.warning(
+            "terminal_intent_publish_failed",
+            extra={
+                "reason_code": "intent_ack_failed",
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+            },
+            exc_info=True,
+        )
         return False
     return True

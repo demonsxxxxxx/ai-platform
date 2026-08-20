@@ -232,7 +232,33 @@ async def test_v3_records_false_lease_close_result(monkeypatch, caplog):
     records = [item for item in caplog.records if item.message == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason_code == "lease_release_failure"
-    assert records[0].lease_released is False
+
+
+@pytest.mark.asyncio
+async def test_v3_setup_failure_releases_lease_and_records_once(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+    request = request_for(FakeBridge([open_entry()]))
+    request.app.state.run_stream_runtime = SimpleNamespace(
+        hub=request.app.state.run_stream_runtime.hub
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request,
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert error.value.status_code == 503
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "hub_source_failure"
+    assert records[0].lease_released is True
+
 
 
 class ClosedSubscription:

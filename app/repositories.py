@@ -5728,6 +5728,28 @@ async def terminalize_pending_tool_permission_requests(
     return rows
 
 
+async def list_pending_sse_terminal_publication_intents(
+    conn: AsyncConnection,
+    *,
+    limit: int = TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return bounded pending terminal intents for worker-owned post-commit retry."""
+
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
+    cursor = await conn.execute(
+        """
+        select tenant_id, run_id, attempt_id, stream_incarnation
+        from sse_terminal_publication_intents
+        where state = 'pending'
+        order by emitted_at asc, id asc
+        limit %s
+        for update skip locked
+        """,
+        (bounded_limit,),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_runs_requiring_tool_permission_terminalization(
     conn: AsyncConnection,
     *,

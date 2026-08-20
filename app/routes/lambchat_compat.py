@@ -1682,21 +1682,8 @@ async def chat_session_stream(
         return True
 
     runtime = getattr(request.app.state, "run_stream_runtime", None)
-    if runtime is None:
-        lease_released = await release_lease()
-        _record_sse_exit(
-            run_id=run_id,
-            stream_incarnation=authority.stream_incarnation,
-            reason="lease_release_failure" if not lease_released else "hub_source_failure",
-            lease_released=lease_released,
-        )
-        raise HTTPException(status_code=503, detail="sse_stream_unavailable")
-    bridge = runtime.bridge
-    channel = stream_live_channel(
-        tenant_scope_value=authority.tenant_scope,
-        run_id=run_id,
-        stream_incarnation=authority.stream_incarnation,
-    )
+    bridge = None
+    channel = ""
     subscription = None
 
     async def close_subscription() -> bool:
@@ -1711,6 +1698,14 @@ async def chat_session_stream(
         return True
 
     try:
+        if runtime is None:
+            raise RuntimeError("sse_stream_runtime_unavailable")
+        bridge = runtime.bridge
+        channel = stream_live_channel(
+            tenant_scope_value=authority.tenant_scope,
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+        )
         subscription = await runtime.hub.subscribe(channel)
         resume = await bridge.resolve_resume(
             tenant_scope_value=authority.tenant_scope,

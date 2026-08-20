@@ -1745,7 +1745,46 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
 
 
 @pytest.mark.asyncio
-async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch, tmp_path):
+async def test_sdk_defers_effectful_mcp_answer_until_pre_hook(monkeypatch, tmp_path):
+    captured, deltas, published_before_hook, published_after_hook = {}, [], [], []
+    subject = _subject()
+    subject["write_capable"] = True
+    subject["risk_level"] = "high"
+    pre_hook, completed_hook = _mcp_hook_steps(subject, call_id="mcp-write-call")
+    steps = [
+        *_stream_steps("must remain deferred"),
+        ("probe", lambda: published_before_hook.extend(deltas)),
+        pre_hook,
+        completed_hook,
+        *_stream_steps(" verified answer", index=1),
+        ("probe", lambda: published_after_hook.extend(deltas)),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="must remain deferred verified answer"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="write",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert published_before_hook == []
+    assert "verified answer" in "".join(published_after_hook)
+    assert result.error is None
+    assert "must remain deferred" not in "".join(deltas)
+
+
     captured = {}
     deltas = []
     observed_before_result = []
