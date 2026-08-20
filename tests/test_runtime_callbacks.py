@@ -1114,7 +1114,28 @@ def test_executor_callback_is_the_ordered_assistant_delta_ingress(monkeypatch):
     ]
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
+        "assistant_delta",
         "executor_callback",
+        "assistant_delta",
+    ]
+    persisted_deltas = [
+        event["payload"]
+        for event in persisted
+        if event["event_type"] == "assistant_delta"
+    ]
+    assert persisted_deltas == [
+        {
+            "delta": "safe ",
+            "source": "worker_answer_delta_v1",
+            "visible_to_user": True,
+            "severity": "info",
+        },
+        {
+            "delta": "answer",
+            "source": "worker_answer_delta_v1",
+            "visible_to_user": True,
+            "severity": "info",
+        },
     ]
     assert [event.event_type for event in published] == [
         "assistant_text_delta",
@@ -1172,7 +1193,10 @@ def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_co
     )
 
     assert response.status_code == 200
-    assert [event["event_type"] for event in persisted] == ["executor_callback"]
+    assert [event["event_type"] for event in persisted] == [
+        "executor_callback",
+        "assistant_delta",
+    ]
     assert identity_reads == 2
     assert published == []
 
@@ -1308,7 +1332,16 @@ def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
         "batch_id": "batch-a",
         "event_count": 1,
     }
-    assert [event["event_type"] for event in persisted] == ["executor_callback"]
+    assert [event["event_type"] for event in persisted] == [
+        "executor_callback",
+        "assistant_delta",
+    ]
+    assert persisted[1]["payload"] == {
+        "delta": "text fallback",
+        "source": "worker_answer_delta_v1",
+        "visible_to_user": True,
+        "severity": "info",
+    }
     assert published[0].payload == {"delta": "text fallback"}
 
 

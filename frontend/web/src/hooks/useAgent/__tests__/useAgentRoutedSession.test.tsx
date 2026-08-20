@@ -5041,6 +5041,95 @@ test("useAgent presents a safe local card when terminal history hydration fails"
   }
 });
 
+test("useAgent rehydrates durable partial text for a failed terminal run", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let eventQueries = 0;
+  const historyEvents = [
+    {
+      id: "durable-partial:user",
+      event_type: "user:message",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:00Z",
+      data: { content: "生成报告" },
+    },
+    {
+      id: "durable-partial:delta",
+      event_type: "message:chunk",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:01Z",
+      data: { content: "已完成可公开的部分。" },
+    },
+    {
+      id: "durable-partial:detail",
+      event_type: "final_detail",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:02Z",
+      data: { detail_kind: "failed", detail_code: "executor_reported_failure" },
+    },
+    {
+      id: "durable-partial:done",
+      event_type: "done",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:02Z",
+      data: { status: "failed" },
+    },
+  ];
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-durable-partial",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async () => {
+    eventQueries += 1;
+    return {
+      current_run_id: "run-durable-partial",
+      events: eventQueries === 1 ? historyEvents.slice(0, 1) : historyEvents,
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-durable-partial",
+    run_id: "run-durable-partial",
+    status: "failed",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-durable-partial");
+    });
+    await settle(harness.act);
+
+    assert.equal(eventQueries, 2);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.ok(
+      harness.hook.messages.some(
+        (message) => message.role === "assistant" && message.content === "已完成可公开的部分。",
+      ),
+    );
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .filter((part) => part.type === "run_status").length,
+      0,
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent fails closed after initial reload status retries are exhausted", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
