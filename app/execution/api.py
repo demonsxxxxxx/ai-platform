@@ -12,6 +12,10 @@ from app.execution.application.context_file_diagnostics import (
     context_file_failure_log_extra,
     validated_context_file_diagnostic,
 )
+from app.execution.application.executor_reconciliation import (
+    restored_sandbox_run_payload,
+    sandbox_reconciliation_payload,
+)
 
 __all__ = [
     "SkillInvocationEvidenceBinder",
@@ -19,6 +23,8 @@ __all__ = [
     "context_file_failure_event_fields",
     "context_file_failure_event_payload",
     "context_file_failure_log_extra",
+    "restored_sandbox_run_payload",
+    "sandbox_reconciliation_payload",
     "submit_run_until_cancelled",
     "time",
     "validated_context_file_diagnostic",

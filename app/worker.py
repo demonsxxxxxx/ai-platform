@@ -42,7 +42,7 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.execution.api import (
-    WorkerRunCancelled,
+    WorkerRunCancelled, restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
 )
@@ -3377,7 +3377,7 @@ async def reconcile_executor_terminal_result(
     run_payload_value = context.get("run_payload")
     if not isinstance(run_payload_value, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
-    run_payload = RunPayload(**run_payload_value)
+    run_payload = _restored_run_payload(run_payload_value, RunPayload, result.result)
     adapter_name = str(context.get("adapter_name") or "").strip()
     if not adapter_name:
         raise ValueError("executor_reconciliation_adapter_name_missing")
