@@ -460,7 +460,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
 
@@ -545,7 +545,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
 
@@ -615,7 +615,7 @@ async def test_stale_run_maintenance_cas_loss_is_a_noop(monkeypatch):
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", forbidden_drain)
 
     results = await worker_main.reconcile_stale_runs_for_worker(Settings())
@@ -677,7 +677,7 @@ async def test_stale_run_fence_is_held_until_db_commit_then_released(monkeypatch
     )
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release)
 
     await worker_main.reconcile_stale_runs_for_worker(Settings())
@@ -737,7 +737,7 @@ async def test_stale_run_db_error_retains_bounded_fence(monkeypatch):
     )
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", forbidden_release)
 
     results = await worker_main.reconcile_stale_runs_for_worker(Settings())
@@ -798,7 +798,7 @@ async def test_stale_run_fence_renewal_loss_aborts_before_staging_a_terminal_int
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
     monkeypatch.setattr("app.worker_main.queue.renew_run_reconciliation_fence", renewal_lost)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", forbidden_stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", forbidden_stage)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", forbidden_release)
 
     results = await worker_main.reconcile_stale_runs_for_worker(Settings())
@@ -861,7 +861,7 @@ async def test_stale_run_fence_renews_through_stage_and_drain_transactions(monke
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
     monkeypatch.setattr("app.worker_main.queue.renew_run_reconciliation_fence", renew)
-    monkeypatch.setattr("app.worker_main.stale_terminalization.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release)
 

@@ -12,7 +12,7 @@ import uuid
 
 from app import queue
 from app import repositories
-from app.execution.application import stale_terminalization
+from app.execution.api import stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -372,7 +372,7 @@ async def reconcile_stale_runs_for_worker(
                 fenced_transaction = _fenced_transaction_factory(fence_guard)
                 try:
                     async with fenced_transaction() as conn:
-                        staged = await stale_terminalization.stage_stale_run_reconciliation(
+                        staged = await stage_stale_run_reconciliation(
                             conn,
                             tenant_id=tenant_id,
                             workspace_id=workspace_id,
