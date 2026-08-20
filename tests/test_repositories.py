@@ -11,7 +11,7 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import agent_conversation_repository, repositories
+from app import agent_conversation_repository, repositories, run_stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
@@ -22,7 +22,6 @@ from app.platform.postgres.errors import (
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
 from app.runs.api import RunTerminalizationProgress
-from app.runs.infrastructure import postgres as run_persistence
 from app.platform.postgres.sandbox_leases import (
     SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
@@ -30,7 +29,6 @@ from app.platform.postgres.sandbox_leases import (
     fence_sandbox_lease_release,
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
-    record_sandbox_executor_terminal_diagnostics,
 )
 from app.streaming import redis as streaming_redis
 from app.repositories import (
@@ -175,8 +173,6 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
     assert "<= clock_timestamp() - (%s * interval '1 second')" in conn.sql
     assert "not exists ( select 1 from sandbox_leases" in conn.sql
     assert "sandbox_leases.status = 'active'" in conn.sql
-    assert "sandbox_leases.executor_terminal_json is not null" in conn.sql
-    assert "sandbox_leases.executor_reconciliation_status is distinct from 'finalized'" in conn.sql
     assert "for update of runs skip locked" not in conn.sql
     assert conn.params == (900, 900, 25)
 
@@ -222,8 +218,8 @@ async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_can
     async def append_audit_log(_conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    monkeypatch.setattr(run_persistence.run_event_repository, "append_event", append_event)
-    monkeypatch.setattr(run_persistence, "_append_audit_log", append_audit_log)
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
 
     row = await repositories.stage_stale_run_reconciliation(
         Connection(),
@@ -246,8 +242,6 @@ async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_can
     assert "status = %s" in update_sql
     assert "cancel_requested_at is not null" in update_sql
     assert "not exists ( select 1 from sandbox_leases" in update_sql
-    assert "sandbox_leases.executor_terminal_json is not null" in update_sql
-    assert "sandbox_leases.executor_reconciliation_status is distinct from 'finalized'" in update_sql
     assert "greatest( coalesce((select max(created_at)" in update_sql
     assert update_params[4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
     assert update_params[-3:] == (
@@ -280,8 +274,8 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
     async def append_audit_log(_conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    monkeypatch.setattr(run_persistence.run_event_repository, "append_event", append_event)
-    monkeypatch.setattr(run_persistence, "_append_audit_log", append_audit_log)
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
 
     failed = await repositories.stage_stale_run_reconciliation(
         Connection(
@@ -320,6 +314,37 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
 
     assert lost is None
     assert [call[0] for call in calls] == ["sql"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_fenced_stale_terminalization_never_cancels_completed_executor(monkeypatch):
+    calls = []
+
+    class Connection:
+        async def execute(self, sql, params):
+            calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    monkeypatch.setattr(run_stale_terminalization.repositories, "append_event", _record_noop_event)
+    monkeypatch.setattr(run_stale_terminalization.repositories, "append_audit_log", _record_noop_event)
+
+    staged = await run_stale_terminalization.stage_stale_run_reconciliation(
+        Connection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        run_id="run-a",
+        expected_status="running",
+        stale_before="2026-07-21T11:00:00Z",
+        terminal_status="failed",
+        error_code="stale_run_interrupted",
+        error_message="Run interrupted because no live execution owner remains.",
+    )
+
+    assert staged is None
+    assert "executor_terminal_json is not null" in calls[0][0]
+    assert "executor_reconciliation_status is distinct from 'finalized'" in calls[0][0]
+    assert calls[0][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
 
 
 class FakeCursor:
@@ -9756,27 +9781,6 @@ async def test_sandbox_executor_terminal_receipt_is_attempt_fenced_and_idempoten
             executor_status="failed",
             terminal_result={"status": "failed", "run_id": "run-a"},
         )
-
-
-@pytest.mark.asyncio
-async def test_sandbox_executor_terminal_diagnostics_are_claim_fenced():
-    conn = SingleRowConnection({"id": "lease-a"})
-
-    persisted = await record_sandbox_executor_terminal_diagnostics(
-        conn,
-        lease_id="lease-a",
-        claim_token="claim-a",
-        diagnostics=["agent_profile_transport_lost"],
-    )
-
-    assert persisted is True
-    assert "jsonb_set( executor_terminal_json" in conn.sql
-    assert "executor_reconciliation_claim_token = %s" in conn.sql
-    assert conn.params == (
-        json.dumps(["agent_profile_transport_lost"], ensure_ascii=False),
-        "lease-a",
-        "claim-a",
-    )
 
 
 @pytest.mark.asyncio
