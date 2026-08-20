@@ -290,6 +290,9 @@ export function handleStreamEvent(
     acceptedProgress.sequence !== null &&
     progressSequence <= acceptedProgress.sequence
   ) {
+    if (progressSequence === acceptedProgress.sequence) {
+      onCommitted?.(false);
+    }
     return false;
   }
 

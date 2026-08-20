@@ -440,6 +440,77 @@ test("advances only transport for a newer cursor whose semantic updater became a
   assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-active:1:2-0");
 });
 
+test("advances only transport for an immediate equal semantic sequence", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "unchanged",
+        timestamp: new Date(),
+        parts: [{ type: "text", content: "unchanged" }],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    sequence: 9,
+  };
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    eventId: "run-active:1:1-0",
+  };
+  const commits: boolean[] = [];
+  const nextCursor = "run-active:1:2-0";
+  const before = ctx.messages()[0];
+
+  const accepted = handleStreamEvent(
+    {
+      event: "execution_progress",
+      data: JSON.stringify({
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "semantic-equal-immediate",
+        run_id: "run-active",
+        sequence: 9,
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "重复事件不得更新",
+        progress: { current: 2, total: 4 },
+        safe_file_name: null,
+        artifact_public_id: null,
+        created_at: null,
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    nextCursor,
+    undefined,
+    ctx,
+    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    (semanticApplied) => {
+      commits.push(semanticApplied);
+      ctx.acceptedStreamCursorRef!.current.eventId = nextCursor;
+    },
+  );
+
+  assert.equal(accepted, false);
+  assert.deepEqual(commits, [false]);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, nextCursor);
+  assert.equal(ctx.setMessagesCalls(), 0);
+  assert.deepEqual(ctx.messages()[0], before);
+  assert.equal(
+    ctx.processedEventIdsRef.current.has("semantic-equal-immediate"),
+    false,
+  );
+});
+
 test("retains the run-event sequence replay guard after the event-id cap", () => {
   const ctx = createContext(
     [
