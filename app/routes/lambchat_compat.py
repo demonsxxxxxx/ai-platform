@@ -90,6 +90,8 @@ _SSE_EXIT_REASONS = frozenset(
         "live_source_closed",
         "transport_failure",
         "stream_contract_failure",
+        "stream_setup_failure",
+        "stream_cleanup_failure",
     }
 )
 
@@ -1650,9 +1652,24 @@ async def chat_session_stream(
         except Exception:
             return False
 
+    async def record_sse_exit(reason: str) -> None:
+        if reason not in _SSE_EXIT_REASONS:
+            reason = "transport_failure"
+        lease_released = await release_lease(reason=reason)
+        logger.info(
+            "sse_stream_exit",
+            extra={
+                "reason": reason,
+                "run_id_prefix": _safe_sse_correlation(run_id),
+                "attempt_id_prefix": _safe_sse_correlation(authority.attempt_id),
+                "stream_incarnation": authority.stream_incarnation,
+                "lease_released": lease_released,
+            },
+        )
+
     runtime = getattr(request.app.state, "run_stream_runtime", None)
     if runtime is None:
-        await release_lease(reason="stream_setup_failure")
+        await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
     channel = stream_live_channel(
@@ -1695,14 +1712,37 @@ async def chat_session_stream(
                 through_redis_id=resume.after_redis_id or "0-0",
             )
     except StreamContractError as exc:
+        cleanup_failed = False
         if subscription is not None:
-            await subscription.aclose()
-        await release_lease(reason="stream_contract_failure")
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+        await record_sse_exit(
+            "stream_cleanup_failure" if cleanup_failed else "stream_contract_failure"
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
+        cleanup_failed = False
         if subscription is not None:
-            await subscription.aclose()
-        await release_lease(reason="transport_failure")
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+        await record_sse_exit(
+            "stream_cleanup_failure" if cleanup_failed else "transport_failure"
+        )
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
+    except Exception as exc:  # noqa: BLE001
+        cleanup_failed = False
+        if subscription is not None:
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+        await record_sse_exit(
+            "stream_cleanup_failure" if cleanup_failed else "stream_setup_failure"
+        )
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
@@ -1717,19 +1757,7 @@ async def chat_session_stream(
             if exit_recorded:
                 return
             exit_recorded = True
-            if exit_reason not in _SSE_EXIT_REASONS:
-                raise RuntimeError("sse_exit_reason_invalid")
-            lease_released = await release_lease(reason=exit_reason)
-            logger.info(
-                "sse_stream_exit",
-                extra={
-                    "reason": exit_reason,
-                    "run_id_prefix": _safe_sse_correlation(run_id),
-                    "attempt_id_prefix": _safe_sse_correlation(authority.attempt_id),
-                    "stream_incarnation": authority.stream_incarnation,
-                    "lease_released": lease_released,
-                },
-            )
+            await record_sse_exit(exit_reason)
 
         async def refresh_lease() -> bool:
             nonlocal lease
@@ -1890,10 +1918,14 @@ async def chat_session_stream(
             exit_reason = "stream_contract_failure"
             return
         finally:
+            cleanup_failed = False
             try:
                 await subscription.aclose()
-            finally:
-                await record_exit()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+            if cleanup_failed:
+                exit_reason = "stream_cleanup_failure"
+            await record_exit()
 
     return StreamingResponse(
         stream(),

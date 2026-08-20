@@ -304,7 +304,13 @@ class PublicChatAnswerStreamProjector:
             for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
                 if self._raw.endswith(marker[:length]):
                     unstable = max(unstable, length)
-        unstable = max(unstable, sanitizer_unstable_suffix_length(self._raw))
+        unstable = max(
+            unstable,
+            sanitizer_unstable_suffix_length(
+                self._raw,
+                track_ambiguous_prefixes=True,
+            ),
+        )
         return unstable
 
     def push(self, value: object, *, final: bool = False) -> str:

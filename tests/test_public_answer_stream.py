@@ -8,6 +8,40 @@ IDENTITY = "mcp__tenant-server__search"
 CALL_ID = "mcp-call-1"
 
 
+SPLIT_SECRET_TEXTS = (
+    'client_secret="opaque12345"',
+    "api-key='opaque12345'",
+    "access_token=opaque12345",
+    'refresh-token: "opaque12345"',
+    "auth_header='opaque12345'",
+    'authorization: "opaque12345"',
+    "private_key=opaque12345",
+    "Bearer abcdefgh1",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345",
+)
+
+
+def test_sanitizer_prefix_and_token_splits_are_fail_closed_and_parity_safe():
+    for secret in SPLIT_SECRET_TEXTS:
+        for split in range(1, len(secret)):
+            gate = PublicAnswerStreamGate(
+                private_replacements={},
+                sanitizer=sanitize_public_text,
+                max_private_token_chars=64,
+                max_sealed_chars=256,
+            )
+            first = gate.accept(f"Before {secret[:split]}")
+            second = gate.accept(f"{secret[split:]} after")
+            finished = gate.finish(
+                final_text=f"Before {secret} after", release=True
+            )
+            public_text = "".join((*first, *second, *finished.chunks))
+            assert secret not in public_text
+            assert "Before" in public_text
+            assert "after" in public_text
+            assert "[redacted-secret]" in public_text
+
+
 def _sanitize(value):
     return value if isinstance(value, str) and "raw-secret" not in value else ""
 
@@ -32,8 +66,8 @@ def test_unsealed_stream_emits_ordinary_text_and_redacts_full_known_identity():
     )
 
     assert first == ("ordinary answer. ",)
-    assert second == ("Used external tool safely.",)
-    assert finished.chunks == ()
+    assert second == ("Used external tool ",)
+    assert finished.chunks == ("safely.",)
     assert finished.final_text == "ordinary answer. Used external tool safely."
     assert IDENTITY not in "".join((*first, *second, *finished.chunks))
 
@@ -202,7 +236,7 @@ def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     assert initial.failed is True
     assert initial.accept("must not publish") == ()
     assert initial.finish(final_text="must not publish", release=True).chunks == ()
-    assert published == ("ordinary pre-hook text",)
+    assert published == ("ordinary pre-hook ",)
     assert dynamic.failed is True
     assert dynamic.accept("sealed private text") == ()
     assert dynamic.finish(final_text="sealed private text", release=True).chunks == ()

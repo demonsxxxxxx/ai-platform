@@ -53,7 +53,7 @@ _SANITIZER_BEARER_PREFIX = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])bearer\s+[A-Za-z0-9._~+/=-]*$"
 )
 _SANITIZER_ASSIGNMENT_PREFIX = re.compile(
-    r"(?i)(?:token|secret|password|api[_-]?key|authorization)\s*[:=]\s*[A-Za-z0-9._-]{0,15}$"
+    rf"(?i)(?:{SECRET_KEY_PATTERN})\s*[:=]\s*[\"']?[A-Za-z0-9._-]{{0,15}}$"
 )
 
 

@@ -207,7 +207,7 @@ async def connect(bridge, *, last_event_id=None, on_subscribe=None):
 def terminal_rows():
     return (
         open_entry(),
-        entry("2-0", "sev-delta", "assistant_text_delta", {"delta": "hello"}),
+        entry("2-0", "sev-delta", "assistant_text_delta", {"delta": "hello "}),
         entry(
             "3-0",
             "sev-terminal",
@@ -309,7 +309,7 @@ async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
     assert response.headers["x-accel-buffering"] == "no"
     assert "id: run-a:1:2-0" in body
     assert '"schema": "ai-platform.public-run-stream-event.v3"' in body
-    assert '"payload": {"delta": "hello"}' in body
+    assert '"payload": {"delta": "hello "}' in body
     assert body.index("id: run-a:1:3-0") < body.index("id: run-a:1:4-0")
 
 
@@ -324,7 +324,7 @@ async def test_v3_subscribes_before_capturing_replay_tail(monkeypatch):
     _, body = await connect(bridge, on_subscribe=append_after_subscribe)
 
     assert bridge.calls[:3] == ["subscribe", "resolve", "bounds"]
-    assert '"delta": "hello"' in body
+    assert '"delta": "hello "' in body
     assert "event: end\n" in body
 
 

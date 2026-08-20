@@ -264,7 +264,9 @@ class PublicAnswerStreamGate:
                     held = size
                     break
         sanitizer_hold = sanitizer_unstable_suffix_length(
-            text, max_chars=self._max_private_token_chars
+            text,
+            max_chars=self._max_private_token_chars,
+            track_ambiguous_prefixes=True,
         )
         return max(held, sanitizer_hold)
 

@@ -706,6 +706,20 @@ export async function connectToSSE(
             throw new Error("sse_event_contract_invalid");
           }
           acceptedStreamIncarnation ??= adapted.streamIncarnation;
+          const acceptedCursorBeforeEvent = ctx.acceptedStreamCursorRef?.current;
+          if (
+            acceptedCursorBeforeEvent?.sessionId === targetSessionId &&
+            acceptedCursorBeforeEvent.runId === targetRunId &&
+            acceptedCursorBeforeEvent.eventId
+          ) {
+            const cursorComparison = comparePublicRunStreamCursors(
+              eventId,
+              acceptedCursorBeforeEvent.eventId,
+            );
+            if (cursorComparison === null || cursorComparison <= 0) {
+              return;
+            }
+          }
           const terminalStatus = terminalRunStatusFromEvent(
             adapted.event,
             adapted.data as unknown as Record<string, unknown>,

@@ -30,6 +30,9 @@ function createContext(
     acceptedRunEventSequenceRef: {
       current: { sessionId: null, runId: null, sequence: null },
     },
+    acceptedStreamCursorRef: {
+      current: { sessionId: null, runId: null, eventId: null },
+    },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -108,6 +111,39 @@ test("does not let a stale run terminal event finalize the active run", () => {
     ctx,
   );
 
+  assert.deepEqual(terminalCalls, []);
+  assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("rejects a stale cursor before terminal callbacks or reducer mutation", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    eventId: "run-active:1:2-0",
+  };
+  const terminalCalls: string[] = [];
+  ctx.onRunTerminal = () => {
+    terminalCalls.push("terminal");
+    return true;
+  };
+
+  const accepted = handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-active",
+        event_type: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-active",
+    "run-active:1:1-0",
+    "2026-07-14T02:00:00.000Z",
+    ctx,
+  );
+
+  assert.equal(accepted, false);
   assert.deepEqual(terminalCalls, []);
   assert.equal(ctx.setMessagesCalls(), 0);
 });

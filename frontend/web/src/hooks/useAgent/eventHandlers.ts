@@ -32,6 +32,7 @@ import {
   type PublicStreamPresentation,
   type PublicStreamPresentationOwner,
 } from "./publicStreamPresentation";
+import { comparePublicRunStreamCursors } from "./publicRunStreamV3";
 import {
   terminalRunStatusFromEvent,
   type TerminalRunStatus,
@@ -201,6 +202,24 @@ export function handleStreamEvent(
   }
   if (binding && eventRunId && eventRunId !== binding.runId) {
     return false;
+  }
+
+  const cursorSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
+  const cursorRunId = binding?.runId ?? eventRunId;
+  const acceptedCursorBeforeEffects = ctx.acceptedStreamCursorRef?.current;
+  if (
+    acceptedCursorBeforeEffects &&
+    acceptedCursorBeforeEffects.sessionId === cursorSessionId &&
+    acceptedCursorBeforeEffects.runId === cursorRunId &&
+    acceptedCursorBeforeEffects.eventId
+  ) {
+    const cursorComparison = comparePublicRunStreamCursors(
+      eventId,
+      acceptedCursorBeforeEffects.eventId,
+    );
+    if (cursorComparison !== null && cursorComparison <= 0) {
+      return false;
+    }
   }
 
   const terminalStatus = terminalRunStatusFromEvent(
@@ -437,6 +456,41 @@ export function handleStreamEvent(
     committedData: EventData = data,
     onApplied: () => void = commitAcceptedEvent,
   ) => ctx.setMessages((prev) => {
+    if (binding) {
+      if (
+        ctx.streamVersionRef.current !== binding.streamVersion ||
+        ctx.sessionIdRef.current !== binding.sessionId ||
+        ctx.currentRunIdRef.current !== binding.runId
+      ) {
+        return prev;
+      }
+    }
+    const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+    if (
+      acceptedCursor &&
+      acceptedCursor.sessionId === progressSessionId &&
+      acceptedCursor.runId === progressRunId &&
+      acceptedCursor.eventId
+    ) {
+      const cursorComparison = comparePublicRunStreamCursors(
+        eventId,
+        acceptedCursor.eventId,
+      );
+      if (cursorComparison !== null && cursorComparison <= 0) {
+        return prev;
+      }
+    }
+    const currentAcceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
+    if (
+      progressSequence !== null &&
+      currentAcceptedProgress &&
+      currentAcceptedProgress.sessionId === progressSessionId &&
+      currentAcceptedProgress.runId === progressRunId &&
+      currentAcceptedProgress.sequence !== null &&
+      progressSequence <= currentAcceptedProgress.sequence
+    ) {
+      return prev;
+    }
     let didApply = false;
     const next = prev.map((m) => {
       if (m.id !== messageId) return m;
