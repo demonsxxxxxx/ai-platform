@@ -15,6 +15,7 @@ from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
+from app.persistence import artifacts as artifact_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.errors import (
     RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
@@ -998,7 +999,7 @@ async def test_revealed_session_artifacts_are_acl_scoped_and_not_globally_capped
 
     conn = Connection()
 
-    rows = await repositories.list_revealed_session_artifacts(
+    rows = await artifact_persistence.list_revealed_session_artifacts(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",

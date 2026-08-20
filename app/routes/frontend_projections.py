@@ -19,6 +19,7 @@ from app.models import (
     RevealedFileSessionGroupResponse,
     RevealedFileSessionResponse,
 )
+from app.persistence import artifacts as artifact_persistence
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -206,7 +207,7 @@ async def list_revealed_session_files(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     async with transaction() as conn:
-        rows = await repositories.list_revealed_session_artifacts(
+        rows = await artifact_persistence.list_revealed_session_artifacts(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

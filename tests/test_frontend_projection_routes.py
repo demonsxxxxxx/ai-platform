@@ -56,10 +56,9 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
         raising=False,
     )
     monkeypatch.setattr(
-        frontend_projections.repositories,
+        frontend_projections.artifact_persistence,
         "list_revealed_session_artifacts",
         fake_list_revealed_session_artifacts,
-        raising=False,
     )
     monkeypatch.setattr(
         frontend_projections.repositories,

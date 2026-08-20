@@ -112,7 +112,6 @@ get_artifact = artifacts.get_artifact
 get_authorized_artifact = artifacts.get_authorized_artifact
 list_revealed_artifact_sessions = artifacts.list_revealed_artifact_sessions
 list_revealed_artifacts = artifacts.list_revealed_artifacts
-list_revealed_session_artifacts = artifacts.list_revealed_session_artifacts
 queue_expired_artifacts_for_deletion = artifacts.queue_expired_artifacts_for_deletion
 get_data_retention_backlog = retention.get_data_retention_backlog
 purge_deleted_memory_records = retention.purge_deleted_memory_records
