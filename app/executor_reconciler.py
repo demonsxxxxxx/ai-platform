@@ -341,7 +341,7 @@ async def reconcile_pending_executor_terminals_once(
                 extra={
                     "lease_id": str(lease_row["id"]),
                     "run_id": str(lease_row["run_id"]),
-                    "attempt_id": str(lease_row.get("attempt_id") or ""),
+                    "attempt_id": str(lease_row["attempt_id"]),
                     "attempt_count": int(
                         lease_row.get("executor_reconciliation_attempt_count") or 0
                     ),
