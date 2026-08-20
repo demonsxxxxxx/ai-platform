@@ -7,7 +7,13 @@ function locale() {
   return JSON.parse(readFileSync(join(process.cwd(), "src/i18n/locales/zh.json"), "utf8"));
 }
 
-test("run terminal status retry exhaustion copy is available in Chinese", () => {
+test("run terminal result-unavailable copy is available in Chinese", () => {
+  assert.equal(
+    locale().chat.runTerminal.resultUnavailable,
+    "任务终态已确认，但结果暂时无法加载。请刷新会话。",
+  );
+});
+test("run terminal unavailable-status copy is available in Chinese", () => {
   assert.equal(
     locale().chat.runTerminal.statusUnavailable,
     "任务状态暂时无法同步。请刷新当前会话后重试。",

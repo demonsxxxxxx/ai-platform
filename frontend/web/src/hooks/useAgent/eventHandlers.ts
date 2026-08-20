@@ -290,6 +290,20 @@ export function handleStreamEvent(
       progressRunId &&
       ctx.acceptedRunEventSequenceRef
     ) {
+      const accepted = ctx.acceptedRunEventSequenceRef.current;
+      const isSameRun =
+        accepted !== null &&
+        accepted.sessionId === progressSessionId &&
+        accepted.runId === progressRunId;
+      if (
+        isSameRun &&
+        accepted !== null &&
+        accepted.sequence !== null &&
+        progressSequence <= accepted.sequence
+      ) {
+        onCommitted?.(true);
+        return;
+      }
       ctx.acceptedRunEventSequenceRef.current = {
         sessionId: progressSessionId,
         runId: progressRunId,

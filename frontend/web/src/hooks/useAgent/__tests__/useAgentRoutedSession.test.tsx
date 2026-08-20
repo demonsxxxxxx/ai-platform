@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  PUBLIC_RUN_STREAM_SCHEMA,
+} from "../../../generated/publicRunStreamV3.ts";
 import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type {
@@ -54,6 +57,7 @@ async function loadReactHarness({
   const { AuthProvider, useAuth } = await import("../../useAuth.tsx");
   const { useAgent } = await import("../../useAgent.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
   const {
     MemoryRouter,
     Route,
@@ -81,6 +85,18 @@ async function loadReactHarness({
   const root = createRoot(container as never);
   const originalGetCurrentUser = authApi.getCurrentUser;
   const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  sessionApi.getAuthoritative = async (sessionId) => {
+    const session = await sessionApi.get(sessionId);
+    return {
+      session_id: sessionId,
+      workspace_id: "default",
+      agent_id: session?.agent_id || "general-agent",
+      title: "",
+      purpose: "conversation",
+      agent_conversation: null,
+    };
+  };
   let currentAuthUser = {
     id: "user-a",
     tenant_id: "tenant-a",
@@ -330,6 +346,7 @@ async function loadReactHarness({
         await unmount();
       } finally {
         restoreAuthApi();
+        sessionApi.getAuthoritative = originalGetAuthoritative;
       }
     },
   };
@@ -341,6 +358,33 @@ async function settle(act: typeof import("react").act) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
+}
+
+function sseV3FramesResponse(
+  frames: Array<{
+    event: string;
+    cursor: string;
+    eventId: string;
+    payload: Record<string, unknown>;
+  }>,
+) {
+  return new Response(
+    frames
+      .map(
+        ({ event, cursor, eventId, payload }) =>
+          `id: ${cursor}\nevent: ${event}\ndata: ${JSON.stringify({
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: eventId,
+            run_id: "run-live-terminal",
+            stream_incarnation: 2,
+            emitted_at: "2026-07-15T00:00:00Z",
+            event_type: event,
+            payload,
+          })}\n\n`,
+      )
+      .join(""),
+    { headers: { "content-type": "text/event-stream" } },
+  );
 }
 
 function completedSseResponse() {
@@ -3359,6 +3403,88 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent replaces a partial live answer with one exact terminal hydration", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalFetch = dom.window.fetch;
+  let exactRunQueries = 0;
+
+  dom.window.fetch = async () =>
+    sseV3FramesResponse([
+      {
+        event: "assistant_text_delta",
+        cursor: "run-live-terminal:2:1-0",
+        eventId: "run-live-terminal:delta",
+        payload: { delta: "临时答案" },
+      },
+      {
+        event: "terminal",
+        cursor: "run-live-terminal:2:2-0",
+        eventId: "run-live-terminal:terminal",
+        payload: {
+          event_id: "run-live-terminal:terminal",
+          hydrate_required: true,
+          status: "succeeded",
+        },
+      },
+    ]);
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    if (options?.run_id === "run-live-terminal") {
+      exactRunQueries += 1;
+      return {
+        current_run_id: "run-live-terminal",
+        events: [
+          {
+            id: "run-live-terminal:final",
+            event_type: "message:chunk",
+            run_id: "run-live-terminal",
+            timestamp: "2026-07-15T00:00:03Z",
+            data: { run_id: "run-live-terminal", content: "权威终态答案" },
+          },
+        ],
+      };
+    }
+    return { current_run_id: "run-live-terminal", events: [] };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "实时终态会话",
+    session_id: "session-live-terminal",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-live-terminal",
+    run_id: "run-live-terminal",
+    trace_id: "trace-live-terminal",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("生成终态答案");
+    });
+    await settle(harness.act);
+
+    const assistants = harness.hook.messages.filter(
+      (message) => message.role === "assistant" && message.runId === "run-live-terminal",
+    );
+    assert.equal(exactRunQueries, 1);
+    assert.equal(assistants.length, 1);
+    assert.equal(assistants[0]?.content, "权威终态答案");
+    assert.doesNotMatch(JSON.stringify(harness.hook.messages), /临时答案临时答案/);
+  } finally {
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.submitChat = originalSubmitChat;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }

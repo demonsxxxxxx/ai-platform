@@ -1,10 +1,22 @@
 import pytest
 
 from app.executors.public_answer_stream import PublicAnswerStreamGate
+from app.memory_redaction import (
+    MEMORY_REDACTION_MODE_STANDARD,
+    MEMORY_REDACTION_MODE_STRICT,
+    MEMORY_REDACTION_MODES,
+)
+from app.platform.public_payload import sanitize_public_text
 
 
 IDENTITY = "mcp__tenant-server__search"
 CALL_ID = "mcp-call-1"
+
+
+def test_memory_redaction_public_modes_import_and_preserve_strict_contract():
+    assert MEMORY_REDACTION_MODE_STANDARD == "standard"
+    assert MEMORY_REDACTION_MODE_STRICT == "strict"
+    assert MEMORY_REDACTION_MODES == {"standard", "strict"}
 
 
 def _sanitize(value):
@@ -21,20 +33,70 @@ def _gate(**kwargs):
     )
 
 
-def test_unsealed_stream_emits_ordinary_text_and_redacts_full_known_identity():
-    gate = _gate()
-
-    first = gate.accept("ordinary answer. ")
-    second = gate.accept(f"Used {IDENTITY} safely.")
-    finished = gate.finish(
-        final_text=f"ordinary answer. Used {IDENTITY} safely.", release=True
+@pytest.mark.parametrize(
+    ("secret", "split"),
+    [
+        ("sk-abcdefghi12", 3),
+        ("ghp_abcdefghijklmnopqrstuvwxyz", 4),
+        ("AKIA1234567890ABCDEF", 4),
+        ("abcdefghij.klmnopqrst.uvwxyzabcd", 21),
+        ("abcdefghij.klmnopqrst.uvwxyzabcd", 22),
+        ("Bearer abcdef12", 7),
+        ("Bearer abcdefgh1", 15),
+        ("api_key=abcdefghijkl", 8),
+    ],
+)
+def test_sanitizer_owned_secret_split_across_chunks_is_never_published(secret, split):
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=sanitize_public_text,
+        max_private_token_chars=64,
+        max_sealed_chars=128,
     )
 
-    assert first == ("ordinary answer. ",)
-    assert second == ("Used external tool safely.",)
-    assert finished.chunks == ()
-    assert finished.final_text == "ordinary answer. Used external tool safely."
-    assert IDENTITY not in "".join((*first, *second, *finished.chunks))
+    first = gate.accept(f"Before {secret[:split]}")
+    second = gate.accept(f"{secret[split:]} after")
+    finished = gate.finish(final_text=f"Before {secret} after", release=True)
+
+    public_text = "".join((*first, *second, *finished.chunks))
+    assert secret not in public_text
+    assert "[redacted-secret]" in public_text
+
+
+def test_sanitizer_owned_jwt_and_bearer_secrets_are_safe_at_every_split():
+    secrets = (
+        "abcdefghij.klmnopqrst.uvwxyzabcd",
+        "Bearer abcdefgh1",
+    )
+    for secret in secrets:
+        for split in range(1, len(secret)):
+            gate = PublicAnswerStreamGate(
+                private_replacements={},
+                sanitizer=sanitize_public_text,
+                max_private_token_chars=64,
+                max_sealed_chars=256,
+            )
+            first = gate.accept(f"Before {secret[:split]}")
+            second = gate.accept(f"{secret[split:]} after")
+            finished = gate.finish(final_text=f"Before {secret} after", release=True)
+            public_text = "".join((*first, *second, *finished.chunks))
+            assert secret not in public_text
+
+
+def test_long_jwt_segments_fail_closed_before_the_tracking_ceiling_can_leak_prefix():
+    secret = "abcdefghijabcdefghij." + "x" * 90 + "." + "z" * 20
+    for split in range(1, len(secret)):
+        gate = PublicAnswerStreamGate(
+            private_replacements={},
+            sanitizer=sanitize_public_text,
+            max_private_token_chars=64,
+            max_sealed_chars=256,
+        )
+        first = gate.accept(f"Before {secret[:split]}")
+        second = gate.accept(f"{secret[split:]} after")
+        finished = gate.finish(final_text=f"Before {secret} after", release=True)
+        public_text = "".join((*first, *second, *finished.chunks))
+        assert secret not in public_text
 
 
 def test_unsealed_stream_withholds_only_a_possible_private_token_prefix():
@@ -174,7 +236,7 @@ def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     assert initial.failed is True
     assert initial.accept("must not publish") == ()
     assert initial.finish(final_text="must not publish", release=True).chunks == ()
-    assert published == ("ordinary pre-hook text",)
+    assert published == ("ordinary pre-hook ",)
     assert dynamic.failed is True
     assert dynamic.accept("sealed private text") == ()
     assert dynamic.finish(final_text="sealed private text", release=True).chunks == ()

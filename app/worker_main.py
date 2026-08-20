@@ -30,6 +30,7 @@ from app.routes.sandbox_runtime_cleanup import (
 from app.redis_client import close_redis_client
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
+from app.streaming.worker_projection import publish_pending_run_terminal
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 
@@ -272,6 +273,13 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             await reconcile_terminalized_permission_run(
                 tenant_id=tenant_id, run_id=run_id, progress=outcome, transaction_factory=transaction
             )
+        terminal_published = False
+        if outcome is not None and outcome.is_terminal():
+            terminal_published = await publish_pending_run_terminal(
+                transaction,
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
         progress.append(
             {
                 "tenant_id": tenant_id,
@@ -280,6 +288,7 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
                 "status": outcome.status if outcome is not None else None,
                 "did_transition": outcome.did_transition if outcome is not None else False,
                 "needs_reconcile": outcome.needs_reconcile if outcome is not None else False,
+                "terminal_published": terminal_published,
             }
         )
     async with transaction() as conn:
@@ -297,6 +306,11 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             run_id=run_id,
             transaction_factory=transaction,
         )
+        await publish_pending_run_terminal(
+            transaction,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
     async with transaction() as conn:
         parent_recovery_candidates = await repositories.list_multi_agent_parent_runs_requiring_finalization(
             conn,
@@ -313,6 +327,34 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
                 tenant_id=tenant_id,
                 parent_run_id=parent_run_id,
             )
+        await publish_pending_run_terminal(
+            transaction,
+            tenant_id=tenant_id,
+            run_id=parent_run_id,
+        )
+    try:
+        async with transaction() as conn:
+            pending_terminal_intents = await repositories.list_pending_sse_terminal_publication_intents(
+                conn,
+                limit=limit,
+            )
+    except Exception:
+        logger.exception("Pending terminal intent maintenance query failed")
+        pending_terminal_intents = []
+    for candidate in pending_terminal_intents:
+        tenant_id = str(candidate.get("tenant_id") or "")
+        run_id = str(candidate.get("run_id") or "")
+        attempt_id = str(candidate.get("attempt_id") or "")
+        stream_incarnation = candidate.get("stream_incarnation")
+        if not tenant_id or not run_id or not attempt_id or stream_incarnation is None:
+            continue
+        await publish_pending_run_terminal(
+            transaction,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=int(stream_incarnation),
+        )
     return progress
 
 

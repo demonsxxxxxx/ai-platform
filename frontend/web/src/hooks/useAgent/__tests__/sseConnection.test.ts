@@ -2272,13 +2272,13 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
           v3Frame({
-            cursor: "run-1:1:2-0",
+            cursor: "run-1:1:10-0",
             runId: "run-1",
             eventType: "semantic_stage",
             eventId: "semantic-progress-1",
             payload: {
               event: "run_event",
-              data: { sequence: 9, event_type: "worker_progress" },
+              data: { sequence: 8, event_type: "worker_progress" },
             },
           }) as never,
         );
@@ -2288,9 +2288,79 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
     /SSE closed before terminal event/,
   );
 
-  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:2-0");
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:10-0");
   assert.equal(context.acceptedRunEventSequenceRef.current.sequence, 8);
   assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
+});
+
+test("delayed older semantic event cannot regress the accepted transport cursor", async () => {
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set(["semantic-progress-new"]) },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 9 },
+    },
+    acceptedStreamCursorRef: {
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0" },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-1",
+      "assistant-1",
+      context,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-1:1:3-0",
+            runId: "run-1",
+            eventType: "semantic_stage",
+            eventId: "semantic-progress-new",
+            payload: {
+              event: "run_event",
+              data: { sequence: 9, event_type: "worker_progress" },
+            },
+          }) as never,
+        );
+        init.onmessage?.(
+          v3Frame({
+            cursor: "run-1:1:2-0",
+            runId: "run-1",
+            eventType: "semantic_stage",
+            eventId: "semantic-progress-old",
+            payload: {
+              event: "run_event",
+              data: { sequence: 8, event_type: "worker_progress" },
+            },
+          }) as never,
+        );
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:3-0");
+  assert.equal(context.acceptedRunEventSequenceRef.current.sequence, 9);
 });
 
 test("replay gap preserves partial output until an active run reaches terminal hydration", async () => {

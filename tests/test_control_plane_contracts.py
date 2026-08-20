@@ -328,6 +328,19 @@ def test_public_payload_sanitizer_redacts_secret_like_executor_values():
     assert "smoke-secret-token" not in serialized
 
 
+def test_public_payload_sanitizer_redacts_provider_tokens_in_public_text():
+    payload = sanitize_public_payload(
+        {
+            "message": (
+                "github=ghp_abcdefghijklmnopqrstuvwxyz123456 "
+                "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJydW4ifQ.signature"
+            )
+        }
+    )
+
+    assert payload == {"message": "github=[redacted-secret] jwt=[redacted-secret]"}
+
+
 def test_public_payload_sanitizer_preserves_safe_token_like_text():
     payload = sanitize_public_payload(
         {

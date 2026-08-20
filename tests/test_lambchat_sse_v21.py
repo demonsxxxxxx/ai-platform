@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -79,26 +80,246 @@ def open_entry(redis_id="1-0"):
     )
 
 
+def test_sse_exit_diagnostic_uses_only_bounded_safe_fields(caplog):
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+
+    route._record_sse_exit(
+        run_id="run-a",
+        stream_incarnation=3,
+        reason="unexpected-private-detail",
+        lease_released=False,
+    )
+
+    record = next(item for item in caplog.records if item.message == "sse_stream_exit")
+    assert record.reason_code == "hub_source_failure"
+    assert record.run_id == "run-a"
+    assert record.stream_incarnation == 3
+    assert record.lease_released is False
+    assert "unexpected-private-detail" not in caplog.text
+    assert "tool_input" not in caplog.text
+    assert "cursor" not in caplog.text
+
+
+
+
+@pytest.mark.asyncio
+async def test_v3_does_not_emit_replay_gap_after_delayed_resume_lease_refresh_fails(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch)
+    allow_calls = 0
+
+    def allows_frame(_lease, *, now):
+        nonlocal allow_calls
+        allow_calls += 1
+        return False
+
+    monkeypatch.setattr(SseAuthorityLease, "allows_frame", allows_frame)
+
+    acquire_calls = 0
+
+    async def renewal_rejected(conn, **kwargs):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            return lease()
+        raise SseAuthorityConflictError("sse_authority_revoked")
+
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", renewal_rejected)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+    bridge = FakeBridge(
+        [open_entry()],
+        resume=ResumeDecision(
+            None, StreamGap("retained_history_unavailable", "run-a:1:1-0", 1, 1)
+        ),
+        resume_delay=True,
+    )
+
+    _, body = await connect(bridge, last_event_id="run-a:1:1-0")
+
+    assert body == ""
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "authorization_expired"
+    assert records[0].lease_released is True
+    assert allow_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_v3_rechecks_lease_after_wait_before_heartbeat(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch)
+    allow_calls = 0
+
+    def allows_frame(_lease, *, now):
+        nonlocal allow_calls
+        allow_calls += 1
+        return allow_calls == 1
+
+    monkeypatch.setattr(SseAuthorityLease, "allows_frame", allows_frame)
+
+    acquire_calls = 0
+
+    async def renewal_rejected(conn, **kwargs):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            return lease()
+        raise SseAuthorityConflictError("sse_authority_revoked")
+
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", renewal_rejected)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+
+    _, body = await connect(
+        FakeBridge([open_entry()]),
+        subscription=TimeoutSubscription(),
+    )
+
+    assert body == ""
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "authorization_expired"
+
+
+@pytest.mark.asyncio
+async def test_v3_rechecks_lease_after_wait_before_live_payload(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch)
+    allow_calls = 0
+
+    def allows_frame(_lease, *, now):
+        nonlocal allow_calls
+        allow_calls += 1
+        return allow_calls == 1
+
+    monkeypatch.setattr(SseAuthorityLease, "allows_frame", allows_frame)
+
+    acquire_calls = 0
+
+    async def renewal_rejected(conn, **kwargs):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            return lease()
+        raise SseAuthorityConflictError("sse_authority_revoked")
+
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", renewal_rejected)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+
+    _, body = await connect(
+        FakeBridge([open_entry()]),
+        subscription=DelayedPublicationSubscription(),
+    )
+
+    assert body == ""
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "authorization_expired"
+    assert records[0].lease_released is True
+    assert allow_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_v3_classifies_live_close_reason(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+
+    _, body = await connect(
+        FakeBridge([open_entry()]),
+        subscription=ClosedSubscription("live_transport_unavailable"),
+    )
+
+    assert "event: stream_open\n" in body
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "hub_source_failure"
+
+
+@pytest.mark.asyncio
+async def test_v3_records_false_lease_close_result(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+
+    async def close_without_update(conn, **kwargs):
+        return False
+
+    monkeypatch.setattr(route, "close_sse_authority_lease", close_without_update)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+
+    _, body = await connect(FakeBridge(terminal_rows()))
+
+    assert 'event: end\n' in body
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "lease_release_failure"
+
+
+@pytest.mark.asyncio
+async def test_v3_setup_failure_releases_lease_and_records_once(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level("INFO", logger=route._sse_logger.name)
+    request = request_for(FakeBridge([open_entry()]))
+    request.app.state.run_stream_runtime = SimpleNamespace(
+        hub=request.app.state.run_stream_runtime.hub
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request,
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert error.value.status_code == 503
+    records = [item for item in caplog.records if item.message == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason_code == "hub_source_failure"
+    assert records[0].lease_released is True
+
+
+
 class ClosedSubscription:
-    def __init__(self):
+    def __init__(self, reason="test_stream_closed"):
         self.closed = False
+        self.reason = reason
 
     async def next(self, *, timeout_seconds=None):
-        raise LiveSubscriptionClosed("test_stream_closed")
+        raise LiveSubscriptionClosed(self.reason)
 
     async def aclose(self):
         self.closed = True
 
 
+class TimeoutSubscription(ClosedSubscription):
+    async def next(self, *, timeout_seconds=None):
+        await asyncio.sleep(0)
+        raise TimeoutError
+
+
+class DelayedPublicationSubscription(ClosedSubscription):
+    async def next(self, *, timeout_seconds=None):
+        await asyncio.sleep(0)
+        return SimpleNamespace()
+
+
 class FakeBridge:
-    def __init__(self, rows, *, resume=None, resolve_error=None):
+    def __init__(
+        self, rows, *, resume=None, resolve_error=None, resume_delay=False
+    ):
         self.rows = list(rows)
         self.resume = resume
+        self.resume_delay = resume_delay
         self.resolve_error = resolve_error
         self.calls = []
 
     async def resolve_resume(self, **kwargs):
         self.calls.append("resolve")
+        if self.resume_delay:
+            await asyncio.sleep(0)
         if self.resolve_error:
             raise self.resolve_error
         if self.resume is not None:
@@ -127,11 +348,11 @@ class FakeBridge:
 
 
 class FakeHub:
-    def __init__(self, bridge, *, on_subscribe=None):
+    def __init__(self, bridge, *, on_subscribe=None, subscription=None):
         self.bridge = bridge
         self.on_subscribe = on_subscribe
         self.calls = []
-        self.subscription = ClosedSubscription()
+        self.subscription = subscription or ClosedSubscription()
 
     async def subscribe(self, channel):
         self.calls.append("subscribe")
@@ -141,10 +362,14 @@ class FakeHub:
         return self.subscription
 
 
-def request_for(bridge, *, on_subscribe=None):
+def request_for(bridge, *, on_subscribe=None, subscription=None):
     runtime = SimpleNamespace(
         bridge=bridge,
-        hub=FakeHub(bridge, on_subscribe=on_subscribe),
+        hub=FakeHub(
+            bridge,
+            on_subscribe=on_subscribe,
+            subscription=subscription,
+        ),
     )
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=runtime)))
 
@@ -173,11 +398,21 @@ def patch_authority(monkeypatch, *, run=None):
     monkeypatch.setattr(route, "get_terminal_intent", get_intent)
 
 
-async def connect(bridge, *, last_event_id=None, on_subscribe=None):
+async def connect(
+    bridge,
+    *,
+    last_event_id=None,
+    on_subscribe=None,
+    subscription=None,
+):
     response = await route.chat_session_stream(
         "session-a",
         "run-a",
-        request_for(bridge, on_subscribe=on_subscribe),
+        request_for(
+            bridge,
+            on_subscribe=on_subscribe,
+            subscription=subscription,
+        ),
         last_event_id=last_event_id,
         principal=AuthPrincipal(
             user_id="user-a", display_name="User", tenant_id="tenant-a"
@@ -279,7 +514,16 @@ async def test_v3_missing_authority_distinguishes_startup_from_terminal_run(
 
 @pytest.mark.asyncio
 async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
-    patch_authority(monkeypatch)
+    patch_authority(
+        monkeypatch,
+        run={
+            "id": "run-a",
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        },
+    )
 
     async def forbidden(*args, **kwargs):
         raise AssertionError("PG run_events must not drive live SSE")
@@ -298,7 +542,16 @@ async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_v3_subscribes_before_capturing_replay_tail(monkeypatch):
-    patch_authority(monkeypatch)
+    patch_authority(
+        monkeypatch,
+        run={
+            "id": "run-a",
+            "session_id": "session-a",
+            "status": "running",
+            "agent_id": "qa-word-review",
+            "skill_id": "general-chat",
+        },
+    )
     bridge = FakeBridge([open_entry()])
 
     def append_after_subscribe():

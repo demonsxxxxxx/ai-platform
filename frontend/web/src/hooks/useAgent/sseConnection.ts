@@ -16,7 +16,10 @@ import {
   type StreamEvent,
 } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
-import { adaptPublicRunStreamEventV3 } from "./publicRunStreamV3";
+import {
+  adaptPublicRunStreamEventV3,
+  comparePublicRunStreamCursors,
+} from "./publicRunStreamV3";
 import { clearAllLoadingStates } from "./messageParts";
 import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
@@ -703,6 +706,31 @@ export async function connectToSSE(
           };
           const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
             if (!isCurrentStream()) return;
+            const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+            const ownsAcceptedCursor =
+              acceptedCursor?.sessionId === targetSessionId &&
+              acceptedCursor.runId === targetRunId;
+            const cursorComparison =
+              ownsAcceptedCursor && acceptedCursor.eventId
+                ? comparePublicRunStreamCursors(eventId, acceptedCursor.eventId)
+                : 1;
+            if (
+              ownsAcceptedCursor &&
+              acceptedCursor.eventId &&
+              (cursorComparison === null || cursorComparison <= 0)
+            ) {
+              if (
+                semanticApplied &&
+                isAcceptedRunProgress(
+                  adapted.event,
+                  adapted.data as unknown as Record<string, unknown>,
+                  Boolean(terminalStatus),
+                )
+              ) {
+                retryCountRef.current = 0;
+              }
+              return;
+            }
             if (ctx.acceptedStreamCursorRef) {
               ctx.acceptedStreamCursorRef.current = {
                 sessionId: targetSessionId,

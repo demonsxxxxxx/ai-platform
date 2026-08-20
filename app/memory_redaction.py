@@ -37,6 +37,60 @@ STRICT_JWT_LIKE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])"
 )
 
+_SANITIZER_TOKEN_SUFFIX = re.compile(
+    r"(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+$"
+)
+
+
+_SANITIZER_PROVIDER_PREFIX = re.compile(
+    r"(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{0,10}|gh[pousr]_[A-Za-z0-9_]{0,10}|AKIA[0-9A-Z]{0,15})$"
+)
+_SANITIZER_JWT_TWO_SEGMENT_PREFIX = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*$"
+)
+_SANITIZER_JWT_THREE_SEGMENT_PREFIX = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]*$"
+)
+_SANITIZER_BEARER_PREFIX = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])bearer\s+[A-Za-z0-9._~+/=-]*$"
+)
+_SANITIZER_ASSIGNMENT_PREFIX = re.compile(
+    r"(?i)(?:token|secret|password|api[_-]?key|authorization)\s*[:=]\s*[A-Za-z0-9._-]{0,15}$"
+)
+
+
+def sanitizer_unstable_suffix_length(
+    value: str, *, max_chars: int = 64, track_ambiguous_prefixes: bool = False
+) -> int:
+    """Return a bounded suffix that could become a secret on the next chunk."""
+
+    for pattern in (
+        _SANITIZER_JWT_THREE_SEGMENT_PREFIX,
+        _SANITIZER_JWT_TWO_SEGMENT_PREFIX,
+        _SANITIZER_BEARER_PREFIX,
+    ):
+        match = pattern.search(value)
+        if match:
+            candidate_chars = len(value) - match.start()
+            return candidate_chars if candidate_chars <= max_chars else max_chars + 1
+
+    limit = min(len(value), max_chars)
+    for size in range(limit, 0, -1):
+        suffix = value[-size:]
+        if (
+            _SANITIZER_PROVIDER_PREFIX.fullmatch(suffix)
+            or _SANITIZER_ASSIGNMENT_PREFIX.fullmatch(suffix)
+        ):
+            return size
+    if not track_ambiguous_prefixes:
+        return 0
+    candidate_match = _SANITIZER_TOKEN_SUFFIX.search(value)
+    if candidate_match:
+        candidate_chars = len(value) - candidate_match.start()
+        return candidate_chars if candidate_chars <= max_chars else max_chars + 1
+    return 0
+
+
 MEMORY_REDACTION_MODE_STANDARD = "standard"
 MEMORY_REDACTION_MODE_STRICT = "strict"
 MEMORY_REDACTION_MODES = {MEMORY_REDACTION_MODE_STANDARD, MEMORY_REDACTION_MODE_STRICT}

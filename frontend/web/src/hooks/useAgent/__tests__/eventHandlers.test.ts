@@ -758,6 +758,124 @@ test("commits a public delta before a later execution state and keeps history se
   assert.deepEqual(historyProcess.steps, [liveStep]);
 });
 
+test("does not move the accepted sequence backward when a delayed step follows a newer step", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-sequence-order",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-sequence-order";
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-sequence-order",
+    streamVersion: 0,
+  };
+  let delayedProgress: (() => void) | null = null;
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => undefined,
+    setTimeout: (callback) => {
+      delayedProgress = callback;
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {
+      delayedProgress = null;
+    },
+  });
+  presentation.activate({
+    sessionId: binding.sessionId,
+    runId: binding.runId,
+    assistantMessageId: "assistant-sequence-order",
+    streamVersion: binding.streamVersion,
+  });
+  ctx.publicStreamPresentation = presentation;
+
+  const executionEvent = (
+    event: string,
+    eventId: string,
+    sequence: number,
+    stepId: string,
+  ) =>
+    ({
+      event,
+      data: JSON.stringify({
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: eventId,
+        run_id: binding.runId,
+        sequence,
+        step_id: stepId,
+        kind: "processing",
+        stage: "private-stage",
+        status: "running",
+        title: "处理中",
+        summary: "安全进度",
+        progress: { current: sequence, total: 4 },
+        safe_file_name: null,
+        artifact_public_id: null,
+        created_at: null,
+      }),
+    }) as StreamEvent;
+
+  assert.equal(
+    handleStreamEvent(
+      executionEvent("execution_step", "step-1", 1, "step-1"),
+      "assistant-sequence-order",
+      "step-1",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(
+      executionEvent("execution_progress", "progress-2", 2, "step-1"),
+      "assistant-sequence-order",
+      "progress-2",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(
+      executionEvent("execution_progress", "progress-3", 3, "step-1"),
+      "assistant-sequence-order",
+      "progress-3",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.notEqual(delayedProgress, null);
+  assert.equal(
+    handleStreamEvent(
+      executionEvent("execution_step", "step-4", 4, "step-2"),
+      "assistant-sequence-order",
+      "step-4",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 4);
+  assert.equal(typeof delayedProgress, "function");
+  (delayedProgress as unknown as () => void)();
+  assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 4);
+});
+
 test("creates a new streaming assistant for a running run after the latest user message", () => {
   const messages: Message[] = [
     {

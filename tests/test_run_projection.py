@@ -719,6 +719,23 @@ def test_stream_projector_withholds_identifier_until_split_token_is_complete():
     assert projector.flush() == ""
 
 
+def test_stream_projector_withholds_split_sanitizer_secret_until_redaction():
+    run = {
+        "id": "run-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    projector = PublicChatAnswerStreamProjector(run)
+
+    first = projector.push("Before sk-abcdef")
+    second = projector.push("ghi12 after")
+
+    assert first == ""
+    assert "sk-abcdefghi12" not in second
+    assert "[redacted-secret]" in second
+
+
 def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
     run = {
         "id": "run-a",
