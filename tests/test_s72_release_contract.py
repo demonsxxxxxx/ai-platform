@@ -122,14 +122,18 @@ def test_required_backend_job_collects_linux_special_node_contract() -> None:
         )
     )
     backend_tests = workflow["jobs"]["backend-tests"]
-    release_shard = next(
+    release_shards = [
         shard
         for shard in backend_tests["strategy"]["matrix"]["include"]
-        if shard["shard"] == "release-governance"
-    )
+        if "tests/test_s72_release_contract.py" in shard["test_files"].split()
+    ]
 
     assert backend_tests["runs-on"] == "ubuntu-latest"
-    assert release_shard["test_files"].split().count("tests/test_s72_release_contract.py") == 1
+    assert len(release_shards) == 1
+    assert (
+        release_shards[0]["test_files"].split().count("tests/test_s72_release_contract.py")
+        == 1
+    )
     assert "backend-tests" in workflow["jobs"]["required"]["needs"]
 
 
