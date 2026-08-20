@@ -18,7 +18,6 @@ from openpyxl import Workbook
 
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.file_parser_contracts import (
-    MaterializedAttachmentFact,
     build_attachment_preprocessing_contract,
 )
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
@@ -270,17 +269,6 @@ def write_minimal_docx(path: Path) -> None:
   <w:body><w:p><w:r><w:t>translated</w:t></w:r></w:p></w:body>
 </w:document>""",
         )
-
-
-def write_minimal_xlsx(path: Path, *, formula: str = "=1+2") -> None:
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet["A1"] = "metric"
-    sheet["B1"] = "value"
-    sheet["A2"] = "total"
-    sheet["B2"] = formula
-    workbook.save(path)
-    workbook.close()
 
 
 def write_dimensionless_validation_xlsx(path: Path) -> None:
@@ -2892,110 +2880,6 @@ async def test_default_executor_uses_raw_xlsx_without_typed_context(tmp_path, mo
 
     assert result["status"] == "completed"
     assert "attachment_contexts" not in captured
-
-
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="superseded by sandbox-owned raw attachment processing")
-async def test_default_executor_keeps_duplicate_xlsx_basenames_bound_to_distinct_file_ids(
-    tmp_path,
-    monkeypatch,
-):
-    first_path = tmp_path / "first.xlsx"
-    second_path = tmp_path / "second.xlsx"
-    write_minimal_xlsx(first_path, formula="=1+2")
-    write_minimal_xlsx(second_path, formula="=3+4")
-    raw_by_file = {
-        "file-a": first_path.read_bytes(),
-        "file-b": second_path.read_bytes(),
-    }
-    first_path.unlink()
-    second_path.unlink()
-    captured = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_stage(_self, *, file_id, workspace_root, max_bytes, **_scope):
-        raw = raw_by_file[file_id]
-        target = Path(workspace_root) / "context" / file_id / "book.xlsx"
-        target.parent.mkdir(parents=True)
-        target.write_bytes(raw)
-        return {
-            "file_id": file_id,
-            "workspace_path": f"context/{file_id}/book.xlsx",
-            "bytes_staged": len(raw),
-            "max_bytes": max_bytes,
-        }
-
-    async def fake_sdk(**kwargs):
-        captured["attachment_contexts"] = kwargs["attachment_contexts"]
-        return sdk_result(
-            "two workbook answer",
-            used_skills=["qa-rag-skill"],
-            used_skills_source="executor_hook",
-        )
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
-        fake_stage,
-    )
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
-    facts = [
-        MaterializedAttachmentFact(
-            file_id=file_id,
-            file_name="book.xlsx",
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            byte_count=len(raw),
-            sha256=hashlib.sha256(raw).hexdigest(),
-        )
-        for file_id, raw in raw_by_file.items()
-    ]
-    payload = task_payload()
-    payload["config"].update(
-        {
-            "skill_ids": ["qa-rag-skill"],
-            "input_files": ["file-a", "file-b"],
-            "materialized_file_names": ["book.xlsx", "book.xlsx"],
-            "tool_policy_subjects": context_stage_policy(),
-            "context_manifest": {
-                "queue_attempt_id": "qat-attempt-a",
-                "schema_version": "ai-platform.context-manifest.v1",
-                "files": [{"file_id": "file-a"}, {"file_id": "file-b"}],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    attachment_facts=facts,
-                ),
-            },
-            "context_retrieval_scope": {
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "agent_id": "general-agent",
-            },
-        }
-    )
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    async def emit_event(_event):
-        return None
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-    assert [row["file_id"] for row in result["attachment_parser_evidence"]] == [
-        "file-a",
-        "file-b",
-    ]
-    assert result["attachment_parser_evidence"][0]["sha256"] != result[
-        "attachment_parser_evidence"
-    ][1]["sha256"]
-    formulas = [
-        context.content["workbook"]["sheets"][0]["rows"][1]["cells"][1]["value"]
-        for context in captured["attachment_contexts"]
-    ]
-    assert formulas == ["=1+2", "=3+4"]
 
 
 @pytest.mark.asyncio
