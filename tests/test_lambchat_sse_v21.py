@@ -81,6 +81,20 @@ def open_entry(redis_id="1-0"):
     )
 
 
+class FailingSubscription:
+    def __init__(self, *, cleanup_error=False):
+        self.closed = False
+        self.cleanup_error = cleanup_error
+
+    async def next(self, *, timeout_seconds=None):
+        raise RuntimeError("private setup failure")
+
+    async def aclose(self):
+        self.closed = True
+        if self.cleanup_error:
+            raise RuntimeError("private cleanup failure")
+
+
 class ClosedSubscription:
     def __init__(self):
         self.closed = False
@@ -164,6 +178,12 @@ def request_for(bridge, *, on_subscribe=None, subscription=None):
         ),
     )
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=runtime)))
+
+
+def request_without_runtime():
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=None))
+    )
 
 
 def patch_authority(monkeypatch, *, run=None, close_result=True):
@@ -544,4 +564,153 @@ async def test_v3_admitted_body_cancellation_closes_subscription_and_records_onc
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason == "client_disconnected"
+    assert subscription.closed is True
+
+
+@pytest.mark.asyncio
+async def test_v3_missing_runtime_after_admission_records_setup_exit_and_releases_lease(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+    with pytest.raises(HTTPException) as exc:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_without_runtime(),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+    assert exc.value.status_code == 503
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "stream_setup_failure"
+    assert records[0].lease_released is True
+    assert "private" not in caplog.text
+    assert "tenant-a" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_v3_generic_setup_failure_records_one_safe_exit(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+
+    def fail_subscribe():
+        raise RuntimeError("private hub failure")
+
+    with pytest.raises(HTTPException) as exc:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([open_entry()]), on_subscribe=fail_subscribe),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+    assert exc.value.status_code == 503
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "stream_setup_failure"
+    assert records[0].lease_released is True
+    assert "private hub failure" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_v3_live_source_close_records_bounded_reason_and_cleanup(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+    subscription = ClosedSubscription()
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        request_for(FakeBridge([open_entry()]), subscription=subscription),
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+    assert "event: stream_open" in body
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "live_source_closed"
+    assert records[0].lease_released is True
+    assert subscription.closed is True
+
+
+@pytest.mark.asyncio
+async def test_v3_generic_generator_failure_records_transport_exit(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+    subscription = FailingSubscription()
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        request_for(
+            FakeBridge([open_entry()]),
+            subscription=subscription,
+        ),
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="private setup failure"):
+        "".join([chunk async for chunk in response.body_iterator])
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "transport_failure"
+    assert records[0].lease_released is True
+    assert subscription.closed is True
+    assert "private setup failure" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_v3_cleanup_failure_overrides_exit_reason_without_duplicate_record(
+    monkeypatch, caplog
+):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+    subscription = FailingSubscription(cleanup_error=True)
+    response = await route.chat_session_stream(
+        "session-a",
+        "run-a",
+        request_for(
+            FakeBridge(terminal_rows()),
+            subscription=subscription,
+        ),
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+    assert "event: end\n" in body
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "stream_cleanup_failure"
+    assert records[0].lease_released is True
+    assert subscription.closed is True
+
+
+@pytest.mark.asyncio
+async def test_v3_setup_cleanup_failure_is_classified_once(monkeypatch, caplog):
+    patch_authority(monkeypatch)
+    caplog.set_level(logging.INFO, logger=route.logger.name)
+    subscription = FailingSubscription(cleanup_error=True)
+    with pytest.raises(HTTPException) as exc:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(
+                FakeBridge([open_entry()], resolve_error=StreamTransportUnavailable("down")),
+                subscription=subscription,
+            ),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+    assert exc.value.status_code == 503
+    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
+    assert len(records) == 1
+    assert records[0].reason == "stream_cleanup_failure"
+    assert records[0].lease_released is True
     assert subscription.closed is True

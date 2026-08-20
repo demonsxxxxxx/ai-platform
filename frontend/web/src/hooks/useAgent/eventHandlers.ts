@@ -332,6 +332,12 @@ export function handleStreamEvent(
     onCommitted?.(true);
   };
 
+  const commitTransportOnly = () => {
+    if (committed) return;
+    committed = true;
+    onCommitted?.(false);
+  };
+
   if (terminalStatus && eventRunId) {
     const owner = presentationOwner(binding, messageId);
     if (owner) ctx.publicStreamPresentation?.flush(owner);
@@ -477,6 +483,7 @@ export function handleStreamEvent(
         acceptedCursor.eventId,
       );
       if (cursorComparison !== null && cursorComparison <= 0) {
+        commitTransportOnly();
         return prev;
       }
     }
@@ -489,6 +496,7 @@ export function handleStreamEvent(
       currentAcceptedProgress.sequence !== null &&
       progressSequence <= currentAcceptedProgress.sequence
     ) {
+      commitTransportOnly();
       return prev;
     }
     let didApply = false;

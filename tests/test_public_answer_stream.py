@@ -42,6 +42,54 @@ def test_sanitizer_prefix_and_token_splits_are_fail_closed_and_parity_safe():
             assert "[redacted-secret]" in public_text
 
 
+def test_stateful_assignment_sanitizer_holds_split_secret_values_and_matches_terminal():
+    cases = (
+        ('client_secret => "opaque value!/$-with.punctuation"', "opaque value!/$-with.punctuation"),
+        ("'authorization' -> 'opaque,value;with spaces'", "opaque,value;with spaces"),
+        ("access_token=opaque.value-with.punctuation", "opaque.value-with.punctuation"),
+    )
+    for secret, raw_value in cases:
+        for first_split in range(1, len(secret) - 1):
+            for second_split in range(first_split + 1, len(secret)):
+                gate = PublicAnswerStreamGate(
+                    private_replacements={},
+                    sanitizer=sanitize_public_text,
+                    max_private_token_chars=128,
+                    max_sealed_chars=512,
+                )
+                outputs = [
+                    *gate.accept(f"Before {secret[:first_split]}"),
+                    *gate.accept(secret[first_split:second_split]),
+                    *gate.accept(f"{secret[second_split:]} after"),
+                ]
+                finished = gate.finish(
+                    final_text=f"Before {secret} after", release=True
+                )
+                outputs.extend(finished.chunks)
+                public_text = "".join(outputs)
+                assert raw_value not in public_text
+                assert secret not in public_text
+                assert "Before" in public_text
+                assert "after" in public_text
+                assert "[redacted-secret]" in public_text
+                assert finished.final_text == sanitize_public_text(
+                    f"Before {secret} after"
+                )
+
+
+def test_stateful_assignment_sanitizer_fails_closed_at_bounded_ceiling():
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=sanitize_public_text,
+        max_private_token_chars=32,
+        max_sealed_chars=256,
+    )
+    assert gate.accept("access_token=") == ()
+    assert gate.accept("x" * 64) == ()
+    assert gate.failed is True
+    assert gate.finish(final_text="access_token=" + ("x" * 64), release=True).chunks == ()
+
+
 def _sanitize(value):
     return value if isinstance(value, str) and "raw-secret" not in value else ""
 

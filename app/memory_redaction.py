@@ -55,12 +55,80 @@ _SANITIZER_BEARER_PREFIX = re.compile(
 _SANITIZER_ASSIGNMENT_PREFIX = re.compile(
     rf"(?i)(?:{SECRET_KEY_PATTERN})\s*[:=]\s*[\"']?[A-Za-z0-9._-]{{0,15}}$"
 )
+_SANITIZER_ASSIGNMENT_START = re.compile(
+    rf"""(?ix)
+    (?<![A-Za-z0-9_-])
+    (?:
+        (?P<key_quote>[\"'])
+        (?P<quoted_key>{SECRET_KEY_PATTERN})
+        (?P=key_quote)
+        |
+        (?P<plain_key>{SECRET_KEY_PATTERN})
+    )
+    \s*(?:=>|->|[:=])\s*
+    (?P<value_quote>[\"'])?
+    """
+)
+_SECRET_ASSIGNMENT_STREAM_PATTERN = re.compile(
+    rf"""(?isx)
+    (?<![A-Za-z0-9_-])
+    (?P<key>
+        (?P<key_quote>[\"'])
+        (?P<quoted_key>{SECRET_KEY_PATTERN})
+        (?P=key_quote)
+        |
+        (?P<plain_key>{SECRET_KEY_PATTERN})
+    )
+    \s*(?P<separator>=>|->|[:=])\s*
+    (?P<value>
+        "(?:\\.|[^"\\])*"
+        | '(?:\\.|[^'\\])*'
+        | [^\s,;}}]+
+    )
+    """
+)
+
+
+def _redact_stream_secret_assignment(match: re.Match[str]) -> str:
+    key = match.group("quoted_key") or match.group("plain_key")
+    if not is_sensitive_redaction_key(key):
+        return match.group(0)
+    return f"{match.group('key')}{match.group('separator')}[redacted-secret]"
+
+
+def _unfinished_secret_assignment_start(value: str) -> int | None:
+    for match in _SANITIZER_ASSIGNMENT_START.finditer(value):
+        key = match.group("quoted_key") or match.group("plain_key")
+        if not is_sensitive_redaction_key(key):
+            continue
+        value_start = match.end()
+        quote = match.group("value_quote")
+        if quote:
+            index = value_start
+            while index < len(value):
+                if value[index] == "\\":
+                    index += 2
+                    continue
+                if value[index] == quote:
+                    break
+                index += 1
+            if index >= len(value):
+                return match.start()
+            continue
+        if not re.search(r"[\s,;}]", value[value_start:]):
+            return match.start()
+    return None
 
 
 def sanitizer_unstable_suffix_length(
     value: str, *, max_chars: int = 64, track_ambiguous_prefixes: bool = False
 ) -> int:
     """Return a bounded suffix that could become a secret on the next chunk."""
+
+    assignment_start = _unfinished_secret_assignment_start(value)
+    if assignment_start is not None:
+        candidate_chars = len(value) - assignment_start
+        return candidate_chars if candidate_chars <= max_chars else max_chars + 1
 
     for pattern in (
         _SANITIZER_JWT_THREE_SEGMENT_PREFIX,
@@ -320,6 +388,7 @@ def _redact_secret_like_token_value(match: re.Match[str]) -> str:
 def redact_memory_text(value: object, *, mode: str = MEMORY_REDACTION_MODE_STANDARD) -> str:
     redaction_mode = normalize_memory_redaction_mode(mode)
     text = "" if value is None else str(value)
+    text = _SECRET_ASSIGNMENT_STREAM_PATTERN.sub(_redact_stream_secret_assignment, text)
     text = QUOTED_SECRET_FIELD_PATTERN.sub(_redact_quoted_secret_field, text)
     text = SECRET_ASSIGNMENT_PATTERN.sub(_redact_secret_assignment, text)
     text = BEARER_TOKEN_PATTERN.sub("Bearer [redacted-secret]", text)

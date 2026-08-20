@@ -362,6 +362,84 @@ test("does not acknowledge a transport cursor until the reducer updater commits"
   assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), true);
 });
 
+test("advances only transport for a newer cursor whose semantic updater became a duplicate", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  const pending: Array<React.SetStateAction<Message[]>> = [];
+  ctx.setMessages = (updater) => pending.push(updater);
+  const commits: boolean[] = [];
+  const applyCommit = (semanticApplied: boolean, cursor: string) => {
+    commits.push(semanticApplied);
+    ctx.acceptedStreamCursorRef!.current.eventId = cursor;
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+  const makeEvent = (): StreamEvent => ({
+    event: "message:chunk",
+    data: JSON.stringify({
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      run_id: "run-active",
+      event_id: "semantic-delta-race",
+      sequence: 4,
+      content: "duplicate body",
+    }),
+  });
+
+  assert.equal(
+    handleStreamEvent(
+      makeEvent(),
+      "assistant-1",
+      "run-active:1:1-0",
+      undefined,
+      ctx,
+      binding,
+      (semanticApplied) => applyCommit(semanticApplied, "run-active:1:1-0"),
+    ),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(
+      makeEvent(),
+      "assistant-1",
+      "run-active:1:2-0",
+      undefined,
+      ctx,
+      binding,
+      (semanticApplied) => applyCommit(semanticApplied, "run-active:1:2-0"),
+    ),
+    true,
+  );
+  assert.equal(pending.length, 2);
+
+  let messages = ctx.messages();
+  const firstUpdater = pending.shift();
+  assert.equal(typeof firstUpdater, "function");
+  if (typeof firstUpdater === "function") messages = firstUpdater(messages);
+  const secondUpdater = pending.shift();
+  assert.equal(typeof secondUpdater, "function");
+  if (typeof secondUpdater === "function") messages = secondUpdater(messages);
+
+  assert.deepEqual(commits, [true, false]);
+  assert.equal(messages[0]?.content, "duplicate body");
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-active:1:2-0");
+});
+
 test("retains the run-event sequence replay guard after the event-id cap", () => {
   const ctx = createContext(
     [
