@@ -202,6 +202,13 @@ function publicTerminalPresentation(
       stage: "terminal",
       severity: "warning",
     },
+    terminal_reconciliation_failed: failed(
+      i18n.t("chat.runTerminal.terminalReconciliationFailed", {
+        defaultValue:
+          "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
+      }),
+      "terminal_reconciliation",
+    ),
     result_unavailable: {
       detailKind: "result_unavailable",
       message: i18n.t("chat.runTerminal.resultUnavailable", {

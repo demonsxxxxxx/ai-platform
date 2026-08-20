@@ -2579,12 +2579,14 @@ async def test_sandbox_reconciliation_payload_excludes_prompt_and_private_contex
     restored = restored_sandbox_run_payload(stored, RunPayload, {})
 
     assert restored.run_id == payload.run_id
-    assert stored["input"] == {"platform_model_id": "model-1"}
-    assert stored["file_ids"] == []
-    assert "context_snapshot" not in stored
-    assert "context_pack" not in stored
-    assert stored["agent_profile"] == {}
-    assert stored["agent_profile_expected"] is False
+    execution_payload = stored["execution_payload"]
+    assert stored["schema_version"] == "ai-platform.executor-reconciliation-snapshot.v2"
+    assert execution_payload["input"] == {"platform_model_id": "model-1"}
+    assert execution_payload["file_ids"] == []
+    assert "context_snapshot" not in execution_payload
+    assert "context_pack" not in execution_payload
+    assert execution_payload["agent_profile"] == {}
+    assert stored["metadata"]["agent_profile_expected"] is False
     assert "private prompt" not in json.dumps(stored)
     assert "private key" not in json.dumps(stored)
 
@@ -2617,15 +2619,16 @@ async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile(
 
     stored = sandbox_reconciliation_payload(payload)
 
-    assert stored["agent_profile_expected"] is True
-    assert stored["agent_profile"] == {
+    execution_payload = stored["execution_payload"]
+    assert stored["metadata"]["agent_profile_expected"] is True
+    assert execution_payload["agent_profile"] == {
         "agent_id": "agent-1",
         "revision": 3,
         "content_hash": "a" * 64,
         "skill_set": [{"skill_id": "general-chat", "expected_version": "v2"}],
     }
     assert "private system prompt text" not in json.dumps(stored)
-    assert "instructions" not in stored["agent_profile"]
+    assert "instructions" not in execution_payload["agent_profile"]
 
 
 def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
@@ -2645,7 +2648,7 @@ def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
     )
     stored = sandbox_reconciliation_payload(payload)
-    stored["agent_profile_expected"] = True
+    stored["metadata"]["agent_profile_expected"] = True
     result = {}
 
     restored = restored_sandbox_run_payload(stored, RunPayload, result)

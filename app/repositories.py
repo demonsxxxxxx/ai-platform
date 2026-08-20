@@ -4059,6 +4059,13 @@ async def list_stale_run_reconciliation_candidates(
               and sandbox_leases.run_id = runs.id
               and sandbox_leases.status = 'active'
           )
+          and not exists (
+            select 1 from sandbox_leases
+            where sandbox_leases.tenant_id = runs.tenant_id
+              and sandbox_leases.run_id = runs.id
+              and sandbox_leases.executor_terminal_json is not null
+              and sandbox_leases.executor_reconciliation_status <> 'finalized'
+          )
         order by stale_before asc, runs.tenant_id asc, runs.id asc
         limit %s
         """,

@@ -173,6 +173,8 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
     assert "<= clock_timestamp() - (%s * interval '1 second')" in conn.sql
     assert "not exists ( select 1 from sandbox_leases" in conn.sql
     assert "sandbox_leases.status = 'active'" in conn.sql
+    assert "sandbox_leases.executor_terminal_json is not null" in conn.sql
+    assert "sandbox_leases.executor_reconciliation_status <> 'finalized'" in conn.sql
     assert "for update of runs skip locked" not in conn.sql
     assert conn.params == (900, 900, 25)
 

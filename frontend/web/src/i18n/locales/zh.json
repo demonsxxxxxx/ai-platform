@@ -615,6 +615,7 @@
       "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",
       "skillSandboxAdmissionFailed": "所选 Skill 未能通过隔离沙箱准入。",
+      "terminalReconciliationFailed": "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
       "statusUnavailable": "任务状态暂时无法同步。请刷新当前会话后重试。",
       "toolInvocationEvidenceMismatch": "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。"
     },

@@ -59,7 +59,40 @@ def test_reconciler_restores_top_level_run_payload_context():
     assert payload.attempt_id == "attempt-a"
 
 
-def _result() -> ExecutorResult:
+def test_reconciler_restores_versioned_execution_payload_without_metadata_leakage():
+    row = _lease_row()
+    row["executor_reconciliation_context_json"] = {
+        "schema_version": "ai-platform.executor-reconciliation.v1",
+        "run_payload": {
+            "schema_version": "ai-platform.executor-reconciliation-snapshot.v2",
+            "execution_payload": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "attempt_id": "attempt-a",
+                "agent_id": "agent-a",
+                "skill_id": None,
+                "file_ids": [],
+                "input": {},
+                "execution_kind": "harness_chat",
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.run-payload.v2",
+                "skill_manifests": [],
+            },
+            "metadata": {"agent_profile_expected": True},
+        },
+        "adapter_context": {},
+    }
+
+    context, payload = _context_payload(row, row["executor_terminal_json"])
+
+    assert context["adapter_context"] == {}
+    assert payload.run_id == "run-a"
+    assert row["executor_terminal_json"]["diagnostics"] == ["agent_profile_transport_lost"]
+
+
     return ExecutorResult(
         status="succeeded",
         adapter_version="opensandbox/1",
