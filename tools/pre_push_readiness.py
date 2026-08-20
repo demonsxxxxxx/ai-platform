@@ -1274,6 +1274,9 @@ class _WindowsDirectoryRemovalRetry:
     attempts: int = 0
     deadline: float | None = None
 
+    def record_directory_removed(self) -> None:
+        self.attempts = 0
+
     def wait(self, error: OSError) -> bool:
         if (
             getattr(error, "winerror", None) != WINDOWS_ERROR_DIRECTORY_NOT_EMPTY
@@ -1320,6 +1323,7 @@ def _remove_windows_cleanup_tree(
         _clear_windows_read_only(path, attributes)
         try:
             os.rmdir(path)
+            retry.record_directory_removed()
         except OSError as error:
             if not retry.wait(error):
                 raise
