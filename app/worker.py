@@ -2031,7 +2031,7 @@ async def _create_worker_runtime_sandbox_lease(
         sandbox_mode="ephemeral",
         provider="fake",
         browser_enabled=False,
-        ttl_seconds=1800,
+        ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
         resource_limits_json={},
         user_visible_payload_json=_runtime_sandbox_workspace_payload(),
         lease_payload_json=lease_payload,

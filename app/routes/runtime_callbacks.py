@@ -159,6 +159,17 @@ async def record_executor_callback(
                     continue
                 event_stage, event_message, event_payload = canonical_delta
                 public_deltas.append((item_index, str(event_payload["delta"])))
+                # The public delta must be replayable after a terminal hydration.
+                # Keep its durable ledger row in the same idempotent callback batch
+                # as the executor receipt; Redis remains the live delivery channel.
+                event_batch.append(
+                    {
+                        "event_type": "assistant_delta",
+                        "stage": event_stage,
+                        "message": event_message,
+                        "payload": event_payload,
+                    }
+                )
                 continue
             else:
                 event_stage = str(executor_event["stage"])
@@ -273,6 +284,7 @@ async def record_executor_callback(
                 attempt_id=callback.attempt_id,
                 lease_id=lease_id,
                 executor_status="running",
+                ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
             )
             if heartbeat is None:
                 raise HTTPException(

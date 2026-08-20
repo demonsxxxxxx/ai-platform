@@ -117,6 +117,7 @@ async def record_sandbox_executor_accepted(
     attempt_id: str,
     lease_id: str,
     reconciliation_context: dict[str, Any],
+    ttl_seconds: int = 1800,
 ) -> dict[str, Any]:
     cursor = await connection.execute(
         """
@@ -128,6 +129,7 @@ async def record_sandbox_executor_accepted(
             end,
             executor_heartbeat_at = now(),
             executor_reconciliation_context_json = %s::jsonb,
+            expires_at = now() + make_interval(secs => %s),
             updated_at = now()
         where id = %s
           and tenant_id = %s
@@ -138,6 +140,7 @@ async def record_sandbox_executor_accepted(
         """,
         (
             json.dumps(reconciliation_context, ensure_ascii=False),
+            int(ttl_seconds),
             lease_id,
             tenant_id,
             run_id,
@@ -160,6 +163,7 @@ async def record_sandbox_executor_heartbeat(
     attempt_id: str,
     lease_id: str,
     executor_status: str,
+    ttl_seconds: int = 1800,
 ) -> dict[str, Any] | None:
     if executor_status not in {"accepted", "running"}:
         raise ValueError("sandbox_executor_heartbeat_status_invalid")
@@ -173,16 +177,18 @@ async def record_sandbox_executor_heartbeat(
             end,
             executor_heartbeat_at = now(),
             heartbeat_at = now(),
+            expires_at = now() + make_interval(secs => %s),
             updated_at = now()
         where id = %s
           and tenant_id = %s
           and run_id = %s
           and attempt_id = %s
           and status = 'active'
+          and (expires_at is null or expires_at > now())
           and executor_terminal_json is null
         returning *
         """,
-        (executor_status, executor_status, lease_id, tenant_id, run_id, attempt_id),
+        (executor_status, executor_status, int(ttl_seconds), lease_id, tenant_id, run_id, attempt_id),
     )
     row = await cursor.fetchone()
     return dict(row) if row is not None else None
