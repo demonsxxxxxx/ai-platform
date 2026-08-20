@@ -1,6 +1,8 @@
 # ruff: noqa: B008
 
+import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -80,6 +82,52 @@ _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
 _SSE_RETRYABLE_STARTUP_CODES = frozenset(
     {"sse_stream_not_admitted", "sse_stream_not_confirmed"}
 )
+SSE_EXIT_REASON_CODES = frozenset(
+    {
+        "client_disconnect",
+        "live_subscription_closed",
+        "stream_contract_rejected",
+        "authorization_expired",
+        "hub_source_failure",
+        "lease_release_failure",
+        "replay_gap",
+        "stream_completed",
+    }
+)
+_LIVE_HUB_SOURCE_FAILURE_REASONS = frozenset(
+    {"live_transport_unavailable", "live_hub_closed", "live_subscribe_failed"}
+)
+
+
+def _classify_live_subscription_exit(exc: LiveSubscriptionClosed) -> str:
+    if exc.reason in _LIVE_HUB_SOURCE_FAILURE_REASONS:
+        return "hub_source_failure"
+    return "live_subscription_closed"
+
+
+_sse_logger = logging.getLogger(__name__)
+
+
+def _record_sse_exit(
+    *,
+    run_id: str,
+    stream_incarnation: int,
+    reason: str,
+    lease_released: bool | None,
+) -> None:
+    """Record bounded admitted-stream closure data without transport payloads."""
+
+    if reason not in SSE_EXIT_REASON_CODES:
+        reason = "hub_source_failure"
+    _sse_logger.info(
+        "sse_stream_exit",
+        extra={
+            "reason_code": reason,
+            "run_id": run_id,
+            "stream_incarnation": stream_incarnation,
+            "lease_released": lease_released,
+        },
+    )
 
 
 def _sse_conflict(code: str) -> HTTPException:
@@ -1623,18 +1671,25 @@ async def chat_session_stream(
     if lease is None:
         raise _sse_conflict("sse_authority_lease_unavailable")
 
-    async def release_lease() -> None:
+    async def release_lease() -> bool:
         try:
             async with transaction() as conn:
-                await close_sse_authority_lease(
+                return await close_sse_authority_lease(
                     conn, lease_id=lease.lease_id, reason="connection_closed"
                 )
         except Exception:
-            pass
+            return False
+        return True
 
     runtime = getattr(request.app.state, "run_stream_runtime", None)
     if runtime is None:
-        await release_lease()
+        lease_released = await release_lease()
+        _record_sse_exit(
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            reason="lease_release_failure" if not lease_released else "hub_source_failure",
+            lease_released=lease_released,
+        )
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
     channel = stream_live_channel(
@@ -1643,6 +1698,18 @@ async def chat_session_stream(
         stream_incarnation=authority.stream_incarnation,
     )
     subscription = None
+
+    async def close_subscription() -> bool:
+        nonlocal subscription
+        if subscription is None:
+            return True
+        try:
+            await subscription.aclose()
+        except Exception:
+            return False
+        subscription = None
+        return True
+
     try:
         subscription = await runtime.hub.subscribe(channel)
         resume = await bridge.resolve_resume(
@@ -1676,19 +1743,71 @@ async def chat_session_stream(
                 stream_incarnation=authority.stream_incarnation,
                 through_redis_id=resume.after_redis_id or "0-0",
             )
+    except asyncio.CancelledError:
+        subscription_closed = await close_subscription()
+        lease_released = await release_lease()
+        _record_sse_exit(
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            reason=(
+                "lease_release_failure"
+                if not lease_released
+                else "hub_source_failure"
+                if not subscription_closed
+                else "client_disconnect"
+            ),
+            lease_released=lease_released,
+        )
+        raise
     except StreamContractError as exc:
-        if subscription is not None:
-            await subscription.aclose()
-        await release_lease()
+        subscription_closed = await close_subscription()
+        lease_released = await release_lease()
+        _record_sse_exit(
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            reason=(
+                "lease_release_failure"
+                if not lease_released
+                else "hub_source_failure"
+                if not subscription_closed
+                else "stream_contract_rejected"
+            ),
+            lease_released=lease_released,
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
-        if subscription is not None:
-            await subscription.aclose()
-        await release_lease()
+        await close_subscription()
+        lease_released = await release_lease()
+        _record_sse_exit(
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            reason=(
+                "lease_release_failure"
+                if not lease_released
+                else "hub_source_failure"
+            ),
+            lease_released=lease_released,
+        )
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
+    except Exception as exc:
+        await close_subscription()
+        lease_released = await release_lease()
+        _record_sse_exit(
+            run_id=run_id,
+            stream_incarnation=authority.stream_incarnation,
+            reason=(
+                "lease_release_failure"
+                if not lease_released
+                else "hub_source_failure"
+            ),
+            lease_released=lease_released,
+        )
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
+        exit_reason = "stream_completed"
+        lease_released: bool | None = None
         after = resume.after_redis_id or "0-0"
         terminal_event_id: str | None = restored_terminal_event_id
 
@@ -1777,11 +1896,16 @@ async def chat_session_stream(
 
         try:
             if resume.gap is not None:
+                if not await refresh_lease():
+                    exit_reason = "authorization_expired"
+                    return
+                exit_reason = "replay_gap"
                 yield _sse("gap", resume.gap.as_public_dict())
                 return
             if resume_already_ended:
                 return
             if not await refresh_lease():
+                exit_reason = "authorization_expired"
                 return
             await publish_pending_terminal()
             while after != replay_tail:
@@ -1797,10 +1921,14 @@ async def chat_session_stream(
                     raise StreamContractError("stream_replay_history_unavailable")
                 for entry in entries:
                     if not await refresh_lease():
+                        exit_reason = "authorization_expired"
                         return
                     after = entry.cursor.redis_id
                     frame, ended = project_entry(entry)
                     if frame is not None:
+                        if not await refresh_lease():
+                            exit_reason = "authorization_expired"
+                            return
                         yield frame
                     if ended:
                         return
@@ -1808,14 +1936,22 @@ async def chat_session_stream(
                     raise StreamContractError("stream_replay_history_unavailable")
             while True:
                 if not await refresh_lease():
+                    exit_reason = "authorization_expired"
                     return
                 await publish_pending_terminal()
                 try:
                     publication = await subscription.next(timeout_seconds=5.0)
                 except TimeoutError:
+                    if not await refresh_lease():
+                        exit_reason = "authorization_expired"
+                        return
                     yield ": heartbeat\n\n"
                     continue
-                except LiveSubscriptionClosed:
+                except LiveSubscriptionClosed as exc:
+                    exit_reason = _classify_live_subscription_exit(exc)
+                    return
+                if not await refresh_lease():
+                    exit_reason = "authorization_expired"
                     return
                 if publication.channel != channel:
                     raise StreamContractError("stream_live_channel_mismatch")
@@ -1830,14 +1966,39 @@ async def chat_session_stream(
                 after = entry.cursor.redis_id
                 frame, ended = project_entry(entry)
                 if frame is not None:
+                    if not await refresh_lease():
+                        exit_reason = "authorization_expired"
+                        return
                     yield frame
                 if ended:
                     return
-        except (StreamTransportUnavailable, StreamContractError):
+        except asyncio.CancelledError:
+            exit_reason = "client_disconnect"
+            raise
+        except StreamContractError:
+            exit_reason = "stream_contract_rejected"
+            return
+        except LiveSubscriptionClosed as exc:
+            exit_reason = _classify_live_subscription_exit(exc)
+            return
+        except StreamTransportUnavailable:
+            exit_reason = "hub_source_failure"
+            return
+        except Exception:
+            exit_reason = "hub_source_failure"
             return
         finally:
-            await subscription.aclose()
-            await release_lease()
+            if not await close_subscription():
+                exit_reason = "hub_source_failure"
+            lease_released = await release_lease()
+            if not lease_released and exit_reason == "stream_completed":
+                exit_reason = "lease_release_failure"
+            _record_sse_exit(
+                run_id=run_id,
+                stream_incarnation=authority.stream_incarnation,
+                reason=exit_reason,
+                lease_released=lease_released,
+            )
 
     return StreamingResponse(
         stream(),

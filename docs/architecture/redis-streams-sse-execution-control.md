@@ -93,6 +93,26 @@ labels cannot enter these projections. Runtime approval is not a Streaming
 producer. Artifact and Run-status live producers remain outside v3 unless a
 separately reviewed committed source contract is accepted.
 
+The effectful-tool answer gate remains fail-closed until the structured SDK
+terminal and required capability completion evidence are both accepted. The SDK
+currently exposes no earlier authority that proves a later lifecycle failure
+cannot invalidate already-public answer text, so governed runs do not publish
+provisional answer chunks. They publish only the existing server-owned semantic
+phase and execution-progress projections through the authenticated callback;
+the terminal answer remains the sole authoritative answer publication. This
+keeps long-running work visible without making retractable model text public.
+
+## Admitted-stream closure diagnostics
+
+Every admitted stream records one bounded `sse_stream_exit` diagnostic with the
+run ID, positive stream incarnation, lease-release outcome, and exactly one
+reason code: `client_disconnect`, `live_subscription_closed`,
+`stream_contract_rejected`, `authorization_expired`, `hub_source_failure`,
+`lease_release_failure`, `replay_gap`, or `stream_completed`. The diagnostic
+contains no principal identity, headers, cursor payload, event body, tool
+identity, or answer text. Closure diagnostics are observational only and do not
+change heartbeat, replay, lease, incarnation, or reconnect behavior.
+
 ## Projection and bounded coalescer
 
 Private SDK/callback events pass through typed normalization and an event-specific

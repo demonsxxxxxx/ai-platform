@@ -388,6 +388,8 @@ const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
 
 const RUN_STATUS_DETAIL_I18N_KEYS: Readonly<Record<string, string>> = {
   context_file_too_large: "chat.runTerminal.contextFileTooLarge",
+  terminal_result_unavailable: "chat.runTerminal.resultUnavailable",
+  status_unavailable: "chat.runTerminal.statusUnavailable",
 };
 
 function RunStatusItem({
