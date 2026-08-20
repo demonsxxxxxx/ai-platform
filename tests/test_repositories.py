@@ -22,6 +22,7 @@ from app.platform.postgres.errors import (
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
 from app.runs.api import RunTerminalizationProgress
+from app.runs.infrastructure import postgres as run_persistence
 from app.platform.postgres.sandbox_leases import (
     SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
@@ -221,8 +222,8 @@ async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_can
     async def append_audit_log(_conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+    monkeypatch.setattr(run_persistence.run_event_repository, "append_event", append_event)
+    monkeypatch.setattr(run_persistence, "_append_audit_log", append_audit_log)
 
     row = await repositories.stage_stale_run_reconciliation(
         Connection(),
@@ -279,8 +280,8 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
     async def append_audit_log(_conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+    monkeypatch.setattr(run_persistence.run_event_repository, "append_event", append_event)
+    monkeypatch.setattr(run_persistence, "_append_audit_log", append_audit_log)
 
     failed = await repositories.stage_stale_run_reconciliation(
         Connection(
@@ -9769,7 +9770,7 @@ async def test_sandbox_executor_terminal_diagnostics_are_claim_fenced():
     )
 
     assert persisted is True
-    assert "jsonb_set(executor_terminal_json" in conn.sql
+    assert "jsonb_set( executor_terminal_json" in conn.sql
     assert "executor_reconciliation_claim_token = %s" in conn.sql
     assert conn.params == (
         json.dumps(["agent_profile_transport_lost"], ensure_ascii=False),

@@ -3,15 +3,60 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.control_plane_contracts import AUDIT_EVENT_SCHEMA_VERSION
+from app.persistence_limits import AUDIT_PAYLOAD_MAX_BYTES, ensure_json_size
 from app.platform.postgres.errors import RepositoryConflictError
+from app import run_event_repository
 
 
 def _dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+async def _append_audit_log(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    action: str,
+    target_type: str,
+    target_id: str,
+    trace_id: str | None = None,
+    payload_json: dict[str, Any] | None = None,
+) -> str:
+    resolved_payload = payload_json or {}
+    ensure_json_size(
+        resolved_payload,
+        max_bytes=AUDIT_PAYLOAD_MAX_BYTES,
+        code="audit_payload_too_large",
+    )
+    audit_id = f"aud_{uuid.uuid4().hex}"
+    await conn.execute(
+        """
+        insert into audit_logs(
+            id, tenant_id, user_id, action, target_type, target_id,
+            trace_id, schema_version, payload_json
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        """,
+        (
+            audit_id,
+            tenant_id,
+            user_id,
+            action,
+            target_type,
+            target_id,
+            trace_id,
+            AUDIT_EVENT_SCHEMA_VERSION,
+            _dumps_json(resolved_payload),
+        ),
+    )
+    return audit_id
 
 
 async def count_active_runs_for_user(
@@ -246,7 +291,7 @@ async def stage_stale_run_reconciliation(
         """,
         (
             terminal_status,
-            dumps_json(target_result),
+            _dumps_json(target_result),
             error_code,
             error_message,
             tenant_id,
@@ -273,7 +318,7 @@ async def stage_stale_run_reconciliation(
     }
     if error_code:
         event_payload["error_code"] = error_code
-    await append_event(
+    await run_event_repository.append_event(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -288,7 +333,7 @@ async def stage_stale_run_reconciliation(
         payload=event_payload,
         error_code=error_code,
     )
-    await append_audit_log(
+    await _append_audit_log(
         conn,
         tenant_id=tenant_id,
         user_id=None,
