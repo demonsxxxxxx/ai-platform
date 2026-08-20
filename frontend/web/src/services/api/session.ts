@@ -61,6 +61,24 @@ export interface SessionInputFilesResponse {
   files: SessionInputFile[];
 }
 
+export interface SessionArtifactFile {
+  id: string;
+  file_name: string;
+  file_type: "image" | "video" | "document" | "code" | "project" | "other";
+  mime_type: string | null;
+  file_size: number;
+  preview_url: string | null;
+  download_url: string | null;
+  session_id: string;
+  source: "reveal_file" | "reveal_project";
+  created_at: string | null;
+}
+
+export interface SessionArtifactFilesResponse {
+  session_id: string;
+  files: SessionArtifactFile[];
+}
+
 export interface CapabilitySuggestion {
   capability_id: string;
   label: string;
@@ -253,6 +271,10 @@ export function buildSessionInputFilesUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/files`;
 }
 
+export function buildSessionArtifactFilesUrl(sessionId: string): string {
+  return `${API_BASE}/api/files/revealed/session/${encodeURIComponent(sessionId)}`;
+}
+
 export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
 }
@@ -442,6 +464,22 @@ export const sessionApi = {
     options?: SessionRunsQuery,
   ): Promise<{ session_id: string; runs: RunSummary[]; count: number }> {
     return authFetch(buildSessionRunsUrl(sessionId, options));
+  },
+
+  /** Load every active file artifact revealed for one exact session. */
+  async getArtifactFiles(
+    sessionId: string,
+  ): Promise<SessionArtifactFilesResponse> {
+    const items = await authFetch<SessionArtifactFile[]>(
+      buildSessionArtifactFilesUrl(sessionId),
+    );
+    if (items.some((file) => file.session_id !== sessionId)) {
+      throw new Error("session_artifact_projection_mismatch");
+    }
+    return {
+      session_id: sessionId,
+      files: items.filter((file) => file.source === "reveal_file"),
+    };
   },
 
   /** Load the authoritative persistent input-file projection for a session. */

@@ -190,6 +190,31 @@ async def list_revealed_files(
     return RevealedFileListResponse(items=_page(items, page=page, page_size=page_size), total=len(items), page=page, page_size=page_size)
 
 
+@router.get(
+    "/files/revealed/session/{session_id}",
+    response_model=list[RevealedFileItemResponse],
+)
+async def list_revealed_session_files(
+    session_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> list[RevealedFileItemResponse]:
+    """Return all active artifacts for an exact session from one query."""
+
+    _require_permission(principal, ARTIFACT_READ)
+    try:
+        safe_session_id = assert_safe_id(session_id, "session_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        rows = await repositories.list_revealed_session_artifacts(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            session_id=safe_session_id,
+        )
+    return [_revealed_item(row) for row in rows]
+
+
 @router.get("/files/revealed/grouped", response_model=RevealedFileGroupedListResponse)
 async def list_revealed_files_grouped(
     page: int = Query(default=1, ge=1),

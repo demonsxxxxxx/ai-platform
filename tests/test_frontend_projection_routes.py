@@ -39,6 +39,10 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
         calls.append(("list_revealed_artifacts", kwargs))
         return visible(artifact_rows)
 
+    async def fake_list_revealed_session_artifacts(conn, **kwargs):
+        calls.append(("list_revealed_session_artifacts", kwargs))
+        return visible(artifact_rows)
+
     async def fake_list_revealed_sessions(conn, **kwargs):
         calls.append(("list_revealed_sessions", kwargs))
         return visible(session_rows)
@@ -49,6 +53,12 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
         frontend_projections.repositories,
         "list_revealed_artifacts",
         fake_list_revealed_artifacts,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        frontend_projections.repositories,
+        "list_revealed_session_artifacts",
+        fake_list_revealed_session_artifacts,
         raising=False,
     )
     monkeypatch.setattr(
@@ -87,6 +97,46 @@ def test_revealed_files_read_projection_returns_empty_shapes(monkeypatch):
     assert sessions_response.json() == []
     assert any(name == "list_revealed_artifacts" for name, _ in calls)
     assert any(name == "list_revealed_sessions" for name, _ in calls)
+
+
+def test_revealed_session_files_are_not_limited_by_generic_projection_cap(monkeypatch):
+    artifacts = [
+        {
+            "id": f"art_{index:03d}",
+            "storage_key": f"tenants/default/report-{index:03d}.pdf",
+            "label": f"Report {index:03d}",
+            "content_type": "application/pdf",
+            "size_bytes": index,
+            "run_id": "run_a",
+            "session_id": "ses_a",
+            "session_name": "QA session",
+            "trace_id": "trace_a",
+            "workspace_id": "default",
+            "user_id": "ordinary",
+            "artifact_type": "document",
+            "created_at": "2026-08-04T08:00:00Z",
+        }
+        for index in range(501)
+    ]
+    calls = install_projection_route_fakes(monkeypatch, artifacts=artifacts)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/files/revealed/session/ses_a",
+        headers=headers("artifact:download"),
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()) == 501
+    assert response.json()[500]["id"] == "art_500"
+    _, call = next(
+        item for item in calls if item[0] == "list_revealed_session_artifacts"
+    )
+    assert call == {
+        "tenant_id": "default",
+        "user_id": "ordinary",
+        "session_id": "ses_a",
+    }
 
 
 def test_revealed_files_project_authorized_artifacts(monkeypatch):
@@ -261,6 +311,12 @@ def test_revealed_files_fail_closed_without_artifact_permission(monkeypatch):
     client = TestClient(create_app())
 
     response = client.get("/api/files/revealed", headers=headers(""))
+    session_response = client.get(
+        "/api/files/revealed/session/ses_a",
+        headers=headers(""),
+    )
 
     assert response.status_code == 403
     assert response.json()["detail"] == "missing_permission:artifact:download"
+    assert session_response.status_code == 403
+    assert session_response.json()["detail"] == "missing_permission:artifact:download"

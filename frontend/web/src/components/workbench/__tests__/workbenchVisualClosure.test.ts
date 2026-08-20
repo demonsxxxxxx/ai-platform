@@ -205,28 +205,24 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
-test("workbench right context is a real run context panel, not a blank placeholder", () => {
+test("workbench right context is a session file-only panel", () => {
   const sidePanel = read("src/librechat-ui/SidePanel.tsx");
 
   assert.match(sidePanel, /data-librechat-context-overview/);
-  assert.match(sidePanel, /data-librechat-context-section=\{section\}/);
-  assert.match(sidePanel, /section="run"/);
-  assert.match(sidePanel, /section="skills"/);
-  assert.match(sidePanel, /section="mcp"/);
-  assert.match(sidePanel, /section="files"/);
-  assert.match(sidePanel, /section="permissions"/);
-  assert.match(sidePanel, /selectedSkillsCount/);
-  assert.match(sidePanel, /selectedToolsCount/);
-  assert.match(sidePanel, /attachmentsCount/);
-  assert.match(sidePanel, /approvalCount/);
-  assert.match(sidePanel, /workbench\.contextPanel\.selectedSkills/);
-  assert.match(sidePanel, /workbench\.contextPanel\.selectedTools/);
+  assert.match(sidePanel, /data-librechat-context-section="files"/);
   assert.match(sidePanel, /workbench\.contextPanel\.files/);
-  assert.match(sidePanel, /workbench\.contextPanel\.permissions/);
-  assert.doesNotMatch(
-    sidePanel,
-    /phase2Unavailable[\s\S]{0,120}mt-auto/,
-  );
+  assert.match(sidePanel, /filesStatus/);
+  assert.match(sidePanel, /formatFileSize/);
+  assert.doesNotMatch(sidePanel, /section="run"/);
+  assert.doesNotMatch(sidePanel, /section="skills"/);
+  assert.doesNotMatch(sidePanel, /section="mcp"/);
+  assert.doesNotMatch(sidePanel, /section="permissions"/);
+  assert.doesNotMatch(sidePanel, /selectedSkillsCount/);
+  assert.doesNotMatch(sidePanel, /selectedToolsCount/);
+  assert.doesNotMatch(sidePanel, /approvalCount/);
+  assert.doesNotMatch(sidePanel, /workbench\.contextPanel\.selectedSkills/);
+  assert.doesNotMatch(sidePanel, /workbench\.contextPanel\.selectedTools/);
+  assert.doesNotMatch(sidePanel, /workbench\.contextPanel\.permissions/);
 });
 
 test("post-login projection panels share workbench surface tokens", () => {
