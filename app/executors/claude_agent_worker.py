@@ -53,11 +53,6 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import SkillInvocationEvidenceBinder
-from app.file_parser_contracts import (
-    AttachmentParserRequirement,
-    build_attachment_parser_requirements,
-    validate_required_parser_evidence,
-)
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -252,7 +247,6 @@ class PreparedSandboxFinalization:
     staged_skill_names: list[str]
     skill_manifests: list[dict[str, Any]]
     public_skill_metadata: dict[str, dict[str, str]]
-    attachment_parser_requirements: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -277,7 +271,6 @@ class PreparedSdkRun:
     system_prompt: str = ""
     public_skill_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
     attachment_metadata: list[_AuthorizedAttachmentMetadata] = field(default_factory=list)
-    attachment_parser_requirements: list[dict[str, Any]] = field(default_factory=list)
     materialized_file_names: list[str] | None = None
 
 
@@ -1348,15 +1341,6 @@ class ClaudeAgentWorkerAdapter:
                 **prompt_builder_kwargs,
             )
         )
-        attachment_parser_requirements = build_attachment_parser_requirements(
-            file_ids=list(payload.file_ids),
-            declared_file_names=file_names,
-            content_types=[
-                item.content_type for item in attachment_metadata
-            ] if len(attachment_metadata) == len(file_names) else [],
-            materialized_dir=resolved_workspace / "inputs",
-            materialized_file_names=staged_file_names,
-        )
         return (
             PreparedSdkRun(
                 workspace=resolved_workspace,
@@ -1371,7 +1355,6 @@ class ClaudeAgentWorkerAdapter:
                 prompt=prompt,
                 system_prompt=self._agent_profile_system_prompt(payload),
                 attachment_metadata=attachment_metadata,
-                attachment_parser_requirements=attachment_parser_requirements,
                 materialized_file_names=staged_file_names,
             ),
             None,
@@ -1407,20 +1390,6 @@ class ClaudeAgentWorkerAdapter:
                 pins=prepared.pinned_manifests,
             ),
             "public_skill_metadata": dict(prepared.public_skill_metadata),
-            "attachment_parser_requirements": list(
-                prepared.attachment_parser_requirements
-                or build_attachment_parser_requirements(
-                    file_ids=list(payload.file_ids),
-                    declared_file_names=prepared.file_names,
-                    content_types=[
-                        item.content_type for item in prepared.attachment_metadata
-                    ] if len(prepared.attachment_metadata) == len(prepared.file_names) else [],
-                    materialized_dir=prepared.workspace / "inputs",
-                    materialized_file_names=list(
-                        prepared.materialized_file_names or prepared.file_names
-                    ),
-                )
-            ),
         }
         reconciliation_context = {
             "schema_version": "ai-platform.executor-reconciliation.v1",
@@ -1584,11 +1553,6 @@ class ClaudeAgentWorkerAdapter:
                 for key, value in dict(adapter_context.get("public_skill_metadata") or {}).items()
                 if isinstance(value, dict)
             },
-            attachment_parser_requirements=[
-                dict(item)
-                for item in adapter_context.get("attachment_parser_requirements", [])
-                if isinstance(item, dict)
-            ],
         )
         runtime_result = _PersistedSandboxRuntimeResult(
             status=str(terminal_result.get("status") or ""),
@@ -1631,34 +1595,6 @@ class ClaudeAgentWorkerAdapter:
             capability_evidence,
             available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
         )
-        parser_requirements = [
-            AttachmentParserRequirement.model_validate(item)
-            for item in getattr(prepared, "attachment_parser_requirements", [])
-            if isinstance(item, dict)
-        ]
-        if not parser_requirements and isinstance(prepared, PreparedSdkRun):
-            parser_requirements = [
-                AttachmentParserRequirement.model_validate(item)
-                for item in build_attachment_parser_requirements(
-                    file_ids=list(payload.file_ids),
-                    declared_file_names=prepared.file_names,
-                    content_types=[
-                        item.content_type for item in prepared.attachment_metadata
-                    ] if len(prepared.attachment_metadata) == len(prepared.file_names) else [],
-                    materialized_dir=prepared.workspace / "inputs",
-                    materialized_file_names=list(
-                        prepared.materialized_file_names or prepared.file_names
-                    ),
-                )
-            ]
-        parser_evidence = executor_response.get("attachment_parser_evidence")
-        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
-            parser_valid, parser_error = validate_required_parser_evidence(
-                requirements=parser_requirements,
-                evidence=parser_evidence,
-            )
-            if not parser_valid and selected_capability_error is None:
-                selected_capability_error = parser_error
         runtime_tool_evidence = validate_runtime_tool_evidence(
             executor_response,
             binding={
@@ -1721,11 +1657,6 @@ class ClaudeAgentWorkerAdapter:
             "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
             "capability_evidence": capability_evidence,
-            **(
-                {"attachment_parser_evidence": parser_evidence}
-                if isinstance(parser_evidence, list)
-                else {}
-            ),
             **runtime_tool_evidence.private_payload(),
         }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
