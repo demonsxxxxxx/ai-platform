@@ -30,6 +30,9 @@ function createContext(
     acceptedRunEventSequenceRef: {
       current: { sessionId: null, runId: null, sequence: null },
     },
+    acceptedStreamCursorRef: {
+      current: { sessionId: null, runId: null, eventId: null },
+    },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -108,6 +111,39 @@ test("does not let a stale run terminal event finalize the active run", () => {
     ctx,
   );
 
+  assert.deepEqual(terminalCalls, []);
+  assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("rejects a stale cursor before terminal callbacks or reducer mutation", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    eventId: "run-active:1:2-0",
+  };
+  const terminalCalls: string[] = [];
+  ctx.onRunTerminal = () => {
+    terminalCalls.push("terminal");
+    return true;
+  };
+
+  const accepted = handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-active",
+        event_type: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-active",
+    "run-active:1:1-0",
+    "2026-07-14T02:00:00.000Z",
+    ctx,
+  );
+
+  assert.equal(accepted, false);
   assert.deepEqual(terminalCalls, []);
   assert.equal(ctx.setMessagesCalls(), 0);
 });
@@ -324,6 +360,155 @@ test("does not acknowledge a transport cursor until the reducer updater commits"
   assert.deepEqual(commits, [true]);
   assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 4);
   assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), true);
+});
+
+test("advances only transport for a newer cursor whose semantic updater became a duplicate", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  const pending: Array<React.SetStateAction<Message[]>> = [];
+  ctx.setMessages = (updater) => pending.push(updater);
+  const commits: boolean[] = [];
+  const applyCommit = (semanticApplied: boolean, cursor: string) => {
+    commits.push(semanticApplied);
+    ctx.acceptedStreamCursorRef!.current.eventId = cursor;
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+  const makeEvent = (): StreamEvent => ({
+    event: "message:chunk",
+    data: JSON.stringify({
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      run_id: "run-active",
+      event_id: "semantic-delta-race",
+      sequence: 4,
+      content: "duplicate body",
+    }),
+  });
+
+  assert.equal(
+    handleStreamEvent(
+      makeEvent(),
+      "assistant-1",
+      "run-active:1:1-0",
+      undefined,
+      ctx,
+      binding,
+      (semanticApplied) => applyCommit(semanticApplied, "run-active:1:1-0"),
+    ),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(
+      makeEvent(),
+      "assistant-1",
+      "run-active:1:2-0",
+      undefined,
+      ctx,
+      binding,
+      (semanticApplied) => applyCommit(semanticApplied, "run-active:1:2-0"),
+    ),
+    true,
+  );
+  assert.equal(pending.length, 2);
+
+  let messages = ctx.messages();
+  const firstUpdater = pending.shift();
+  assert.equal(typeof firstUpdater, "function");
+  if (typeof firstUpdater === "function") messages = firstUpdater(messages);
+  const secondUpdater = pending.shift();
+  assert.equal(typeof secondUpdater, "function");
+  if (typeof secondUpdater === "function") messages = secondUpdater(messages);
+
+  assert.deepEqual(commits, [true, false]);
+  assert.equal(messages[0]?.content, "duplicate body");
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-active:1:2-0");
+});
+
+test("advances only transport for an immediate equal semantic sequence", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "unchanged",
+        timestamp: new Date(),
+        parts: [{ type: "text", content: "unchanged" }],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    sequence: 9,
+  };
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    eventId: "run-active:1:1-0",
+  };
+  const commits: boolean[] = [];
+  const nextCursor = "run-active:1:2-0";
+  const before = ctx.messages()[0];
+
+  const accepted = handleStreamEvent(
+    {
+      event: "execution_progress",
+      data: JSON.stringify({
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "semantic-equal-immediate",
+        run_id: "run-active",
+        sequence: 9,
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "重复事件不得更新",
+        progress: { current: 2, total: 4 },
+        safe_file_name: null,
+        artifact_public_id: null,
+        created_at: null,
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    nextCursor,
+    undefined,
+    ctx,
+    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    (semanticApplied) => {
+      commits.push(semanticApplied);
+      ctx.acceptedStreamCursorRef!.current.eventId = nextCursor;
+    },
+  );
+
+  assert.equal(accepted, false);
+  assert.deepEqual(commits, [false]);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, nextCursor);
+  assert.equal(ctx.setMessagesCalls(), 0);
+  assert.deepEqual(ctx.messages()[0], before);
+  assert.equal(
+    ctx.processedEventIdsRef.current.has("semantic-equal-immediate"),
+    false,
+  );
 });
 
 test("retains the run-event sequence replay guard after the event-id cap", () => {

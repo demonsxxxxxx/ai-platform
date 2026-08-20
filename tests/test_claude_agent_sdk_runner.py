@@ -1693,12 +1693,13 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
 
 
 @pytest.mark.asyncio
-async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_text_once(
+async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_releases_once(
     monkeypatch,
     tmp_path,
 ):
-    captured, deltas, published_before_hook, published_after_hook = {}, [], [], []
+    captured, deltas, published_before_hook, published_before_terminal = {}, [], [], []
     subject = _subject()
+    subject["write_capable"] = True
     call_id = "mcp-call-1"
     before = f"Before {subject['identity']}."
     after = f" After {call_id}."
@@ -1707,7 +1708,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         ("probe", lambda: published_before_hook.extend(deltas)),
         *_mcp_hook_steps(subject, call_id=call_id),
         *_stream_steps(after, index=1),
-        ("probe", lambda: published_after_hook.extend(deltas)),
+        ("probe", lambda: published_before_terminal.extend(deltas)),
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -1729,19 +1730,64 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    joined = "".join(deltas)
-    assert "".join(published_before_hook) == "Before external tool."
-    assert published_after_hook[len(published_before_hook):] == [" After ", "tool invocation."]
+    assert published_before_hook == []
+    assert published_before_terminal == []
+    terminal_chunks = deltas[len(published_before_terminal):]
+    assert terminal_chunks == ["Before external tool. After tool invocation."]
+    assert "".join(deltas) == "Before external tool. After tool invocation."
+    assert "".join(deltas).count("tool invocation.") == 1
     assert result.error is None
-    assert joined == "Before external tool. After tool invocation."
-    assert result.message == " After tool invocation."
+    assert result.message == "Before external tool. After tool invocation."
     for private_value in (
         subject["identity"],
         subject["mcp_server_config"]["url"],
         call_id,
         "safe-synthetic-value",
     ):
-        assert private_value not in joined
+        assert private_value not in "".join(deltas)
+
+
+@pytest.mark.asyncio
+async def test_sdk_effectful_mcp_discards_provisional_body_on_failed_terminal(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas = {}, []
+    subject = _subject()
+    subject["write_capable"] = True
+    call_id = "mcp-call-1"
+    steps = [
+        *_mcp_hook_steps(subject, call_id=call_id),
+        *_stream_steps("provisional answer must not escape"),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text="provisional answer must not escape",
+            result_error="simulated terminal failure",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error is not None
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -1784,8 +1830,8 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == ["Verified MCP final answer streams ", "safely."]
-    assert deltas == observed_before_result
+    assert observed_before_result == ["Verified MCP final answer streams "]
+    assert deltas == ["Verified MCP final answer streams ", "safely."]
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -1965,8 +2011,8 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     )
 
     assert "Authoritative platform MCP requirement:" not in _captured_sdk_prompt(captured)
-    assert observed_before_result == ["Skill answer streams ", "safely."]
-    assert deltas == observed_before_result
+    assert observed_before_result == ["Skill answer streams "]
+    assert deltas == ["Skill answer streams ", "safely."]
     assert "".join(deltas) == text
     assert result.error is None
     assert result.message == text
@@ -2077,8 +2123,8 @@ async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == ["Verified Skill final answer streams ", "safely."]
-    assert deltas == observed_before_result
+    assert observed_before_result == ["Verified Skill final answer streams "]
+    assert deltas == ["Verified Skill final answer streams ", "safely."]
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -2479,8 +2525,8 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == ["Short safe public ", "answer."]
-    assert deltas == result_gate
+    assert result_gate == ["Short safe public "]
+    assert deltas == ["Short safe public ", "answer."]
     assert "".join(deltas) == streamed_text
     assert result.message == streamed_text
 
@@ -2548,7 +2594,7 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monke
         on_text=deltas.append,
     )
 
-    assert deltas == ["short ", "answer"]
+    assert deltas == ["short "]
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,10 @@ import {
   type StreamEvent,
 } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
-import { adaptPublicRunStreamEventV3 } from "./publicRunStreamV3";
+import {
+  adaptPublicRunStreamEventV3,
+  comparePublicRunStreamCursors,
+} from "./publicRunStreamV3";
 import { clearAllLoadingStates } from "./messageParts";
 import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
@@ -84,6 +87,15 @@ export function clearReconnectTimeout(
 
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
+
+export function isSSEHeartbeatComment(event: {
+  event?: string;
+  data?: string;
+  id?: string;
+}): boolean {
+  return !event.event && !event.data && !event.id;
+}
+
 /** Injectable connection dependencies keep auth and startup races testable. */
 export interface SSETokenDependencies {
   getValidAccessToken?: typeof getValidAccessToken;
@@ -662,6 +674,7 @@ export async function connectToSSE(
           if (!isCurrentStream()) {
             return;
           }
+          if (isSSEHeartbeatComment(event)) return;
           if (event.event === "ping") return;
           let parsed: unknown;
           try {
@@ -693,6 +706,20 @@ export async function connectToSSE(
             throw new Error("sse_event_contract_invalid");
           }
           acceptedStreamIncarnation ??= adapted.streamIncarnation;
+          const acceptedCursorBeforeEvent = ctx.acceptedStreamCursorRef?.current;
+          if (
+            acceptedCursorBeforeEvent?.sessionId === targetSessionId &&
+            acceptedCursorBeforeEvent.runId === targetRunId &&
+            acceptedCursorBeforeEvent.eventId
+          ) {
+            const cursorComparison = comparePublicRunStreamCursors(
+              eventId,
+              acceptedCursorBeforeEvent.eventId,
+            );
+            if (cursorComparison === null || cursorComparison <= 0) {
+              return;
+            }
+          }
           const terminalStatus = terminalRunStatusFromEvent(
             adapted.event,
             adapted.data as unknown as Record<string, unknown>,
@@ -703,6 +730,31 @@ export async function connectToSSE(
           };
           const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
             if (!isCurrentStream()) return;
+            const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+            const ownsAcceptedCursor =
+              acceptedCursor?.sessionId === targetSessionId &&
+              acceptedCursor.runId === targetRunId;
+            const cursorComparison =
+              ownsAcceptedCursor && acceptedCursor.eventId
+                ? comparePublicRunStreamCursors(eventId, acceptedCursor.eventId)
+                : 1;
+            if (
+              ownsAcceptedCursor &&
+              acceptedCursor.eventId &&
+              (cursorComparison === null || cursorComparison <= 0)
+            ) {
+              if (
+                semanticApplied &&
+                isAcceptedRunProgress(
+                  adapted.event,
+                  adapted.data as unknown as Record<string, unknown>,
+                  Boolean(terminalStatus),
+                )
+              ) {
+                retryCountRef.current = 0;
+              }
+              return;
+            }
             if (ctx.acceptedStreamCursorRef) {
               ctx.acceptedStreamCursorRef.current = {
                 sessionId: targetSessionId,

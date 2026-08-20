@@ -16,6 +16,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.memory_redaction import sanitizer_unstable_suffix_length
 from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
 from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,
@@ -303,6 +304,13 @@ class PublicChatAnswerStreamProjector:
             for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
                 if self._raw.endswith(marker[:length]):
                     unstable = max(unstable, length)
+        unstable = max(
+            unstable,
+            sanitizer_unstable_suffix_length(
+                self._raw,
+                track_ambiguous_prefixes=True,
+            ),
+        )
         return unstable
 
     def push(self, value: object, *, final: bool = False) -> str:

@@ -32,6 +32,7 @@ import {
   type PublicStreamPresentation,
   type PublicStreamPresentationOwner,
 } from "./publicStreamPresentation";
+import { comparePublicRunStreamCursors } from "./publicRunStreamV3";
 import {
   terminalRunStatusFromEvent,
   type TerminalRunStatus,
@@ -203,6 +204,24 @@ export function handleStreamEvent(
     return false;
   }
 
+  const cursorSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
+  const cursorRunId = binding?.runId ?? eventRunId;
+  const acceptedCursorBeforeEffects = ctx.acceptedStreamCursorRef?.current;
+  if (
+    acceptedCursorBeforeEffects &&
+    acceptedCursorBeforeEffects.sessionId === cursorSessionId &&
+    acceptedCursorBeforeEffects.runId === cursorRunId &&
+    acceptedCursorBeforeEffects.eventId
+  ) {
+    const cursorComparison = comparePublicRunStreamCursors(
+      eventId,
+      acceptedCursorBeforeEffects.eventId,
+    );
+    if (cursorComparison !== null && cursorComparison <= 0) {
+      return false;
+    }
+  }
+
   const terminalStatus = terminalRunStatusFromEvent(
     eventType,
     data as unknown as Record<string, unknown>,
@@ -271,6 +290,9 @@ export function handleStreamEvent(
     acceptedProgress.sequence !== null &&
     progressSequence <= acceptedProgress.sequence
   ) {
+    if (progressSequence === acceptedProgress.sequence) {
+      onCommitted?.(false);
+    }
     return false;
   }
 
@@ -290,6 +312,20 @@ export function handleStreamEvent(
       progressRunId &&
       ctx.acceptedRunEventSequenceRef
     ) {
+      const accepted = ctx.acceptedRunEventSequenceRef.current;
+      const isSameRun =
+        accepted !== null &&
+        accepted.sessionId === progressSessionId &&
+        accepted.runId === progressRunId;
+      if (
+        isSameRun &&
+        accepted !== null &&
+        accepted.sequence !== null &&
+        progressSequence <= accepted.sequence
+      ) {
+        onCommitted?.(true);
+        return;
+      }
       ctx.acceptedRunEventSequenceRef.current = {
         sessionId: progressSessionId,
         runId: progressRunId,
@@ -297,6 +333,12 @@ export function handleStreamEvent(
       };
     }
     onCommitted?.(true);
+  };
+
+  const commitTransportOnly = () => {
+    if (committed) return;
+    committed = true;
+    onCommitted?.(false);
   };
 
   if (terminalStatus && eventRunId) {
@@ -423,6 +465,43 @@ export function handleStreamEvent(
     committedData: EventData = data,
     onApplied: () => void = commitAcceptedEvent,
   ) => ctx.setMessages((prev) => {
+    if (binding) {
+      if (
+        ctx.streamVersionRef.current !== binding.streamVersion ||
+        ctx.sessionIdRef.current !== binding.sessionId ||
+        ctx.currentRunIdRef.current !== binding.runId
+      ) {
+        return prev;
+      }
+    }
+    const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+    if (
+      acceptedCursor &&
+      acceptedCursor.sessionId === progressSessionId &&
+      acceptedCursor.runId === progressRunId &&
+      acceptedCursor.eventId
+    ) {
+      const cursorComparison = comparePublicRunStreamCursors(
+        eventId,
+        acceptedCursor.eventId,
+      );
+      if (cursorComparison !== null && cursorComparison <= 0) {
+        commitTransportOnly();
+        return prev;
+      }
+    }
+    const currentAcceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
+    if (
+      progressSequence !== null &&
+      currentAcceptedProgress &&
+      currentAcceptedProgress.sessionId === progressSessionId &&
+      currentAcceptedProgress.runId === progressRunId &&
+      currentAcceptedProgress.sequence !== null &&
+      progressSequence <= currentAcceptedProgress.sequence
+    ) {
+      commitTransportOnly();
+      return prev;
+    }
     let didApply = false;
     const next = prev.map((m) => {
       if (m.id !== messageId) return m;

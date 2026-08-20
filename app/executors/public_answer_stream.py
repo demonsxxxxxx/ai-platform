@@ -1,6 +1,11 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from app.memory_redaction import (
+    sanitizer_unstable_assignment_suffix_length,
+    sanitizer_unstable_suffix_length,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PublicAnswerFinish:
@@ -69,7 +74,21 @@ class PublicAnswerStreamGate:
             return ()
         self._accepted_text = True
         self._extend_logical_view(text)
-        candidate = self._project(self._pending + text)
+        raw_candidate = self._pending + text
+        raw_hold = sanitizer_unstable_assignment_suffix_length(
+            raw_candidate,
+            max_chars=self._max_private_token_chars,
+        )
+        if raw_hold:
+            if raw_hold > self._max_private_token_chars:
+                self._fail()
+                return ()
+            stable_candidate = self._project(raw_candidate[:-raw_hold])
+            if stable_candidate is None:
+                return ()
+            self._pending = raw_candidate[-raw_hold:]
+            return self._emit(stable_candidate)
+        candidate = self._project(raw_candidate)
         if candidate is None:
             return ()
         if self._sealed:
@@ -79,6 +98,9 @@ class PublicAnswerStreamGate:
             self._pending = candidate
             return ()
         held_chars = self._private_prefix_chars(candidate)
+        if held_chars > self._max_private_token_chars:
+            self._fail()
+            return ()
         emitted = candidate[:-held_chars] if held_chars else candidate
         self._pending = candidate[-held_chars:] if held_chars else ""
         return self._emit(emitted)
@@ -258,7 +280,12 @@ class PublicAnswerStreamGate:
                 if text.endswith(token[:size]):
                     held = size
                     break
-        return held
+        sanitizer_hold = sanitizer_unstable_suffix_length(
+            text,
+            max_chars=self._max_private_token_chars,
+            track_ambiguous_prefixes=True,
+        )
+        return max(held, sanitizer_hold)
 
     def _project_across_publication_boundary(self, candidate: str) -> str | None:
         consumed = 0

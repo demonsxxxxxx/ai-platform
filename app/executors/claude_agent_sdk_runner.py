@@ -1212,10 +1212,16 @@ async def run_claude_agent_sdk(
         strict_tool_lifecycle_names.add("MCP")
     sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
     sandbox_tool_lifecycle_governed = bool(strict_tool_lifecycle_names)
+    effectful_mcp_lifecycle_governed = {
+        identity
+        for identity, subject in authorized_subjects.items()
+        if identity.startswith("mcp__") and subject.get("write_capable") is True
+    }
     required_answer_gate = bool(
         required_capability_declarations
         or required_builtin_declarations
         or sandbox_tool_lifecycle_governed
+        or effectful_mcp_lifecycle_governed
     )
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     governed_builtin_lifecycle_rejected = False
@@ -1240,7 +1246,7 @@ async def run_claude_agent_sdk(
         sanitizer=sanitize_public_text,
         max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
     )
-    if sandbox_tool_lifecycle_governed:
+    if sandbox_tool_lifecycle_governed or effectful_mcp_lifecycle_governed:
         answer_stream_gate.defer_until_finish()
     elif required_answer_gate:
         answer_stream_gate.seal()
@@ -1318,6 +1324,7 @@ async def run_claude_agent_sdk(
                 lifecycle_phase == "completed"
                 and not required_builtin_declarations
                 and not sandbox_tool_lifecycle_governed
+                and not effectful_mcp_lifecycle_governed
                 and capability_completion_error() is None
             ):
                 answer_stream_gate.release_after_verified_capability()
