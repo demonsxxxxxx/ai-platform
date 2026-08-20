@@ -10,7 +10,11 @@ import pytest
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
-from app.execution.api import validated_context_file_diagnostic
+from app.execution.api import (
+    restored_sandbox_run_payload,
+    sandbox_reconciliation_payload,
+    validated_context_file_diagnostic,
+)
 from app.executors.base import (
     ArtifactManifest,
     ExecutorDispatchAccepted,
@@ -20,10 +24,7 @@ from app.executors.base import (
     RunExecutionOwner,
     RunPayload,
 )
-from app.executors.claude_agent_worker import (
-    ClaudeAgentWorkerAdapter,
-    _sandbox_reconciliation_payload,
-)
+from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
@@ -1562,6 +1563,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
                 "execution_kind": "harness_chat",
                 "trace_id": "trace-a",
                 "agent_profile": agent_profile,
+                "agent_profile_expected": bool(agent_profile),
                 "schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
             },
         }
@@ -1585,6 +1587,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
     assert captured[0].agent_profile == expected_profile
+    assert result.result.get("diagnostics", []) == []
 
 
 @pytest.mark.asyncio
@@ -2572,10 +2575,8 @@ async def test_sandbox_reconciliation_payload_excludes_prompt_and_private_contex
         model_value="provider-model",
     )
 
-    stored = _sandbox_reconciliation_payload(payload)
-    restored = RunPayload(
-        **{key: value for key, value in stored.items() if key not in {"agent_profile", "agent_profile_expected"}}
-    )
+    stored = sandbox_reconciliation_payload(payload)
+    restored = restored_sandbox_run_payload(stored, RunPayload, {})
 
     assert restored.run_id == payload.run_id
     assert stored["input"] == {"platform_model_id": "model-1"}
@@ -2614,7 +2615,7 @@ async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile(
         },
     )
 
-    stored = _sandbox_reconciliation_payload(payload)
+    stored = sandbox_reconciliation_payload(payload)
 
     assert stored["agent_profile_expected"] is True
     assert stored["agent_profile"] == {
@@ -2625,6 +2626,32 @@ async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile(
     }
     assert "private system prompt text" not in json.dumps(stored)
     assert "instructions" not in stored["agent_profile"]
+
+
+def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
+    payload = RunPayload(
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        session_id="session-1",
+        run_id="run-1",
+        attempt_id="attempt-1",
+        agent_id="general-agent",
+        skill_id=None,
+        file_ids=[],
+        input={},
+        execution_kind=RUN_EXECUTION_KIND_HARNESS_CHAT,
+        trace_id="trace-1",
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    )
+    stored = sandbox_reconciliation_payload(payload)
+    stored["agent_profile_expected"] = True
+    result = {}
+
+    restored = restored_sandbox_run_payload(stored, RunPayload, result)
+
+    assert restored.agent_profile == {}
+    assert result["diagnostics"] == ["agent_profile_transport_lost"]
 
 
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):

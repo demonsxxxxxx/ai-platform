@@ -52,7 +52,10 @@ from app.executors.claude_agent_sdk_runner import (
     sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
-from app.execution.api import SkillInvocationEvidenceBinder
+from app.execution.api import (
+    SkillInvocationEvidenceBinder,
+    sandbox_reconciliation_payload,
+)
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -200,17 +203,10 @@ def _capability_execution_error(
     *,
     available_skill_identities: object = (),
 ) -> str | None:
-    """Validate required Skill and only the MCP invocations that actually occurred."""
+    """Validate only the authorized capability invocations that actually occurred."""
 
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
-        required_skill_identity=(
-            payload.skill_id
-            if payload.execution_kind == RUN_EXECUTION_KIND_SKILL
-            and not payload.agent_profile
-            and payload.skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
-            else None
-        ),
         available_skill_identities=available_skill_identities,
     )
     decision = _capability_completion_decision(
@@ -1380,7 +1376,7 @@ class ClaudeAgentWorkerAdapter:
         runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
         adapter_reconciliation_context = {
             "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
-            "run_payload": _sandbox_reconciliation_payload(payload),
+            "run_payload": sandbox_reconciliation_payload(payload),
             "workspace": str(prepared.workspace),
             "allowed_skill_names": list(prepared.allowed_skill_names),
             "staged_skill_names": list(prepared.staged_skill_names),
@@ -1394,7 +1390,7 @@ class ClaudeAgentWorkerAdapter:
         reconciliation_context = {
             "schema_version": "ai-platform.executor-reconciliation.v1",
             "adapter_name": "claude-agent-worker",
-            "run_payload": _sandbox_reconciliation_payload(payload),
+            "run_payload": sandbox_reconciliation_payload(payload),
             "adapter_context": adapter_reconciliation_context,
         }
         request = SandboxRuntimeRequest(
@@ -1593,7 +1589,7 @@ class ClaudeAgentWorkerAdapter:
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
-            available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
+            available_skill_identities=prepared.allowed_skill_names,
         )
         runtime_tool_evidence = validate_runtime_tool_evidence(
             executor_response,
@@ -1871,7 +1867,7 @@ class ClaudeAgentWorkerAdapter:
             selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
-                available_skill_identities=prepared.allowed_skill_names if payload.agent_profile else (),
+                available_skill_identities=prepared.allowed_skill_names,
             )
             if selected_skill_error is not None:
                 turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -2679,67 +2675,6 @@ def _pin_manifests_for_result(pins: dict[str, dict[str, Any]], allowed_skill_nam
         manifest["used"] = False
         manifests.append(manifest)
     return manifests
-
-
-def _non_secret_agent_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    """Return a non-secret agent_profile snapshot for reconciliation context.
-
-    Excludes `instructions` (system prompt) and any private fields; keeps
-    identity/version metadata sufficient to tell expert runs apart and to
-    detect transport loss.
-    """
-    if not isinstance(profile, dict) or not profile:
-        return {}
-    return {
-        "agent_id": str(profile.get("agent_id") or ""),
-        "revision": (
-            int(profile["revision"])
-            if isinstance(profile.get("revision"), int) and not isinstance(profile.get("revision"), bool)
-            else 0
-        ),
-        "content_hash": str(profile.get("content_hash") or ""),
-        "skill_set": [
-            {
-                "skill_id": str(item.get("skill_id") or ""),
-                "expected_version": str(item.get("expected_version") or ""),
-            }
-            for item in profile.get("skill_set") or []
-            if isinstance(item, dict)
-        ],
-    }
-
-
-def _sandbox_reconciliation_payload(payload: RunPayload) -> dict[str, Any]:
-    """Persist only non-secret fields required by durable terminalization."""
-
-    source_input = payload.input if isinstance(payload.input, dict) else {}
-    return {
-        "tenant_id": payload.tenant_id,
-        "workspace_id": payload.workspace_id,
-        "user_id": payload.user_id,
-        "session_id": payload.session_id,
-        "run_id": payload.run_id,
-        "attempt_id": payload.attempt_id,
-        "agent_id": payload.agent_id,
-        "skill_id": payload.skill_id,
-        "file_ids": [],
-        "input": {
-            key: source_input[key]
-            for key in ("_runtime_tool_policy_subjects", "platform_model_id")
-            if key in source_input
-        },
-        "execution_kind": payload.execution_kind,
-        "trace_id": payload.trace_id,
-        "skill_version": payload.skill_version,
-        "release_decision": dict(payload.release_decision),
-        "skill_manifests": [dict(item) for item in payload.skill_manifests],
-        "context_snapshot_id": payload.context_snapshot_id,
-        "model_id": payload.model_id,
-        "model_value": payload.model_value,
-        "schema_version": payload.schema_version,
-        "agent_profile": _non_secret_agent_profile(payload.agent_profile),
-        "agent_profile_expected": bool(payload.agent_profile),
-    }
 
 
 def _skill_manifests_from_catalog(

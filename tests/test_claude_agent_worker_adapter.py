@@ -2383,12 +2383,12 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         ("unauthorized", "required_tool_completion_evidence_mismatch"),
         ("duplicate", "required_tool_completion_evidence_mismatch"),
         ("cross_mcp_call_id", "required_tool_completion_evidence_mismatch"),
-        ("skill_missing", "required_tool_completion_evidence_missing"),
+        ("skill_missing", None),
         ("skill_completed", None),
         ("skill_mcp_call_id", "required_tool_completion_evidence_mismatch"),
     ],
 )
-def test_worker_capability_execution_plan_validates_required_and_observed_calls(case, expected_error):
+def test_worker_capability_execution_plan_validates_observed_calls(case, expected_error):
     second_subject = {
         **_mcp_subject(),
         "identity": "mcp__other-server__fetch",
@@ -2456,7 +2456,11 @@ def test_worker_capability_execution_plan_validates_required_and_observed_calls(
         skill_call_id = evidence[0]["tool_call_id"]
         evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = skill_call_id
 
-    assert claude_agent_worker._capability_execution_error(current_payload, evidence) == expected_error
+    assert claude_agent_worker._capability_execution_error(
+        current_payload,
+        evidence,
+        available_skill_identities=[skill_id],
+    ) == expected_error
 
 
 def test_agent_profile_capability_plan_accepts_only_server_authorized_skill_evidence():
