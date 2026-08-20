@@ -3,60 +3,15 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any
 
 from psycopg import AsyncConnection
 
-from app.control_plane_contracts import AUDIT_EVENT_SCHEMA_VERSION
-from app.persistence_limits import AUDIT_PAYLOAD_MAX_BYTES, ensure_json_size
 from app.platform.postgres.errors import RepositoryConflictError
-from app import run_event_repository
 
 
 def _dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
-
-
-async def _append_audit_log(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str | None,
-    action: str,
-    target_type: str,
-    target_id: str,
-    trace_id: str | None = None,
-    payload_json: dict[str, Any] | None = None,
-) -> str:
-    resolved_payload = payload_json or {}
-    ensure_json_size(
-        resolved_payload,
-        max_bytes=AUDIT_PAYLOAD_MAX_BYTES,
-        code="audit_payload_too_large",
-    )
-    audit_id = f"aud_{uuid.uuid4().hex}"
-    await conn.execute(
-        """
-        insert into audit_logs(
-            id, tenant_id, user_id, action, target_type, target_id,
-            trace_id, schema_version, payload_json
-        )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-        """,
-        (
-            audit_id,
-            tenant_id,
-            user_id,
-            action,
-            target_type,
-            target_id,
-            trace_id,
-            AUDIT_EVENT_SCHEMA_VERSION,
-            _dumps_json(resolved_payload),
-        ),
-    )
-    return audit_id
 
 
 async def count_active_runs_for_user(
@@ -217,143 +172,6 @@ async def get_run(
     return await cursor.fetchone()
 
 
-async def stage_stale_run_reconciliation(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str | None,
-    run_id: str,
-    expected_status: str,
-    stale_before: Any,
-    cancel_requested_before: Any | None = None,
-    terminal_status: str,
-    error_code: str | None,
-    error_message: str | None,
-) -> dict[str, Any] | None:
-    """CAS one ownerless stale run into the existing terminalization path."""
-
-    if expected_status not in {"queued", "running"}:
-        raise ValueError("invalid_stale_run_expected_status")
-    if terminal_status not in {"failed", "cancelled"}:
-        raise ValueError("invalid_stale_run_terminal_status")
-    target_result = (
-        {"message": "任务已取消", "reconciliation_reason": "stale_run_no_owner"}
-        if terminal_status == "cancelled"
-        else {
-            "message": "Run interrupted because no live execution owner remains.",
-            "retryable": True,
-            "reconciliation_reason": "stale_run_no_owner",
-        }
-    )
-    cursor = await conn.execute(
-        """
-        update runs
-        set permission_terminalization_target = %s,
-            permission_terminalization_reason = 'stale_run_no_owner',
-            permission_terminalization_result_json = %s::jsonb,
-            permission_terminalization_error_code = %s,
-            permission_terminalization_error_message = %s
-        where tenant_id = %s
-          and workspace_id = %s
-          and user_id is not distinct from %s
-          and id = %s
-          and status = %s
-          and permission_terminalization_target is null
-          and (%s <> 'cancelled' or cancel_requested_at is not null)
-          and (%s <> 'failed' or cancel_requested_at is null)
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.status = 'active'
-          )
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.executor_terminal_json is not null
-              and sandbox_leases.executor_reconciliation_status is distinct from 'finalized'
-          )
-          and (
-            (%s = 'cancelled' and cancel_requested_at <= %s::timestamptz)
-            or
-            (%s = 'failed' and greatest(
-                  coalesce((select max(created_at) from run_events
-                            where run_events.tenant_id = runs.tenant_id
-                              and run_events.run_id = runs.id), '-infinity'::timestamptz),
-                  coalesce(started_at, '-infinity'::timestamptz),
-                  coalesce(queued_at, '-infinity'::timestamptz),
-                  created_at
-                ) <= %s::timestamptz)
-          )
-        returning id, trace_id, permission_terminalization_target
-        """,
-        (
-            terminal_status,
-            _dumps_json(target_result),
-            error_code,
-            error_message,
-            tenant_id,
-            workspace_id,
-            user_id,
-            run_id,
-            expected_status,
-            terminal_status,
-            terminal_status,
-            terminal_status,
-            cancel_requested_before,
-            terminal_status,
-            stale_before,
-        ),
-    )
-    staged = await cursor.fetchone()
-    if staged is None:
-        return None
-    event_payload: dict[str, Any] = {
-        "visible_to_user": True,
-        "severity": "warning" if terminal_status == "cancelled" else "error",
-        "result_status": terminal_status,
-        "reason": "stale_run_no_owner",
-    }
-    if error_code:
-        event_payload["error_code"] = error_code
-    await run_event_repository.append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        trace_id=staged.get("trace_id"),
-        event_type="stale_run_reconciled",
-        stage="worker_maintenance",
-        message=(
-            "任务取消请求已在执行器丢失后收口"
-            if terminal_status == "cancelled"
-            else "任务因执行器丢失而中断"
-        ),
-        payload=event_payload,
-        error_code=error_code,
-    )
-    await _append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=None,
-        action="run.stale.reconcile",
-        target_type="run",
-        target_id=run_id,
-        trace_id=staged.get("trace_id"),
-        payload_json={
-            "workspace_id": workspace_id,
-            "target_user_id": user_id,
-            "expected_status": expected_status,
-            "result_status": terminal_status,
-            "reason": "stale_run_no_owner",
-            "error_code": error_code,
-        },
-    )
-    return dict(staged)
-
-
-
 async def get_run_identity(
     conn: AsyncConnection,
     *,
@@ -371,79 +189,6 @@ async def get_run_identity(
         (run_id,),
     )
     return await cursor.fetchone()
-
-
-async def list_stale_run_terminalization_candidates(
-    conn: AsyncConnection,
-    *,
-    stale_after_seconds: int,
-    cancel_requested_after_seconds: int | None = None,
-    limit: int,
-) -> list[dict[str, Any]]:
-    """List ownerless stale runs without a pending executor terminal receipt."""
-
-    bounded_staleness = max(int(stale_after_seconds), 1)
-    bounded_cancel_staleness = max(
-        int(
-            bounded_staleness
-            if cancel_requested_after_seconds is None
-            else cancel_requested_after_seconds
-        ),
-        1,
-    )
-    bounded_limit = max(1, min(int(limit), 50))
-    cursor = await conn.execute(
-        """
-        select runs.tenant_id, runs.workspace_id, runs.user_id, runs.id as run_id,
-               runs.status, runs.cancel_requested_at,
-               runs.cancel_requested_at as cancel_requested_before,
-               greatest(
-                 coalesce(latest_event.created_at, '-infinity'::timestamptz),
-                 coalesce(runs.started_at, '-infinity'::timestamptz),
-                 coalesce(runs.queued_at, '-infinity'::timestamptz),
-                 runs.created_at
-               ) as stale_before
-        from runs
-        left join lateral (
-          select run_events.created_at
-          from run_events
-          where run_events.tenant_id = runs.tenant_id
-            and run_events.run_id = runs.id
-          order by run_events.created_at desc, run_events.sequence desc
-          limit 1
-        ) as latest_event on true
-        where runs.status in ('queued', 'running')
-          and (
-            (runs.cancel_requested_at is not null
-             and runs.cancel_requested_at <= clock_timestamp() - (%s * interval '1 second'))
-            or
-            (runs.cancel_requested_at is null
-             and greatest(
-                   coalesce(latest_event.created_at, '-infinity'::timestamptz),
-                   coalesce(runs.started_at, '-infinity'::timestamptz),
-                   coalesce(runs.queued_at, '-infinity'::timestamptz),
-                   runs.created_at
-                 ) <= clock_timestamp() - (%s * interval '1 second'))
-          )
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.status = 'active'
-          )
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.executor_terminal_json is not null
-              and sandbox_leases.executor_reconciliation_status is distinct from 'finalized'
-          )
-        order by stale_before asc, runs.tenant_id asc, runs.id asc
-        limit %s
-        """,
-        (bounded_cancel_staleness, bounded_staleness, bounded_limit),
-    )
-    return list(await cursor.fetchall())
 
 
 async def _stage_run_tool_permission_terminalization(
