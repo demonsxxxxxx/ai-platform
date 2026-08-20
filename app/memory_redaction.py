@@ -37,7 +37,34 @@ STRICT_JWT_LIKE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])"
 )
 
-MEMORY_REDACTION_MODE_STANDARD = "standard"
+_SANITIZER_PROVIDER_PREFIX = re.compile(
+    r"(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{0,10}|gh[pousr]_[A-Za-z0-9_]{0,10}|AKIA[0-9A-Z]{0,15})$"
+)
+_SANITIZER_JWT_PREFIX = re.compile(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{0,10}$")
+_SANITIZER_BEARER_PREFIX = re.compile(
+    r"(?i)bearer(?:\s+[A-Za-z0-9._~+/=-]{0,7})?$"
+)
+_SANITIZER_ASSIGNMENT_PREFIX = re.compile(
+    r"(?i)(?:token|secret|password|api[_-]?key|authorization)\s*[:=]\s*[A-Za-z0-9._-]{0,15}$"
+)
+
+
+def sanitizer_unstable_suffix_length(value: str, *, max_chars: int = 64) -> int:
+    """Return a bounded suffix that could become a secret on the next chunk."""
+
+    limit = min(len(value), max_chars)
+    for size in range(limit, 0, -1):
+        suffix = value[-size:]
+        if (
+            _SANITIZER_PROVIDER_PREFIX.fullmatch(suffix)
+            or _SANITIZER_JWT_PREFIX.fullmatch(suffix)
+            or _SANITIZER_BEARER_PREFIX.fullmatch(suffix)
+            or _SANITIZER_ASSIGNMENT_PREFIX.fullmatch(suffix)
+        ):
+            return size
+    return 0
+
+
 MEMORY_REDACTION_MODE_STRICT = "strict"
 MEMORY_REDACTION_MODES = {MEMORY_REDACTION_MODE_STANDARD, MEMORY_REDACTION_MODE_STRICT}
 

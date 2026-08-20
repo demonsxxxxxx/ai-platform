@@ -1,6 +1,8 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from app.memory_redaction import sanitizer_unstable_suffix_length
+
 
 @dataclass(frozen=True, slots=True)
 class PublicAnswerFinish:
@@ -258,7 +260,7 @@ class PublicAnswerStreamGate:
                 if text.endswith(token[:size]):
                     held = size
                     break
-        return held
+        return max(held, sanitizer_unstable_suffix_length(text))
 
     def _project_across_publication_boundary(self, candidate: str) -> str | None:
         consumed = 0

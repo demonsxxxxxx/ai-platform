@@ -703,6 +703,23 @@ export async function connectToSSE(
           };
           const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
             if (!isCurrentStream()) return;
+            const acceptedSequence = ctx.acceptedRunEventSequenceRef?.current;
+            const eventSequence = runEventSequence(
+              adapted.data as unknown as Record<string, unknown>,
+            );
+            const cursorWouldRegress =
+              acceptedSequence != null &&
+              acceptedSequence.sessionId === targetSessionId &&
+              acceptedSequence.runId === targetRunId &&
+              acceptedSequence.sequence !== null &&
+              eventSequence !== null &&
+              eventSequence <= acceptedSequence.sequence;
+            if (cursorWouldRegress) {
+              if (semanticApplied) {
+                retryCountRef.current = 0;
+              }
+              return;
+            }
             if (ctx.acceptedStreamCursorRef) {
               ctx.acceptedStreamCursorRef.current = {
                 sessionId: targetSessionId,

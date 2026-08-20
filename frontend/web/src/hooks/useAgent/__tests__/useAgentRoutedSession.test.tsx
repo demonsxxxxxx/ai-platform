@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  PUBLIC_RUN_STREAM_SCHEMA,
+} from "../../../generated/publicRunStreamV3.ts";
 import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type {
@@ -341,6 +344,33 @@ async function settle(act: typeof import("react").act) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
+}
+
+function sseV3FramesResponse(
+  frames: Array<{
+    event: string;
+    cursor: string;
+    eventId: string;
+    payload: Record<string, unknown>;
+  }>,
+) {
+  return new Response(
+    frames
+      .map(
+        ({ event, cursor, eventId, payload }) =>
+          `id: ${cursor}\nevent: ${event}\ndata: ${JSON.stringify({
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: eventId,
+            run_id: "run-live-terminal",
+            stream_incarnation: 2,
+            emitted_at: "2026-07-15T00:00:00Z",
+            event_type: event,
+            payload,
+          })}\n\n`,
+      )
+      .join(""),
+    { headers: { "content-type": "text/event-stream" } },
+  );
 }
 
 function completedSseResponse() {
@@ -3375,14 +3405,22 @@ test("useAgent replaces a partial live answer with one exact terminal hydration"
   let exactRunQueries = 0;
 
   dom.window.fetch = async () =>
-    sseFramesResponse([
+    sseV3FramesResponse([
       {
-        event: "message:chunk",
-        data: { run_id: "run-live-terminal", content: "临时答案" },
+        event: "assistant_text_delta",
+        cursor: "run-live-terminal:2:1-0",
+        eventId: "run-live-terminal:delta",
+        payload: { delta: "临时答案" },
       },
       {
-        event: "run_event",
-        data: { run_id: "run-live-terminal", event_type: "run_succeeded" },
+        event: "terminal",
+        cursor: "run-live-terminal:2:2-0",
+        eventId: "run-live-terminal:terminal",
+        payload: {
+          event_id: "run-live-terminal:terminal",
+          hydrate_required: true,
+          status: "succeeded",
+        },
       },
     ]);
   sessionApi.getEvents = (async (_sessionId, options) => {
@@ -3438,6 +3476,7 @@ test("useAgent replaces a partial live answer with one exact terminal hydration"
   }
 });
 
+test("useAgent consumes lambchat's runless error then done fallback exactly once", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
