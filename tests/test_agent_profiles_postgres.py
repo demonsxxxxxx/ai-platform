@@ -12,7 +12,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
+from app import agent_conversation_repository, repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_AGENT_PROFILE_TEST_DSN"
@@ -714,6 +714,110 @@ async def test_postgres_agent_conversation_duplicate_start_is_exactly_once(monke
             await first_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         finally:
             await first_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_agent_history_projects_only_legacy_default_titles():
+    dsn = _postgres_dsn()
+    schema_name = f"agent_history_title_{uuid.uuid4().hex}"
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    conn = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(conn, schema_name)
+        await conn.execute(schema_sql)
+        profile_hash = await _seed_profile_chat_storage(
+            conn,
+            skill_version="version-profile-chat",
+        )
+
+        async def create_history_session(
+            session_id: str,
+            title: str,
+            title_source: str,
+        ) -> None:
+            await repositories.create_session(
+                conn,
+                tenant_id="tenant-profile-chat",
+                workspace_id="workspace-profile-chat",
+                agent_id="agt_profile_chat",
+                user_id="user-profile-chat",
+                title=title,
+                title_source=title_source,
+                session_id=session_id,
+                admitted_agent_profile_revision=1,
+                admitted_agent_profile_hash=profile_hash,
+            )
+
+        for session_id, title, title_source in (
+            ("ses-legacy-default", "Profile Chat Agent", "initial"),
+            ("ses-generated", "Generated task title", "generated"),
+            ("ses-user-renamed", "User-selected title", "user"),
+            ("ses-migrated-custom", "Legacy custom title", "initial"),
+            ("ses-empty", "Profile Chat Agent", "initial"),
+        ):
+            await create_history_session(session_id, title, title_source)
+
+        blank_task = " \n\t "
+        first_task = "Investigate\nbatch variance and prepare a detailed remediation plan"
+        await conn.execute(
+            """
+            insert into messages(
+              id, tenant_id, session_id, run_id, role, content, metadata_json, created_at
+            ) values
+              ('msg-legacy-assistant', 'tenant-profile-chat', 'ses-legacy-default', null,
+               'assistant', 'Assistant text must not become the title', '{}'::jsonb,
+               '2026-08-20T00:00:00Z'::timestamptz),
+              ('msg-legacy-blank', 'tenant-profile-chat', 'ses-legacy-default', null,
+               'user', %s, '{}'::jsonb, '2026-08-20T00:00:30Z'::timestamptz),
+              ('msg-legacy-first', 'tenant-profile-chat', 'ses-legacy-default', null,
+               'user', %s, '{}'::jsonb, '2026-08-20T00:01:00Z'::timestamptz),
+              ('msg-legacy-later', 'tenant-profile-chat', 'ses-legacy-default', null,
+               'user', 'Later user task must not replace the first', '{}'::jsonb,
+               '2026-08-20T00:02:00Z'::timestamptz),
+              ('msg-generated', 'tenant-profile-chat', 'ses-generated', null,
+               'user', 'Generated title must win', '{}'::jsonb,
+               '2026-08-20T00:03:00Z'::timestamptz),
+              ('msg-user-renamed', 'tenant-profile-chat', 'ses-user-renamed', null,
+               'user', 'User rename must win', '{}'::jsonb,
+               '2026-08-20T00:04:00Z'::timestamptz),
+              ('msg-migrated-custom', 'tenant-profile-chat', 'ses-migrated-custom', null,
+               'user', 'A migrated custom title must win', '{}'::jsonb,
+               '2026-08-20T00:05:00Z'::timestamptz)
+            """,
+            (blank_task, first_task),
+        )
+
+        rows = await agent_conversation_repository.list_authorized_agent_conversations(
+            conn,
+            tenant_id="tenant-profile-chat",
+            user_id="user-profile-chat",
+            agent_id="agt_profile_chat",
+            revision=1,
+            cursor=None,
+            limit=10,
+        )
+
+        assert {row["id"]: row["title"] for row in rows} == {
+            "ses-legacy-default": first_task.replace("\n", " ")[:32],
+            "ses-generated": "Generated task title",
+            "ses-user-renamed": "User-selected title",
+            "ses-migrated-custom": "Legacy custom title",
+            "ses-empty": "Profile Chat Agent",
+        }
+    finally:
+        try:
+            await conn.execute(
+                sql.SQL("drop schema if exists {} cascade").format(
+                    sql.Identifier(schema_name)
+                )
+            )
+        finally:
+            await conn.close()
 
 
 @pytest.mark.asyncio
