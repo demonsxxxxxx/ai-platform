@@ -15,6 +15,7 @@ from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
+from app.persistence import artifacts as artifact_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.errors import (
     RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
@@ -976,6 +977,49 @@ async def test_authorized_artifact_requires_an_active_exact_scope_owning_session
     assert "runs.user_id = %s" in conn.sql
     assert "sessions.status = 'active'" in conn.sql
     assert conn.params == ("tenant-a", "artifact-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_revealed_session_artifacts_are_acl_scoped_and_not_globally_capped():
+    expected_rows = [{"id": f"artifact-{index}"} for index in range(501)]
+
+    class Cursor:
+        async def fetchall(self):
+            return expected_rows
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split()).lower()
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+
+    rows = await artifact_persistence.list_revealed_session_artifacts(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    assert rows == expected_rows
+    assert len(rows) == 501
+    assert "count(*) over()" not in conn.sql
+    assert "join sessions on sessions.id = runs.session_id" in conn.sql
+    assert "sessions.tenant_id = runs.tenant_id" in conn.sql
+    assert "sessions.workspace_id = runs.workspace_id" in conn.sql
+    assert "sessions.user_id = runs.user_id" in conn.sql
+    assert "sessions.agent_id = runs.agent_id" in conn.sql
+    assert "sessions.status = 'active'" in conn.sql
+    assert "artifacts.lifecycle_state = 'active'" in conn.sql
+    assert "artifacts.expires_at is null or artifacts.expires_at > now()" in conn.sql
+    assert "order by artifacts.created_at desc, artifacts.id desc" in conn.sql
+    assert " limit " not in f" {conn.sql} "
+    assert conn.params == ("tenant-a", "user-a", "session-a")
 
 
 @pytest.mark.asyncio

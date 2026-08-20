@@ -38,6 +38,8 @@ export {
   type ChatStreamNeedsConfirmationResponse,
   type ChatStreamQueuedResponse,
   type CapabilitySuggestion,
+  type SessionArtifactFile,
+  type SessionArtifactFilesResponse,
   type SessionListResponse,
   type SessionInputFile,
   type SessionInputFilesResponse,
