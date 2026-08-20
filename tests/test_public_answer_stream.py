@@ -84,10 +84,10 @@ def test_stateful_assignment_sanitizer_fails_closed_at_bounded_ceiling():
         max_private_token_chars=32,
         max_sealed_chars=256,
     )
-    assert gate.accept("access_token=") == ()
+    assert gate.accept('access_token="') == ()
     assert gate.accept("x" * 64) == ()
     assert gate.failed is True
-    assert gate.finish(final_text="access_token=" + ("x" * 64), release=True).chunks == ()
+    assert gate.finish(final_text='access_token="' + ("x" * 64), release=True).chunks == ()
 
 
 def _sanitize(value):
