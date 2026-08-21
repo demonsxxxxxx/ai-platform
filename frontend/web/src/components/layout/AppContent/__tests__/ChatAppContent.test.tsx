@@ -705,7 +705,8 @@ test("projects the Agent welcome and recommendations only in the empty Chat UI",
   assert.doesNotMatch(chatViewSource, /<Bot\b/);
   assert.match(chatViewSource, /agentEmptyProfile\.welcome_message/);
   assert.match(chatViewSource, /data-agent-starter-prompts/);
-  assert.match(chatViewSource, /onClick=\{\(\) => void onSendMessage\(prompt\)\}/);
+  assert.match(chatViewSource, /onClick=\{\(\) => setComposerDraft\(prompt\)\}/);
+  assert.doesNotMatch(chatViewSource, /onSendMessage\(prompt\)/);
   assert.doesNotMatch(appContentSource, /data-agent-workspace-welcome/);
   assert.doesNotMatch(appContentSource, /data-agent-workspace-start/);
 });
