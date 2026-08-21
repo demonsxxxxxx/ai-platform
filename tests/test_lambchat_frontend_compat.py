@@ -1,4 +1,7 @@
 from contextlib import asynccontextmanager
+import json
+from pathlib import Path
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +12,11 @@ from app.models import ChatStreamRequest
 from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
+)
+from app.run_projection import (
+    PUBLIC_TERMINAL_DETAIL_MESSAGES,
+    PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
+    RESULT_UNAVAILABLE_MESSAGE,
 )
 from app.routes.files import MAX_UPLOAD_BYTES
 
@@ -2747,3 +2755,41 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
     assert "runtime211" not in str(event)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
+
+
+def test_frontend_public_terminal_catalog_matches_backend_allowlist():
+    repository_root = Path(__file__).resolve().parents[1]
+    presentation_source = (
+        repository_root
+        / "frontend/web/src/hooks/useAgent/publicTerminalPresentation.ts"
+    ).read_text(encoding="utf-8")
+    event_processor_source = (
+        repository_root / "frontend/web/src/hooks/useAgent/eventProcessor.ts"
+    ).read_text(encoding="utf-8")
+    renderer_source = (
+        repository_root
+        / "frontend/web/src/components/chat/ChatMessage/MessagePartRenderer.tsx"
+    ).read_text(encoding="utf-8")
+    public_messages = {
+        **PUBLIC_TERMINAL_DETAIL_MESSAGES,
+        "result_unavailable": RESULT_UNAVAILABLE_MESSAGE,
+    }
+    catalog_match = re.search(
+        r"PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS\s*=\s*\{(?P<body>[\s\S]*?)\n\} as const",
+        presentation_source,
+    )
+    assert catalog_match is not None
+    frontend_codes = set(
+        re.findall(r"^  ([a-z][a-z0-9_]*):", catalog_match.group("body"), re.MULTILINE)
+    )
+    expected_codes = {*public_messages, "terminal_reconciliation_failed"}
+
+    assert frontend_codes == expected_codes
+    assert set(PUBLIC_TERMINAL_ERROR_CODE_ALIASES.values()) <= set(public_messages)
+    for detail_code, message in public_messages.items():
+        assert f"  {detail_code}:" in presentation_source
+        assert json.dumps(message, ensure_ascii=False) in presentation_source
+
+    assert "  terminal_reconciliation_failed:" in presentation_source
+    assert 'from "./publicTerminalPresentation"' in event_processor_source
+    assert "getPublicTerminalPresentationDefinition" in renderer_source

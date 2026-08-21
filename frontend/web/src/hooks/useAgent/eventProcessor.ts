@@ -28,6 +28,10 @@ import {
   collapsePublicExecutionSteps,
   upsertPublicExecutionStep,
 } from "./publicStreamPresentation";
+import {
+  publicTerminalPresentation,
+  publicTerminalRunReference,
+} from "./publicTerminalPresentation";
 import i18n from "../../i18n";
 import { translateBackendError } from "../../utils/backendErrors";
 import {
@@ -120,108 +124,6 @@ const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
 const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;
 const ACTIONABLE_PUBLIC_STATUS_PATTERN =
   /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed|cancel/i;
-
-interface PublicTerminalPresentation {
-  detailKind: "failed" | "cancelled" | "result_unavailable";
-  message: string;
-  stage: string;
-  severity: "info" | "warning" | "error";
-}
-
-function publicTerminalPresentation(
-  detailCode: string,
-): PublicTerminalPresentation | undefined {
-  const failed = (
-    message: string,
-    stage = "terminal",
-  ): PublicTerminalPresentation => ({
-    detailKind: "failed",
-    message,
-    stage,
-    severity: "error",
-  });
-  const presentations: Record<string, PublicTerminalPresentation> = {
-    run_failed: failed(i18n.t("chat.runTerminal.failed")),
-    run_timeout: failed(
-      i18n.t("chat.runTerminal.runTimeout", {
-        defaultValue: "任务执行超时。请缩小任务范围后重试。",
-      }),
-    ),
-    run_budget_exhausted: failed(
-      i18n.t("chat.runTerminal.runBudgetExhausted"),
-    ),
-    model_service_unavailable: failed(
-      i18n.t("chat.runTerminal.modelServiceUnavailable", {
-        defaultValue:
-          "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
-      }),
-    ),
-    execution_service_unavailable: failed(
-      i18n.t("chat.runTerminal.executionServiceUnavailable", {
-        defaultValue:
-          "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
-      }),
-    ),
-    dependent_service_unavailable: failed(
-      i18n.t("chat.runTerminal.dependentServiceUnavailable", {
-        defaultValue: "任务依赖的服务暂时不可用。请稍后重试。",
-      }),
-    ),
-    capability_not_authorized: failed(
-      i18n.t("chat.runTerminal.capabilityNotAuthorized", {
-        defaultValue: "当前账号不能使用所选能力。请重新选择或联系管理员。",
-      }),
-      "policy",
-    ),
-    tool_permission_denied: failed(
-      i18n.t("chat.runTerminal.toolPermissionDenied", {
-        defaultValue: "任务所需工具未获授权。请调整请求或联系管理员。",
-      }),
-      "policy",
-    ),
-    tool_invocation_evidence_mismatch: failed(
-      i18n.t("chat.runTerminal.toolInvocationEvidenceMismatch", {
-        defaultValue:
-          "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
-      }),
-      "tool_evidence",
-    ),
-    skill_sandbox_admission_failed: failed(
-      i18n.t("chat.runTerminal.skillSandboxAdmissionFailed"),
-      "skill_sandbox_admission",
-    ),
-    context_file_too_large: failed(
-      i18n.t("chat.runTerminal.contextFileTooLarge"),
-      "file_preprocessing",
-    ),
-    run_cancelled: {
-      detailKind: "cancelled",
-      message: i18n.t("chat.runTerminal.cancelledWithPartial", {
-        defaultValue: "任务已取消。取消前已产生的公开内容仍会保留。",
-      }),
-      stage: "terminal",
-      severity: "warning",
-    },
-    terminal_reconciliation_failed: failed(
-      i18n.t("chat.runTerminal.terminalReconciliationFailed", {
-        defaultValue:
-          "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
-      }),
-      "terminal_reconciliation",
-    ),
-    result_unavailable: {
-      detailKind: "result_unavailable",
-      message: i18n.t("chat.runTerminal.resultUnavailable", {
-        defaultValue: "本次执行未能生成可展示的回复内容。",
-      }),
-      stage: "terminal",
-      // Warning keeps the card visible: informational run_status parts are
-      // hidden from the transcript unless the event_type is actionable.
-      severity: "warning",
-    },
-  };
-  return presentations[detailCode];
-}
 
 /**
  * Unified message event processor.
@@ -390,8 +292,10 @@ export function processMessageEvent(
 
     case "final_detail": {
       // Terminal detail is a fixed-code presentation contract. Never render
-      // the backend-provided message itself: an unknown code or mismatched kind
-      // fails closed, and useful partial assistant text remains intact.
+      // the backend-provided message itself: an unknown code, foreign version,
+      // or mismatched kind fails closed, and useful partial assistant text
+      // remains intact.
+      if (data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION) break;
       const detailCode = data.detail_code || "";
       const terminal = publicTerminalPresentation(detailCode);
       if (!terminal || data.detail_kind !== terminal.detailKind) break;
@@ -401,13 +305,6 @@ export function processMessageEvent(
           .filter((part) => part.type === "text" && !part.depth)
           .map((part) => (part.type === "text" ? part.content : ""))
           .join("");
-      const terminalMessage =
-        detailCode === "terminal_reconciliation_failed" && data.run_id
-          ? `${terminal.message} ${i18n.t("chat.runTerminal.runReference", {
-              defaultValue: "任务编号：{{runId}}",
-              runId: data.run_id,
-            })}`
-          : terminal.message;
       result.content = partialContent || terminal.message;
       result.cancelled = terminal.detailKind === "cancelled";
       result.parts = upsertRunStatusPart(parts, {
@@ -415,8 +312,12 @@ export function processMessageEvent(
         event_id: `terminal-detail:${data.run_id || messageId || detailCode}`,
         event_type: detailCode,
         stage: terminal.stage,
-        message: terminalMessage,
+        message: terminal.message,
         severity: terminal.severity,
+        run_reference:
+          detailCode === "terminal_reconciliation_failed"
+            ? publicTerminalRunReference(data.run_id)
+            : undefined,
         created_at: data.timestamp,
       });
       break;

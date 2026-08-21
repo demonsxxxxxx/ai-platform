@@ -82,6 +82,7 @@ export interface RunStatusPart {
   stage: string;
   message: string;
   severity: "info" | "warning" | "error";
+  run_reference?: string;
   sequence?: number;
   created_at?: string;
 }

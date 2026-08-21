@@ -74,6 +74,7 @@ import {
   expandPublicExecutionSteps,
   PublicStreamPresentation,
 } from "./useAgent/publicStreamPresentation";
+import { getPublicTerminalPresentationDefinition } from "./useAgent/publicTerminalPresentation";
 import {
   type AcceptedRunEventSequence,
   type AcceptedStreamCursor,
@@ -1036,7 +1037,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             event_id: `terminal-result-unavailable:${runId}`,
             event_type: "terminal_result_unavailable",
             stage: "agent",
-            message: i18n.t("chat.runTerminal.resultUnavailable"),
+            message: i18n.t("chat.runTerminal.terminalResultUnavailable", {
+              defaultValue:
+                "任务终态已确认，但结果暂时无法加载。请刷新当前会话。",
+            }),
             severity: "warning",
           };
         }
@@ -1056,19 +1060,41 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return message;
           }
           matched = true;
+          const projectedDetailKind =
+            outcome === "failed"
+              ? "failed"
+              : outcome === "cancelled"
+                ? "cancelled"
+                : null;
           const parts = collapsePublicExecutionSteps(
-            clearAllLoadingStates(message.parts || []).filter(
-            (part) =>
-              !(
-                part.type === "run_status" &&
-                terminalRunStatus(part.event_type) === outcome
+            clearAllLoadingStates(message.parts || []).filter((part) => {
+              if (
+                part.type !== "run_status" ||
+                terminalRunStatus(part.event_type) !== outcome
+              ) {
+                return true;
+              }
+              return Boolean(
+                projectedDetailKind &&
+                  getPublicTerminalPresentationDefinition(part.event_type)
+                    ?.detailKind === projectedDetailKind,
+              );
+            }),
+          );
+          const hasProjectedTerminalCard = Boolean(
+            projectedDetailKind &&
+              parts.some(
+                (part) =>
+                  part.type === "run_status" &&
+                  getPublicTerminalPresentationDefinition(part.event_type)
+                    ?.detailKind === projectedDetailKind,
               ),
-            ),
           );
           if (
             card &&
             cardEventId &&
             !cardAdded &&
+            !hasProjectedTerminalCard &&
             !parts.some(
               (part) =>
                 part.type === "run_status" &&
@@ -1084,6 +1110,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           }
           if (
             outcome === "cancelled" &&
+            !hasProjectedTerminalCard &&
             !parts.some((part) => part.type === "cancelled")
           ) {
             return {
@@ -1093,7 +1120,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               parts: [...parts, { type: "cancelled" as const }],
             };
           }
-          return { ...message, isStreaming: false, parts };
+          return {
+            ...message,
+            isStreaming: false,
+            cancelled: outcome === "cancelled" ? true : message.cancelled,
+            parts,
+          };
         });
         if (!matched && card) {
           return [
