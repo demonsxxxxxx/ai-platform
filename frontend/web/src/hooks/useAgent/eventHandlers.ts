@@ -129,7 +129,7 @@ const SIDE_EFFECT_EVENTS = new Set<string>([
   "complete",
   "done",
   "end",
-  "queue_update",
+  "stream_open",
   "skills:changed",
   "heartbeat",
 ]);
@@ -411,9 +411,11 @@ export function handleStreamEvent(
       return true;
     }
 
-    case "queue_update": {
-      if (data.status === "processing") {
-        import("react-hot-toast").then(({ default: toast }) => {
+    case "stream_open": {
+      if (ctx.dismissQueueToast) {
+        ctx.dismissQueueToast();
+      } else {
+        void import("react-hot-toast").then(({ default: toast }) => {
           toast.dismiss("chat-queue");
           toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
         });
