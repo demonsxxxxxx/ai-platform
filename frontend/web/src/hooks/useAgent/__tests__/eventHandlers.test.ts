@@ -1086,7 +1086,7 @@ test("streams ai-platform run event and artifact card into message parts", () =>
   assert.equal(ctx.setMessagesCalls(), 2);
 });
 
-test("keeps a controlled failed final detail before exactly-once terminal convergence", () => {
+test("keeps an actionable PDF-password detail before exactly-once terminal convergence", () => {
   const ctx = createContext(
     [
       {
@@ -1114,7 +1114,8 @@ test("keeps a controlled failed final detail before exactly-once terminal conver
       data: JSON.stringify({
         run_id: "run-final",
         detail_kind: "failed",
-        detail_code: "run_failed",
+        detail_code: "context_file_pdf_password_required",
+        message: "Executor failed at C:\\private\\encrypted.pdf?token=secret",
       }),
     } as StreamEvent,
     "assistant-final",
@@ -1139,9 +1140,15 @@ test("keeps a controlled failed final detail before exactly-once terminal conver
   assert.equal(acceptedDetail, true);
   assert.equal(acceptedTerminal, true);
   assert.equal(terminalCalls, 1);
-  assert.match(ctx.messages()[0]?.content || "", /任务未能完成/);
+  assert.match(
+    ctx.messages()[0]?.content || "",
+    /PDF 文件需要密码。请先解除密码保护后重新上传。/,
+  );
   assert.equal(ctx.messages()[0]?.isStreaming, true);
-  assert.doesNotMatch(ctx.messages()[0]?.content || "", /Executor failed/);
+  assert.doesNotMatch(
+    JSON.stringify(ctx.messages()[0]),
+    /Executor|private|token=secret/,
+  );
 });
 
 test("stream error handler never renders unknown backend diagnostics", () => {

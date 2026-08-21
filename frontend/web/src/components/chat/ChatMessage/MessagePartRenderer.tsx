@@ -12,6 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { MessagePart } from "../../../types";
+import { getPublicTerminalPresentationDefinition } from "../../../hooks/useAgent/publicTerminalPresentation";
 import { useTranslation } from "react-i18next";
 import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
@@ -370,24 +371,14 @@ const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
   cancel_requested: "chat.runStatus.event.cancelRequested",
   cancel_requested_but_completed:
     "chat.runStatus.event.cancelRequestedButCompleted",
-  run_failed: "chat.runStatus.event.runFailed",
-  run_timeout: "chat.runStatus.event.runTimeout",
-  run_budget_exhausted: "chat.runStatus.event.runBudgetExhausted",
-  model_service_unavailable: "chat.runStatus.event.modelServiceUnavailable",
-  execution_service_unavailable:
-    "chat.runStatus.event.executionServiceUnavailable",
-  dependent_service_unavailable:
-    "chat.runStatus.event.dependentServiceUnavailable",
-  capability_not_authorized: "chat.runStatus.event.capabilityNotAuthorized",
-  tool_permission_denied: "chat.runStatus.event.toolPermissionDenied",
-  skill_sandbox_admission_failed:
-    "chat.runStatus.event.skillSandboxAdmissionFailed",
-  context_file_too_large: "chat.runStatus.event.contextFileTooLarge",
-  run_cancelled: "chat.runStatus.event.runCancelled",
+  status_unavailable: "chat.runStatus.event.statusUnavailable",
+  terminal_result_unavailable:
+    "chat.runStatus.event.terminalResultUnavailable",
 };
 
 const RUN_STATUS_DETAIL_I18N_KEYS: Readonly<Record<string, string>> = {
-  context_file_too_large: "chat.runTerminal.contextFileTooLarge",
+  status_unavailable: "chat.runTerminal.statusUnavailable",
+  terminal_result_unavailable: "chat.runTerminal.terminalResultUnavailable",
 };
 
 function RunStatusItem({
@@ -425,23 +416,34 @@ function RunStatusItem({
       : part.severity === "warning"
         ? "border-amber-200/70 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
         : "border-stone-200/70 bg-stone-50 text-stone-700 dark:border-stone-700/60 dark:bg-stone-800/40 dark:text-stone-300";
-  const eventLabel = t(
-    RUN_STATUS_EVENT_I18N_KEYS[part.event_type] ??
-      "chat.runStatus.event.executionUpdate",
+  const terminalDefinition = getPublicTerminalPresentationDefinition(
+    part.event_type,
   );
+  const eventLabel = terminalDefinition
+    ? t(terminalDefinition.eventLabelKey, {
+        defaultValue: terminalDefinition.defaultEventLabel,
+      })
+    : t(
+        RUN_STATUS_EVENT_I18N_KEYS[part.event_type] ??
+          "chat.runStatus.event.executionUpdate",
+      );
   const detailKey = RUN_STATUS_DETAIL_I18N_KEYS[part.event_type];
-  const statusLabel = t(
-    detailKey ??
-      (part.severity === "error"
-        ? "chat.runStatus.status.failed"
-        : part.severity === "warning"
-          ? "chat.runStatus.status.warning"
-          : isWaiting
-            ? "chat.runStatus.status.waiting"
-            : isActive
-              ? "chat.runStatus.status.running"
-              : "chat.runStatus.status.completed"),
-  );
+  const statusLabel = terminalDefinition
+    ? t(terminalDefinition.messageKey, {
+        defaultValue: terminalDefinition.defaultMessage,
+      })
+    : t(
+        detailKey ??
+          (part.severity === "error"
+            ? "chat.runStatus.status.failed"
+            : part.severity === "warning"
+              ? "chat.runStatus.status.warning"
+              : isWaiting
+                ? "chat.runStatus.status.waiting"
+                : isActive
+                  ? "chat.runStatus.status.running"
+                  : "chat.runStatus.status.completed"),
+      );
 
   return (
     <div
@@ -463,7 +465,7 @@ function RunStatusItem({
         <div
           className={clsx(
             "mt-0.5 text-xs opacity-70",
-            detailKey ? "break-words" : "truncate",
+            terminalDefinition || detailKey ? "break-words" : "truncate",
           )}
         >
           {statusLabel}

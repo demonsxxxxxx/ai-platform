@@ -1036,7 +1036,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             event_id: `terminal-result-unavailable:${runId}`,
             event_type: "terminal_result_unavailable",
             stage: "agent",
-            message: i18n.t("chat.runTerminal.resultUnavailable"),
+            message: i18n.t("chat.runTerminal.terminalResultUnavailable", {
+              defaultValue:
+                "任务终态已确认，但结果暂时无法加载。请刷新当前会话。",
+            }),
             severity: "warning",
           };
         }
