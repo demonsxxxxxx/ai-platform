@@ -189,7 +189,7 @@ export function adaptPublicRunStreamEventV3({
         return null;
       }
       return {
-        event: "metadata",
+        event: "stream_open",
         data: base,
         emittedAt: parsed.emitted_at,
         streamIncarnation: parsed.stream_incarnation,

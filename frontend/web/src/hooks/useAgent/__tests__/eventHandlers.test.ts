@@ -88,6 +88,111 @@ test("terminal stream events dismiss a queued admission toast", () => {
   }
 });
 
+test("accepted current-run stream_open clears the queue toast without mutating messages", () => {
+  let dismissCalls = 0;
+  const commits: boolean[] = [];
+  const ctx = createContext([], null, () => {
+    dismissCalls += 1;
+  });
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.streamVersionRef.current = 2;
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    eventId: "run-active:2:1-0",
+  };
+
+  const accepted = handleStreamEvent(
+    {
+      event: "stream_open",
+      data: JSON.stringify({
+        event_id: "stream-open-active",
+        run_id: "run-active",
+      }),
+    },
+    "assistant-1",
+    "run-active:2:2-0",
+    "2026-07-11T01:02:03.000Z",
+    ctx,
+    { sessionId: "session-1", runId: "run-active", streamVersion: 2 },
+    (semanticApplied) => commits.push(semanticApplied),
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(dismissCalls, 1);
+  assert.equal(ctx.setMessagesCalls(), 0);
+  assert.deepEqual(commits, [true]);
+});
+
+test("stale session, run, generation, and cursor stream_open cannot clear a newer queue toast", () => {
+  let dismissCalls = 0;
+  const ctx = createContext([], null, () => {
+    dismissCalls += 1;
+  });
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.streamVersionRef.current = 2;
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    eventId: "run-active:2:10-0",
+  };
+  const event = {
+    event: "stream_open",
+    data: JSON.stringify({
+      event_id: "stream-open-stale",
+      run_id: "run-active",
+    }),
+  } as StreamEvent;
+
+  assert.equal(
+    handleStreamEvent(
+      event,
+      "assistant-1",
+      "run-active:2:11-0",
+      undefined,
+      ctx,
+      { sessionId: "session-old", runId: "run-active", streamVersion: 2 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      event,
+      "assistant-1",
+      "run-active:2:11-0",
+      undefined,
+      ctx,
+      { sessionId: "session-1", runId: "run-old", streamVersion: 2 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      event,
+      "assistant-1",
+      "run-active:2:11-0",
+      undefined,
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 1 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      event,
+      "assistant-1",
+      "run-active:2:9-0",
+      undefined,
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 2 },
+    ),
+    false,
+  );
+
+  assert.equal(dismissCalls, 0);
+  assert.equal(ctx.setMessagesCalls(), 0);
+});
+
 test("does not let a stale run terminal event finalize the active run", () => {
   const ctx = createContext([], null);
   ctx.currentRunIdRef.current = "run-new";

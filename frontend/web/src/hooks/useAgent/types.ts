@@ -103,6 +103,7 @@ export type AssistantTextProjectionKind =
 // Event types from backend
 export type EventType =
   | "metadata"
+  | "stream_open"
   | "message:chunk"
   | "final_detail"
   | "user:message"
@@ -126,7 +127,6 @@ export type EventType =
   | "sandbox:error"
   | "token:usage"
   | "skills:changed"
-  | "queue_update"
   | "heartbeat"
   | "complete"
   | "done"
@@ -194,9 +194,8 @@ export interface EventData {
   action?: string;
   skill_name?: string;
   files_count?: number;
-  // queue_update event fields
+  // Public terminal and transport status fields
   status?: string;
-  queue_position?: number;
   // Versioned public Chat projection fields
   projection_version?: string;
   projection_kind?: string;
