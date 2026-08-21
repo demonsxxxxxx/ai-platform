@@ -141,6 +141,34 @@ test("renders every public terminal detail without exposing backend message or s
   }
 });
 
+test("renders a validated reconciliation correlation ID without backend text", () => {
+  const basePart = {
+    type: "run_status",
+    event_id: "evt-terminal-reconciliation",
+    event_type: "terminal_reconciliation_failed",
+    stage: "private repository stage",
+    message: "backend exception with token",
+    severity: "error",
+  } satisfies Extract<MessagePart, { type: "run_status" }>;
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      part: { ...basePart, run_reference: "run-correlation-123" },
+      isLast: true,
+    }),
+  );
+
+  assert.match(markup, /任务编号：run-correlation-123/);
+  assert.doesNotMatch(markup, /backend exception|token|repository stage/i);
+
+  const invalidMarkup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      part: { ...basePart, run_reference: "<private-run>" },
+      isLast: true,
+    }),
+  );
+  assert.doesNotMatch(invalidMarkup, /private-run|任务编号：/i);
+});
+
 test("renders password-protected PDF guidance instead of a generic failure", () => {
   const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, {

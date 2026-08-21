@@ -1113,6 +1113,7 @@ test("keeps an actionable PDF-password detail before exactly-once terminal conve
       event: "final_detail",
       data: JSON.stringify({
         run_id: "run-final",
+        projection_version: "ai-platform.chat-public-projection.v1",
         detail_kind: "failed",
         detail_code: "context_file_pdf_password_required",
         message: "Executor failed at C:\\private\\encrypted.pdf?token=secret",

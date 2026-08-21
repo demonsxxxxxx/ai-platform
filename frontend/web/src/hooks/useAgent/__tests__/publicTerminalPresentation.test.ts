@@ -139,6 +139,12 @@ test("live and replay projection use every fixed safe public terminal presentati
     assert.equal(terminal.stage, definition.stage);
     assert.equal(terminal.severity, definition.severity);
     assert.equal(terminal.message, definition.defaultMessage);
+    assert.equal(
+      terminal.run_reference,
+      detailCode === "terminal_reconciliation_failed"
+        ? `run-${detailCode}`
+        : undefined,
+    );
     assert.doesNotMatch(
       JSON.stringify(result),
       /private token|runtime|secret\.log/i,
@@ -200,4 +206,35 @@ test("historical reconstruction preserves the actionable PDF-password cause", ()
   if (status?.type !== "run_status") throw new Error("expected run status");
   assert.equal(status.event_type, "context_file_pdf_password_required");
   assert.doesNotMatch(JSON.stringify(assistant), /private|runtime|secret\.pdf/i);
+});
+
+test("historical reconstruction rejects a recognized code from a foreign projection", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "evt-foreign-pdf-password",
+        event_type: "final_detail",
+        run_id: "run-foreign-pdf-password",
+        timestamp: "2026-08-20T01:00:00.000Z",
+        data: {
+          run_id: "run-foreign-pdf-password",
+          projection_version: "foreign-projection.v1",
+          detail_kind: "failed",
+          detail_code: "context_file_pdf_password_required",
+          message: "private parser exception at C:\\runtime\\secret.pdf",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const serialized = JSON.stringify(messages);
+  assert.doesNotMatch(serialized, /PDF 文件需要密码|private|runtime|secret\.pdf/i);
+  assert.equal(
+    messages.some((message) =>
+      message.parts?.some((part) => part.type === "run_status"),
+    ),
+    false,
+  );
 });

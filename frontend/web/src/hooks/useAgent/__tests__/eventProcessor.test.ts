@@ -276,11 +276,13 @@ test("keeps safe partial live output while surfacing a result-unavailable termin
 test("fails closed for unknown or mismatched terminal detail", () => {
   for (const data of [
     {
+      projection_version: "ai-platform.chat-public-projection.v1",
       detail_kind: "failed",
       detail_code: "private_executor_failure",
       message: "secret token at /home/private/runtime.log",
     },
     {
+      projection_version: "ai-platform.chat-public-projection.v1",
       detail_kind: "cancelled",
       detail_code: "run_timeout",
       message: "secret token at /home/private/runtime.log",
@@ -299,6 +301,31 @@ test("fails closed for unknown or mismatched terminal detail", () => {
     );
     assert.deepEqual(result.parts, []);
     assert.equal(result.content, "");
+  }
+});
+
+test("fails closed for an absent or foreign terminal projection version", () => {
+  for (const projectionVersion of [undefined, "foreign-projection.v1"]) {
+    const result = processMessageEvent(
+      "final_detail",
+      {
+        run_id: "run-version-rejected",
+        projection_version: projectionVersion,
+        detail_kind: "failed",
+        detail_code: "context_file_pdf_password_required",
+        message: "secret token at /home/private/runtime.log",
+      },
+      [],
+      "",
+      [],
+      0,
+      [],
+      false,
+      "run-version-rejected",
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.content, "");
+    assert.doesNotMatch(JSON.stringify(result), /secret|runtime|token/i);
   }
 });
 

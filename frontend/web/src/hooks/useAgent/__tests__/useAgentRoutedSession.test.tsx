@@ -3238,6 +3238,7 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
         event: "final_detail",
         data: {
           run_id: "run-failed",
+          projection_version: "ai-platform.chat-public-projection.v1",
           detail_kind: "failed",
           detail_code: "run_failed",
         },
@@ -3422,7 +3423,7 @@ test("useAgent consumes lambchat's runless error then done fallback exactly once
   }
 });
 
-test("useAgent waits for a failed done status when the fallback error is public text", async () => {
+test("useAgent preserves an actionable hydrated failure without a generic duplicate", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -3462,8 +3463,10 @@ test("useAgent waits for a failed done status when the fallback error is public 
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-public-fallback-failed",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
-            detail_code: "run_failed",
+            detail_code: "context_file_pdf_password_required",
+            message: "PdfReadError at C:\\private\\encrypted.pdf?token=secret",
           },
         }]
       : [],
@@ -3476,19 +3479,23 @@ test("useAgent waits for a failed done status when the fallback error is public 
     await settle(harness.act);
 
     const serializedMessages = JSON.stringify(harness.hook.messages);
+    const runStatusParts = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .filter((part) => part.type === "run_status");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
+    assert.equal(runStatusParts.length, 1);
     assert.equal(
-      harness.hook.messages
-        .flatMap((message) => message.parts || [])
-        .filter(
-          (part) =>
-            part.type === "run_status" &&
-            part.event_id === "terminal-failure:run-public-fallback-failed",
-        ).length,
-      1,
+      runStatusParts[0]?.type === "run_status" && runStatusParts[0].event_type,
+      "context_file_pdf_password_required",
     );
+    assert.equal(
+      runStatusParts[0]?.type === "run_status" && runStatusParts[0].message,
+      "PDF 文件需要密码。请先解除密码保护后重新上传。",
+    );
+    assert.equal(serializedMessages.includes("任务未能完成。请稍后重试"), false);
     assert.equal(serializedMessages.includes("Executor failed"), false);
+    assert.doesNotMatch(serializedMessages, /PdfReadError|private|token=secret/i);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
@@ -3689,6 +3696,7 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-transport-interruption",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -3774,6 +3782,7 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-reconcile-owner",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -3893,6 +3902,7 @@ test("useAgent production 401 fails closed without refresh or status reconciliat
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-initial-post-refresh",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -4124,6 +4134,7 @@ test("useAgent uses the backend current run subject before normalizing a failed 
           timestamp: "2026-07-15T00:00:02Z",
           data: {
             run_id: "run-history-failed",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -4470,6 +4481,7 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
           timestamp: "2026-07-15T00:00:02Z",
           data: {
             run_id: "run-history-interrupted",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -5257,6 +5269,7 @@ test("useAgent immediately reconciles a non-terminal application error without s
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-nonterminal-error",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },

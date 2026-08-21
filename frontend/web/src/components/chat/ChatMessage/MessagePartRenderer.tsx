@@ -12,7 +12,10 @@ import {
   XCircle,
 } from "lucide-react";
 import type { MessagePart } from "../../../types";
-import { getPublicTerminalPresentationDefinition } from "../../../hooks/useAgent/publicTerminalPresentation";
+import {
+  getPublicTerminalPresentationDefinition,
+  publicTerminalRunReference,
+} from "../../../hooks/useAgent/publicTerminalPresentation";
 import { useTranslation } from "react-i18next";
 import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
@@ -444,6 +447,16 @@ function RunStatusItem({
                   ? "chat.runStatus.status.running"
                   : "chat.runStatus.status.completed"),
       );
+  const runReference =
+    part.event_type === "terminal_reconciliation_failed"
+      ? publicTerminalRunReference(part.run_reference)
+      : undefined;
+  const runReferenceLabel = runReference
+    ? t("chat.runTerminal.runReference", {
+        defaultValue: "任务编号：{{runId}}",
+        runId: runReference,
+      })
+    : null;
 
   return (
     <div
@@ -469,6 +482,7 @@ function RunStatusItem({
           )}
         >
           {statusLabel}
+          {runReferenceLabel ? ` ${runReferenceLabel}` : ""}
         </div>
       </div>
     </div>

@@ -655,6 +655,7 @@
       "requiredCapabilityUnavailable": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
       "resultUnavailable": "本次执行未能生成可展示的回复内容。",
       "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
+      "runReference": "任务编号：{{runId}}",
       "runTimeout": "任务执行超时。请缩小任务范围后重试。",
       "skillSandboxAdmissionFailed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
       "statusUnavailable": "任务状态暂时无法同步。请刷新当前会话后重试。",

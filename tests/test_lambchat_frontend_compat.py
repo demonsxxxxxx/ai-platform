@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import json
 from pathlib import Path
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -2773,7 +2774,17 @@ def test_frontend_public_terminal_catalog_matches_backend_allowlist():
         **PUBLIC_TERMINAL_DETAIL_MESSAGES,
         "result_unavailable": RESULT_UNAVAILABLE_MESSAGE,
     }
+    catalog_match = re.search(
+        r"PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS\s*=\s*\{(?P<body>[\s\S]*?)\n\} as const",
+        presentation_source,
+    )
+    assert catalog_match is not None
+    frontend_codes = set(
+        re.findall(r"^  ([a-z][a-z0-9_]*):", catalog_match.group("body"), re.MULTILINE)
+    )
+    expected_codes = {*public_messages, "terminal_reconciliation_failed"}
 
+    assert frontend_codes == expected_codes
     assert set(PUBLIC_TERMINAL_ERROR_CODE_ALIASES.values()) <= set(public_messages)
     for detail_code, message in public_messages.items():
         assert f"  {detail_code}:" in presentation_source

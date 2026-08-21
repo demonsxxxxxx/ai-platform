@@ -20,6 +20,13 @@ searched `app/`, `frontend/`, `tests/`, `tools/`, `scripts/`, `docs/`, and
 excluded. Historical release evidence was searched for obsolete assumptions but
 was not treated as current runtime evidence.
 
+This record spans companion delivery PRs #1183 and #1184. PR #1183 owns the
+queue changes described below; PR #1184 owns public terminal presentation and
+this audit record. Until #1183 is merged, the queue sections describe its
+reviewed candidate state rather than the source tree at PR #1184's isolated
+head. PR #1184 must follow #1183, or first incorporate the exact #1183 changes,
+before this document can be treated as the current combined repository state.
+
 ## Authority Map
 
 | Concern | Authority | Public projection |
@@ -34,7 +41,7 @@ was not treated as current runtime evidence.
 
 ## Queue Lifecycle
 
-### Current Flow
+### Audited Target Flow (Issue #1182 / PR #1183)
 
 1. Submission may return `queued` with a current queue position. `useAgent.ts`
    creates the single indefinite `chat-queue` toast for that accepted Run.
@@ -54,10 +61,10 @@ was not treated as current runtime evidence.
 does not claim that all execution work has started or that capacity is
 available globally.
 
-### Retired Queue Logic
+### Queue Retirement Delivered By PR #1183
 
-The browser `queue_update` compatibility event was removed from the internal
-event union and handler. Whole-repository exact search found no current SSE v3
+PR #1183 removes the browser `queue_update` compatibility event from the
+internal event union and handler. The fixed-base audit found no current SSE v3
 schema, backend publisher, generated public type, tool, script, or active test
 that could emit it. Keeping the handler made a real queued toast depend on an
 unreachable transition.

@@ -28,7 +28,10 @@ import {
   collapsePublicExecutionSteps,
   upsertPublicExecutionStep,
 } from "./publicStreamPresentation";
-import { publicTerminalPresentation } from "./publicTerminalPresentation";
+import {
+  publicTerminalPresentation,
+  publicTerminalRunReference,
+} from "./publicTerminalPresentation";
 import i18n from "../../i18n";
 import { translateBackendError } from "../../utils/backendErrors";
 import {
@@ -289,8 +292,10 @@ export function processMessageEvent(
 
     case "final_detail": {
       // Terminal detail is a fixed-code presentation contract. Never render
-      // the backend-provided message itself: an unknown code or mismatched kind
-      // fails closed, and useful partial assistant text remains intact.
+      // the backend-provided message itself: an unknown code, foreign version,
+      // or mismatched kind fails closed, and useful partial assistant text
+      // remains intact.
+      if (data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION) break;
       const detailCode = data.detail_code || "";
       const terminal = publicTerminalPresentation(detailCode);
       if (!terminal || data.detail_kind !== terminal.detailKind) break;
@@ -309,6 +314,10 @@ export function processMessageEvent(
         stage: terminal.stage,
         message: terminal.message,
         severity: terminal.severity,
+        run_reference:
+          detailCode === "terminal_reconciliation_failed"
+            ? publicTerminalRunReference(data.run_id)
+            : undefined,
         created_at: data.timestamp,
       });
       break;
