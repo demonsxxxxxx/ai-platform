@@ -875,7 +875,7 @@ export function ChatView({
               className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
               key={prompt}
               disabled={!canSendMessage || isLoading}
-              onClick={() => void onSendMessage(prompt)}
+              onClick={() => setComposerDraft(prompt)}
               type="button"
             >
               {prompt}

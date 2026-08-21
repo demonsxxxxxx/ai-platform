@@ -11,7 +11,6 @@ import { useTranslation } from "react-i18next";
 import {
   Wrench,
   Sparkles,
-  Brain,
   Plus,
   Image,
   Video,
@@ -20,9 +19,7 @@ import {
   ChevronDown,
   Upload,
   Layers,
-  Settings2,
 } from "lucide-react";
-import { THINKING_LEVEL_COLOR } from "../chat/chatInputConstants";
 
 import type { FileCategory, UploadLimitsBytes } from "../../types";
 import { formatUploadLimitMiB } from "../../utils/uploadLimits";
@@ -50,9 +47,6 @@ interface FeatureMenuProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
-  hasThinkingOption: boolean;
-  thinkingLabel?: string;
-  thinkingLevel?: string;
   // File upload
   uploadCategories: FileCategory[];
   uploadLimitsBytes?: UploadLimitsBytes | null;
@@ -100,18 +94,15 @@ function MenuItem({
   icon,
   label,
   badge,
-  badgeColor,
   active,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
   badge?: string;
-  badgeColor?: string;
   active?: boolean;
   onClick: () => void;
 }) {
-  const color = THINKING_LEVEL_COLOR[badgeColor ?? ""];
   return (
     <button
       type="button"
@@ -121,21 +112,7 @@ function MenuItem({
     >
       <span className="feature-menu-item-icon">{icon}</span>
       <span className="flex-1 text-left truncate">{label}</span>
-      {badge && (
-        <span
-          className="feature-menu-item-badge"
-          style={
-            color
-              ? {
-                  color: color.text,
-                  background: color.bg,
-                }
-              : undefined
-          }
-        >
-          {badge}
-        </span>
-      )}
+      {badge && <span className="feature-menu-item-badge">{badge}</span>}
     </button>
   );
 }
@@ -148,9 +125,6 @@ export const FeatureMenu = memo(function FeatureMenu({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
-  hasThinkingOption,
-  thinkingLabel,
-  thinkingLevel,
   uploadCategories,
   uploadLimitsBytes,
   onFileCategorySelect,
@@ -193,9 +167,8 @@ export const FeatureMenu = memo(function FeatureMenu({
   const hasFeatureItems =
     totalToolsCount > 0 ||
     totalSkillsCount > 0 ||
-    hasThinkingOption ||
     uploadCategories.length > 0;
-  if (!hasFeatureItems && uploadCategories.length === 0) return null;
+  if (!hasFeatureItems) return null;
 
   const resolvedTriggerLabel = triggerLabel ?? t("chat.features", "功能");
 
@@ -283,40 +256,6 @@ export const FeatureMenu = memo(function FeatureMenu({
                     badge={`${enabledSkillsCount}/${totalSkillsCount}`}
                     active={activePanel === "skills"}
                     onClick={() => onOpen("skills")}
-                  />
-                )}
-              </MenuGroup>
-            )}
-            {(hasThinkingOption || uploadCategories.length > 0) && (
-              <MenuGroup
-                label={t("featureMenu.settings", "设置")}
-                icon={<Settings2 size={18} />}
-              >
-                <MenuItem
-                  icon={<Settings2 size={18} />}
-                  label={t("featureMenu.model", "Model")}
-                  active={activePanel === "model"}
-                  onClick={() => onOpen("model")}
-                />
-                {uploadCategories.length > 0 && (
-                  <MenuItem
-                    icon={<FileText size={18} />}
-                    label={t("featureMenu.fileReference", "File reference")}
-                    active={activePanel === "file"}
-                    onClick={() => {
-                      onFileCategorySelect(uploadCategories[0]);
-                      setIsOpen(false);
-                    }}
-                  />
-                )}
-                {hasThinkingOption && (
-                  <MenuItem
-                    icon={<Brain size={18} />}
-                    label={t("chat.thinkingIntensity", "思考强度")}
-                    badge={thinkingLabel}
-                    badgeColor={thinkingLevel}
-                    active={activePanel === "thinking"}
-                    onClick={() => onOpen("thinking")}
                   />
                 )}
               </MenuGroup>

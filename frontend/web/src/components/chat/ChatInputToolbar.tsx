@@ -15,9 +15,6 @@ export interface ChatInputToolbarProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
-  hasThinkingOption: boolean;
-  thinkingLabel?: string;
-  thinkingLevel?: string;
   uploadCategories: FileCategory[];
   uploadLimitsBytes: UploadLimitsBytes | null;
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
@@ -44,9 +41,6 @@ export function ChatInputToolbar({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
-  hasThinkingOption,
-  thinkingLabel,
-  thinkingLevel,
   uploadCategories,
   uploadLimitsBytes,
   uploadFiles,
@@ -104,12 +98,9 @@ export function ChatInputToolbar({
           totalToolsCount={totalToolsCount}
           enabledSkillsCount={enabledSkillsCount}
           totalSkillsCount={totalSkillsCount}
-          hasThinkingOption={hasThinkingOption}
           uploadCategories={uploadCategories}
           uploadLimitsBytes={uploadLimitsBytes}
           onFileCategorySelect={handleFileCategorySelect}
-          thinkingLabel={thinkingLabel}
-          thinkingLevel={thinkingLevel}
         />
       </div>
 
