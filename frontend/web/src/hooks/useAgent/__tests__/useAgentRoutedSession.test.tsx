@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  PUBLIC_RUN_STREAM_SCHEMA,
+  STREAM_DESIGN_ID,
+} from "../../../generated/publicRunStreamV3.ts";
 import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type {
@@ -379,6 +383,174 @@ function nonClosingSseEventResponse(event: string, data: Record<string, unknown>
     { headers: { "content-type": "text/event-stream" } },
   );
 }
+
+function controlledPublicRunLifecycle(runId: string) {
+  const streamIncarnation = 1;
+  const encoder = new TextEncoder();
+  let finish: (() => void) | null = null;
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        const streamOpen = {
+          schema: PUBLIC_RUN_STREAM_SCHEMA,
+          event_id: `stream-open-${runId}`,
+          run_id: runId,
+          stream_incarnation: streamIncarnation,
+          emitted_at: "2026-08-21T00:00:00Z",
+          event_type: "stream_open",
+          payload: { design_id: STREAM_DESIGN_ID },
+        };
+        controller.enqueue(
+          encoder.encode(
+            `id: ${runId}:${streamIncarnation}:1-0\nevent: stream_open\ndata: ${JSON.stringify(streamOpen)}\n\n`,
+          ),
+        );
+        finish = () => {
+          const terminal = {
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: `terminal-${runId}`,
+            run_id: runId,
+            stream_incarnation: streamIncarnation,
+            emitted_at: "2026-08-21T00:00:01Z",
+            event_type: "terminal",
+            payload: {
+              event_id: `terminal-${runId}`,
+              hydrate_required: true,
+              status: "cancelled",
+            },
+          };
+          const end = {
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: `end-${runId}`,
+            run_id: runId,
+            stream_incarnation: streamIncarnation,
+            emitted_at: "2026-08-21T00:00:02Z",
+            event_type: "end",
+            payload: { terminal_event_id: terminal.event_id },
+          };
+          controller.enqueue(
+            encoder.encode(
+              `id: ${runId}:${streamIncarnation}:2-0\nevent: terminal\ndata: ${JSON.stringify(terminal)}\n\n` +
+                `id: ${runId}:${streamIncarnation}:3-0\nevent: end\ndata: ${JSON.stringify(end)}\n\n`,
+            ),
+          );
+          controller.close();
+        };
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  return {
+    response,
+    finish: () => {
+      if (!finish) throw new Error("stream controller not initialized");
+      const complete = finish;
+      finish = null;
+      complete();
+    },
+  };
+}
+
+test("queued submit clears chat-queue when the current SSE v3 stream opens", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const toast = (await import("react-hot-toast")).default;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = dom.window.fetch;
+  const originalToastLoading = toast.loading;
+  const originalToastDismiss = toast.dismiss;
+  const loadedToastIds: Array<string | undefined> = [];
+  const dismissedToastIds: Array<string | undefined> = [];
+  let finishStream: (() => void) | null = null;
+  let forcedTerminal = false;
+  let releasedOnQueueTransition = false;
+  let forcedTerminalTimer: ReturnType<typeof setTimeout> | null = null;
+
+  dom.window.fetch = async () => {
+    const stream = controlledPublicRunLifecycle("run-queue-open");
+    finishStream = stream.finish;
+    forcedTerminalTimer = setTimeout(() => {
+      forcedTerminal = true;
+      const finish = finishStream;
+      finishStream = null;
+      finish?.();
+    }, 1_000);
+    return stream.response;
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "队列切换会话",
+    session_id: "session-queue-open",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-queue-open",
+    run_id: "run-queue-open",
+    trace_id: "trace-queue-open",
+    status: "queued",
+    queue_position: 1,
+  })) as typeof sessionApi.submitChat;
+  sessionApi.getEvents = async () => ({
+    events: [
+      {
+        id: "run-cancelled-run-queue-open",
+        event_type: "final_detail",
+        run_id: "run-queue-open",
+        timestamp: "2026-08-21T00:00:01Z",
+        data: {
+          run_id: "run-queue-open",
+          detail_kind: "cancelled",
+          detail_code: "run_cancelled",
+        },
+      },
+    ],
+  });
+  toast.loading = ((...args: Parameters<typeof toast.loading>) => {
+    loadedToastIds.push(args[1]?.id as string | undefined);
+    return originalToastLoading(...args);
+  }) as typeof toast.loading;
+  toast.dismiss = ((...args: Parameters<typeof toast.dismiss>) => {
+    dismissedToastIds.push(args[0]);
+    if (args[0] === "chat-queue" && !forcedTerminal) {
+      releasedOnQueueTransition = true;
+      if (forcedTerminalTimer) clearTimeout(forcedTerminalTimer);
+      forcedTerminalTimer = null;
+      const finish = finishStream;
+      finishStream = null;
+      finish?.();
+    }
+    return originalToastDismiss(...args);
+  }) as typeof toast.dismiss;
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("执行排队任务"), {
+        status: "accepted",
+      });
+    });
+    await settle(harness.act);
+
+    assert.deepEqual(loadedToastIds, ["chat-queue"]);
+    assert.equal(releasedOnQueueTransition, true);
+    assert.equal(dismissedToastIds[0], "chat-queue");
+    assert.equal(
+      dismissedToastIds.every((toastId) => toastId === "chat-queue"),
+      true,
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalFetch;
+    if (forcedTerminalTimer) clearTimeout(forcedTerminalTimer);
+    toast.loading = originalToastLoading;
+    toast.dismiss = originalToastDismiss;
+    await harness.cleanup();
+  }
+});
 
 test("useAgent defers the locked Skill label until the server projects it", async () => {
   const harness = await loadReactHarness();

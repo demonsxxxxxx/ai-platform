@@ -65,7 +65,10 @@ test("rejects foreign runs, incarnations, cursors, headers, and extra fields", (
     value: envelope("stream_open", { design_id: STREAM_DESIGN_ID }),
   };
 
-  assert.ok(adaptPublicRunStreamEventV3(base));
+  const adapted = adaptPublicRunStreamEventV3(base);
+  assert.equal(adapted?.event, "stream_open");
+  assert.equal(adapted?.data.run_id, "run-1");
+  assert.ok(adapted);
   assert.equal(
     adaptPublicRunStreamEventV3({ ...base, targetRunId: "run-2" }),
     null,
