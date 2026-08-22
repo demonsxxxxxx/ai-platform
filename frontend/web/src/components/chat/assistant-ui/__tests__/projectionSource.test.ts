@@ -66,6 +66,18 @@ function renderProjection(
           : null,
       );
     }
+    if (part.type === "artifact") {
+      return createElement(
+        "a",
+        {
+          key: part.artifact_id,
+          href: part.download_url,
+          "aria-label": part.label,
+          "data-artifact-id": part.artifact_id,
+        },
+        part.label,
+      );
+    }
     if (part.type === "tool") {
       return createElement(
         "button",
@@ -168,6 +180,31 @@ test("mounted projection delegates one tool action and remains keyboard accessib
     assert.deepEqual(calls, ["inspect:operation-read-1", "inspect:operation-read-1"]);
     tool.focus();
     assert.equal(dom.container.ownerDocument.activeElement, tool);
+  } finally {
+    dom.cleanup();
+  }
+});
+
+test("mounted artifact card exposes only its safe label with keyboard semantics", () => {
+  const dom = setupDom();
+  const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
+  try {
+    renderProjection(dom.root, message([{
+      type: "artifact",
+      artifact_id: "artifact-public-1",
+      artifact_type: "document",
+      label: "Artifact",
+      content_type: "application/octet-stream",
+      size_bytes: 128,
+      download_url: "/api/ai/artifacts/artifact-public-1/download",
+    }]), actions);
+    const artifact = dom.container.querySelector("[data-artifact-id=artifact-public-1]") as HTMLAnchorElement | null;
+    assert.ok(artifact);
+    assert.equal(artifact?.getAttribute("aria-label"), "Artifact");
+    assert.equal(artifact?.getAttribute("href"), "/api/ai/artifacts/artifact-public-1/download");
+    artifact.focus();
+    assert.equal(dom.container.ownerDocument.activeElement, artifact);
+    assert.doesNotMatch(dom.container.textContent || "", /private|secret|C:\\\\Users/iu);
   } finally {
     dom.cleanup();
   }
