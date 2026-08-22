@@ -1289,9 +1289,12 @@ async def run_claude_agent_sdk(
             return True
         if agent_event_adapter is None or on_agent_event is None or agent_event_callback_failed:
             return not agent_event_callback_failed
-        callback_result = on_agent_event(candidates)
-        if isawaitable(callback_result):
-            callback_result = await callback_result
+        try:
+            callback_result = on_agent_event(candidates)
+            if isawaitable(callback_result):
+                callback_result = await callback_result
+        except Exception:  # noqa: BLE001
+            callback_result = False
         if callback_result is False:
             agent_event_callback_failed = True
             seal_agent_candidates("agent_event_callback_not_acknowledged")

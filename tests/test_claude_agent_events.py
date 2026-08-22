@@ -662,7 +662,8 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
 
 
 @pytest.mark.asyncio
-async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch):
+@pytest.mark.parametrize("callback_failure", ["false", "exception"])
+async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, callback_failure):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -688,6 +689,8 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch):
 
     async def reject_batch(batch):
         callback_batches.append(batch)
+        if callback_failure == "exception":
+            raise RuntimeError("callback transport failed")
         return False
 
     async def query_fn(*, prompt, options):
