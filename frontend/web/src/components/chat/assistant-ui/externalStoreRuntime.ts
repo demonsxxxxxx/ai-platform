@@ -2,8 +2,9 @@ import { useMemo } from "react";
 import {
   useExternalStoreRuntime,
   type AppendMessage,
+  type ExternalStoreAdapter,
+  type ThreadMessageLike,
 } from "@assistant-ui/react";
-import type { ExternalStoreAdapter, ThreadMessageLike } from "@assistant-ui/core";
 import type { Message, MessagePart } from "../../../types";
 
 export interface AssistantUiRuntimeActions {
@@ -32,16 +33,15 @@ function convertPart(part: MessagePart): AssistantUiContentPart | null {
     case "tool":
       return {
         type: "tool-call",
-        toolCallId: part.id || `tool:${part.name}`,
-        toolName: part.name,
+        toolCallId: "tool",
+        toolName: "Tool",
         args: {},
         argsText: "",
-        result: part.result,
         isError: part.success === false,
       };
     case "artifact":
       // Artifact authorization and rendering stay in ChatMessage's renderer.
-      return { type: "data-artifact", data: { id: part.artifact_id, label: part.label, status: part.status } };
+      return { type: "data-artifact", data: { label: part.label, status: part.status } };
     default:
       return null;
   }
@@ -85,6 +85,9 @@ export function useAssistantUiExternalStoreRuntime(
       },
       onRefetchThread: async () => {
         await actions.loadHistory();
+      },
+      onReload: async () => {
+        await actions.reconnect();
       },
     }),
     [actions, isRunning, messages],

@@ -37,6 +37,10 @@ import {
   terminalRunStatusFromEvent,
   type TerminalRunStatus,
 } from "./runLifecycle";
+import {
+  projectV4EventToLegacyHandler,
+  type V4PublicEvent,
+} from "../../components/chat/assistant-ui/publicEventAdapter";
 
 /**
  * Context passed to event handler
@@ -150,6 +154,30 @@ function dismissQueueToast(ctx: EventHandlerContext): void {
   void import("react-hot-toast").then(({ default: toast }) => {
     toast.dismiss("chat-queue");
   });
+}
+
+/**
+ * Additive v4 production seam. The existing handler remains the sole owner of
+ * message, status, artifact, cursor, and terminal side effects.
+ */
+export function handlePublicRunStreamEventV4(
+  event: V4PublicEvent,
+  messageId: string,
+  ctx: EventHandlerContext,
+  binding?: StreamEventBinding,
+  onCommitted?: (semanticApplied: boolean) => void,
+): boolean {
+  const projected = projectV4EventToLegacyHandler(event, messageId);
+  if (!projected) return false;
+  return handleStreamEvent(
+    projected.streamEvent,
+    projected.messageId,
+    event.eventId,
+    event.emittedAt,
+    ctx,
+    binding,
+    onCommitted,
+  );
 }
 
 /**

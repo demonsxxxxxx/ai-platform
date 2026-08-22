@@ -17,6 +17,24 @@ test("assistant-ui composer delegates only text content to the existing send own
   );
 });
 
+test("external message conversion does not expose raw tool results or identifiers", () => {
+  const converted = toAssistantUiMessage({
+    id: "message-1",
+    role: "assistant",
+    content: "",
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+    parts: [{ type: "tool", id: "private-operation", name: "private_skill", args: {}, result: "secret output" }],
+  });
+  assert.deepEqual(converted.content, [{
+    type: "tool-call",
+    toolCallId: "tool",
+    toolName: "Tool",
+    args: {},
+    argsText: "",
+    isError: false,
+  }]);
+});
+
 test("external message conversion keeps stable ids and hides thinking payload", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",

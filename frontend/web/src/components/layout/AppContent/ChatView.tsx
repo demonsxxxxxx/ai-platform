@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
+import { ThreadPrimitive } from "@assistant-ui/react";
 import toast from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
@@ -736,8 +737,12 @@ export function ChatView({
 
   const virtuosoItemContent = useCallback(
     (index: number, message: (typeof messages)[number]) => (
-      <AssistantUiMessageFrame>
-        <ChatMessage
+      <ThreadPrimitive.Unstable_MessageById
+        messageId={message.id}
+        components={{
+          Message: () => (
+            <AssistantUiMessageFrame>
+              <ChatMessage
           message={message}
           artifactDownloadScopeContext={artifactDownloadScopeContext}
           sessionId={sessionId ?? undefined}
@@ -747,8 +752,11 @@ export function ChatView({
           latestAutoPreview={latestAutoPreview}
           onOpenPreview={handleOpenPreview}
           onForkMessage={handleForkMessage}
-        />
-      </AssistantUiMessageFrame>
+              />
+            </AssistantUiMessageFrame>
+          ),
+        }}
+      />
     ),
     [
       sessionId,
