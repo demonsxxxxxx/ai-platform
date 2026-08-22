@@ -143,7 +143,7 @@ _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
-_MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
+_MAX_REQUIRED_ANSWER_TEXT_CHARS = 262_144
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -1909,9 +1909,13 @@ async def run_claude_agent_sdk(
         if not value:
             return
         if project_agent and agent_event_adapter is not None:
-            await publish_agent_candidates(
-                agent_event_adapter.accept_answer_text(value, already_gated=True)
-            )
+            for offset in range(0, len(value), 8_192):
+                await publish_agent_candidates(
+                    agent_event_adapter.accept_answer_text(
+                        value[offset : offset + 8_192],
+                        already_gated=True,
+                    )
+                )
         if on_text is None:
             return
         callback_result = on_text(value)
@@ -2064,6 +2068,10 @@ async def run_claude_agent_sdk(
             terminal_error = selected_skill_hook_error()
         if terminal_error is None:
             terminal_error = capability_completion_error()
+        if terminal_error is None and answer_stream_gate.final_text_exceeds_bound(
+            structured_result_text
+        ):
+            terminal_error = _SDK_TOOL_ADMISSION_FAILED
         finished_answer = answer_stream_gate.finish(
             final_text=structured_result_text,
             release=terminal_error is None,

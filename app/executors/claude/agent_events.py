@@ -16,7 +16,6 @@ from typing import Any, Callable
 
 from app.control_plane_contracts import sanitize_public_text
 from app.streaming.events_v4 import PUBLIC_STREAM_EVENT_TYPES
-from app.validation import assert_safe_id
 
 _APPLICATION_EVENT_TYPES = frozenset(
     value for value in PUBLIC_STREAM_EVENT_TYPES if not value.startswith("stream.")
@@ -83,11 +82,30 @@ _ALLOWED_TASK_REASON_CODES = frozenset({"user_cancelled", "run_cancelled", "time
 
 
 _SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
+_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def _assert_safe_ref(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _SAFE_REF_PATTERN.fullmatch(value) is None:
         raise ValueError(f"{field_name} is not a safe reference")
+    return value
+
+
+def _assert_run_id(value: object) -> str:
+    if not isinstance(value, str) or _RUN_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError("run_id is not a v4 RunId")
+    return value
+
+
+def _assert_attempt_id(value: object) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= 256:
+        raise ValueError("attempt_id is not a v4 AttemptId")
+    return value
+
+
+def _assert_event_id(value: object) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= 256:
+        raise ValueError("event_id is not a v4 EventId")
     return value
 
 
@@ -108,7 +126,7 @@ def _safe_text(value: object, *, maximum: int) -> str | None:
     sanitized = sanitize_public_text(value)
     if not isinstance(sanitized, str) or sanitized != value:
         return None
-    if len(sanitized.encode("utf-8")) > maximum:
+    if len(sanitized) > maximum:
         return None
     return sanitized
 
@@ -179,12 +197,12 @@ class ClaudeAgentEventCandidate:
     payload: dict[str, object]
 
     def __post_init__(self) -> None:
-        assert_safe_id(self.run_id, "run_id")
-        assert_safe_id(self.event_id, "event_id")
+        _assert_run_id(self.run_id)
+        _assert_event_id(self.event_id)
         if self.message_id is not None:
-            assert_safe_id(self.message_id, "message_id")
+            _assert_safe_ref(self.message_id, "message_id")
         if self.causation_event_id is not None:
-            assert_safe_id(self.causation_event_id, "causation_event_id")
+            _assert_safe_ref(self.causation_event_id, "causation_event_id")
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
         _validate_payload(self.event_type, self.payload)
@@ -374,8 +392,8 @@ class ClaudeSdkAgentEventAdapter:
         sanitizer: Callable[[object], object] = sanitize_public_text,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        assert_safe_id(run_id, "run_id")
-        assert_safe_id(attempt_id, "attempt_id")
+        _assert_run_id(run_id)
+        _assert_attempt_id(attempt_id)
         self.run_id = run_id
         self.attempt_id = attempt_id
         self._clock = clock
@@ -391,7 +409,7 @@ class ClaudeSdkAgentEventAdapter:
         self._tools: dict[str, tuple[str, str, str]] = {}
         self._tool_states: dict[str, _ToolState] = {}
         self._tasks: dict[str, _TaskState] = {}
-        self._policy_denied: set[str] = set()
+        self._policy_decisions: set[str] = set()
         self._seen_events: set[str] = set()
         self._capabilities: dict[str, tuple[str, str]] = {}
         self._load_capabilities(authorized_capabilities, tool_policy_subjects, public_skill_metadata)
@@ -488,7 +506,7 @@ class ClaudeSdkAgentEventAdapter:
             return ()
         if not already_gated and _safe_text(value, maximum=_MAX_TEXT) is None:
             return ()
-        if len((self._answer_content + value).encode("utf-8")) > _MAX_TEXT:
+        if len(self._answer_content + value) > _MAX_TEXT:
             self._sealed = True
             return ()
         events: list[ClaudeAgentEventCandidate] = []
@@ -569,21 +587,57 @@ class ClaudeSdkAgentEventAdapter:
             return ()
         identity, category, label = resolved
         call_id = _safe_private_identity(tool_use_id)
-        if call_id is None:
+        if call_id is None or call_id in self._policy_decisions:
             return ()
-        operation_id = _opaque("op", self.run_id, "tool", call_id)
+        self._policy_decisions.add(call_id)
+        decision_id = _opaque("decision", self.run_id, "policy", call_id)
+        events: list[ClaudeAgentEventCandidate] = [
+            self._candidate(
+                "policy.checking",
+                {"decision_id": decision_id, "category": category, "display_name": label},
+                identity=f"policy.checking:{call_id}",
+            )
+        ]
         if allowed:
-            return ()
-        if call_id in self._policy_denied:
-            return ()
-        self._policy_denied.add(call_id)
-        return (
+            events.append(
+                self._candidate(
+                    "policy.allowed",
+                    {
+                        "decision_id": decision_id,
+                        "category": category,
+                        "display_name": label,
+                        "decision_code": "allowed",
+                    },
+                    identity=f"policy.allowed:{call_id}",
+                )
+            )
+            return tuple(events)
+        events.append(
+            self._candidate(
+                "policy.denied",
+                {
+                    "decision_id": decision_id,
+                    "category": category,
+                    "display_name": label,
+                    "decision_code": "policy_denied",
+                },
+                identity=f"policy.denied:{call_id}",
+            )
+        )
+        events.append(
             self._candidate(
                 "tool.denied",
-                {"operation_id": operation_id, "category": category, "display_name": label, "denial_code": "policy_denied"},
+                {
+                    "operation_id": _opaque("op", self.run_id, "tool", call_id),
+                    "category": category,
+                    "display_name": label,
+                    "denial_code": "policy_denied",
+                },
                 identity=f"denied:{call_id}",
-            ),
+                causation_identity=f"policy.denied:{call_id}",
+            )
         )
+        return tuple(events)
 
     def accept_hook(
         self,

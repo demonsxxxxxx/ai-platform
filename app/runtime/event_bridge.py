@@ -1,3 +1,5 @@
+import re
+
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
@@ -66,6 +68,28 @@ EVENT_STAGE_MAP = {
     "run_cancelled": "control",
 }
 
+_V4_MESSAGE_EVENT_TYPES = frozenset(
+    {
+        "message.started",
+        "message.delta",
+        "message.completed",
+        "thinking.started",
+        "thinking.completed",
+        "model.completed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "tool.denied",
+        "subagent.started",
+        "subagent.progress",
+        "subagent.completed",
+        "subagent.failed",
+        "subagent.cancelled",
+    }
+)
+_V4_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_V4_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
+
 _RAW_TOOL_PRIVATE_FIELDS = frozenset(
     {
         "command",
@@ -90,9 +114,28 @@ def _private_executor_event() -> dict[str, object]:
     }
 
 
+def _v4_envelope_identity_is_valid(event: AgentEvent) -> bool:
+    if not isinstance(event.run_id, str) or _V4_RUN_ID_PATTERN.fullmatch(event.run_id) is None:
+        return False
+    if not isinstance(event.event_id, str) or not 1 <= len(event.event_id) <= 256:
+        return False
+    if event.type in _V4_MESSAGE_EVENT_TYPES:
+        if not isinstance(event.message_id, str):
+            return False
+    elif event.message_id is not None and not isinstance(event.message_id, str):
+        return False
+    if event.message_id is not None and _V4_SAFE_REF_PATTERN.fullmatch(event.message_id) is None:
+        return False
+    if event.causation_event_id is not None and _V4_SAFE_REF_PATTERN.fullmatch(event.causation_event_id) is None:
+        return False
+    return True
+
+
 def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
     """Carry a validated v4 candidate without adding legacy visibility fields."""
 
+    if not _v4_envelope_identity_is_valid(event):
+        return _private_executor_event()
     stage = _V4_EVENT_STAGES.get(event.type)
     if stage is None or not event.run_id or not event.event_id:
         return _private_executor_event()

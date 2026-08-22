@@ -60,6 +60,16 @@ class PublicAnswerStreamGate:
 
         return self._failed
 
+    def final_text_exceeds_bound(self, value: object) -> bool:
+        """Check the projected terminal answer without publishing it."""
+
+        if self._failed or not isinstance(value, str):
+            return False
+        projected = self._project(value)
+        return self._logical_overflowed or (
+            projected is not None and len(projected) > self._max_sealed_chars
+        )
+
     def accept(self, text: object) -> tuple[str, ...]:
         """Accept one ordered answer fragment and return immediately safe chunks."""
 
@@ -173,9 +183,7 @@ class PublicAnswerStreamGate:
         safe_final = self._project(final_text)
         if safe_final is None:
             return self._discard()
-        if self._sealed and (
-            self._logical_overflowed or len(safe_final) > self._max_sealed_chars
-        ):
+        if self._logical_overflowed or len(safe_final) > self._max_sealed_chars:
             self._fail()
             return self._discard()
 

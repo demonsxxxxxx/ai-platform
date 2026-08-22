@@ -39,6 +39,44 @@ def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
     assert all("attempt-1" not in str(event.as_dict()["payload"]) for event in events)
 
 
+def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
+    adapter = _adapter()
+
+    allowed = adapter.accept_policy_decision(
+        tool_name="Read",
+        tool_input={},
+        allowed=True,
+        tool_use_id="allowed-call",
+    )
+    assert [event.event_type for event in allowed] == [
+        "policy.checking",
+        "policy.allowed",
+    ]
+    assert allowed[0].payload["decision_id"] == allowed[1].payload["decision_id"]
+    assert adapter.accept_policy_decision(
+        tool_name="Read",
+        tool_input={},
+        allowed=True,
+        tool_use_id="allowed-call",
+    ) == ()
+
+    denied = adapter.accept_policy_decision(
+        tool_name="Read",
+        tool_input={},
+        allowed=False,
+        tool_use_id="denied-call",
+    )
+    assert [event.event_type for event in denied] == [
+        "policy.checking",
+        "policy.denied",
+        "tool.denied",
+    ]
+    assert denied[-1].causation_event_id == denied[1].event_id
+    assert all("allowed-call" not in repr(event.as_dict()) for event in allowed)
+    assert all("denied-call" not in repr(event.as_dict()) for event in denied)
+
+
+
 def test_thinking_has_lifecycle_only_and_tool_hooks_dedupe_exact_sdk_identity():
     adapter = _adapter()
     class ThinkingBlock:
@@ -200,6 +238,26 @@ def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields()
 
 
 
+def test_bridge_enforces_v4_reference_grammar_lengths_and_message_families():
+    from app.runtime.kernel_contracts import AgentEvent
+
+    def event(event_type: str, *, run_id: str = "run-1187", message_id: str | None = "msg-1"):
+        return AgentEvent(
+            type=event_type,
+            event_id="e" * 256,
+            run_id=run_id,
+            message_id=message_id,
+            causation_event_id=None,
+            payload={"delta": "safe"} if event_type == "message.delta" else {},
+        )
+
+    assert agent_event_to_executor_event(event("message.delta"))["event_type"] == "message.delta"
+    assert agent_event_to_executor_event(event("model.completed", message_id=None))["event_type"] == "executor_private_event"
+    assert agent_event_to_executor_event(event("artifact.created", message_id=None))["event_type"] == "executor_private_event"
+    assert agent_event_to_executor_event(event("message.delta", run_id="run.bad"))["event_type"] == "executor_private_event"
+    assert agent_event_to_executor_event(event("message.delta", message_id="m" * 257))["event_type"] == "executor_private_event"
+
+
 def test_task_updated_terminal_is_idempotent_and_seals_late_progress():
     adapter = _adapter()
 
@@ -274,6 +332,24 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
             causation_event_id=None,
             payload={"delta": "ok", "extra": "private"},
         )
+    multibyte_delta = "é" * 8_192
+    ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="evt_multibyte_delta",
+        event_type="message.delta",
+        message_id="msg_1",
+        causation_event_id=None,
+        payload={"delta": multibyte_delta},
+    )
+    multibyte_content = "界" * 262_144
+    ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="evt_multibyte_content",
+        event_type="message.completed",
+        message_id="msg_1",
+        causation_event_id=None,
+        payload={"content": multibyte_content},
+    )
     with pytest.raises(ValueError):
         ClaudeAgentEventCandidate(
             run_id="run-1187",
@@ -281,7 +357,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
             event_type="message.delta",
             message_id="msg_1",
             causation_event_id=None,
-            payload={"delta": "d" * 8193},
+            payload={"delta": "d" * 8_193},
         )
 
 
@@ -381,8 +457,18 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             subtype="update",
             data={},
             task_id="task-private",
-            patch={},
+            patch={"progress_percent": 50, "current_category": "execute"},
+            status="running",
+            session_id="sdk-session",
+            uuid="task-progress",
+        )
+        yield sdk.TaskNotificationMessage(
+            subtype="update",
+            data={},
+            task_id="task-private",
             status="completed",
+            output_file="",
+            summary="",
             session_id="sdk-session",
             uuid="task-completed",
         )
@@ -415,15 +501,114 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     assert [candidate.event_type for candidate in candidates] == [
         "message.started",
         "message.delta",
+        "policy.checking",
+        "policy.allowed",
         "tool.started",
         "tool.completed",
+        "policy.checking",
+        "policy.denied",
         "tool.denied",
         "subagent.started",
+        "subagent.progress",
         "subagent.completed",
         "message.delta",
         "message.completed",
         "model.completed",
     ]
-    assert candidates[1].payload == {"delta": "safe "}
-    assert candidates[7].payload == {"delta": "answer"}
+    deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
+    assert deltas == ["safe ", "answer"]
     assert all(value not in repr(candidate.as_dict()) for candidate in candidates for value in ("sdk-tool-1", "permission-tool"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected_error"),
+    [
+        ("a" * 262_144, None),
+        ("é" * 262_144, None),
+        ("a" * 262_145, "claude_agent_sdk_tool_admission_failed"),
+    ],
+    ids=["ascii", "multibyte", "max-plus-one"],
+)
+async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_boundaries(
+    monkeypatch, answer, expected_error
+):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_sdk_max_thinking_tokens=128,
+            claude_agent_sdk_effort="high",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    subject = {
+        "identity": "mcp__tenant-server__search",
+        "mcp_server": "tenant-server",
+        "mcp_tool": "search",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "allowed_parameter_keys": ["query"],
+        "required_parameter_keys": [],
+        "risk_level": "high",
+        "write_capable": True,
+        "public_tool_label": "Tenant search",
+        "mcp_server_config": {"type": "http", "url": "https://private.example/mcp"},
+    }
+    candidates = []
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result=answer,
+        )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        query_fn=query_fn,
+        on_agent_event=candidates.append,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        tool_policy_subjects=[subject],
+        execution_policy="sandbox_brokered",
+        require_selected_skill_invocation=False,
+    )
+
+    deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
+    if expected_error is not None:
+        assert result.error == expected_error
+        assert result.message == ""
+        assert candidates == []
+        return
+    assert result.error is None
+    assert result.message == answer
+    assert "".join(deltas) == answer
+    assert deltas and all(len(delta) <= 8_192 for delta in deltas)
+    assert candidates[-2].event_type == "message.completed"
+    assert len(candidates[-2].payload["content"]) == 262_144
