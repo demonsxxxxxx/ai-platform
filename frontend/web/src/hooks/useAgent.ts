@@ -1381,9 +1381,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     return promise;
   }, [createSSEContext]);
 
-  // Cleanup on unmount
   useEffect(() => {
     isMountedRef.current = true;
+    const terminalEventIds = v4TerminalEventIdsRef.current;
     const mountedGeneration = ++mountedGenerationRef.current;
     return () => {
       if (mountedGenerationRef.current !== mountedGeneration) {
@@ -1401,7 +1401,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalEventIdsRef.current.clear();
+      terminalEventIds.clear();
       statusRetryCountRef.current = 0;
       resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       isLoadingHistoryRef.current = false;
