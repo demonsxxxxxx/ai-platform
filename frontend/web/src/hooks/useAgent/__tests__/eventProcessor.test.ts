@@ -1963,6 +1963,53 @@ test("projects v4 subagent lifecycle with parent event identity resolution", () 
   assert.equal(child.status, "running");
 });
 
+test("retains subagent origin event identity across lifecycle updates", () => {
+  const started = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-root",
+      display_name: "Root agent",
+      status: "started",
+      event_id: "parent-event-1",
+    },
+    [], "", [], 0, [], true, "message-1",
+  );
+  const progressed = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-root",
+      display_name: "Root agent",
+      status: "progress",
+      progress_percent: 50,
+      event_id: "parent-event-2",
+    },
+    started.parts, "", [], 0, [], true, "message-1",
+  );
+  const child = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-child",
+      display_name: "Child agent",
+      status: "started",
+      event_id: "child-event-1",
+      causation_event_id: "parent-event-1",
+    },
+    progressed.parts, "", [], 0, [], true, "message-1",
+  );
+  const root = progressed.parts[0];
+  assert.equal(root?.type, "subagent");
+  if (root?.type !== "subagent") throw new Error("expected typed root subagent");
+  assert.equal(root.origin_event_id, "parent-event-1");
+  assert.equal(root.event_id, "parent-event-2");
+  const childPart = child.parts[1];
+  assert.equal(childPart?.type, "subagent");
+  if (childPart?.type !== "subagent") throw new Error("expected typed child subagent");
+  assert.equal(childPart.parent_agent_id, "agent-root");
+});
+
 test("does not invent a parent agent from an unresolved causation event", () => {
   const result = processMessageEvent(
     "run_event",

@@ -102,7 +102,7 @@ function matchesV4TerminalFence(
   );
 }
 
-function terminalFenceFromEvent(
+export function acceptV4TerminalFence(
   event: V4PublicEvent,
   ctx: EventHandlerContext,
   terminalEventId: string,
@@ -242,6 +242,14 @@ export function handlePublicRunStreamEventV4(
       ? ((event.event.payload as unknown as Record<string, unknown>).terminal_event_id as string | undefined)
       : undefined;
   const fence = ctx.v4TerminalFenceRef?.current;
+  if (
+    binding &&
+    event.eventType !== "stream.end" &&
+    (event.runId !== binding.runId ||
+      event.runId !== ctx.currentRunIdRef.current)
+  ) {
+    return false;
+  }
   const bindingMatchesCurrentOwner = Boolean(
     !binding ||
       (ctx.sessionIdRef.current === binding.sessionId &&
@@ -256,6 +264,13 @@ export function handlePublicRunStreamEventV4(
     event.eventType,
     event.event as unknown as Record<string, unknown>,
   );
+  if (
+    terminalStatus &&
+    (event.runId !== ctx.currentRunIdRef.current ||
+      (binding && event.runId !== binding.runId))
+  ) {
+    return false;
+  }
   if (terminalStatus && event.eventType !== "stream.end") {
     if (terminalEventId && (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) || ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)) return false;
     const owner = presentationOwner(binding, messageId);
@@ -271,7 +286,7 @@ export function handlePublicRunStreamEventV4(
       event.runId,
       terminalStatus,
       messageId,
-      terminalFenceFromEvent(event, ctx, terminalEventId, () => undefined),
+      acceptV4TerminalFence(event, ctx, terminalEventId, () => undefined),
     );
     if (!accepted) return false;
     onCommitted?.(false);

@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 // jsdom 26 ships no declarations; the harness uses only its runtime constructor.
 // @ts-expect-error jsdom is the sole pinned test runtime dependency.
 import { JSDOM } from "jsdom";
-import { act, createElement, type ReactNode } from "react";
+import { act, createElement, useEffect, useState, type ReactNode } from "react";
+import { adaptPublicRunStreamEventV4, projectV4EventToLegacyHandler } from "../publicEventAdapter";
+import { acceptV4TerminalFence, handlePublicRunStreamFrameV4, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
+import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
 import { createRoot, type Root } from "react-dom/client";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
@@ -205,6 +208,121 @@ test("mounted artifact card exposes only its safe label with keyboard semantics"
     artifact.focus();
     assert.equal(dom.container.ownerDocument.activeElement, artifact);
     assert.doesNotMatch(dom.container.textContent || "", /private|secret|C:\\\\Users/iu);
+  } finally {
+    dom.cleanup();
+  }
+});
+
+test("mounted production fence owner accepts its matching end once and rejects a foreign end", async () => {
+  const dom = setupDom();
+  const terminalEvent = adaptPublicRunStreamEventV4({
+    eventHeader: "run.succeeded",
+    transportCursor: "run-1:1:1-0",
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "terminal-1",
+      run_id: "run-1",
+      message_id: "message-1",
+      seq: 1,
+      event_type: "run.succeeded",
+      stream_incarnation: 1,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { terminal_event_id: "terminal-1", hydrate_required: true },
+    },
+  }, { runId: "run-1", streamIncarnation: 1 });
+  assert.ok(terminalEvent);
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 3 },
+    v4TerminalFenceRef: { current: null },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+  } as unknown as EventHandlerContext;
+  function ProductionFinalizationOwner() {
+    const [accepted, setAccepted] = useState(0);
+    useEffect(() => {
+      acceptV4TerminalFence(terminalEvent!, ctx, "terminal-1", () => setAccepted((value) => value + 1))();
+    }, []);
+    return createElement("div", { "data-terminal-state": String(accepted) }, "terminal");
+  }
+  try {
+    await act(async () => { dom.root.render(createElement(ProductionFinalizationOwner)); });
+    const endFrame = {
+      frame: {
+        eventHeader: "stream.end",
+        transportCursor: "run-1:1:2-0",
+        value: {
+          schema: "ai-platform.public-run-stream-control.v4",
+          event_id: "end-1",
+          run_id: "run-1",
+          message_id: null,
+          seq: null,
+          event_type: "stream.end",
+          stream_incarnation: 1,
+          replayable: true,
+          trace_ref: null,
+          causation_event_id: null,
+          emitted_at: "2026-01-01T00:00:01Z",
+          payload: { terminal_event_id: "terminal-1" },
+        },
+      },
+      adapterBinding: { runId: "run-1", streamIncarnation: 1 },
+      messageId: "message-1",
+      ctx,
+      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 3 },
+    };
+    const adaptedEnd = adaptPublicRunStreamEventV4(endFrame.frame, endFrame.adapterBinding);
+    assert.equal(adaptedEnd?.runId, "run-1");
+    assert.equal(adaptedEnd?.eventType, "stream.end");
+    assert.equal((adaptedEnd?.event.payload as Record<string, unknown>).terminal_event_id, "terminal-1");
+    assert.equal(ctx.v4TerminalFenceRef?.current?.terminalEventId, "terminal-1");
+    assert.equal(handlePublicRunStreamFrameV4(endFrame as never), true);
+    assert.equal(handlePublicRunStreamFrameV4(endFrame as never), false);
+    const foreignEnd = { ...endFrame, frame: { ...endFrame.frame, value: { ...endFrame.frame.value, run_id: "run-2" } }, adapterBinding: { runId: "run-2", streamIncarnation: 1 } };
+    assert.equal(handlePublicRunStreamFrameV4(foreignEnd as never), false);
+  } finally {
+    dom.cleanup();
+  }
+});
+
+test("mounted adapter-to-reducer artifact failure exposes a safe accessible label", () => {
+  const dom = setupDom();
+  const adapted = adaptPublicRunStreamEventV4({
+    eventHeader: "artifact.failed",
+    transportCursor: "run-1:1:3-0",
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "artifact-failed-1",
+      run_id: "run-1",
+      message_id: "message-1",
+      seq: 3,
+      event_type: "artifact.failed",
+      stream_incarnation: 1,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { artifact_id: "artifact-opaque-1", status: "failed", failure_category: "artifact_failed" },
+    },
+  }, { runId: "run-1", streamIncarnation: 1 });
+  assert.ok(adapted);
+  const legacy = projectV4EventToLegacyHandler(adapted!, "message-1");
+  assert.ok(legacy);
+  const payload = JSON.parse(legacy!.streamEvent.data) as Record<string, unknown>;
+  const reduced = processMessageEvent("artifact_card", payload, [], "", [], 0, [], false, "message-1");
+  try {
+    renderProjection(dom.root, message(reduced.parts), { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined });
+    const artifact = dom.container.querySelector("[data-artifact-id]") as HTMLAnchorElement | null;
+    assert.ok(artifact);
+    assert.equal(artifact?.getAttribute("aria-label"), "Artifact unavailable");
+    assert.equal(artifact?.textContent, "Artifact unavailable");
+    assert.doesNotMatch(artifact?.getAttribute("aria-label") || "", /artifact-opaque-1|private|secret|token/i);
   } finally {
     dom.cleanup();
   }

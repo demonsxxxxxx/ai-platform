@@ -248,6 +248,8 @@ export interface SubagentPart {
   duration_ms?: number;
   progress_percent?: number;
   current_category?: string;
+  /** Immutable origin event used to retain parent causation across lifecycle updates. */
+  origin_event_id?: string;
   event_id?: string;
   causation_event_id?: string | null;
 }

@@ -196,6 +196,60 @@ test("v4 terminal binding is checked before hydration side effects", () => {
   }), false);
 });
 
+test("v4 terminal rejects a foreign Run before hydration", () => {
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 8 },
+    v4TerminalFenceRef: { current: null },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => {
+      throw new Error("foreign terminal hydrated");
+    },
+  } as unknown as EventHandlerContext;
+  const foreign = adaptPublicRunStreamEventV4(
+    {
+      eventHeader: "run.succeeded",
+      transportCursor: "run-2:1:1-0",
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: "foreign-terminal",
+        run_id: "run-2",
+        message_id: "message-2",
+        seq: 1,
+        event_type: "run.succeeded",
+        stream_incarnation: 1,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-01-01T00:00:00Z",
+        payload: { terminal_event_id: "foreign-terminal", hydrate_required: true },
+      },
+    },
+    { runId: "run-2", streamIncarnation: 1 },
+  );
+  assert.ok(foreign);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "run.succeeded",
+      transportCursor: "run-2:1:1-0",
+      value: foreign.event,
+    },
+    adapterBinding: { runId: "run-2", streamIncarnation: 1 },
+    messageId: "message-2",
+    ctx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 8 },
+  }), false);
+});
+
 test("v4 terminal end waits for authoritative hydration and scopes the fence", () => {
   const ctx = {
     sessionIdRef: { current: "session-1" },

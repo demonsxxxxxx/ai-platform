@@ -662,7 +662,10 @@ function acceptedSubagentIdForEvent(
   parentEventId: string,
 ): string | undefined {
   for (const part of parts) {
-    if (part.type === "subagent" && part.event_id === parentEventId) {
+    if (
+      part.type === "subagent" &&
+      (part.origin_event_id === parentEventId || part.event_id === parentEventId)
+    ) {
       return part.public_operation_id || part.agent_id;
     }
     if (part.type === "subagent" && part.parts) {
@@ -706,6 +709,7 @@ function createPublicSubagentPart(
     duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     progress_percent: typeof data.progress_percent === "number" ? data.progress_percent : undefined,
     current_category: typeof data.current_category === "string" ? data.current_category : undefined,
+    origin_event_id: typeof data.event_id === "string" ? data.event_id : undefined,
     event_id: typeof data.event_id === "string" ? data.event_id : undefined,
     causation_event_id: causationEventId,
   };
@@ -725,6 +729,7 @@ function upsertPublicSubagentPart(
     updated[index] = {
       ...previous,
       ...next,
+      origin_event_id: previous.origin_event_id ?? next.origin_event_id,
       parts: previous.parts,
       startedAt: previous.startedAt ?? next.startedAt,
     };
