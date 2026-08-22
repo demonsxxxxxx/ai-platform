@@ -459,7 +459,8 @@ export function processMessageEvent(
         }
       }
       if (data.event_type === "public_subagent_activity") {
-        const subagentPart = createPublicSubagentPart(data, depth);
+        const subagentPart = createPublicSubagentPart(data, depth, parts);
+
         if (subagentPart) {
           result.parts = upsertPublicSubagentPart(parts, subagentPart);
           break;
@@ -656,12 +657,38 @@ function upsertPublicToolPart(
   return updated;
 }
 
-function createPublicSubagentPart(data: EventData, depth: number): Extract<MessagePart, { type: "subagent" }> | null {
+function acceptedSubagentIdForEvent(
+  parts: MessagePart[],
+  parentEventId: string,
+): string | undefined {
+  for (const part of parts) {
+    if (part.type === "subagent" && part.event_id === parentEventId) {
+      return part.public_operation_id || part.agent_id;
+    }
+    if (part.type === "subagent" && part.parts) {
+      const nested = acceptedSubagentIdForEvent(part.parts, parentEventId);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+function createPublicSubagentPart(
+  data: EventData,
+  depth: number,
+  parts: MessagePart[],
+): Extract<MessagePart, { type: "subagent" }> | null {
   const agentId = typeof data.subagent_id === "string" ? data.subagent_id : "";
   const agentName = typeof data.display_name === "string" ? data.display_name : "";
   const status = typeof data.status === "string" ? data.status : "";
   if (!agentId || !agentName || !status) return null;
   const terminal = status === "completed" || status === "failed" || status === "cancelled";
+  const causationEventId = typeof data.causation_event_id === "string"
+    ? data.causation_event_id
+    : null;
+  const parentAgentId = causationEventId
+    ? acceptedSubagentIdForEvent(parts, causationEventId)
+    : undefined;
   return {
     type: "subagent",
     agent_id: agentId,
@@ -674,13 +701,13 @@ function createPublicSubagentPart(data: EventData, depth: number): Extract<Messa
     startedAt: typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
     completedAt: terminal && typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
     error: status === "failed" && typeof data.failure_category === "string" ? data.failure_category : undefined,
-    parent_agent_id: typeof data.parent_id === "string" ? data.parent_id : undefined,
+    parent_agent_id: parentAgentId,
     public_operation_id: agentId,
     duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     progress_percent: typeof data.progress_percent === "number" ? data.progress_percent : undefined,
     current_category: typeof data.current_category === "string" ? data.current_category : undefined,
     event_id: typeof data.event_id === "string" ? data.event_id : undefined,
-    causation_event_id: data.causation_event_id ?? null,
+    causation_event_id: causationEventId,
   };
 }
 

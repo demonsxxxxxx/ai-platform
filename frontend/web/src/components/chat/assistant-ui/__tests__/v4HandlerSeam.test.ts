@@ -158,6 +158,44 @@ test("v4 handler advances transport cursor for semantic duplicates without reapp
   assert.equal(transportOnlyCommits, 1);
   assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-1:1:2-0");
 });
+test("v4 terminal binding is checked before hydration side effects", () => {
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 8 },
+    v4TerminalFenceRef: { current: null },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => {
+      throw new Error("stale terminal hydrated");
+    },
+  } as unknown as EventHandlerContext;
+  const terminal = frame("run.succeeded", {
+    terminal_event_id: "terminal-stale",
+    hydrate_required: true,
+  }, "message-1");
+  assert.ok(terminal);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "run.succeeded",
+      transportCursor: "run-1:1:1-0",
+      generation: 4,
+      value: terminal.event,
+    },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 4 },
+    messageId: "message-1",
+    ctx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 7 },
+  }), false);
+});
+
 test("v4 terminal end waits for authoritative hydration and scopes the fence", () => {
   const ctx = {
     sessionIdRef: { current: "session-1" },
@@ -174,7 +212,12 @@ test("v4 terminal end waits for authoritative hydration and scopes the fence", (
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
     onRunTerminal: (_runId: string, _status: "succeeded" | "failed" | "cancelled", _messageId: string, onAccepted?: () => void) => {
-      hydrationAccepted = onAccepted;
+      hydrationAccepted = () => {
+        ctx.currentRunIdRef.current = null;
+        ctx.streamVersionRef.current = 8;
+        ctx.v4TerminalFenceRef!.current = null;
+        onAccepted?.();
+      };
       return true;
     },
   } as unknown as EventHandlerContext;
@@ -226,6 +269,81 @@ test("v4 terminal end waits for authoritative hydration and scopes the fence", (
   assert.equal(ctx.v4TerminalFenceRef?.current?.streamIncarnation, 3);
   assert.equal(ctx.v4TerminalFenceRef?.current?.generation, 2);
   assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding: { runId: "run-1", streamIncarnation: 3, generation: 2 }, messageId: "message-1", ctx, binding }), true);
+});
+
+test("v4 terminal receipt survives real finalization for every terminal outcome", () => {
+  const cases = [
+    ["run.succeeded", { terminal_event_id: "terminal-succeeded", hydrate_required: true }, "succeeded"],
+    ["run.cancelled", { terminal_event_id: "terminal-cancelled", hydrate_required: true, reason_code: "user_cancelled" }, "cancelled"],
+    ["run.failed", { terminal_event_id: "terminal-failed", hydrate_required: true, projection_version: "ai-platform.chat-public-projection.v1", code: "run_failed", default_message: "Run failed", detail: null }, "failed"],
+  ] as const;
+  for (const [eventType, payload, status] of cases) {
+    const ctx = {
+      sessionIdRef: { current: "session-1" },
+      currentRunIdRef: { current: "run-1" },
+      processedEventIdsRef: { current: new Set<string>() },
+      acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null } },
+      lastHistoryTimestampRef: { current: null },
+      activeSubagentStackRef: { current: [] },
+      streamVersionRef: { current: 4 },
+      v4TerminalFenceRef: { current: null },
+      v4TerminalEventIdsRef: { current: new Set<string>() },
+      setSessionId: () => undefined,
+      setMessages: () => undefined,
+      setConnectionStatus: () => undefined,
+      setIsInitializingSandbox: () => undefined,
+      setSandboxError: () => undefined,
+      onRunTerminal: (_runId: string, observedStatus: string, _messageId: string, onAccepted?: () => void) => {
+        assert.equal(observedStatus, status);
+        ctx.currentRunIdRef.current = null;
+        ctx.streamVersionRef.current = 5;
+        onAccepted?.();
+        return true;
+      },
+    } as unknown as EventHandlerContext;
+    const terminal = frame(eventType, payload, "message-1");
+    assert.ok(terminal);
+    const end = {
+      eventHeader: "stream.end",
+      transportCursor: "run-1:1:2-0",
+      generation: 3,
+      value: {
+        schema: "ai-platform.public-run-stream-control.v4",
+        event_id: `end-${status}`,
+        run_id: "run-1",
+        message_id: null,
+        seq: null,
+        event_type: "stream.end",
+        stream_incarnation: 1,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-01-01T00:00:01Z",
+        payload: { terminal_event_id: payload.terminal_event_id },
+      },
+    };
+    const binding = { sessionId: "session-1", runId: "run-1", streamVersion: 4 };
+    assert.equal(handlePublicRunStreamFrameV4({
+      frame: {
+        eventHeader: eventType,
+        transportCursor: "run-1:1:1-0",
+        generation: 3,
+        value: terminal.event,
+      },
+      adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+      messageId: "message-1",
+      ctx,
+      binding,
+    }), true);
+    assert.equal(handlePublicRunStreamFrameV4({
+      frame: end,
+      adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+      messageId: "message-1",
+      ctx,
+      binding,
+    }), true);
+    assert.equal(ctx.v4TerminalFenceRef?.current, null);
+  }
 });
 
 test("v4 handler delegates stream gaps to the existing recovery owner", () => {

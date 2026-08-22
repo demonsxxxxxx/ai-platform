@@ -1928,15 +1928,57 @@ test("projects v4 tool lifecycle into a stable typed ToolPart", () => {
   assert.equal(completed.parts[0].result, "safe summary");
 });
 
-test("projects v4 subagent lifecycle with stable parent metadata", () => {
+test("projects v4 subagent lifecycle with parent event identity resolution", () => {
+  const root = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-root",
+      display_name: "Root agent",
+      status: "started",
+      event_id: "parent-event-1",
+    },
+    [], "", [], 0, [], true, "message-1",
+  );
   const result = processMessageEvent(
     "run_event",
-    { event_type: "public_subagent_activity", subagent_id: "agent-child", display_name: "Verification agent", status: "started", parent_id: "agent-root" },
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-child",
+      display_name: "Verification agent",
+      status: "started",
+      event_id: "child-event-1",
+      causation_event_id: "parent-event-1",
+      parent_id: "forbidden-fallback",
+    },
+    root.parts, "", [], 0, [], true, "message-1",
+  );
+  assert.equal(result.parts.length, 2);
+  const child = result.parts[1];
+  assert.equal(child?.type, "subagent");
+  if (child?.type !== "subagent") throw new Error("expected typed subagent part");
+  assert.equal(child.agent_id, "agent-child");
+  assert.equal(child.parent_agent_id, "agent-root");
+  assert.equal(child.causation_event_id, "parent-event-1");
+  assert.equal(child.status, "running");
+});
+
+test("does not invent a parent agent from an unresolved causation event", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-child",
+      display_name: "Verification agent",
+      status: "started",
+      event_id: "child-event-2",
+      causation_event_id: "missing-parent-event",
+      parent_id: "raw-agent-id",
+    },
     [], "", [], 0, [], true, "message-1",
   );
   assert.equal(result.parts[0]?.type, "subagent");
   if (result.parts[0]?.type !== "subagent") throw new Error("expected typed subagent part");
-  assert.equal(result.parts[0].agent_id, "agent-child");
-  assert.equal(result.parts[0].parent_agent_id, "agent-root");
-  assert.equal(result.parts[0].status, "running");
+  assert.equal(result.parts[0].parent_agent_id, undefined);
+  assert.equal(result.parts[0].causation_event_id, "missing-parent-event");
 });

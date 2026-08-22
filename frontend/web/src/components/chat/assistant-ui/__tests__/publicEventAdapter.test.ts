@@ -149,6 +149,23 @@ test("v4 gap cursors require the canonical run/incarnation/Redis-id grammar", ()
   );
 });
 
+test("artifact.failed without a filename projects a fixed safe visible label", () => {
+  const adapted = adaptPublicRunStreamEventV4(
+    frame("artifact.failed", {
+      artifact_id: "artifact-private-raw-id",
+      status: "failed",
+      failure_category: "artifact_failed",
+    }),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+  assert.ok(adapted);
+  const projected = projectV4EventToLegacyHandler(adapted, "message-1");
+  assert.ok(projected);
+  const data = JSON.parse(projected.streamEvent.data) as Record<string, unknown>;
+  assert.equal(data.label, "Artifact unavailable");
+  assert.notEqual(data.label, "artifact-private-raw-id");
+});
+
 test("stream.end remains transport-only and preserves its terminal receipt", () => {
   const raw = frame("stream.end", { terminal_event_id: "terminal-1" }).value as Record<string, unknown>;
   const adapted = adaptPublicRunStreamEventV4({

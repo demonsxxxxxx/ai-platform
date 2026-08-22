@@ -96,7 +96,6 @@ function matchesV4TerminalFence(
       terminalEventId &&
       fence.terminalEventId === terminalEventId &&
       fence.sessionId === ctx.sessionIdRef.current &&
-      fence.runId === ctx.currentRunIdRef.current &&
       fence.runId === event.runId &&
       fence.streamIncarnation === event.streamIncarnation &&
       (fence.generation === undefined || fence.generation === event.generation),
@@ -109,16 +108,19 @@ function terminalFenceFromEvent(
   terminalEventId: string,
   onAccepted: () => void,
 ): () => void {
+  const sessionId = ctx.sessionIdRef.current;
+  const runId = event.runId;
   return () => {
-    const sessionId = ctx.sessionIdRef.current;
-    if (!sessionId || ctx.currentRunIdRef.current !== event.runId) return;
+    if (!sessionId || ctx.sessionIdRef.current !== sessionId) return;
+    if (ctx.currentRunIdRef.current && ctx.currentRunIdRef.current !== runId) return;
     ctx.v4TerminalFenceRef!.current = {
       sessionId,
-      runId: event.runId,
+      runId,
       streamIncarnation: event.streamIncarnation,
       generation: event.generation,
       terminalEventId,
     };
+    ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
     onAccepted();
   };
 }
@@ -239,6 +241,17 @@ export function handlePublicRunStreamEventV4(
     event.eventType === "stream.end" || event.eventType.startsWith("run.")
       ? ((event.event.payload as unknown as Record<string, unknown>).terminal_event_id as string | undefined)
       : undefined;
+  const fence = ctx.v4TerminalFenceRef?.current;
+  const bindingMatchesCurrentOwner = Boolean(
+    !binding ||
+      (ctx.sessionIdRef.current === binding.sessionId &&
+        ((ctx.streamVersionRef.current === binding.streamVersion &&
+          ctx.currentRunIdRef.current === binding.runId) ||
+          (event.eventType === "stream.end" &&
+            fence?.runId === binding.runId &&
+            fence.sessionId === binding.sessionId))),
+  );
+  if (!bindingMatchesCurrentOwner) return false;
   const terminalStatus = terminalRunStatusFromEvent(
     event.eventType,
     event.event as unknown as Record<string, unknown>,
@@ -267,11 +280,15 @@ export function handlePublicRunStreamEventV4(
   if (event.eventType === "stream.end") {
     const fenced = matchesV4TerminalFence(event, ctx, terminalEventId);
     const legacyFenced = Boolean(
-      ctx.v4TerminalEventIdsRef &&
-      terminalEventId &&
-      ctx.v4TerminalEventIdsRef.current.has(terminalEventId),
+      !ctx.v4TerminalFenceRef &&
+        terminalEventId &&
+        ctx.v4TerminalEventIdsRef?.current.has(terminalEventId),
     );
     if (!fenced && !legacyFenced) return false;
+    onCommitted?.(false);
+    if (ctx.v4TerminalFenceRef) ctx.v4TerminalFenceRef.current = null;
+    ctx.v4TerminalEventIdsRef?.current.clear();
+    return true;
   }
   const projected = projectV4EventToLegacyHandler(event, messageId);
   if (!projected) return false;

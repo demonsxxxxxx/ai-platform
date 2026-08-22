@@ -1326,8 +1326,9 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   const ctx = createContext([], null);
   ctx.currentRunIdRef.current = "run-1";
   let terminalCalls = 0;
-  ctx.onRunTerminal = () => {
+  ctx.onRunTerminal = (_runId, _status, _messageId, onAccepted) => {
     terminalCalls += 1;
+    onAccepted?.();
     return true;
   };
   const terminal = {

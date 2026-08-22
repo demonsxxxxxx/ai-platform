@@ -385,7 +385,9 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
       duration_ms: payload.duration_ms,
       progress_percent: payload.progress_percent,
       current_category: payload.current_category,
-      parent_id: event.causationEventId,
+      // causation_event_id remains an event identity. The reducer resolves a
+      // parent subagent only from an already accepted parent event.
+      causation_event_id: event.causationEventId,
     }),
   });
   switch (event.eventType) {
@@ -434,7 +436,7 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
         ...base,
         artifact_id: payload.artifact_id,
         artifact_type: payload.media_type || "artifact",
-        label: payload.filename || payload.artifact_id,
+        label: payload.filename || "Artifact unavailable",
         content_type: payload.media_type || "application/octet-stream",
         size_bytes: payload.size_bytes ?? 0,
         status: payload.status,
