@@ -122,7 +122,7 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     assert "name: backend required" in workflow
     assert (
-        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
+        "needs: [backend-validation, backend-tests, v4-durable-streaming, agent-skill-contracts, backend-image]"
         in workflow
     )
     assert "name: Agent and Skill contracts" in workflow
@@ -199,10 +199,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert " -k " not in pytest_step
     assert "runs-on: ubuntu-latest" in required_job
     assert (
-        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
+        "needs: [backend-validation, backend-tests, v4-durable-streaming, agent-skill-contracts, backend-image]"
         in required_job
     )
-    assert "VALIDATION_RESULT: ${{ needs.backend-validation.result }}" in required_job
+    assert "V4_DURABLE_RESULT: ${{ needs.v4-durable-streaming.result }}" in required_job
     assert "BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}" in required_job
     assert 'test "$VALIDATION_RESULT" = "success"' in required_job
     assert 'test "$BACKEND_TESTS_RESULT" = "success"' in required_job
@@ -289,13 +289,10 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert not any(token.startswith("--ignore") for token in tokens)
 
     assert (
-        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
+        "needs: [backend-validation, backend-tests, v4-durable-streaming, agent-skill-contracts, backend-image]"
         in required_job
     )
-    assert (
-        "AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}"
-        in required_job
-    )
+    assert "V4_DURABLE_RESULT: ${{ needs.v4-durable-streaming.result }}" in required_job
     assert 'test "$AGENT_SKILL_RESULT" = "success"' in required_job
     assert re.search(r"(?m)^\s*continue-on-error\s*:", required_job) is None
 
