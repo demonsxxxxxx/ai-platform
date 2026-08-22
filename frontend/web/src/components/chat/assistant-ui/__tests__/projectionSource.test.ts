@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
+import { AssistantUiMessageFrame } from "../MessageFrame";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -28,7 +30,20 @@ test("assistant-ui projection mounts a non-empty transcript without replacing th
           reconnect: async () => undefined,
           loadHistory: async () => undefined,
         },
-        children: createElement("div", { "data-transcript": true }, "visible answer"),
+        children: createElement(
+          ThreadPrimitive.Unstable_MessageById,
+          {
+            messageId: "message-1",
+            components: {
+              Message: () =>
+                createElement(
+                  AssistantUiMessageFrame,
+                  null,
+                  createElement("div", { "data-transcript": true }, "visible answer"),
+                ),
+            },
+          },
+        ),
       },
     ),
   );

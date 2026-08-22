@@ -119,6 +119,7 @@ const CHAT_PUBLIC_COMMENTARY_EVENT_TYPES: ReadonlySet<string> = new Set(
 );
 const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
   ...CHAT_PUBLIC_COMMENTARY_EVENT_TYPES,
+  "public_activity",
   "error",
 ]);
 const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;

@@ -132,7 +132,10 @@ function safeInteger(value: unknown, minimum = 0, maximum = Number.MAX_SAFE_INTE
   return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 }
 
+const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const REDIS_ID_PATTERN = /^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$/;
 const SAFE_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/;
+const SAFE_FILENAME_PATTERN = /^[^/\\]+$/;
 const TOOL_CATEGORIES = new Set(["skill", "mcp", "read", "write", "edit", "search", "execute"]);
 const PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   category: TOOL_CATEGORIES,
@@ -142,7 +145,7 @@ const PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   denial_code: new Set(["capability_not_authorized", "policy_denied"]),
   reason_code: new Set(["user_cancelled", "run_cancelled", "policy_cancelled", "timeout"]),
   source: new Set(["user", "system"]),
-  status: new Set(["created", "ready", "failed", "queued", "running"]),
+  status: new Set(["created", "ready", "failed"]),
   reason: new Set(["retained_history_unavailable", "stream_missing", "stream_continuity_unproven", "stream_incarnation_mismatch"]),
   recovery: new Set(["reload_durable_state"]),
   decision_code: new Set(["allowed", "capability_not_authorized", "policy_denied"]),
@@ -163,51 +166,73 @@ const EVENT_PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   "artifact.failed.failure_category": new Set(["artifact_failed", "unavailable"]),
 };
 const PAYLOAD_STRING_MAX: Record<string, number> = {
-  delta: 8192,
-  content: 262144,
-  display_name: 128,
-  input_summary: 512,
-  result_summary: 2048,
-  media_type: 128,
-  default_message: 1024,
-  detail: 2048,
-  code: 128,
+  delta: 8192, content: 262144, display_name: 128, input_summary: 512,
+  result_summary: 2048, media_type: 128, default_message: 1024, detail: 2048, code: 128,
 };
 const NON_EMPTY_PAYLOAD_STRINGS = new Set(["delta", "display_name", "media_type", "code", "default_message"]);
 const PAYLOAD_NUMBER_MAX: Record<string, number> = {
-  duration_ms: 86400000,
-  turn_count: 10000,
-  progress_percent: 100,
-  size_bytes: 1099511627776,
+  duration_ms: 86400000, turn_count: 10000, progress_percent: 100, size_bytes: 1099511627776,
 };
+
+function isValidTransportCursor(value: unknown, runId: string, incarnation: number): value is string {
+  if (typeof value !== "string") return false;
+  const prefix = `${runId}:${incarnation}:`;
+  if (!value.startsWith(prefix)) return false;
+  return REDIS_ID_PATTERN.test(value.slice(prefix.length));
+}
+
+function isSafeFilename(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 255 || !SAFE_FILENAME_PATTERN.test(value)) return false;
+  return [...value].every((character) => {
+    const code = character.charCodeAt(0);
+    return code > 0x1f && code !== 0x7f;
+  });
+}
+function isPayloadRefKey(key: string): boolean {
+  return ["operation_id", "artifact_id", "decision_id", "subagent_id", "terminal_event_id"].includes(key);
+}
+
+function isNullableSafeRef(value: unknown): boolean {
+  return value === null || (typeof value === "string" && SAFE_REF_PATTERN.test(value));
+}
+
+function isRfc3339DateTime(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 64) return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second, , zone] = match;
+  const y = Number(year), m = Number(month), d = Number(day);
+  if (m < 1 || m > 12 || d < 1 || d > new Date(Date.UTC(y, m, 0)).getUTCDate()) return false;
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return false;
+  if (zone !== "Z" && (Number(zone.slice(1, 3)) > 23 || Number(zone.slice(4, 6)) > 59)) return false;
+  return !Number.isNaN(Date.parse(value));
+}
 
 function payloadIsValid(eventType: string, payload: unknown): payload is Record<string, unknown> {
   if (!isRecord(payload) || Object.keys(payload).length > 64) return false;
   const allowed = PAYLOAD_KEYS[eventType];
   if (!allowed || !hasOnlyKeys(payload, allowed)) return false;
   for (const key of REQUIRED_PAYLOAD_KEYS[eventType] || []) {
-    if (!(key in payload)) return false;
+    if (!Object.hasOwn(payload, key)) return false;
   }
   for (const [key, value] of Object.entries(payload)) {
-    if (PAYLOAD_ENUMS[key] && (typeof value !== "string" || !(EVENT_PAYLOAD_ENUMS[`${eventType}.${key}`] || PAYLOAD_ENUMS[key]).has(value))) return false;
+    const enumValues = EVENT_PAYLOAD_ENUMS[`${eventType}.${key}`] || PAYLOAD_ENUMS[key];
+    if (enumValues && (typeof value !== "string" || !enumValues.has(value))) return false;
     if (key.endsWith("_refs")) {
       if (!Array.isArray(value) || value.length > 32 || new Set(value).size !== value.length || value.some((entry) => typeof entry !== "string" || !SAFE_REF_PATTERN.test(entry))) return false;
     }
-    if (key === "event_id" || key === "terminal_event_id" || key === "operation_id" || key === "artifact_id" || key === "decision_id" || key === "subagent_id") {
-      if (!nonEmptyString(value) || !SAFE_REF_PATTERN.test(value)) return false;
-    }
+    if (isPayloadRefKey(key) && (!nonEmptyString(value) || !SAFE_REF_PATTERN.test(value))) return false;
+    if (key === "evidence_ref" && !isNullableSafeRef(value)) return false;
+    if (key === "detail" && value === null) continue;
     const stringMax = PAYLOAD_STRING_MAX[key];
     if (stringMax !== undefined && (typeof value !== "string" || value.length > stringMax || (NON_EMPTY_PAYLOAD_STRINGS.has(key) && value.length === 0))) return false;
     const numberMax = PAYLOAD_NUMBER_MAX[key];
     if (numberMax !== undefined && !safeInteger(value, 0, numberMax)) return false;
     if (key === "hydrate_required" && value !== true) return false;
-    if ((key === "detail" || key === "evidence_ref" || key === "requested_event_id" || key === "earliest_available_event_id" || key === "latest_available_event_id" || key.endsWith("_stream_incarnation")) && value !== null && value !== undefined) {
-      if (key.endsWith("_stream_incarnation")) {
-        if (!safeInteger(value, 1)) return false;
-      } else if (typeof value !== "string" || (key !== "detail" && !SAFE_REF_PATTERN.test(value))) return false;
-    }
-    if (key === "filename" && (typeof value !== "string" || value.length === 0 || value.length > 255 || /[/\\\\\\u0000-\\u001f\\u007f]/.test(value))) return false;
-    if (key === "current_stream_incarnation" && !safeInteger(value, 1)) return false;
+    if (["requested_event_id", "earliest_available_event_id", "latest_available_event_id"].includes(key) && !isNullableSafeRef(value)) return false;
+    if (["requested_stream_incarnation"].includes(key) && value !== null && !safeInteger(value, 1)) return false;
+    if (["current_stream_incarnation"].includes(key) && !safeInteger(value, 1)) return false;
+    if (key === "filename" && !isSafeFilename(value)) return false;
   }
   return true;
 }
@@ -217,39 +242,30 @@ function eventShapeIsValid(value: Record<string, unknown>, eventType: V4EventTyp
   const expectedSchema = isControl
     ? "ai-platform.public-run-stream-control.v4"
     : "ai-platform.public-run-stream-event.v4";
-  if (!hasOnlyKeys(value, isControl ? CONTROL_KEYS : APPLICATION_KEYS)) return false;
+  const keys = isControl ? CONTROL_KEYS : APPLICATION_KEYS;
+  if (Object.keys(value).length !== keys.length || !hasOnlyKeys(value, keys)) return false;
   if (value.schema !== expectedSchema || value.event_type !== eventType) return false;
-  if (!nonEmptyString(value.event_id) || value.event_id.length > 256 || !nonEmptyString(value.run_id) || !SAFE_REF_PATTERN.test(value.run_id)) return false;
+  if (!nonEmptyString(value.event_id) || value.event_id.length > 256 || !nonEmptyString(value.run_id) || !RUN_ID_PATTERN.test(value.run_id)) return false;
   if (isControl) {
-    if (value.message_id !== null || value.seq !== null || value.trace_ref !== null) return false;
-    if (typeof value.replayable !== "boolean") return false;
+    if (value.message_id !== null || value.seq !== null || value.trace_ref !== null || typeof value.replayable !== "boolean") return false;
   } else if (
     ["message.started", "message.delta", "message.completed", "thinking.started", "thinking.completed", "model.completed", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"].includes(eventType) &&
     (!nonEmptyString(value.message_id) || !SAFE_REF_PATTERN.test(value.message_id))
   ) {
     return false;
-  } else if (
-    value.message_id !== null && (!nonEmptyString(value.message_id) || !SAFE_REF_PATTERN.test(value.message_id))
-  ) {
+  } else if (value.message_id !== null && (!nonEmptyString(value.message_id) || !SAFE_REF_PATTERN.test(value.message_id))) {
     return false;
   }
   if (!isControl && (!safeInteger(value.seq, 1) || value.replayable !== true)) return false;
   if (isControl && ((eventType === "stream.open" || eventType === "stream.end") !== value.replayable)) return false;
   if (value.trace_ref !== null && (!nonEmptyString(value.trace_ref) || value.trace_ref.length > 128 || !SAFE_REF_PATTERN.test(value.trace_ref))) return false;
   if (value.causation_event_id !== null && (!nonEmptyString(value.causation_event_id) || !SAFE_REF_PATTERN.test(value.causation_event_id))) return false;
-  if (!safeInteger(value.stream_incarnation, 1) || !nonEmptyString(value.emitted_at) || value.emitted_at.length > 64 || Number.isNaN(Date.parse(value.emitted_at))) return false;
+  if (!safeInteger(value.stream_incarnation, 1) || !isRfc3339DateTime(value.emitted_at)) return false;
   return payloadIsValid(eventType, value.payload);
 }
 
-function semanticKey(value: Record<string, unknown>, eventType: V4EventType): string {
-  const payload = value.payload as Record<string, unknown>;
-  const operationId = typeof payload.operation_id === "string" ? payload.operation_id : "";
-  const subagentId = typeof payload.subagent_id === "string" ? payload.subagent_id : "";
-  const artifactId = typeof payload.artifact_id === "string" ? payload.artifact_id : "";
-  const decisionId = typeof payload.decision_id === "string" ? payload.decision_id : "";
-  const terminalId = typeof payload.terminal_event_id === "string" ? payload.terminal_event_id : "";
-  const durableSequence = typeof value.seq === "number" ? String(value.seq) : "";
-  return [eventType, value.message_id ?? "", operationId || subagentId || artifactId || decisionId || terminalId, durableSequence].join(":");
+function semanticKey(value: Record<string, unknown>, _eventType: V4EventType): string {
+  return value.event_id as string;
 }
 
 export function adaptPublicRunStreamEventV4(
@@ -264,6 +280,7 @@ export function adaptPublicRunStreamEventV4(
   if (!eventShapeIsValid(frame.value, eventType as V4EventType)) return null;
   if (frame.eventHeader !== eventType || frame.value.run_id !== binding.runId) return null;
   const incarnation = frame.value.stream_incarnation as number;
+  if (!isValidTransportCursor(frame.transportCursor, binding.runId, incarnation)) return null;
   if (binding.streamIncarnation != null && binding.streamIncarnation !== incarnation) return null;
   if (binding.generation != null && frame.generation !== binding.generation) return null;
   return {
@@ -290,39 +307,85 @@ export interface V4LegacyDispatchEvent {
 export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMessageId: string): V4LegacyDispatchEvent | null {
   const payload = (event.event as unknown as { payload: Record<string, unknown> }).payload;
   const base = { event_id: event.eventId, run_id: event.runId, sequence: event.sequence, timestamp: event.emittedAt };
+  const messageTarget = event.messageId || fallbackMessageId;
+  const activity = (phase: string, message: string, severity: "info" | "warning" | "error" = "info") => ({
+    event: "run_event" as const,
+    data: JSON.stringify({
+      ...base,
+      event_type: "public_activity",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      stage: phase,
+      status: phase,
+      severity,
+      message,
+    }),
+  });
   switch (event.eventType) {
     case "stream.open":
       return { streamEvent: { event: "stream_open", data: JSON.stringify(base) }, messageId: fallbackMessageId };
     case "stream.heartbeat":
       return { streamEvent: { event: "heartbeat", data: JSON.stringify(base) }, messageId: fallbackMessageId };
     case "stream.end":
-      return { streamEvent: { event: "end", data: JSON.stringify({ ...base, status: "succeeded" }) }, messageId: fallbackMessageId };
+      return { streamEvent: { event: "end", data: JSON.stringify({ ...base, payload: { terminal_event_id: payload.terminal_event_id } }) }, messageId: fallbackMessageId };
     case "stream.gap":
       return null;
     case "message.started":
-      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: "", projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_delta" }) }, messageId: event.messageId || fallbackMessageId };
+      return { streamEvent: { event: "run_event", data: JSON.stringify({ ...base, event_type: "public_activity", projection_version: "ai-platform.chat-public-projection.v1", stage: "message_started", status: "running", message: "Assistant response started" }) }, messageId: messageTarget };
     case "message.delta":
-      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.delta, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_delta" }) }, messageId: event.messageId || fallbackMessageId };
+      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.delta, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_delta" }) }, messageId: messageTarget };
     case "message.completed":
-      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.content, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_final" }) }, messageId: event.messageId || fallbackMessageId };
+      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.content, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_final" }) }, messageId: messageTarget };
     case "thinking.started":
+      return { streamEvent: activity("thinking_started", "Thinking", "info"), messageId: messageTarget };
     case "thinking.completed":
-      return { streamEvent: { event: "thinking", data: JSON.stringify({ ...base, content: "", thinking_id: event.eventId }) }, messageId: event.messageId || fallbackMessageId };
+      return { streamEvent: activity("thinking_completed", "Thinking complete", "info"), messageId: messageTarget };
     case "model.completed":
-      return { streamEvent: { event: "token:usage", data: JSON.stringify({ ...base, input_tokens: 0, output_tokens: 0, duration: payload.duration_ms, turn_count: payload.turn_count, stop_category: payload.stop_category }) }, messageId: event.messageId || fallbackMessageId };
+      return { streamEvent: activity("model_completed", "Model response complete", "info"), messageId: messageTarget };
+    case "tool.started":
+      return { streamEvent: activity("tool_started", payload.display_name as string), messageId: messageTarget };
+    case "tool.completed":
+      return { streamEvent: activity("tool_completed", payload.display_name as string), messageId: messageTarget };
+    case "tool.failed":
+      return { streamEvent: activity("tool_failed", payload.display_name as string, "error"), messageId: messageTarget };
+    case "tool.denied":
+      return { streamEvent: activity("tool_denied", payload.display_name as string, "warning"), messageId: messageTarget };
+    case "subagent.started":
+      return { streamEvent: activity("subagent_started", payload.display_name as string), messageId: messageTarget };
+    case "subagent.progress":
+      return { streamEvent: activity("subagent_progress", payload.display_name as string), messageId: messageTarget };
+    case "subagent.completed":
+      return { streamEvent: activity("subagent_completed", payload.display_name as string), messageId: messageTarget };
+    case "subagent.failed":
+      return { streamEvent: activity("subagent_failed", payload.display_name as string, "error"), messageId: messageTarget };
+    case "subagent.cancelled":
+      return { streamEvent: activity("subagent_cancelled", payload.display_name as string, "warning"), messageId: messageTarget };
     case "artifact.created":
     case "artifact.ready":
     case "artifact.failed":
-      return { streamEvent: { event: "artifact_card", data: JSON.stringify({ ...base, artifact_id: payload.artifact_id, filename: payload.filename, media_type: payload.media_type, size_bytes: payload.size_bytes, status: payload.status, evidence_ref: payload.evidence_ref ?? null }) }, messageId: fallbackMessageId };
+      return { streamEvent: { event: "artifact_card", data: JSON.stringify({
+        ...base,
+        artifact_id: payload.artifact_id,
+        artifact_type: payload.media_type || "artifact",
+        label: payload.filename || payload.artifact_id,
+        content_type: payload.media_type || "application/octet-stream",
+        size_bytes: payload.size_bytes ?? 0,
+        status: payload.status,
+      }) }, messageId: fallbackMessageId };
+    case "policy.checking":
+      return { streamEvent: activity("policy_checking", payload.display_name as string), messageId: messageTarget };
+    case "policy.allowed":
+      return { streamEvent: activity("policy_allowed", payload.display_name as string), messageId: messageTarget };
+    case "policy.denied":
+      return { streamEvent: activity("policy_denied", payload.display_name as string, "warning"), messageId: messageTarget };
     case "run.succeeded":
       return { streamEvent: { event: "done", data: JSON.stringify({ ...base, status: "succeeded", hydrate_required: true }) }, messageId: fallbackMessageId };
     case "run.cancelled":
-      return { streamEvent: { event: "user:cancel", data: JSON.stringify({ ...base, status: "cancelled", hydrate_required: true }) }, messageId: fallbackMessageId };
+      return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: "run_cancelled", detail_kind: "cancelled" }) }, messageId: fallbackMessageId };
     case "run.failed":
-      return { streamEvent: { event: "error", data: JSON.stringify({ ...base, status: "failed", detail_code: payload.code, detail_kind: "failed", hydrate_required: true }) }, messageId: fallbackMessageId };
+      return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: payload.code, detail_kind: "failed" }) }, messageId: fallbackMessageId };
     case "run.cancel_requested":
-      return { streamEvent: { event: "run_event", data: JSON.stringify({ ...base, event_type: "cancel_requested", projection_version: "ai-platform.chat-public-projection.v1", message: "Cancellation requested" }) }, messageId: event.messageId || fallbackMessageId };
+      return { streamEvent: activity("cancel_requested", "Cancellation requested", "warning"), messageId: messageTarget };
     default:
-      return { streamEvent: { event: "run_event", data: JSON.stringify({ ...base, event_type: event.eventType, projection_version: "ai-platform.chat-public-projection.v1" }) }, messageId: event.messageId || fallbackMessageId };
+      return null;
   }
 }

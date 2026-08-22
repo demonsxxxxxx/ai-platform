@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import {
+  handlePublicRunStreamFrameV4,
+  type EventHandlerContext,
+} from "../../../../hooks/useAgent/eventHandlers";
+import type { StreamEventBinding } from "../../../../hooks/useAgent/eventHandlers";
 import {
   adaptPublicRunStreamEventV4,
   projectV4EventToLegacyHandler,
@@ -12,7 +14,7 @@ function frame(eventType: string, payload: Record<string, unknown>, messageId: s
   return adaptPublicRunStreamEventV4(
     {
       eventHeader: eventType,
-      transportCursor: "cursor-1",
+      transportCursor: "run-1:1:1-0",
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
         event_id: "event-1",
@@ -44,14 +46,149 @@ test("v4 handler seam delegates message and terminal events to legacy owners", (
   assert.ok(terminal);
   const projectedTerminal = projectV4EventToLegacyHandler(terminal, "message-1");
   assert.ok(projectedTerminal);
-  assert.equal(projectedTerminal.streamEvent.event, "done");
-  assert.match(projectedTerminal.streamEvent.data, /hydrate_required/);
+  const failed = frame("run.failed", {
+    terminal_event_id: "terminal-2",
+    hydrate_required: true,
+    projection_version: "ai-platform.chat-public-projection.v1",
+    code: "run_failed",
+    default_message: "Run failed",
+    detail: null,
+  });
+  assert.ok(failed);
+  const projectedFailed = projectV4EventToLegacyHandler(failed, "message-1");
+  assert.ok(projectedFailed);
+  assert.equal(projectedFailed.streamEvent.event, "final_detail");
+  assert.match(projectedFailed.streamEvent.data, /detail_kind.*failed/);
+  assert.doesNotMatch(projectedFailed.streamEvent.data, /Run failed/);
 });
 
-test("v4 handler is an additive dispatch seam, not a second reducer owner", () => {
-  const root = join(dirname(fileURLToPath(import.meta.url)), "../../../../hooks/useAgent/eventHandlers.ts");
-  const source = readFileSync(root, "utf8");
-  assert.match(source, /handlePublicRunStreamEventV4/);
-  assert.match(source, /return handleStreamEvent\(/);
-  assert.doesNotMatch(source, /publicEventReducer|historyFold/);
+test("v4 handler is executable assembly through the existing event owner", () => {
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedStreamCursorRef: { current: { sessionId: null, runId: null, eventId: null } },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } as unknown as EventHandlerContext;
+  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0 };
+  let committed = 0;
+  const accepted = handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "stream.open",
+      transportCursor: "run-1:1:1700000000000-0",
+      value: {
+        schema: "ai-platform.public-run-stream-control.v4",
+        event_id: "event-open",
+        run_id: "run-1",
+        message_id: null,
+        seq: null,
+        event_type: "stream.open",
+        stream_incarnation: 1,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-01-01T00:00:00Z",
+        payload: { design_id: "ai-platform.redis-streams-sse-event-channel.v4" },
+      },
+    },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1 },
+    messageId: "message-1",
+    ctx,
+    binding,
+    onCommitted: (semanticApplied) => { if (semanticApplied) committed += 1; },
+  });
+  assert.equal(accepted, true);
+  assert.equal(committed, 1);
+});
+
+test("v4 handler advances transport cursor for semantic duplicates without reapplying them", () => {
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null } },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } as unknown as EventHandlerContext;
+  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0 };
+  const first = {
+    eventHeader: "stream.heartbeat",
+    transportCursor: "run-1:1:1-0",
+    value: {
+      schema: "ai-platform.public-run-stream-control.v4",
+      event_id: "heartbeat-1",
+      run_id: "run-1",
+      message_id: null,
+      seq: null,
+      event_type: "stream.heartbeat",
+      stream_incarnation: 1,
+      replayable: false,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { status: "running" },
+    },
+  };
+  const second = { ...first, transportCursor: "run-1:1:2-0" };
+  let semanticCommits = 0;
+  let transportOnlyCommits = 0;
+  const onCommitted = (semanticApplied: boolean) => {
+    if (semanticApplied) semanticCommits += 1;
+    else transportOnlyCommits += 1;
+    ctx.acceptedStreamCursorRef!.current.eventId = semanticApplied
+      ? (semanticCommits === 1 ? "run-1:1:1-0" : ctx.acceptedStreamCursorRef!.current.eventId)
+      : "run-1:1:2-0";
+  };
+  assert.equal(handlePublicRunStreamFrameV4({ frame: first, adapterBinding: { runId: "run-1", streamIncarnation: 1 }, messageId: "message-1", ctx, binding, onCommitted }), true);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: second, adapterBinding: { runId: "run-1", streamIncarnation: 1 }, messageId: "message-1", ctx, binding, onCommitted }), false);
+  assert.equal(semanticCommits, 1);
+  assert.equal(transportOnlyCommits, 1);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-1:1:2-0");
+});
+test("v4 handler delegates stream gaps to the existing recovery owner", () => {
+  const frameValue = {
+    schema: "ai-platform.public-run-stream-control.v4",
+    event_id: "event-gap",
+    run_id: "run-1",
+    message_id: null,
+    seq: null,
+    event_type: "stream.gap",
+    stream_incarnation: 1,
+    replayable: false,
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-01-01T00:00:00Z",
+    payload: {
+      reason: "stream_missing",
+      requested_event_id: "0-1",
+      requested_stream_incarnation: 1,
+      earliest_available_event_id: "0-2",
+      latest_available_event_id: "0-3",
+      current_stream_incarnation: 1,
+      recovery: "reload_durable_state",
+    },
+  };
+  let gapEventId = "";
+  const accepted = handlePublicRunStreamFrameV4({
+    frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", value: frameValue },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1 },
+    messageId: "message-1",
+    ctx: {} as EventHandlerContext,
+    onGap: (event) => { gapEventId = event.eventId; },
+  });
+  assert.equal(accepted, false);
+  assert.equal(gapEventId, "event-gap");
 });

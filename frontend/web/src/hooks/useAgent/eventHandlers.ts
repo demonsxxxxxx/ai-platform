@@ -38,8 +38,11 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import {
+  adaptPublicRunStreamEventV4,
   projectV4EventToLegacyHandler,
+  type V4AdapterBinding,
   type V4PublicEvent,
+  type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
 
 /**
@@ -103,6 +106,21 @@ function presentationOwner(
         streamVersion: binding.streamVersion,
       }
     : null;
+}
+
+function compareTransportCursors(left: string, right: string): number | null {
+  const structured = comparePublicRunStreamCursors(left, right);
+  if (structured !== null) return structured;
+  const parseRedisId = (value: string): [bigint, bigint] | null => {
+    const match = /^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$/.exec(value);
+    return match ? [BigInt(match[1]), BigInt(match[2])] : null;
+  };
+  const leftId = parseRedisId(left);
+  const rightId = parseRedisId(right);
+  if (!leftId || !rightId) return null;
+  if (leftId[0] !== rightId[0]) return leftId[0] < rightId[0] ? -1 : 1;
+  if (leftId[1] === rightId[1]) return 0;
+  return leftId[1] < rightId[1] ? -1 : 1;
 }
 
 const MESSAGE_EVENTS = new Set<string>([
@@ -172,8 +190,41 @@ export function handlePublicRunStreamEventV4(
   return handleStreamEvent(
     projected.streamEvent,
     projected.messageId,
-    event.eventId,
+    event.transportCursor,
     event.emittedAt,
+    ctx,
+    binding,
+    onCommitted,
+  );
+}
+
+/** Call-ready v4 composition seam: validate, route gaps, then delegate once. */
+export function handlePublicRunStreamFrameV4({
+  frame,
+  adapterBinding,
+  messageId,
+  ctx,
+  binding,
+  onGap,
+  onCommitted,
+}: {
+  frame: V4SseFrame;
+  adapterBinding: V4AdapterBinding;
+  messageId: string;
+  ctx: EventHandlerContext;
+  binding?: StreamEventBinding;
+  onGap?: (event: V4PublicEvent) => void;
+  onCommitted?: (semanticApplied: boolean) => void;
+}): boolean {
+  const event = adaptPublicRunStreamEventV4(frame, adapterBinding);
+  if (!event) return false;
+  if (event.eventType === "stream.gap") {
+    onGap?.(event);
+    return false;
+  }
+  return handlePublicRunStreamEventV4(
+    event,
+    messageId,
     ctx,
     binding,
     onCommitted,
@@ -241,7 +292,7 @@ export function handleStreamEvent(
     acceptedCursorBeforeEffects.runId === cursorRunId &&
     acceptedCursorBeforeEffects.eventId
   ) {
-    const cursorComparison = comparePublicRunStreamCursors(
+    const cursorComparison = compareTransportCursors(
       eventId,
       acceptedCursorBeforeEffects.eventId,
     );
@@ -511,7 +562,7 @@ export function handleStreamEvent(
       acceptedCursor.runId === progressRunId &&
       acceptedCursor.eventId
     ) {
-      const cursorComparison = comparePublicRunStreamCursors(
+      const cursorComparison = compareTransportCursors(
         eventId,
         acceptedCursor.eventId,
       );
