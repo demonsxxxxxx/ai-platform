@@ -426,7 +426,161 @@
         "schema", "event_id", "tenant_scope", "run_id", "attempt_id", "message_id", "seq", "event_type",
         "stream_incarnation", "replayable", "trace_ref", "causation_event_id", "emitted_at", "projection_version", "payload", "source"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "event_type": { "enum": [
+            "message.started", "message.delta", "message.completed", "thinking.started", "thinking.completed", "model.completed",
+            "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"
+          ] } }, "required": ["event_type"] },
+          "then": { "properties": {
+            "message_id": { "$ref": "#/$defs/SafeRefV4" },
+            "seq": { "type": "integer", "minimum": 1 },
+            "replayable": { "const": true }
+          } }
+        },
+        {
+          "if": { "properties": { "event_type": { "enum": [
+            "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed"
+          ] } }, "required": ["event_type"] },
+          "then": { "properties": {
+            "seq": { "type": "integer", "minimum": 1 },
+            "replayable": { "const": true }
+          } }
+        },
+        {
+          "if": { "properties": { "event_type": { "enum": ["stream.open", "stream.heartbeat", "stream.gap", "stream.end"] } }, "required": ["event_type"] },
+          "then": { "properties": {
+            "message_id": { "const": null },
+            "seq": { "const": null },
+            "trace_ref": { "const": null }
+          } }
+        },
+        {
+          "if": { "properties": { "event_type": { "enum": ["stream.open", "stream.end"] } }, "required": ["event_type"] },
+          "then": { "properties": { "replayable": { "const": true } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "enum": ["stream.heartbeat", "stream.gap"] } }, "required": ["event_type"] },
+          "then": { "properties": { "replayable": { "const": false } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "message.started" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/MessageStartedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "message.delta" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/MessageDeltaEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "message.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/MessageCompletedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "thinking.started" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ThinkingStartedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "thinking.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ThinkingCompletedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "model.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ModelCompletedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool.started" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ToolStartedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ToolCompletedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool.failed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ToolFailedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool.denied" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ToolDeniedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "subagent.started" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/SubagentStartedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "subagent.progress" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/SubagentProgressEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "subagent.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/SubagentCompletedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "subagent.failed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/SubagentFailedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "subagent.cancelled" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/SubagentCancelledEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "artifact.created" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ArtifactCreatedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "artifact.ready" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ArtifactReadyEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "artifact.failed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ArtifactFailedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "policy.checking" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/PolicyCheckingEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "policy.allowed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/PolicyAllowedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "policy.denied" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/PolicyDeniedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "run.cancel_requested" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/RunCancelRequestedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "run.succeeded" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/RunSucceededEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "run.cancelled" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/RunCancelledEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "run.failed" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/RunFailedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "stream.open" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/StreamOpenControlV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "stream.heartbeat" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/StreamHeartbeatControlV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "stream.gap" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/StreamGapControlV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "stream.end" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/StreamEndControlV4/allOf/1/properties/payload" } } }
+        }
+      ]
     }
   }
 }

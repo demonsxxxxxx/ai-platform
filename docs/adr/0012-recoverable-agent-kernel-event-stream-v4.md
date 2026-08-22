@@ -29,6 +29,14 @@ SSE v4 uses one strict, generated protocol authority at
 library Python `TypedDict` definitions for the internal and public contracts
 and TypeScript types for public application and transport-control events.
 
+WP1 is an additive contract on this unpushed feature branch. Existing active v3
+schema, generator, generated Python module, generated TypeScript module, and
+tests remain in place for current consumers. This temporary source coexistence
+does not authorize runtime negotiation, feature-flag selection, dual
+publication, or a released v3/v4 stack. WP5 performs the release-atomic
+consumer cutover and is the only work package authorized to delete the now-
+unreferenced active v3 artifacts.
+
 Public application events use
 `ai-platform.public-run-stream-event.v4`. Each event requires a stable event
 identity, Run identity, nullable-but-present message and causation references,
@@ -84,13 +92,15 @@ platform's existing durability and authorization boundaries. Generated Python
 and TypeScript contracts cannot silently drift from the schema, and transport
 controls cannot consume application ordering. Runtime producers, persistence,
 Redis publication, reducers, and package cutover remain owned by later work
-packages and must consume this contract without introducing a permanent v3/v4
-dual stack.
+packages.
 
 The v4 hard cutover requires coordinated producer, gateway, frontend, and
-packaging changes. Local WP1 checks prove only schema, generator, and fixture
-behavior; runtime recovery, durable publication, and external acceptance
-remain outside this protocol work package.
+packaging changes. WP1 is source-only and additive; WP5 alone performs the
+authorized hard deletion of active v3 after all consumers, gateway, packaging,
+tests, and documentation are integrated. There is no runtime negotiation or
+concurrent v3/v4 publication. Local WP1 checks prove only schema, generator,
+and fixture behavior; runtime recovery, durable publication, and external
+acceptance remain outside this protocol work package.
 
 ## Rollback
 

@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-platform.invalid/schemas/public_run_stream.v3.schema.json",
+  "title": "AI Platform public Run stream v3",
+  "description": "Single source for the trusted Redis envelope and browser-visible Run stream event.",
+  "$ref": "#/$defs/InternalStreamEnvelopeV3",
+  "$defs": {
+    "EventIdentityV3": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "const": "ai-platform.public-run-stream-event.v3"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+        },
+        "stream_incarnation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "emitted_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "schema",
+        "event_id",
+        "run_id",
+        "stream_incarnation",
+        "emitted_at"
+      ]
+    },
+    "StreamOpenEventV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventIdentityV3"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "stream_open"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "design_id": {
+                  "const": "ai-platform.redis-streams-sse-event-channel.v3"
+                }
+              },
+              "required": [
+                "design_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "event_type",
+            "payload"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "AssistantTextDeltaEventV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventIdentityV3"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "assistant_text_delta"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "delta": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "delta"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "event_type",
+            "payload"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SemanticStageEventV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventIdentityV3"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "semantic_stage"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "event": {
+                  "const": "run_event"
+                },
+                "data": {
+                  "type": "object",
+                  "maxProperties": 64
+                }
+              },
+              "required": [
+                "event",
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "event_type",
+            "payload"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SemanticProgressEventV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventIdentityV3"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "semantic_progress"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "event": {
+                  "enum": [
+                    "execution_progress",
+                    "execution_step",
+                    "execution_step_completed",
+                    "execution_step_failed"
+                  ]
+                },
+                "data": {
+                  "type": "object",
+                  "maxProperties": 64
+                }
+              },
+              "required": [
+                "event",
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "event_type",
+            "payload"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "TerminalEventV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventIdentityV3"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "terminal"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "event_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "hydrate_required": {
+                  "const": true
+                },
+                "status": {
+                  "enum": [
+                    "succeeded",
+                    "failed",
+                    "cancelled"
+                  ]
+                }
+              },
+              "required": [
+                "event_id",
+                "hydrate_required",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "event_type",
+            "payload"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "EndEventV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventIdentityV3"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "end"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "terminal_event_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "required": [
+                "terminal_event_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "event_type",
+            "payload"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PublicRunStreamEventV3": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/StreamOpenEventV3"
+        },
+        {
+          "$ref": "#/$defs/AssistantTextDeltaEventV3"
+        },
+        {
+          "$ref": "#/$defs/SemanticStageEventV3"
+        },
+        {
+          "$ref": "#/$defs/SemanticProgressEventV3"
+        },
+        {
+          "$ref": "#/$defs/TerminalEventV3"
+        },
+        {
+          "$ref": "#/$defs/EndEventV3"
+        }
+      ]
+    },
+    "InternalStreamEnvelopeV3": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "const": "ai-platform.stream-event.v3"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tenant_scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "stream_incarnation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_type": {
+          "enum": [
+            "stream_open",
+            "assistant_text_delta",
+            "semantic_stage",
+            "semantic_progress",
+            "terminal",
+            "end"
+          ]
+        },
+        "emitted_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        },
+        "projection_version": {
+          "const": "public-stream-v3"
+        },
+        "payload": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      },
+      "required": [
+        "schema",
+        "event_id",
+        "tenant_scope",
+        "run_id",
+        "attempt_id",
+        "stream_incarnation",
+        "event_type",
+        "emitted_at",
+        "projection_version",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
