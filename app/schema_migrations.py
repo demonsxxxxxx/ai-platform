@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.20.1"
+TARGET_SCHEMA_VERSION = "2026.08.20.2"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -113,6 +113,13 @@ CRITICAL_TRIGGERS = (
     ),
 )
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "run_events",
+        "chk_run_events_stream_publication_state",
+        "c",
+        "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
+        "'pending'::text, 'published'::text, 'suppressed'::text])))",
+    ),
     (
         "files",
         "chk_files_lifecycle_state",

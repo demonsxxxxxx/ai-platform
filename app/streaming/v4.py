@@ -66,6 +66,7 @@ class V4Recovery:
 
     rows: tuple[Mapping[str, object], ...]
     transport_cursor: str | None = None
+    transport_cursors: tuple[str, ...] = ()
 
 
 # Callback compatibility is intentionally narrow.  A private or unknown
@@ -507,6 +508,29 @@ def _validate_internal_envelope(envelope: Mapping[str, object]) -> dict[str, obj
         "payload": payload,
         "source": source,
     }
+
+
+def _row_for_current_authority(
+    row: Mapping[str, object], *, authority: StreamAuthority
+) -> dict[str, object] | None:
+    """Copy a durable row into the current stream incarnation for recovery only."""
+
+    metadata = _metadata(row)
+    if metadata is None or metadata.get("attempt_id") != authority.attempt_id:
+        return None
+    payload_json = row.get("payload_json")
+    if not isinstance(payload_json, Mapping):
+        return None
+    rebound_metadata = dict(metadata)
+    rebound_metadata["stream_incarnation"] = authority.stream_incarnation
+    rebound_metadata["authorization_epoch"] = authority.authorization_epoch
+    rebound_payload = dict(payload_json)
+    rebound_payload[V4_METADATA_KEY] = rebound_metadata
+    rebound = dict(row)
+    rebound["payload_json"] = rebound_payload
+    return rebound
+
+
 def _metadata(row: Mapping[str, object]) -> Mapping[str, object] | None:
     payload = row.get("payload_json")
     if not isinstance(payload, Mapping):
@@ -739,7 +763,16 @@ async def list_pending_v4_rows(
         where visible_to_user = true
           and stream_publication_state = 'pending'
           and (stream_publication_next_attempt_at is null or stream_publication_next_attempt_at <= now())
-        order by stream_publication_next_attempt_at asc nulls first, created_at asc, id asc
+          and not exists (
+            select 1
+            from run_events predecessor
+            where predecessor.tenant_id = run_events.tenant_id
+              and predecessor.run_id = run_events.run_id
+              and predecessor.visible_to_user = true
+              and predecessor.stream_publication_state = 'pending'
+              and predecessor.sequence < run_events.sequence
+          )
+        order by run_id asc, sequence asc
         limit %s
         for update skip locked
         """,
@@ -935,7 +968,12 @@ async def recover_v4_rows(
         """,
         (tenant_id, run_id, after_sequence, limit),
     )
-    return V4Recovery(tuple(await result.fetchall()))
+    rows: list[Mapping[str, object]] = []
+    for row in await result.fetchall():
+        rebound = _row_for_current_authority(row, authority=authority)
+        if rebound is not None:
+            rows.append(rebound)
+    return V4Recovery(tuple(rows))
 
 
 async def recover_v4_and_resume(
@@ -959,14 +997,19 @@ async def recover_v4_and_resume(
         limit=limit,
     )
     projected: list[Mapping[str, object]] = []
-    transport_cursor: str | None = None
+    transport_cursors: list[str] = []
     for row in recovery.rows:
         internal = project_public_v4(row, authority=authority)
         if internal is None:
             continue
         transport_cursor = await bridge.append(internal)
+        transport_cursors.append(transport_cursor)
         projected.append(internal)
-    return V4Recovery(tuple(projected), transport_cursor)
+    return V4Recovery(
+        tuple(projected),
+        transport_cursors[-1] if transport_cursors else None,
+        tuple(transport_cursors),
+    )
 
 
 __all__ = [

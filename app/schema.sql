@@ -1929,7 +1929,7 @@ create table if not exists run_events (
   stream_publication_last_error text,
   created_at timestamptz not null default now(),
   constraint chk_run_events_stream_publication_state
-    check (stream_publication_state is null or stream_publication_state in ('pending', 'published', 'suppressed'))
+    check (stream_publication_state is null or (stream_publication_state in ('pending', 'published', 'suppressed')))
 );
 
 create index if not exists idx_run_events_run_created on run_events(run_id, created_at);
@@ -1960,7 +1960,7 @@ begin
   ) then
     alter table run_events
       add constraint chk_run_events_stream_publication_state
-      check (stream_publication_state is null or stream_publication_state in ('pending', 'published', 'suppressed')) not valid;
+      check (stream_publication_state is null or (stream_publication_state in ('pending', 'published', 'suppressed'))) not valid;
   end if;
 end $$;
 
