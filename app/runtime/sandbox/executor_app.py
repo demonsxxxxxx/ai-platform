@@ -1480,8 +1480,13 @@ async def _default_executor_runner(
         if capability_evidence_error["code"] or not hasattr(candidate, "to_agent_event"):
             return False
         try:
-            await emit_event(candidate.to_agent_event())
+            acknowledged = await emit_event(candidate.to_agent_event())
         except Exception:  # noqa: BLE001
+            acknowledged = False
+        if acknowledged is not True:
+            reject_capability_evidence("agent_event_callback_not_acknowledged")
+            if isinstance(emit_event, _SealableExecutorEventEmitter):
+                emit_event.seal_capability_failure()
             return False
         return True
 

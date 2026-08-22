@@ -660,6 +660,67 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
     assert published == []
     assert candidates == []
 
+
+@pytest.mark.asyncio
+async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_sdk_max_thinking_tokens=128,
+            claude_agent_sdk_effort="high",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    candidates = []
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result="safe answer",
+        )
+
+    async def reject_candidate(candidate):
+        candidates.append(candidate)
+        return False
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        query_fn=query_fn,
+        on_agent_event=reject_candidate,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="sandbox_brokered",
+        require_selected_skill_invocation=False,
+    )
+
+    assert result.error == "agent_event_callback_not_acknowledged"
+    assert result.message == ""
+    assert len(candidates) == 1
+    assert all(candidate.event_type != "model.completed" for candidate in candidates)
+
+
 @pytest.mark.parametrize(
     ("answer", "expected_error"),
     [

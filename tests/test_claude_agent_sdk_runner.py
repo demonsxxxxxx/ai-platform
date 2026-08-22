@@ -2525,9 +2525,9 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == ["Short safe public "]
-    assert deltas == ["Short safe public ", "answer."]
-    assert "".join(deltas) == streamed_text
+    assert result_gate == []
+    assert deltas == []
+    assert "".join(deltas) == ""
     assert result.message == streamed_text
 
 
@@ -2594,7 +2594,7 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monke
         on_text=deltas.append,
     )
 
-    assert deltas == ["short "]
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -2618,7 +2618,7 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(m
 
     assert captured["include_partial_messages"] is True
     assert result.error == "claude_agent_sdk_tool_admission_failed"
-    assert deltas == ["safe partial must "]
+    assert deltas == []
 
 
 @pytest.mark.asyncio

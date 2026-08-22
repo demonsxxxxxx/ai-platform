@@ -1280,13 +1280,21 @@ async def run_claude_agent_sdk(
         else None
     )
 
-    async def publish_agent_candidates(candidates: tuple[Any, ...]) -> None:
-        if agent_event_adapter is None or on_agent_event is None:
-            return
+    agent_event_callback_failed = False
+
+    async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
+        nonlocal agent_event_callback_failed
+        if agent_event_adapter is None or on_agent_event is None or agent_event_callback_failed:
+            return not agent_event_callback_failed
         for candidate in candidates:
             callback_result = on_agent_event(candidate)
             if isawaitable(callback_result):
-                await callback_result
+                callback_result = await callback_result
+            if callback_result is False:
+                agent_event_callback_failed = True
+                seal_agent_candidates("agent_event_callback_not_acknowledged")
+                return False
+        return True
 
     def seal_agent_candidates(reason: str) -> None:
         if agent_event_adapter is not None:
@@ -2061,6 +2069,8 @@ async def run_claude_agent_sdk(
             if stream_projector.disabled:
                 answer_stream_gate.fail_closed()
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
+        if terminal_error is None and agent_event_callback_failed:
+            terminal_error = "agent_event_callback_not_acknowledged"
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
         if terminal_error is None:
