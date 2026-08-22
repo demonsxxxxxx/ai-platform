@@ -22,10 +22,11 @@ was not treated as current runtime evidence.
 
 This record spans companion delivery PRs #1183 and #1184. PR #1183 owns the
 queue changes described below; PR #1184 owns public terminal presentation and
-this audit record. Until #1183 is merged, the queue sections describe its
-reviewed candidate state rather than the source tree at PR #1184's isolated
-head. PR #1184 must follow #1183, or first incorporate the exact #1183 changes,
-before this document can be treated as the current combined repository state.
+the original audit record. Issue #1168 follows from base
+`acc903c64c109edfef90e227db6c40c5129a007d`: it activates bounded terminal
+reconciliation failure and adds its fixed public code to the existing
+`app/run_projection.py` taxonomy owner. The queue sections continue to describe
+the reviewed #1183/#1184 delivery.
 
 ## Authority Map
 
@@ -83,12 +84,12 @@ The following are not legacy and were retained:
 
 ### Classification And Non-Disclosure
 
-`app/run_projection.py` is the sole ordinary-user terminal classification
-authority. It owns the public detail-code allowlist, raw-to-public aliases, and
-fixed messages. Producers may retain richer internal diagnostics, but routes,
-SSE, history, hydration, and the browser must not render raw `error_message`,
-exception text, parser output, storage paths, commands, tool or server names,
-credentials, tenant scope, or principal data.
+`app/run_projection.py` remains the sole ordinary-user terminal classification
+authority. It defines the public detail-code allowlist, raw-to-public aliases,
+and fixed messages. Producers may retain richer internal diagnostics, but
+routes, SSE, history, hydration, and the browser must not render raw
+`error_message`, exception text, parser output, storage paths, commands, tool or
+server names, credentials, tenant scope, or principal data.
 
 Known safe details pass through Chat public projection as `final_detail`.
 Unknown, malformed, kind-mismatched, or private details fail closed to the fixed
@@ -98,12 +99,41 @@ projection is preserved when a terminal status card is added.
 ### Frontend Presentation
 
 `publicTerminalPresentation.ts` is the single frontend presentation catalog. It
-contains every backend-approved public terminal detail code, the
-backend-confirmed `result_unavailable` code, and the one explicitly dormant
-`terminal_reconciliation_failed` presentation required by accepted ADR 0011.
-The latter has no current `app/` producer; permanent reconciliation-failure
-classification remains owned outside this change and is not implemented here.
-Each entry fixes:
+contains every backend-approved public terminal detail code and the
+backend-confirmed `result_unavailable` code. Issue #1168 activates the previously
+dormant `terminal_reconciliation_failed` presentation required by accepted ADR
+0011: a permanently invalid persisted reconciliation contract or a fifth
+unclassified terminal reconciliation failure now uses that fixed public code. The
+private classification remains only on the lease: unverifiable historical runtime
+handles are quarantined, while verified handles whose stop failed remain `active` or
+historically `released` with a converged `failed` reconciliation status. A dedicated
+cleanup retry claims one row per transaction, verifies and locks the claim before any
+provider side effect, and atomically persists `released` plus `finalized` after a
+successful stop. Governed OpenSandbox cleanup reuses the provider-owned remote
+metadata and signed cleanup-proof authorization boundary in
+`app/runtime/sandbox/opensandbox_policy.py`; remote keys and values must be exact
+strings rather than values coerced through display conversion. It does not restore
+sensitive remote identity labels to the persisted runtime projection. Generic expiry
+and cancellation cleanup may stop or release only leases with no terminal receipt or
+a `finalized` receipt; the release CAS repeats that fence to close
+callback-versus-cleanup races. Reconciliation may claim a historical `released` lease
+only when that durable receipt is `pending`, `retry`, or stale-`claimed`. Primary
+reconciliation also claims one receipt per transaction and retains that row lock
+through workspace recovery, worker side effects, provider stop, and terminal
+persistence, so stale reclamation cannot overlap an active owner. Worker database
+scopes reuse nested savepoints on that claim-owning connection, including with a
+single-connection pool; runtime callbacks that touch both authorities lock the exact
+attempt lease before the Run and then revalidate the Run identity. Before workspace
+preparation, collection, worker reconstruction, or primary terminal cleanup, the
+restored tenant, workspace, user, session, Run, and attempt identity must exactly
+match the claimed lease row. The dedicated failed-receipt cleanup no longer consumes
+that untrusted payload; it operates only on the claim-locked lease identity and its
+verified persisted runtime handle. Terminal reconciliation preserves independently
+authorized artifact rows and never injects a false `artifact_count = 0` into the
+failed Run result. A single active, unexpired artifact-count authority shared by
+successful, failed, and cancelled terminal projections is tracked separately by Issue
+#1188 because it requires completing the Runs persistence migration rather than
+adding logic to the controlled repository bridge. Each entry fixes:
 
 - expected detail kind;
 - localized message key and source-owned default message;
@@ -133,12 +163,19 @@ different:
 `status_unavailable` is likewise retained as a transport/status recovery notice,
 not as a replacement for a known terminal failure.
 
+Admin Runtime exposes tenant-scoped aggregate reconciliation health only: pending,
+released-pending, retry, cleanup-pending, and quarantined receipt counts; retry and
+maximum terminal attempt counts; oldest pending receipt age; and the 15-minute
+terminalization SLO breach count. Released non-finalized historical receipts remain in
+the pending age and SLO measures until reconciliation converges. It does not expose
+lease, run, runtime-handle, or private error values.
+
 ### Public Code Families
 
 The audited catalog covers:
 
 - Run outcome: failed, timeout, budget exhausted, cancelled, no displayable
-  result, and the ADR-required dormant reconciliation-failure presentation.
+  result, and the active ADR 0011 reconciliation-failure presentation.
 - Service and policy: model, execution, or dependency unavailable; capability or
   tool authorization failure; tool-evidence mismatch; required capability
   unavailable; and Skill sandbox admission failure.
@@ -180,10 +217,10 @@ would expose unclassified failures or invite raw exception rendering.
 | `eventHandlers.ts` and internal event types | Ownership/cursor fences and reducer dispatch | Queue repair owner: accepted current `stream_open`; dead `queue_update` removed. |
 | Context/file parsers and validators | Internal bounded failure producers | Searched and retained. Not public text authority. |
 | Executor, sandbox, repository, reconciler | Private operational diagnostics | Searched and retained behind public projection. |
-| `app/run_projection.py` | Public terminal taxonomy and fallback | Searched and retained unchanged as classification authority. |
+| `app/run_projection.py` | Public terminal taxonomy, fallback, and Run/Chat projection | Retained as the classification authority; Issue #1168 activates the ADR 0011 reconciliation-failure code. |
 | Run/LambChat projection routes | Live/history public projection | Searched and retained; no second classification map. |
 | Public payload and memory redaction | Non-disclosure boundary | Searched and retained unchanged. |
-| `publicTerminalPresentation.ts` | Complete frontend fixed-code catalog | Extracted as the sole presentation owner; retains the ADR 0011 reconciliation code as explicitly dormant. |
+| `publicTerminalPresentation.ts` | Complete frontend fixed-code catalog | Extracted as the sole presentation owner; the ADR 0011 reconciliation code is active for Issue #1168 terminal convergence. |
 | `eventProcessor.ts` | Live/replay/hydration reducer projection | Embedded partial map retired; complete catalog reused. |
 | `historyLoader.ts` | Historical reconstruction | Searched and retained; uses the unified processor. |
 | `MessagePartRenderer.tsx` | Visible status card | Partial hard-coded mapping retired; catalog reused. |
@@ -210,10 +247,10 @@ The executable evidence is split by boundary:
 - renderer tests prove every catalog entry produces its fixed visible title and
   detail.
 
-Exact searches after implementation must find no active `queue_update` and no
-`terminal_reconciliation_failed` producer outside its future backend owner. The
-latter may appear only in ADR 0011, the dormant frontend catalog, its locale and
-tests, and this disposition record until that owner is delivered. Generic
+Exact searches after implementation must find no active `queue_update`.
+`terminal_reconciliation_failed` may be produced only by the executor terminal
+reconciler, classified by the backend public projection, and rendered through
+the shared frontend catalog; raw reconciliation errors remain private. Generic
 status text may remain for non-terminal operational events and unknown/private
 failures; that is a deliberate safety disposition, not an incomplete cleanup.
 

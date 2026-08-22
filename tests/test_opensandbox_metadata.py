@@ -1,8 +1,10 @@
 import pytest
 
+from app.runtime.sandbox.opensandbox_policy import opensandbox_metadata_from_info
 from app.runtime.sandbox.providers.opensandbox.metadata import (
     OpenSandboxMetadataError,
     normalize_opensandbox_metadata,
+    opensandbox_metadata_matches,
 )
 
 
@@ -47,6 +49,32 @@ def test_metadata_tokens_are_deterministic_and_domain_separated():
     assert first == repeated
     assert first["ai-platform.runtime_subject"] != changed["ai-platform.runtime_subject"]
     assert first["ai-platform.runtime_subject"] != other_key["ai-platform.run_id"]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"ai-platform.owner": 1},
+        {1: "sandbox-runtime"},
+        [("ai-platform.owner", "sandbox-runtime")],
+    ],
+)
+def test_authoritative_metadata_readback_rejects_non_string_mappings(metadata):
+    assert opensandbox_metadata_from_info({"metadata": metadata}) == {}
+
+
+@pytest.mark.parametrize(
+    "observed",
+    [
+        {"ai-platform.owner": 1},
+        {1: "sandbox-runtime"},
+    ],
+)
+def test_metadata_match_rejects_non_string_remote_entries(observed):
+    assert not opensandbox_metadata_matches(
+        observed,
+        {"ai-platform.owner": "sandbox-runtime"},
+    )
 
 
 @pytest.mark.parametrize(
