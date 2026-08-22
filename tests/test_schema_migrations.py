@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.18.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.20.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -238,6 +238,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert (
         "object_deletion_outbox",
         "chk_object_deletion_outbox_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_events",
+        "chk_run_events_stream_publication_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "files",
@@ -397,7 +401,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
+        "4638ebddc00b129ebaac79f933786385c5e4839475642c44beb1b75cbd4467bf"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -406,6 +410,50 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     assert "rename column supported_file_types" not in schema
     assert "drop column supported_file_types" not in schema
     assert "legacy_supported_file_types" not in schema
+
+
+def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+    for column in (
+        "stream_publication_state text",
+        "stream_publication_attempts integer",
+        "stream_publication_next_attempt_at timestamptz",
+        "stream_publication_redis_id text",
+        "stream_publication_last_error text",
+    ):
+        assert column in schema
+    assert "create index if not exists idx_run_events_stream_publication_retry" not in schema
+    migration = next(
+        item
+        for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+        if item.name == "idx_run_events_stream_publication_retry"
+    )
+    assert migration.predicate_expression == (
+        "visible_to_user = true and stream_publication_state = 'pending'"
+    )
+    assert migration.sql.endswith(
+        "where visible_to_user = true and stream_publication_state = 'pending'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_v4_rollback_removes_only_publication_bookkeeping():
+    class FakeRollbackConnection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+            self.event_facts = [{"id": "evt4_fact", "sequence": 9}]
+
+        async def execute(self, statement: str, params: object = None) -> None:
+            self.statements.append(" ".join(statement.lower().split()))
+
+    conn = FakeRollbackConnection()
+    await schema_migrations.rollback_v4_publication_migration(conn)
+    assert conn.event_facts == [{"id": "evt4_fact", "sequence": 9}]
+    assert any("drop index if exists idx_run_events_stream_publication_retry" in item for item in conn.statements)
+    assert any("delete from schema_index_migrations" in item for item in conn.statements)
+    assert any("drop constraint if exists chk_run_events_stream_publication_state" in item for item in conn.statements)
+    assert any("drop column if exists stream_publication_state" in item for item in conn.statements)
+    assert all("delete from run_events" not in item for item in conn.statements)
 
 
 def test_sandbox_executor_async_terminal_columns_are_additive():

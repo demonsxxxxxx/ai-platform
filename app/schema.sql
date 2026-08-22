@@ -1922,7 +1922,14 @@ create table if not exists run_events (
   total_token_count integer not null default 0,
   estimated_cost_minor integer not null default 0,
   payload_json jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  stream_publication_state text,
+  stream_publication_attempts integer,
+  stream_publication_next_attempt_at timestamptz,
+  stream_publication_redis_id text,
+  stream_publication_last_error text,
+  created_at timestamptz not null default now(),
+  constraint chk_run_events_stream_publication_state
+    check (stream_publication_state is null or stream_publication_state in ('pending', 'published', 'suppressed'))
 );
 
 create index if not exists idx_run_events_run_created on run_events(run_id, created_at);
@@ -1938,6 +1945,26 @@ alter table run_events add column if not exists input_token_count integer not nu
 alter table run_events add column if not exists output_token_count integer not null default 0;
 alter table run_events add column if not exists total_token_count integer not null default 0;
 alter table run_events add column if not exists estimated_cost_minor integer not null default 0;
+alter table run_events add column if not exists stream_publication_state text;
+alter table run_events add column if not exists stream_publication_attempts integer;
+alter table run_events add column if not exists stream_publication_next_attempt_at timestamptz;
+alter table run_events add column if not exists stream_publication_redis_id text;
+alter table run_events add column if not exists stream_publication_last_error text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_run_events_stream_publication_state'
+      and conrelid = 'run_events'::regclass
+  ) then
+    alter table run_events
+      add constraint chk_run_events_stream_publication_state
+      check (stream_publication_state is null or stream_publication_state in ('pending', 'published', 'suppressed')) not valid;
+  end if;
+end $$;
+
+alter table run_events validate constraint chk_run_events_stream_publication_state;
 
 create index if not exists idx_run_events_run_sequence on run_events(tenant_id, run_id, sequence);
 

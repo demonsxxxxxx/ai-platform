@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.18.1"
+TARGET_SCHEMA_VERSION = "2026.08.20.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -60,6 +60,11 @@ CRITICAL_COLUMNS = (
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
     ("object_deletion_outbox", "reconcile_required", "bool", True),
     ("audit_logs", "payload_json", "jsonb", True),
+    ("run_events", "stream_publication_state", "text", False),
+    ("run_events", "stream_publication_attempts", "int4", False),
+    ("run_events", "stream_publication_next_attempt_at", "timestamptz", False),
+    ("run_events", "stream_publication_redis_id", "text", False),
+    ("run_events", "stream_publication_last_error", "text", False),
     ("sandbox_leases", "attempt_id", "text", False),
     ("sandbox_leases", "runtime_container_id", "text", False),
     ("sandbox_leases", "runtime_container_name", "text", False),
@@ -83,6 +88,7 @@ CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
+    ("run_events", "chk_run_events_stream_publication_state"),
     ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
@@ -185,6 +191,16 @@ class ConcurrentIndexMigration:
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
+    ConcurrentIndexMigration(
+        "idx_run_events_stream_publication_retry",
+        "create index concurrently if not exists idx_run_events_stream_publication_retry "
+        "on run_events(stream_publication_next_attempt_at asc, created_at asc, id asc) "
+        "where visible_to_user = true and stream_publication_state = 'pending'",
+        "run_events",
+        ("stream_publication_next_attempt_at", "created_at", "id"),
+        (False, False, False),
+        "visible_to_user = true and stream_publication_state = 'pending'",
+    ),
     ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
@@ -567,6 +583,29 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
     if await cleanup.fetchone() is not None:
         applied = True
     return applied
+
+
+async def rollback_v4_publication_migration(conn: Any) -> None:
+    """Remove only additive publication bookkeeping; event facts stay intact."""
+
+    await conn.execute("drop index if exists idx_run_events_stream_publication_retry")
+    await conn.execute(
+        "delete from schema_index_migrations where index_name = %s",
+        ("idx_run_events_stream_publication_retry",),
+    )
+    await conn.execute(
+        "alter table run_events drop constraint if exists chk_run_events_stream_publication_state"
+    )
+    await conn.execute(
+        """
+        alter table run_events
+          drop column if exists stream_publication_state,
+          drop column if exists stream_publication_attempts,
+          drop column if exists stream_publication_next_attempt_at,
+          drop column if exists stream_publication_redis_id,
+          drop column if exists stream_publication_last_error
+        """
+    )
 
 
 async def apply_migrations(
