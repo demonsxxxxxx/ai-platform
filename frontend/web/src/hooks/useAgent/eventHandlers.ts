@@ -297,9 +297,7 @@ export function handlePublicRunStreamEventV4(
     projected.messageId,
     event.transportCursor,
     event.emittedAt,
-    event.eventType === "stream.end" && ctx.v4TerminalFenceRef
-      ? { ...ctx, v4TerminalEventIdsRef: undefined }
-      : ctx,
+    ctx,
     binding,
     onCommitted,
   );
