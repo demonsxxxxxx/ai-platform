@@ -1912,22 +1912,25 @@ async def run_claude_agent_sdk(
             return "required_tool_completion_evidence_mismatch"
         return None
 
-    async def publish_terminal_text(value: str, *, project_agent: bool = True) -> None:
+    async def publish_terminal_text(value: str, *, project_agent: bool = True) -> bool:
         if not value:
-            return
+            return True
         if project_agent and agent_event_adapter is not None:
             for offset in range(0, len(value), 8_192):
-                await publish_agent_candidates(
+                acknowledged = await publish_agent_candidates(
                     agent_event_adapter.accept_answer_text(
                         value[offset : offset + 8_192],
                         already_gated=True,
                     )
                 )
+                if not acknowledged:
+                    return False
         if on_text is None:
-            return
+            return True
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
+        return True
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -2089,14 +2092,17 @@ async def run_claude_agent_sdk(
             terminal_error = _SDK_TOOL_ADMISSION_FAILED
         if terminal_error is None and isinstance(message, ResultMessage):
             for public_text in finished_answer.chunks:
-                await publish_terminal_text(public_text)
-            if agent_event_adapter is not None:
-                await publish_agent_candidates(
+                if not await publish_terminal_text(public_text):
+                    terminal_error = "agent_event_callback_not_acknowledged"
+                    break
+            if terminal_error is None and agent_event_adapter is not None:
+                if not await publish_agent_candidates(
                     agent_event_adapter.accept_result(
                         message,
                         final_content=finished_answer.final_text,
                     )
-                )
+                ):
+                    terminal_error = "agent_event_callback_not_acknowledged"
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         public_structured_result_text = (

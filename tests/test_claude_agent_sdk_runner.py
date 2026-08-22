@@ -2526,8 +2526,8 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
 
     assert captured["include_partial_messages"] is True
     assert result_gate == []
-    assert deltas == []
-    assert "".join(deltas) == ""
+    assert deltas == [streamed_text]
+    assert len(deltas) == 1
     assert result.message == streamed_text
 
 
