@@ -229,7 +229,7 @@ async def publish_pending_v4_events(
                 )
                 if await repositories.is_cancel_requested(
                     conn, tenant_id=tenant_id, run_id=run_id
-                ) and event_type != "run.cancel_requested" and not preterminal_row:
+                ) and event_type != "run.cancel_requested" and not is_terminal and not preterminal_row:
                     await suppress_v4_event(
                         conn, event_id=event_id, reason="cancellation_fence"
                     )

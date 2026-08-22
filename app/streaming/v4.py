@@ -487,7 +487,6 @@ def _validate_internal_envelope(envelope: Mapping[str, object]) -> dict[str, obj
         message_id = _safe_ref(message_id, name="message_id")
     elif message_id is not None:
         message_id = _safe_ref(message_id, name="message_id")
-        raise V4ProjectionError("v4_message_id_must_be_null")
     seq = envelope.get("seq")
     if event_type in _APPLICATION_EVENT_TYPES:
         seq = _positive_int(seq, name="seq")
@@ -595,7 +594,10 @@ def project_public_v4(
             if message_id != opaque_message_id(authority.tenant_id, authority.run_id):
                 return None
         elif message_id is not None:
-            return None
+            try:
+                _safe_ref(message_id, name="message_id")
+            except V4ProjectionError:
+                return None
         envelope = {
             "schema": INTERNAL_STREAM_EVENT_SCHEMA,
             "event_id": row_id,
@@ -689,7 +691,7 @@ async def append_callback_v4_rows(
             if item.message_id != expected_message_id:
                 raise V4ProjectionError("v4_callback_message_id_invalid")
         elif item.message_id is not None:
-            raise V4ProjectionError("v4_callback_message_id_invalid")
+            _safe_ref(item.message_id, name="message_id")
         event_id = _stable_event_id(
             tenant_id, run_id, attempt_id, batch_id, item.callback_index, item.batch_index
         )
@@ -1017,7 +1019,10 @@ async def recover_v4_and_resume(
             continue
         transport_cursor = await bridge.append(internal)
         transport_cursors.append(transport_cursor)
-        projected.append(internal)
+        public = project_public_envelope_v4(internal)
+        if public is None:
+            continue
+        projected.append(public)
     return V4Recovery(
         tuple(projected),
         transport_cursors[-1] if transport_cursors else None,

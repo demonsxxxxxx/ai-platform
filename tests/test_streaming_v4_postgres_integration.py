@@ -370,11 +370,32 @@ async def test_real_pending_publisher_retries_same_event_after_pg_disposition_fa
 
 
 @pytest.mark.asyncio
-async def test_real_terminal_publish_and_restart_need_no_live_execution_lease():
+@pytest.mark.parametrize(
+    ("status", "event_type", "payload"),
+    [
+        (
+            "succeeded",
+            "run.succeeded",
+            {"terminal_event_id": "evt4_terminal_restart", "hydrate_required": True},
+        ),
+        (
+            "cancelled",
+            "run.cancelled",
+            {
+                "terminal_event_id": "evt4_terminal_restart",
+                "hydrate_required": True,
+                "reason_code": "user_cancelled",
+            },
+        ),
+    ],
+)
+async def test_real_terminal_publish_and_restart_need_no_live_execution_lease(
+    status, event_type, payload
+):
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
             async with conn.transaction():
-                await conn.execute("update runs set status = 'succeeded' where id = %s", (run,))
+                await conn.execute("update runs set status = %s where id = %s", (status, run))
                 await conn.execute(
                     "update sse_stream_authorities set state = 'terminal' where tenant_id = %s and run_id = %s",
                     (tenant, run),
@@ -390,7 +411,8 @@ async def test_real_terminal_publish_and_restart_need_no_live_execution_lease():
                     attempt=attempt,
                     sequence=1,
                     event_id="evt4_terminal_restart",
-                    event_type="run.succeeded",
+                    event_type=event_type,
+                    payload=payload,
                 )
         client, key, bridge = await _redis_stream(tenant, run)
         try:
@@ -420,7 +442,7 @@ async def test_real_terminal_publish_and_restart_need_no_live_execution_lease():
             ) == 1
             rows = await client.xrange(key, min="-", max="+")
             assert len(rows) == 1
-            assert json.loads(rows[0][1]["envelope"])["event_type"] == "run.succeeded"
+            assert json.loads(rows[0][1]["envelope"])["event_type"] == event_type
         finally:
             await client.delete(key, f"{key}:state")
             await client.aclose()
@@ -465,6 +487,11 @@ async def test_recovery_route_rebinds_each_frame_cursor_and_exposes_public_only_
             assert [item["seq"] for item in recovery.rows] == [1, 2]
             assert len(recovery.transport_cursors) == 2
             assert recovery.transport_cursors[0] != recovery.transport_cursors[1]
+            for item in recovery.rows:
+                assert item["schema"] == "ai-platform.public-run-stream-event.v4"
+                assert "tenant_scope" not in item
+                assert "attempt_id" not in item
+                assert "source" not in item
             redis_rows = await client.xrange(key, min="-", max="+")
             assert [json.loads(fields["envelope"])["seq"] for _, fields in redis_rows] == [1, 2]
             for _, fields in redis_rows:

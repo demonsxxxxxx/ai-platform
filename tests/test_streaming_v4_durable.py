@@ -13,6 +13,7 @@ from app.streaming.v4 import (
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
+    recover_v4_and_resume,
     list_pending_v4_rows,
 )
 
@@ -241,6 +242,210 @@ async def test_v4_route_recovery_keeps_pg_gap_and_redis_resume_in_one_seam(monke
     assert calls[0][1]["tenant_id"] == "tenant-a"
     assert calls[0][1]["after_sequence"] == 7
     assert isinstance(calls[0][1]["bridge"], lambchat_compat.V4RedisStreamBridge)
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "status", "payload"),
+    [
+        (
+            "run.succeeded",
+            "succeeded",
+            {"terminal_event_id": "evt4_terminal", "hydrate_required": True},
+        ),
+        (
+            "run.cancelled",
+            "cancelled",
+            {
+                "terminal_event_id": "evt4_terminal",
+                "hydrate_required": True,
+                "reason_code": "user_cancelled",
+            },
+        ),
+    ],
+)
+async def test_terminal_events_bypass_cancellation_fence(
+    monkeypatch, event_type, status, payload
+):
+    from app.streaming import worker_projection
+
+    row = _row(payload, id="evt4_terminal", event_type=event_type, sequence=1)
+    published = []
+    suppressed = []
+
+    async def pending(_conn, *, limit):
+        assert limit == 1
+        return (row,)
+
+    async def identity(_conn, *, run_id):
+        return {"tenant_id": "tenant-a", "run_id": run_id, "status": status}
+
+    async def authority(_conn, *, tenant_id, run_id):
+        return replace(_authority(), state="terminal")
+
+    async def cancel_requested(*_args, **_kwargs):
+        return True
+
+    async def mark_attempt(_conn, *, event_id):
+        return None
+
+    async def mark_published(_conn, *, event_id, redis_id):
+        published.append((event_id, redis_id))
+        return True
+
+    async def suppress(_conn, *, event_id, reason):
+        suppressed.append((event_id, reason))
+        return True
+
+    class Cursor:
+        def __init__(self, value):
+            self.value = value
+
+        async def fetchone(self):
+            return self.value
+
+    class Connection:
+        async def execute(self, statement, _params):
+            if "min(sequence)" in statement:
+                return Cursor({"sequence": 1})
+            return Cursor({"id": "lease"})
+
+    class Transaction:
+        async def __aenter__(self):
+            return Connection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Bridge:
+        async def append(self, envelope):
+            return "12-0"
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(worker_projection, "list_pending_v4_rows", pending)
+    monkeypatch.setattr(worker_projection, "mark_v4_attempt", mark_attempt)
+    monkeypatch.setattr(worker_projection, "mark_v4_published", mark_published)
+    monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
+    monkeypatch.setattr(worker_projection.repositories, "get_run_identity", identity)
+    monkeypatch.setattr(worker_projection, "get_stream_authority", authority)
+    monkeypatch.setattr(worker_projection.repositories, "is_cancel_requested", cancel_requested)
+
+    result = await worker_projection.publish_pending_v4_events(
+        lambda: Transaction(), limit=1, bridge=Bridge()
+    )
+
+    assert result == 1
+    assert published == [("evt4_terminal", "12-0")]
+    assert suppressed == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_returns_public_rows_with_one_transport_cursor_per_frame():
+    rows = (
+        _row({"delta": "first"}, id="evt4_first", sequence=1),
+        _row({"delta": "second"}, id="evt4_second", sequence=2),
+    )
+
+    class Result:
+        async def fetchall(self):
+            return rows
+
+    class Connection:
+        async def execute(self, _statement, _params):
+            return Result()
+
+    class Bridge:
+        def __init__(self):
+            self.cursors = iter(("13-0", "13-1"))
+
+        async def append(self, envelope):
+            assert envelope["schema"] == "ai-platform.stream-event.v4"
+            return next(self.cursors)
+
+    recovery = await recover_v4_and_resume(
+        Connection(),
+        bridge=Bridge(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        authority=_authority(),
+        after_sequence=0,
+        limit=2,
+    )
+
+    assert [row["event_id"] for row in recovery.rows] == ["evt4_first", "evt4_second"]
+    assert recovery.transport_cursors == ("13-0", "13-1")
+    assert recovery.transport_cursor == "13-1"
+    for row in recovery.rows:
+        assert row["schema"] == "ai-platform.public-run-stream-event.v4"
+        assert "tenant_scope" not in row
+        assert "attempt_id" not in row
+        assert "projection_version" not in row
+        assert "source" not in row
+
+
+@pytest.mark.parametrize("message_id", [None, "safe-message"])
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        (
+            "artifact.created",
+            {
+                "artifact_id": "artifact",
+                "filename": "report.txt",
+                "media_type": "text/plain",
+                "size_bytes": 3,
+                "status": "created",
+            },
+        ),
+        (
+            "policy.allowed",
+            {
+                "decision_id": "decision",
+                "category": "read",
+                "display_name": "Read",
+                "decision_code": "allowed",
+            },
+        ),
+        (
+            "run.cancelled",
+            {
+                "terminal_event_id": "evt4_terminal",
+                "hydrate_required": True,
+                "reason_code": "user_cancelled",
+            },
+        ),
+    ],
+)
+def test_nullable_and_safe_nonnull_message_ids_for_nonmessage_events(
+    event_type, payload, message_id
+):
+    row = _row(payload, event_type=event_type)
+    row["payload_json"]["__stream_v4"]["message_id"] = message_id
+
+    internal = project_public_v4(row, authority=_authority())
+
+    assert internal is not None
+    assert internal["message_id"] == message_id
+
+
+def test_invalid_nonmessage_message_id_is_rejected() -> None:
+    row = _row(
+        {
+            "artifact_id": "artifact",
+            "filename": "report.txt",
+            "media_type": "text/plain",
+            "size_bytes": 3,
+            "status": "created",
+        },
+        event_type="artifact.created",
+    )
+    row["payload_json"]["__stream_v4"]["message_id"] = r"C:\\private\\secret"
+
+    assert project_public_v4(row, authority=_authority()) is None
 
 
 def _authority() -> StreamAuthority:
