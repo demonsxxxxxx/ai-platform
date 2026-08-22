@@ -2627,10 +2627,18 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     cleaned_up = asyncio.Event()
 
     class AssistantMessage:
-        pass
+        def __init__(self, *, content, model):
+            self.content = content
+            self.model = model
 
     class TextBlock:
         pass
+
+    class ToolUseBlock:
+        def __init__(self, *, id, name, input):
+            self.id = id
+            self.name = name
+            self.input = input
 
     class StreamEvent:
         pass
@@ -2648,15 +2656,20 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
             pass
 
     async def query(*, prompt, options):
-        del options
         _ = [item async for item in prompt]
+        yield AssistantMessage(
+            content=[ToolUseBlock(id="late-tool", name="Read", input={})],
+            model="model-a",
+        )
         started.set()
         try:
             await asyncio.Event().wait()
         finally:
-            cleaned_up.set()
-        if False:
-            yield ResultMessage()
+            try:
+                pre = options.hooks["PreToolUse"][0].hooks[0]
+                await pre({"tool_name": "Read", "tool_input": {}, "tool_use_id": "late-tool"}, "late-tool", {})
+            finally:
+                cleaned_up.set()
 
     monkeypatch.setitem(
         sys.modules,
@@ -2668,17 +2681,23 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
             ResultMessage=ResultMessage,
             StreamEvent=StreamEvent,
             TextBlock=TextBlock,
+            ToolUseBlock=ToolUseBlock,
             query=query,
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
+    events = []
     task = asyncio.create_task(
         run_claude_agent_sdk(
             prompt="cancel me",
             cwd=tmp_path,
             skill_id="general-chat",
             execution_policy="worker_local_legacy",
+            on_agent_event=events.append,
+            run_id="run-cancel",
+            attempt_id="attempt-cancel",
+            tool_policy_subjects=[_subject(tool_name="Read", public_tool_label="Read file")],
         )
     )
     await started.wait()
@@ -2687,3 +2706,4 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     with pytest.raises(asyncio.CancelledError):
         await task
     assert cleaned_up.is_set()
+    assert events == []

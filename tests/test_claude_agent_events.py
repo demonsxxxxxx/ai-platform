@@ -104,6 +104,20 @@ def test_unknown_sdk_tool_and_mismatched_hook_fail_closed_without_public_candida
 
 def test_task_events_are_opaque_parented_and_terminal_status_is_bounded():
     adapter = _adapter()
+    class ToolUseBlock:
+        pass
+
+    parent_block = ToolUseBlock()
+    parent_block.id = "sdk-tool-1"
+    parent_block.name = "Read"
+    parent_block.input = {}
+    adapter.accept_content_block(parent_block)
+    adapter.accept_hook(
+        "PreToolUse",
+        {"tool_name": "Read", "tool_use_id": "sdk-tool-1", "tool_input": {}},
+        tool_use_id="sdk-tool-1",
+    )
+
     class TaskStartedMessage:
         pass
 
@@ -169,7 +183,121 @@ def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields()
     malformed.event_id = None
     assert agent_event_to_executor_event(malformed)["event_type"] == "executor_private_event"
 
+    cancelled = ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="evt-cancelled",
+        event_type="run.cancelled",
+        message_id=None,
+        causation_event_id=None,
+        payload={
+            "terminal_event_id": "evt-terminal",
+            "hydrate_required": True,
+            "reason_code": "user_cancelled",
+        },
+    )
+    assert agent_event_to_executor_event(cancelled.to_agent_event())["event_type"] == "run.cancelled"
 
+
+
+
+def test_task_updated_terminal_is_idempotent_and_seals_late_progress():
+    adapter = _adapter()
+
+    class TaskStartedMessage:
+        task_id = "task-private"
+        tool_use_id = None
+
+    class TaskUpdatedMessage:
+        task_id = "task-private"
+        status = "completed"
+        patch = {}
+        uuid = "terminal-1"
+
+    class TaskProgressMessage:
+        task_id = "task-private"
+        uuid = "late-progress"
+        usage = {"progress_percent": 50}
+        last_tool_name = "Read"
+
+    assert [event.event_type for event in adapter.accept_task_message(TaskStartedMessage())] == ["subagent.started"]
+    terminal = adapter.accept_task_message(TaskUpdatedMessage())
+    assert [event.event_type for event in terminal] == ["subagent.completed"]
+    assert adapter.accept_task_message(TaskUpdatedMessage()) == ()
+    assert adapter.accept_task_message(TaskProgressMessage()) == ()
+
+
+def test_task_parent_causation_requires_an_accepted_parent_event():
+    adapter = _adapter()
+
+    class TaskStartedMessage:
+        task_id = "task-private"
+        tool_use_id = "unaccepted-tool"
+
+    event = adapter.accept_task_message(TaskStartedMessage())[0]
+    assert event.causation_event_id is None
+
+
+def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
+    delta = "d" * 8192
+    final = "f" * 262144
+    ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="evt_delta",
+        event_type="message.delta",
+        message_id="msg_1",
+        causation_event_id=None,
+        payload={"delta": delta},
+    )
+    ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="evt_final",
+        event_type="message.completed",
+        message_id="msg_1",
+        causation_event_id=None,
+        payload={"content": final},
+    )
+    with pytest.raises(ValueError):
+        ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="evt_missing",
+            event_type="message.delta",
+            message_id="msg_1",
+            causation_event_id=None,
+            payload={},
+        )
+    with pytest.raises(ValueError):
+        ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="evt_extra",
+            event_type="message.delta",
+            message_id="msg_1",
+            causation_event_id=None,
+            payload={"delta": "ok", "extra": "private"},
+        )
+    with pytest.raises(ValueError):
+        ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="evt_oversize",
+            event_type="message.delta",
+            message_id="msg_1",
+            causation_event_id=None,
+            payload={"delta": "d" * 8193},
+        )
+
+
+def test_thinking_identity_is_scoped_by_message_and_block():
+    adapter = _adapter()
+
+    class ThinkingBlock:
+        pass
+
+    block = ThinkingBlock()
+    first = adapter.accept_content_block(block, block_index=0, message_identity="message-a")
+    second = adapter.accept_content_block(block, block_index=0, message_identity="message-a")
+    third = adapter.accept_content_block(block, block_index=0, message_identity="message-b")
+    assert [event.event_type for event in first] == ["thinking.started", "thinking.completed"]
+    assert second == ()
+    assert [event.event_type for event in third] == ["thinking.started", "thinking.completed"]
 
 
 @pytest.mark.asyncio
@@ -237,6 +365,27 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         await pre({"tool_name": "Read", "tool_input": {"file_path": "answer.txt"}, "tool_use_id": "sdk-tool-1"}, "sdk-tool-1", {})
         post = options.hooks["PostToolUse"][-1].hooks[0]
         await post({"tool_name": "Read", "tool_input": {"file_path": "answer.txt"}, "tool_use_id": "sdk-tool-1"}, "sdk-tool-1", {})
+        permission_context = getattr(sdk, "ToolPermissionContext", None)
+        if permission_context is not None:
+            await options.can_use_tool("Read", {}, permission_context(tool_use_id="permission-tool"))
+        yield sdk.TaskStartedMessage(
+            subtype="started",
+            data={},
+            task_id="task-private",
+            description="delegated work",
+            uuid="task-started",
+            session_id="sdk-session",
+            tool_use_id="sdk-tool-1",
+        )
+        yield sdk.TaskUpdatedMessage(
+            subtype="update",
+            data={},
+            task_id="task-private",
+            patch={},
+            status="completed",
+            session_id="sdk-session",
+            uuid="task-completed",
+        )
         yield sdk.ResultMessage(
             subtype="success",
             duration_ms=12,
@@ -268,10 +417,13 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "message.delta",
         "tool.started",
         "tool.completed",
+        "tool.denied",
+        "subagent.started",
+        "subagent.completed",
         "message.delta",
         "message.completed",
         "model.completed",
     ]
     assert candidates[1].payload == {"delta": "safe "}
-    assert candidates[4].payload == {"delta": "answer"}
-    assert all("sdk-tool-1" not in repr(candidate.as_dict()) for candidate in candidates)
+    assert candidates[7].payload == {"delta": "answer"}
+    assert all(value not in repr(candidate.as_dict()) for candidate in candidates for value in ("sdk-tool-1", "permission-tool"))

@@ -997,6 +997,8 @@ async def run_claude_agent_sdk(
         TaskStartedMessage = getattr(sdk, "TaskStartedMessage", ())
         TaskProgressMessage = getattr(sdk, "TaskProgressMessage", ())
         TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
+        TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
+        ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
         if query_fn is None:
@@ -1561,6 +1563,13 @@ async def run_claude_agent_sdk(
             }
         )
 
+    def permission_context_tool_use_id(context: object) -> object:
+        if ToolPermissionContext and isinstance(context, ToolPermissionContext):
+            return getattr(context, "tool_use_id", None)
+        if isinstance(context, dict):
+            return context.get("tool_use_id")
+        return None
+
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
         decision = policy_for_tool(tool_name, tool_input)
         if not decision.allowed:
@@ -1569,7 +1578,7 @@ async def run_claude_agent_sdk(
             diagnostic_counters.setdefault("tool_policy_denials_detail", []).append(
                 {"tool_name": tool_name, "reason": decision.reason}
             )
-            context_tool_use_id = _context.get("tool_use_id") if isinstance(_context, dict) else None
+            context_tool_use_id = permission_context_tool_use_id(_context)
             if agent_event_adapter is not None:
                 await publish_agent_candidates(
                     agent_event_adapter.accept_policy_decision(
@@ -1921,7 +1930,7 @@ async def run_claude_agent_sdk(
         ):
             if agent_event_adapter is not None and isinstance(
                 message,
-                (TaskStartedMessage, TaskProgressMessage, TaskNotificationMessage),
+                (TaskStartedMessage, TaskProgressMessage, TaskNotificationMessage, TaskUpdatedMessage),
             ):
                 await publish_agent_candidates(agent_event_adapter.accept_task_message(message))
                 continue
@@ -1936,7 +1945,15 @@ async def run_claude_agent_sdk(
                 for block_index, block in enumerate(message.content):
                     if agent_event_adapter is not None:
                         await publish_agent_candidates(
-                            agent_event_adapter.accept_content_block(block, block_index=block_index)
+                            agent_event_adapter.accept_content_block(
+                                block,
+                                block_index=block_index,
+                                message_identity=(
+                                    getattr(message, "message_id", None)
+                                    or getattr(message, "uuid", None)
+                                    or getattr(message, "session_id", None)
+                                ),
+                            )
                         )
                     if isinstance(block, TextBlock):
                         diagnostic_counters["text_blocks"] += 1
@@ -2082,13 +2099,28 @@ async def run_claude_agent_sdk(
             capability_evidence=list(capability_evidence),
         )
 
+    consume_task = asyncio.create_task(consume())
     try:
-        return await asyncio.wait_for(consume(), timeout=timeout_seconds)
+        return await asyncio.wait_for(asyncio.shield(consume_task), timeout=timeout_seconds)
     except asyncio.CancelledError:
         seal_agent_candidates("cancelled")
+        consume_task.cancel()
+        try:
+            await consume_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
         raise
     except TimeoutError:
         seal_agent_candidates("timeout")
+        consume_task.cancel()
+        try:
+            await consume_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
         error_code = _SDK_TIMEOUT
         return ClaudeAgentSdkRunResult(
             used_sdk=True,

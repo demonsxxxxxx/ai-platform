@@ -62,6 +62,7 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "policy.denied",
     "run.cancel_requested",
     "run.succeeded",
+    "run.cancelled",
     "run.failed",
 }
 

@@ -30,6 +30,7 @@ _V4_EVENT_STAGES = {
     "policy.denied": "tool_policy",
     "run.cancel_requested": "control",
     "run.succeeded": "runtime",
+    "run.cancelled": "control",
     "run.failed": "runtime",
 }
 

@@ -8,6 +8,7 @@ and returns only validated application-event candidates.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -62,10 +63,32 @@ _PRIVATE_KEYS = frozenset(
     }
 )
 _MAX_TEXT = 262_144
+_MAX_DELTA = 8_192
 _MAX_DISPLAY = 128
+_MAX_FILENAME = 255
 _MAX_SUMMARY = 512
+_MAX_RESULT_SUMMARY = 2_048
+_MAX_MEDIA_TYPE = 128
+_MAX_CODE = 128
+_MAX_DEFAULT_MESSAGE = 1_024
+_MAX_DETAIL = 2_048
 _MAX_DURATION = 86_400_000
 _MAX_TURNS = 10_000
+_MAX_SIZE_BYTES = 1_099_511_627_776
+_MAX_REFS = 32
+_ALLOWED_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
+_ALLOWED_STOP_CATEGORIES = frozenset({"completed", "max_turns", "cancelled", "failed", "unknown"})
+_ALLOWED_FAILURE_CATEGORIES = frozenset({"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"})
+_ALLOWED_TASK_REASON_CODES = frozenset({"user_cancelled", "run_cancelled", "timeout"})
+
+
+_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
+
+
+def _assert_safe_ref(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or _SAFE_REF_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} is not a safe reference")
+    return value
 
 
 def _opaque(prefix: str, run_id: str, kind: str, identity: str) -> str:
@@ -93,6 +116,13 @@ def _safe_text(value: object, *, maximum: int) -> str | None:
 def _safe_display(value: object) -> str | None:
     text = _safe_text(value, maximum=_MAX_DISPLAY)
     return text.strip() if text and text.strip() else None
+
+
+def _safe_filename(value: object) -> str | None:
+    text = _safe_text(value, maximum=_MAX_FILENAME)
+    if text is None or any(ord(char) < 32 or ord(char) == 127 or char in "/\\\\" for char in text):
+        return None
+    return text
 
 
 def _safe_private_identity(value: object) -> str | None:
@@ -186,9 +216,9 @@ class ClaudeAgentEventCandidate:
 
 
 def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or len(payload) > 64:
         raise ValueError("event payload must be an object")
-    expected: dict[str, set[str]] = {
+    required: dict[str, set[str]] = {
         "message.started": set(),
         "message.delta": {"delta"},
         "message.completed": {"content"},
@@ -215,24 +245,100 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "run.cancelled": {"terminal_event_id", "hydrate_required", "reason_code"},
         "run.failed": {"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"},
     }
-    required = expected[event_type]
-    if set(payload) != required:
-        optional = {
-            "tool.started": {"input_summary", "evidence_refs"},
-            "tool.completed": {"result_summary", "evidence_refs", "artifact_refs"},
-            "tool.failed": {"evidence_refs"},
-            "subagent.progress": {"progress_percent"},
-            "artifact.created": {"evidence_ref"},
-            "artifact.ready": {"evidence_ref"},
-            "artifact.failed": {"filename", "media_type"},
-        }.get(event_type, set())
-        if not set(payload).issubset(required | optional):
-            raise ValueError("unknown event payload field")
+    optional = {
+        "tool.started": {"input_summary", "evidence_refs"},
+        "tool.completed": {"result_summary", "evidence_refs", "artifact_refs"},
+        "tool.failed": {"evidence_refs"},
+        "subagent.progress": {"progress_percent"},
+        "artifact.created": {"evidence_ref"},
+        "artifact.ready": {"evidence_ref"},
+        "artifact.failed": {"filename", "media_type"},
+    }
+    expected = required[event_type]
+    keys = set(payload)
+    if not expected <= keys or not keys <= expected | optional.get(event_type, set()):
+        raise ValueError("event payload fields do not match schema")
+    if any(key.lower() in _PRIVATE_KEYS for key in keys):
+        raise ValueError("private event payload field")
+
+    string_bounds = {
+        "delta": (1, _MAX_DELTA),
+        "content": (0, _MAX_TEXT),
+        "display_name": (1, _MAX_DISPLAY),
+        "input_summary": (0, _MAX_SUMMARY),
+        "result_summary": (0, _MAX_RESULT_SUMMARY),
+        "filename": (1, _MAX_FILENAME),
+        "media_type": (1, _MAX_MEDIA_TYPE),
+        "code": (1, _MAX_CODE),
+        "default_message": (1, _MAX_DEFAULT_MESSAGE),
+        "detail": (0, _MAX_DETAIL),
+    }
+    integer_bounds = {
+        "duration_ms": (0, _MAX_DURATION),
+        "turn_count": (0, _MAX_TURNS),
+        "progress_percent": (0, 100),
+        "size_bytes": (0, _MAX_SIZE_BYTES),
+    }
+    ref_fields = {"operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id", "evidence_ref"}
+    array_fields = {"evidence_refs", "artifact_refs"}
     for key, value in payload.items():
-        if key.lower() in _PRIVATE_KEYS:
-            raise ValueError("private event payload field")
-        if isinstance(value, str) and len(value.encode("utf-8")) > 2048:
-            raise ValueError("event payload string is too large")
+        if key in string_bounds:
+            if key == "detail" and value is None:
+                continue
+            minimum, maximum = string_bounds[key]
+            if not isinstance(value, str) or len(value) < minimum or len(value) > maximum:
+                raise ValueError(f"invalid {key} bound")
+            if key == "filename" and any(ord(char) < 32 or ord(char) == 127 or char in "/\\\\" for char in value):
+                raise ValueError("invalid filename")
+        elif key in integer_bounds:
+            minimum, maximum = integer_bounds[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise ValueError(f"invalid {key} bound")
+        elif key in ref_fields:
+            if key == "evidence_ref" and value is None:
+                continue
+            _assert_safe_ref(value, key)
+        elif key in array_fields:
+            if not isinstance(value, list) or len(value) > _MAX_REFS or any(not isinstance(ref, str) for ref in value):
+                raise ValueError(f"invalid {key}")
+            if len(set(value)) != len(value):
+                raise ValueError(f"invalid {key}")
+            for ref in value:
+                _assert_safe_ref(ref, key)
+        elif key == "detail":
+            if value is not None and not isinstance(value, str):
+                raise ValueError("invalid detail")
+
+    if "category" in payload and payload["category"] not in _ALLOWED_CATEGORIES:
+        raise ValueError("invalid category")
+    if "current_category" in payload and payload["current_category"] not in _ALLOWED_CATEGORIES:
+        raise ValueError("invalid current_category")
+    if "stop_category" in payload and payload["stop_category"] not in _ALLOWED_STOP_CATEGORIES:
+        raise ValueError("invalid stop_category")
+    if "failure_category" in payload:
+        allowed = {"subagent_failed"} if event_type == "subagent.failed" else {"artifact_failed", "unavailable"} if event_type == "artifact.failed" else _ALLOWED_FAILURE_CATEGORIES
+        if payload["failure_category"] not in allowed:
+            raise ValueError("invalid failure_category")
+    if "reason_code" in payload:
+        allowed = {"user_cancelled", "policy_cancelled", "timeout"} if event_type == "run.cancelled" else _ALLOWED_TASK_REASON_CODES
+        if payload["reason_code"] not in allowed:
+            raise ValueError("invalid reason_code")
+    if "denial_code" in payload and payload["denial_code"] not in {"capability_not_authorized", "policy_denied"}:
+        raise ValueError("invalid denial_code")
+    if "decision_code" in payload:
+        allowed = {"allowed"} if event_type == "policy.allowed" else {"capability_not_authorized", "policy_denied"}
+        if payload["decision_code"] not in allowed:
+            raise ValueError("invalid decision_code")
+    if "source" in payload and payload["source"] not in {"user", "system"}:
+        raise ValueError("invalid source")
+    if "status" in payload:
+        expected_status = {"artifact.created": "created", "artifact.ready": "ready", "artifact.failed": "failed"}[event_type]
+        if payload["status"] != expected_status:
+            raise ValueError("invalid status")
+    if "hydrate_required" in payload and payload["hydrate_required"] is not True:
+        raise ValueError("hydrate_required must be true")
+    if "projection_version" in payload and payload["projection_version"] != "ai-platform.chat-public-projection.v1":
+        raise ValueError("invalid projection_version")
 
 
 @dataclass
@@ -278,7 +384,9 @@ class ClaudeSdkAgentEventAdapter:
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
         self._answer_started = False
         self._answer_content = ""
-        self._thinking_indices: set[object] = set()
+        self._thinking_indices: set[tuple[object, object]] = set()
+        self._task_progress_seen: set[tuple[str, str]] = set()
+        self._accepted_event_ids: dict[str, str] = {}
         self._tool_blocks: dict[str, tuple[str, dict[str, object]]] = {}
         self._tools: dict[str, tuple[str, str, str]] = {}
         self._tool_states: dict[str, _ToolState] = {}
@@ -357,8 +465,11 @@ class ClaudeSdkAgentEventAdapter:
         if event_id in self._seen_events:
             raise KeyError("duplicate semantic event")
         self._seen_events.add(event_id)
-        causation = _opaque("evt", self.run_id, "tool.started", causation_identity) if causation_identity else None
-        return ClaudeAgentEventCandidate(
+        if causation_identity:
+            causation = self._accepted_event_ids.get(causation_identity)
+        else:
+            causation = None
+        candidate = ClaudeAgentEventCandidate(
             run_id=self.run_id,
             event_id=event_id,
             event_type=event_type,
@@ -366,6 +477,8 @@ class ClaudeSdkAgentEventAdapter:
             causation_event_id=causation,
             payload=payload,
         )
+        self._accepted_event_ids[identity] = candidate.event_id
+        return candidate
 
     def accept_answer_text(self, value: object, *, already_gated: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed or not isinstance(value, str) or not value:
@@ -395,16 +508,23 @@ class ClaudeSdkAgentEventAdapter:
         self._answer_content = content
         return (self._candidate("message.completed", {"content": content}, identity="message.completed"),)
 
-    def accept_content_block(self, block: object, *, block_index: object = None) -> tuple[ClaudeAgentEventCandidate, ...]:
+    def accept_content_block(
+        self,
+        block: object,
+        *,
+        block_index: object = None,
+        message_identity: object = None,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed:
             return ()
         name = type(block).__name__
         if name == "ThinkingBlock":
-            key = block_index if block_index is not None else id(block)
+            scope = message_identity if message_identity is not None else id(block)
+            key = (scope, block_index if block_index is not None else id(block))
             if key in self._thinking_indices:
                 return ()
             self._thinking_indices.add(key)
-            identity = f"thinking:{key!s}"
+            identity = f"thinking:{scope!s}:{key[1]!s}"
             return (
                 self._candidate("thinking.started", {}, identity=identity),
                 self._candidate("thinking.completed", {}, identity=f"{identity}:completed"),
@@ -547,43 +667,55 @@ class ClaudeSdkAgentEventAdapter:
                 return ()
             self._tasks[task_id] = _TaskState(identity=task_id, started=True, started_at=self._clock())
             parent = getattr(message, "tool_use_id", None)
+            parent_identity = f"started:{parent}" if isinstance(parent, str) else None
             return (
                 self._candidate(
                     "subagent.started",
                     {"subagent_id": public_id, "display_name": display},
                     identity=f"subagent.started:{task_id}",
-                    causation_identity=parent if isinstance(parent, str) else None,
+                    causation_identity=parent_identity,
                 ),
             )
-        if state is None or not state.started:
+        if state is None or not state.started or state.terminal:
             return ()
+
+        patch = getattr(message, "patch", None)
+        patch = patch if isinstance(patch, Mapping) else {}
+        status = getattr(message, "status", None) or patch.get("status")
+        terminal_statuses = {"completed", "failed", "killed"}
         duration = _bounded_int(round((self._clock() - state.started_at) * 1000), maximum=_MAX_DURATION)
-        if name == "TaskProgressMessage":
-            last_tool = getattr(message, "last_tool_name", None)
-            resolved = self._resolve_tool(last_tool, {}) if isinstance(last_tool, str) else None
-            category = resolved[1] if resolved else "execute"
-            usage = getattr(message, "usage", None)
-            progress = usage.get("progress_percent") if isinstance(usage, Mapping) else None
-            payload: dict[str, object] = {"subagent_id": public_id, "display_name": display, "duration_ms": duration, "current_category": category}
-            if isinstance(progress, int) and not isinstance(progress, bool):
-                payload["progress_percent"] = _bounded_int(progress, maximum=100)
-            return (self._candidate("subagent.progress", payload, identity=f"subagent.progress:{task_id}:{getattr(message, 'uuid', '')}"),)
-        if name == "TaskNotificationMessage":
-            status = getattr(message, "status", None)
+        if status in terminal_statuses or (name == "TaskNotificationMessage" and status in {"completed", "failed", "stopped"}):
             state.terminal = True
             if status == "completed":
                 event_type = "subagent.completed"
-                payload = {"subagent_id": public_id, "display_name": display, "duration_ms": duration}
-            elif status == "stopped":
+                payload: dict[str, object] = {"subagent_id": public_id, "display_name": display, "duration_ms": duration}
+            elif status in {"stopped", "killed"}:
                 event_type = "subagent.cancelled"
                 payload = {"subagent_id": public_id, "display_name": display, "duration_ms": duration, "reason_code": "run_cancelled"}
-            elif status == "failed":
+            else:
                 event_type = "subagent.failed"
                 payload = {"subagent_id": public_id, "display_name": display, "duration_ms": duration, "failure_category": "subagent_failed"}
-            else:
-                return ()
             return (self._candidate(event_type, payload, identity=f"{event_type}:{task_id}"),)
-        return ()
+
+        if name not in {"TaskProgressMessage", "TaskUpdatedMessage"}:
+            return ()
+        last_tool = getattr(message, "last_tool_name", None) or patch.get("last_tool_name")
+        resolved = self._resolve_tool(last_tool, {}) if isinstance(last_tool, str) else None
+        category = resolved[1] if resolved else patch.get("current_category", "execute")
+        if category not in _ALLOWED_CATEGORIES:
+            category = "execute"
+        usage = getattr(message, "usage", None)
+        progress = usage.get("progress_percent") if isinstance(usage, Mapping) else patch.get("progress_percent")
+        payload: dict[str, object] = {"subagent_id": public_id, "display_name": display, "duration_ms": duration, "current_category": category}
+        if isinstance(progress, int) and not isinstance(progress, bool):
+            payload["progress_percent"] = _bounded_int(progress, maximum=100)
+        token = getattr(message, "uuid", None) or hashlib.sha256(repr(sorted(payload.items())).encode("utf-8")).hexdigest()
+        progress_key = (task_id, str(token))
+        if progress_key in self._task_progress_seen:
+            return ()
+        self._task_progress_seen.add(progress_key)
+        return (self._candidate("subagent.progress", payload, identity=f"subagent.progress:{task_id}:{token}"),)
+
 
     def accept_result(self, result: object, *, final_content: object = None, sealed: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed:
@@ -615,17 +747,18 @@ class ClaudeSdkAgentEventAdapter:
         media_type = reference.get("media_type")
         size = reference.get("size_bytes")
         status = reference.get("status")
-        if not all(isinstance(value, str) and value for value in (artifact_id, filename, media_type)) or not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        if not all(isinstance(value, str) and value for value in (artifact_id, filename, media_type)) or not isinstance(size, int) or isinstance(size, bool) or not 0 <= size <= _MAX_SIZE_BYTES:
             return ()
-        safe_filename = _safe_display(filename)
-        if safe_filename is None or "/" in safe_filename or "\\" in safe_filename:
+        safe_filename = _safe_filename(filename)
+        safe_media_type = _safe_text(media_type, maximum=_MAX_MEDIA_TYPE)
+        if safe_filename is None or safe_media_type is None:
             return ()
         if status not in {"created", "ready", "failed"}:
             return ()
-        payload = {"artifact_id": _opaque("art", self.run_id, "artifact", artifact_id), "filename": safe_filename, "media_type": media_type[:128], "size_bytes": min(size, 1_099_511_627_776), "status": status}
+        payload = {"artifact_id": _opaque("art", self.run_id, "artifact", artifact_id), "filename": safe_filename, "media_type": safe_media_type, "size_bytes": size, "status": status}
         event_type = "artifact.ready" if status == "ready" else "artifact.created" if status == "created" else "artifact.failed"
         if event_type == "artifact.failed":
-            payload = {"artifact_id": payload["artifact_id"], "status": "failed", "failure_category": "artifact_failed", "filename": safe_filename, "media_type": media_type[:128]}
+            payload = {"artifact_id": payload["artifact_id"], "status": "failed", "failure_category": "artifact_failed", "filename": safe_filename, "media_type": safe_media_type}
         return (self._candidate(event_type, payload, identity=f"artifact:{artifact_id}:{status}"),)
 
 
