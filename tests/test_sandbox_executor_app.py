@@ -35,6 +35,7 @@ from app.required_tool_contract import (
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import (
+    ExecutorCallbackEvent,
     ExecutorTaskRequest,
     executor_callback_receipt_event_count,
 )
@@ -3401,7 +3402,7 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
 
     async def emit_event(event):
         emitted.append(event)
-        return not isinstance(event, AgentEvent)
+        return not isinstance(event, ExecutorCallbackEvent)
 
     async def fake_run_claude_agent_sdk(**kwargs):
         candidate = ClaudeAgentEventCandidate(
@@ -3412,7 +3413,7 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
             causation_event_id=None,
             payload={"delta": "safe"},
         )
-        assert await kwargs["on_agent_event"](candidate) is False
+        assert await kwargs["on_agent_event"]((candidate,)) is False
         return SimpleNamespace(
             used_sdk=True,
             error=None,
@@ -3453,8 +3454,9 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
     assert result["status"] == "failed"
     assert result["error_code"] == "agent_event_callback_not_acknowledged"
     assert result["message"] == ""
-    agent_events = [event for event in emitted if isinstance(event, AgentEvent)]
-    assert [event.type for event in agent_events] == ["message.delta"]
+    callback_batches = [event for event in emitted if isinstance(event, ExecutorCallbackEvent)]
+    assert len(callback_batches) == 1
+    assert [event.type for event in callback_batches[0].events] == ["message.delta"]
 
 
 def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path):

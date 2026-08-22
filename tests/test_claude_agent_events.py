@@ -545,7 +545,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         skill_id=None,
         query_fn=query_fn,
         on_text=lambda value: asyncio.sleep(0),
-        on_agent_event=lambda candidate: candidates.append(candidate),
+        on_agent_event=lambda batch: candidates.extend(batch),
         run_id="run-1187",
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
@@ -648,7 +648,7 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
         skill_id=None,
         query_fn=query_fn,
         on_text=on_text,
-        on_agent_event=candidates.append,
+        on_agent_event=lambda batch: candidates.extend(batch),
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
@@ -684,7 +684,11 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch):
             openai_api_key="",
         ),
     )
-    candidates = []
+    callback_batches = []
+
+    async def reject_batch(batch):
+        callback_batches.append(batch)
+        return False
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -699,16 +703,12 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch):
             result="safe answer",
         )
 
-    async def reject_candidate(candidate):
-        candidates.append(candidate)
-        return False
-
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
         query_fn=query_fn,
-        on_agent_event=reject_candidate,
+        on_agent_event=reject_batch,
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
@@ -717,8 +717,13 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch):
 
     assert result.error == "agent_event_callback_not_acknowledged"
     assert result.message == ""
-    assert len(candidates) == 1
-    assert all(candidate.event_type != "model.completed" for candidate in candidates)
+    assert len(callback_batches) == 1
+    assert [candidate.event_type for candidate in callback_batches[0]] == [
+        "message.started",
+        "message.delta",
+        "message.completed",
+        "model.completed",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -773,6 +778,16 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         "mcp_server_config": {"type": "http", "url": "https://private.example/mcp"},
     }
     candidates = []
+    callback_batches = []
+    published = []
+
+    async def accept_batch(batch):
+        callback_batches.append(batch)
+        candidates.extend(batch)
+        return True
+
+    async def on_text(value: str):
+        published.append(value)
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -792,7 +807,8 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         cwd=Path("tests"),
         skill_id=None,
         query_fn=query_fn,
-        on_agent_event=candidates.append,
+        on_text=on_text,
+        on_agent_event=accept_batch,
         run_id="run-1187",
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
@@ -805,9 +821,16 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         assert result.error == expected_error
         assert result.message == ""
         assert candidates == []
+        assert callback_batches == []
+        assert published == []
         return
     assert result.error is None
     assert result.message == answer
+    assert len(callback_batches) == 1
+    assert callback_batches[0][0].event_type == "message.started"
+    assert callback_batches[0][-2].event_type == "message.completed"
+    assert callback_batches[0][-1].event_type == "model.completed"
+    assert published == [answer]
     assert "".join(deltas) == answer
     assert deltas and all(len(delta) <= 8_192 for delta in deltas)
     assert candidates[-2].event_type == "message.completed"

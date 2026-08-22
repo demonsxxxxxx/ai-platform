@@ -144,6 +144,7 @@ _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REQUIRED_ANSWER_TEXT_CHARS = 262_144
+_MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -922,7 +923,7 @@ async def run_claude_agent_sdk(
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
-    on_agent_event: Callable[[Any], Awaitable[bool | None] | bool | None] | None = None,
+    on_agent_event: Callable[[tuple[Any, ...]], Awaitable[bool | None] | bool | None] | None = None,
     run_id: str | None = None,
     attempt_id: str | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
@@ -1284,16 +1285,17 @@ async def run_claude_agent_sdk(
 
     async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
         nonlocal agent_event_callback_failed
+        if not candidates:
+            return True
         if agent_event_adapter is None or on_agent_event is None or agent_event_callback_failed:
             return not agent_event_callback_failed
-        for candidate in candidates:
-            callback_result = on_agent_event(candidate)
-            if isawaitable(callback_result):
-                callback_result = await callback_result
-            if callback_result is False:
-                agent_event_callback_failed = True
-                seal_agent_candidates("agent_event_callback_not_acknowledged")
-                return False
+        callback_result = on_agent_event(candidates)
+        if isawaitable(callback_result):
+            callback_result = await callback_result
+        if callback_result is False:
+            agent_event_callback_failed = True
+            seal_agent_candidates("agent_event_callback_not_acknowledged")
+            return False
         return True
 
     def seal_agent_candidates(reason: str) -> None:
@@ -2091,18 +2093,30 @@ async def run_claude_agent_sdk(
         if terminal_error is None and answer_stream_gate.failed:
             terminal_error = _SDK_TOOL_ADMISSION_FAILED
         if terminal_error is None and isinstance(message, ResultMessage):
+            terminal_candidates: list[Any] = []
             for public_text in finished_answer.chunks:
-                if not await publish_terminal_text(public_text):
-                    terminal_error = "agent_event_callback_not_acknowledged"
-                    break
-            if terminal_error is None and agent_event_adapter is not None:
-                if not await publish_agent_candidates(
+                for offset in range(0, len(public_text), _MAX_PUBLIC_DELTA_CHARS):
+                    terminal_candidates.extend(
+                        agent_event_adapter.accept_answer_text(
+                            public_text[offset : offset + _MAX_PUBLIC_DELTA_CHARS],
+                            already_gated=True,
+                        )
+                        if agent_event_adapter is not None
+                        else ()
+                    )
+            if agent_event_adapter is not None:
+                terminal_candidates.extend(
                     agent_event_adapter.accept_result(
                         message,
                         final_content=finished_answer.final_text,
                     )
-                ):
+                )
+                if not await publish_agent_candidates(tuple(terminal_candidates)):
                     terminal_error = "agent_event_callback_not_acknowledged"
+            if terminal_error is None and on_text is not None:
+                callback_result = on_text(finished_answer.final_text)
+                if isawaitable(callback_result):
+                    await callback_result
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         public_structured_result_text = (
