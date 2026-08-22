@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.streaming.authority import RunCursor
+from app.streaming.postgres import EventReceipt
 from app.streaming.redis import StreamAuthority
 from app.streaming.v4 import (
     V4RedisStreamBridge,
@@ -13,6 +15,227 @@ from app.streaming.v4 import (
     project_public_v4,
     list_pending_v4_rows,
 )
+
+
+def _callback_conn():
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.rows = {}
+            self.statements = []
+
+        async def execute(self, statement, params):
+            self.statements.append((statement, params))
+            if statement.lstrip().lower().startswith("select id"):
+                return Cursor(self.rows.get(params[0]))
+            if statement.lstrip().lower().startswith("update run_events"):
+                return Cursor({"id": params[-1]})
+            raise AssertionError(statement)
+
+    return Connection()
+
+
+@pytest.mark.asyncio
+async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeypatch):
+    from app.streaming import v4
+
+    conn = _callback_conn()
+    append_calls = []
+
+    async def append_event(conn, *, tenant_id, run_id, event, event_id):
+        append_calls.append(event_id)
+        conn.rows[event_id] = {
+            "id": event_id,
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "sequence": 9,
+            "event_type": event.event_type,
+            "visible_to_user": True,
+            "payload_json": dict(event.payload),
+            "stream_publication_state": "pending",
+            "stream_publication_attempts": 0,
+            "stream_publication_next_attempt_at": None,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        return EventReceipt(event_id, RunCursor(run_id, 9), "2026-01-01T00:00:00Z")
+
+    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    authority = _authority()
+    item = v4.V4CallbackItem(
+        callback_index=0,
+        batch_index=1,
+        event_type="message.delta",
+        payload={"delta": "hello"},
+        message_id=opaque_message_id("tenant-a", "run-a"),
+    )
+
+    async def exercise():
+        first = await v4.append_callback_v4_rows(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            batch_id="batch-a",
+            items=(item,),
+            authority=authority,
+            execution_lease_id="lease-a",
+        )
+        second = await v4.append_callback_v4_rows(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            batch_id="batch-a",
+            items=(item,),
+            authority=authority,
+            execution_lease_id="lease-a",
+        )
+        return first, second
+
+    first, second = await exercise()
+    assert first[0]["id"] == second[0]["id"]
+    assert len(append_calls) == 1
+    assert sum("update run_events" in statement.lower() for statement, _ in conn.statements) == 1
+
+
+@pytest.mark.asyncio
+async def test_v4_publisher_retries_missing_authority_without_starving_later_rows(monkeypatch):
+    from app.streaming import worker_projection
+
+    missing = _row({"delta": "first"}, id="evt4_missing")
+    ready = _row({"delta": "second"}, id="evt4_ready")
+    ready["run_id"] = "run-b"
+    ready["payload_json"]["__stream_v4"]["attempt_id"] = "attempt-b"
+    ready["payload_json"]["__stream_v4"]["message_id"] = opaque_message_id("tenant-a", "run-b")
+    ready["payload_json"]["__stream_v4"]["execution_lease_id"] = "lease-b"
+    ready_authority = replace(_authority(), run_id="run-b", attempt_id="attempt-b")
+    missing["payload_json"]["__stream_v4"]["execution_lease_id"] = "lease-a"
+    retries = []
+    published = []
+    attempts = []
+
+    async def pending(_conn, *, limit):
+        assert limit == 2
+        return (missing, ready)
+
+    async def mark_attempt(_conn, *, event_id):
+        attempts.append(event_id)
+
+    async def retry(_conn, *, event_id, error):
+        retries.append((event_id, error))
+
+    async def suppress(*_args, **_kwargs):
+        raise AssertionError("neither row should be suppressed")
+
+    async def identity(_conn, *, run_id):
+        return {"tenant_id": "tenant-a", "run_id": run_id, "status": "running"}
+
+    async def authority(_conn, *, tenant_id, run_id):
+        return None if run_id == "run-a" else ready_authority
+
+    async def cancel_requested(*_args, **_kwargs):
+        return False
+
+    async def published_row(_conn, *, event_id, redis_id):
+        published.append((event_id, redis_id))
+        return True
+
+    class Cursor:
+        async def fetchone(self):
+            return {"id": "lease"}
+
+    class Connection:
+        async def execute(self, _statement, _params):
+            return Cursor()
+
+    class Transaction:
+        async def __aenter__(self):
+            return Connection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Bridge:
+        async def append(self, envelope):
+            published.append((envelope["event_id"], "redis-1"))
+            return "redis-1"
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(worker_projection, "list_pending_v4_rows", pending)
+    monkeypatch.setattr(worker_projection, "mark_v4_attempt", mark_attempt)
+    monkeypatch.setattr(worker_projection, "mark_v4_retry_error", retry)
+    monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
+    monkeypatch.setattr(worker_projection, "mark_v4_published", published_row)
+    monkeypatch.setattr(worker_projection.repositories, "get_run_identity", identity)
+    monkeypatch.setattr(worker_projection, "get_stream_authority", authority)
+    monkeypatch.setattr(worker_projection.repositories, "is_cancel_requested", cancel_requested)
+
+    result = await worker_projection.publish_pending_v4_events(
+        lambda: Transaction(), limit=2, bridge=Bridge()
+    )
+    assert result == 1
+    assert attempts == ["evt4_missing", "evt4_ready"]
+    assert retries == [("evt4_missing", "stream_authority_missing")]
+    assert published[-1] == ("evt4_ready", "redis-1")
+
+
+@pytest.mark.asyncio
+async def test_v4_retry_cap_suppresses_permanently_stuck_authority_rows(monkeypatch):
+    from app.streaming import worker_projection
+
+    suppressed = []
+    async def suppress(_conn, *, event_id, reason):
+        suppressed.append((event_id, reason))
+
+    async def retry(*_args, **_kwargs):
+        pytest.fail("retry cap should suppress")
+
+    monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
+    monkeypatch.setattr(worker_projection, "mark_v4_retry_error", retry)
+
+    await worker_projection._retry_or_suppress_v4_event(
+        object(),
+        event_id="evt4_stuck",
+        attempts=worker_projection.V4_MAX_PUBLICATION_ATTEMPTS,
+        reason="stream_authority_missing",
+    )
+    assert suppressed == [("evt4_stuck", "stream_authority_missing")]
+
+
+@pytest.mark.asyncio
+async def test_v4_route_recovery_keeps_pg_gap_and_redis_resume_in_one_seam(monkeypatch):
+    from app.routes import lambchat_compat
+    expected = lambchat_compat.V4Recovery(({"id": "evt4_gap"},), "12-0")
+    calls = []
+
+    async def recover(conn, **kwargs):
+        calls.append((conn, kwargs))
+        return expected
+
+    monkeypatch.setattr(lambchat_compat, "recover_v4_and_resume", recover)
+    bridge = object()
+    result = await lambchat_compat._recover_v4_attach_gap(
+        "conn",
+        bridge=bridge,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        authority=_authority(),
+        after_sequence=7,
+        limit=16,
+    )
+    assert result == expected
+    assert calls[0][0] == "conn"
+    assert calls[0][1]["tenant_id"] == "tenant-a"
+    assert calls[0][1]["after_sequence"] == 7
+    assert isinstance(calls[0][1]["bridge"], lambchat_compat.V4RedisStreamBridge)
 
 
 def _authority() -> StreamAuthority:

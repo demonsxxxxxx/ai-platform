@@ -172,6 +172,56 @@ class RedisStreamBridge:
         if self._owns_publish_client:
             await self._publish_client.aclose()
 
+    async def append_canonical(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+        event_id: str,
+        event_type: str,
+        envelope_bytes: bytes,
+        terminal_event_id: str = "",
+    ) -> str:
+        """Append a validated canonical envelope through the frozen Lua authority."""
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        live_channel = stream_live_channel(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        terminal = event_type in {"terminal", "run.succeeded", "run.cancelled", "run.failed"}
+        transport_type = "terminal" if terminal else event_type
+        ttl = SSE_STREAM_TERMINAL_TTL_MS if terminal else SSE_STREAM_ACTIVE_IDLE_TTL_MS
+        try:
+            redis_id = await self._publish_client.eval(
+                _APPEND_WITH_TTL_LUA,
+                3,
+                key,
+                f"{key}:state",
+                live_channel,
+                SSE_STREAM_MAXLEN,
+                event_id,
+                envelope_bytes.decode("utf-8"),
+                ttl,
+                transport_type,
+                _sha256(envelope_bytes),
+                terminal_event_id,
+            )
+            return redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
+        except ResponseError as exc:
+            reason = next((value for value in _SCRIPT_CONTRACT_ERRORS if value in str(exc)), None)
+            if reason is not None:
+                raise StreamContractError(reason) from exc
+            raise StreamTransportUnavailable("stream_append_unavailable") from exc
+        except Exception as exc:
+            raise StreamTransportUnavailable("stream_append_unavailable") from exc
+
     async def append(
         self, envelope: StreamEnvelope, *, terminal: bool = False
     ) -> StreamCursor:

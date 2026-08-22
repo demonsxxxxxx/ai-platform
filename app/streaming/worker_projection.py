@@ -24,10 +24,23 @@ from app.streaming.redis import (
     mark_terminal_intent_published,
     publish_terminal_intent,
 )
+from app.streaming.v4 import (
+    V4RedisStreamBridge,
+    list_pending_v4_rows,
+    mark_v4_attempt,
+    mark_v4_published,
+    mark_v4_retry_error,
+    project_public_v4,
+    rebind_v4_incarnation,
+    suppress_v4_event,
+)
 
 
 TransactionFactory = Callable[[], AbstractAsyncContextManager[Any]]
 logger = logging.getLogger(__name__)
+V4_MAX_PUBLICATION_ATTEMPTS = 8
+V4_TERMINAL_EVENT_TYPES = frozenset({"run.succeeded", "run.failed", "run.cancelled"})
+V4_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 
 async def publish_committed_run_event(
@@ -111,6 +124,176 @@ async def persist_and_publish_worker_event(
             row=committed,
         )
     return cancelled
+
+
+async def _retry_or_suppress_v4_event(
+    conn: Any,
+    *,
+    event_id: str,
+    attempts: int,
+    reason: str,
+) -> None:
+    if attempts >= V4_MAX_PUBLICATION_ATTEMPTS:
+        await suppress_v4_event(conn, event_id=event_id, reason=reason)
+    else:
+        await mark_v4_retry_error(conn, event_id=event_id, error=reason)
+
+
+async def publish_pending_v4_events(
+    transaction_factory: TransactionFactory,
+    *,
+    limit: int = 32,
+    bridge: V4RedisStreamBridge | None = None,
+) -> int:
+    """Publish a bounded pending page; duplicate XADDs retain one semantic ID."""
+
+    async with transaction_factory() as conn:
+        pending = await list_pending_v4_rows(conn, limit=limit)
+    if not pending:
+        return 0
+    publisher = bridge or V4RedisStreamBridge()
+    owns_publisher = bridge is None
+    published = 0
+    try:
+        for row in pending:
+            event_id = row.get("id")
+            tenant_id = row.get("tenant_id")
+            run_id = row.get("run_id")
+            if not all(isinstance(value, str) and value for value in (event_id, tenant_id, run_id)):
+                continue
+            event_type = str(row.get("event_type") or "")
+            attempts = int(row.get("stream_publication_attempts") or 0)
+            async with transaction_factory() as conn:
+                await mark_v4_attempt(conn, event_id=event_id)
+                current_run = await repositories.get_run_identity(conn, run_id=run_id)
+                if current_run is None:
+                    await suppress_v4_event(conn, event_id=event_id, reason="run_authority_missing")
+                    continue
+                authority = await get_stream_authority(
+                    conn, tenant_id=tenant_id, run_id=run_id
+                )
+                if authority is None:
+                    await _retry_or_suppress_v4_event(
+                        conn,
+                        event_id=event_id,
+                        attempts=attempts + 1,
+                        reason="stream_authority_missing",
+                    )
+                    continue
+                run_status = str(current_run.get("status") or "").lower()
+                if await repositories.is_cancel_requested(
+                    conn, tenant_id=tenant_id, run_id=run_id
+                ) and event_type != "run.cancel_requested":
+                    await suppress_v4_event(
+                        conn, event_id=event_id, reason="cancellation_fence"
+                    )
+                    continue
+                if event_type in V4_TERMINAL_EVENT_TYPES:
+                    expected_status = event_type.removeprefix("run.")
+                    if run_status != expected_status:
+                        await suppress_v4_event(conn, event_id=event_id, reason="terminal_status_fence")
+                        continue
+                    if authority.state != "terminal":
+                        await _retry_or_suppress_v4_event(
+                            conn,
+                            event_id=event_id,
+                            attempts=attempts + 1,
+                            reason="terminal_authority_pending",
+                        )
+                        continue
+                else:
+                    if run_status in V4_TERMINAL_STATUSES:
+                        await suppress_v4_event(conn, event_id=event_id, reason="terminal_fence")
+                        continue
+                    if event_type != "run.cancel_requested" and authority.state != "confirmed":
+                        await _retry_or_suppress_v4_event(
+                            conn,
+                            event_id=event_id,
+                            attempts=attempts + 1,
+                            reason="stream_authority_not_confirmed",
+                        )
+                        continue
+                    if event_type == "run.cancel_requested" and authority.state not in {"confirmed", "degraded", "terminal"}:
+                        await _retry_or_suppress_v4_event(
+                            conn,
+                            event_id=event_id,
+                            attempts=attempts + 1,
+                            reason="cancel_authority_pending",
+                        )
+                        continue
+                if authority.revocation_state != "active":
+                    await suppress_v4_event(conn, event_id=event_id, reason="revocation_fence")
+                    continue
+                payload_json = row.get("payload_json")
+                metadata = payload_json.get("__stream_v4") if isinstance(payload_json, Mapping) else None
+                if not isinstance(metadata, Mapping):
+                    await suppress_v4_event(conn, event_id=event_id, reason="metadata_invalid")
+                    continue
+                if metadata.get("attempt_id") != authority.attempt_id:
+                    await suppress_v4_event(conn, event_id=event_id, reason="attempt_fence")
+                    continue
+                if metadata.get("authorization_epoch") != authority.authorization_epoch:
+                    await suppress_v4_event(conn, event_id=event_id, reason="authorization_fence")
+                    continue
+                execution_lease_id = metadata.get("execution_lease_id")
+                if not isinstance(execution_lease_id, str) or not execution_lease_id:
+                    await suppress_v4_event(conn, event_id=event_id, reason="lease_fence")
+                    continue
+                lease_cursor = await conn.execute(
+                    """
+                    select id from sandbox_leases
+                    where id = %s and tenant_id = %s and run_id = %s
+                      and attempt_id = %s and status = 'active'
+                      and (expires_at is null or expires_at > now())
+                    """,
+                    (execution_lease_id, tenant_id, run_id, authority.attempt_id),
+                )
+                if await lease_cursor.fetchone() is None:
+                    await suppress_v4_event(conn, event_id=event_id, reason="lease_fence")
+                    continue
+                if metadata.get("stream_incarnation") != authority.stream_incarnation:
+                    await rebind_v4_incarnation(
+                        conn,
+                        event_id=event_id,
+                        stream_incarnation=authority.stream_incarnation,
+                        authorization_epoch=authority.authorization_epoch,
+                    )
+                    row = dict(row)
+                    payload = dict(row.get("payload_json", {}))
+                    metadata = dict(payload.get("__stream_v4", {}))
+                    metadata["stream_incarnation"] = authority.stream_incarnation
+                    metadata["authorization_epoch"] = authority.authorization_epoch
+                    payload["__stream_v4"] = metadata
+                    row["payload_json"] = payload
+            envelope = project_public_v4(row, authority=authority)
+            if envelope is None:
+                async with transaction_factory() as conn:
+                    await suppress_v4_event(conn, event_id=event_id, reason="projection_rejected")
+                continue
+            try:
+                redis_id = await publisher.append(envelope)
+            except StreamContractError as exc:
+                async with transaction_factory() as conn:
+                    await suppress_v4_event(conn, event_id=event_id, reason=str(exc)[:120])
+                continue
+            except StreamTransportUnavailable as exc:
+                async with transaction_factory() as conn:
+                    await _retry_or_suppress_v4_event(
+                        conn,
+                        event_id=event_id,
+                        attempts=attempts + 1,
+                        reason=type(exc).__name__,
+                    )
+                continue
+            async with transaction_factory() as conn:
+                if await mark_v4_published(
+                    conn, event_id=event_id, redis_id=redis_id
+                ):
+                    published += 1
+    finally:
+        if owns_publisher:
+            await publisher.aclose()
+    return published
 
 
 async def persist_worker_failure_event(
