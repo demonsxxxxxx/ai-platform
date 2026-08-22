@@ -1293,9 +1293,14 @@ async def run_claude_agent_sdk(
             callback_result = on_agent_event(candidates)
             if isawaitable(callback_result):
                 callback_result = await callback_result
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling() > 0:
+                raise
+            callback_result = False
         except Exception:  # noqa: BLE001
             callback_result = False
-        if callback_result is False:
+        if callback_result is not True:
             agent_event_callback_failed = True
             seal_agent_candidates("agent_event_callback_not_acknowledged")
             return False

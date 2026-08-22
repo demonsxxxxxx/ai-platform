@@ -545,7 +545,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         skill_id=None,
         query_fn=query_fn,
         on_text=lambda value: asyncio.sleep(0),
-        on_agent_event=lambda batch: candidates.extend(batch),
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
@@ -648,7 +648,7 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
         skill_id=None,
         query_fn=query_fn,
         on_text=on_text,
-        on_agent_event=lambda batch: candidates.extend(batch),
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
@@ -662,7 +662,7 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("callback_failure", ["false", "exception"])
+@pytest.mark.parametrize("callback_failure", ["false", "none", "cancelled", "exception"])
 async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, callback_failure):
     import claude_agent_sdk as sdk
 
@@ -691,6 +691,10 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
         callback_batches.append(batch)
         if callback_failure == "exception":
             raise RuntimeError("callback transport failed")
+        if callback_failure == "cancelled":
+            raise asyncio.CancelledError
+        if callback_failure == "none":
+            return None
         return False
 
     async def query_fn(*, prompt, options):
@@ -727,6 +731,70 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
         "message.completed",
         "model.completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_sdk_max_thinking_tokens=128,
+            claude_agent_sdk_effort="high",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    callback_started = asyncio.Event()
+    callback_never_releases = asyncio.Event()
+
+    async def await_ack(batch):
+        del batch
+        callback_started.set()
+        await callback_never_releases.wait()
+        return True
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result="safe answer",
+        )
+
+    task = asyncio.create_task(
+        run_claude_agent_sdk(
+            prompt="answer",
+            cwd=Path("tests"),
+            skill_id=None,
+            query_fn=query_fn,
+            on_agent_event=await_ack,
+            run_id="run-1187",
+            attempt_id="attempt-1",
+            execution_policy="sandbox_brokered",
+            require_selected_skill_invocation=False,
+        )
+    )
+    await asyncio.wait_for(callback_started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.parametrize(

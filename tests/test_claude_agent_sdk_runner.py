@@ -2694,7 +2694,7 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
             cwd=tmp_path,
             skill_id="general-chat",
             execution_policy="worker_local_legacy",
-            on_agent_event=lambda batch: events.extend(batch),
+            on_agent_event=lambda batch: events.extend(batch) or True,
             run_id="run-cancel",
             attempt_id="attempt-cancel",
             tool_policy_subjects=[_subject(tool_name="Read", public_tool_label="Read file")],
