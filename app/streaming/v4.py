@@ -116,6 +116,18 @@ _REQUIRED_PAYLOAD_KEYS: dict[str, frozenset[str]] = {
     "run.cancelled": frozenset({"terminal_event_id", "hydrate_required", "reason_code"}),
     "run.failed": frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"}),
 }
+_EVENT_FIELD_VALUES: dict[tuple[str, str], frozenset[object]] = {
+    ("tool.failed", "failure_category"): frozenset(
+        {"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"}
+    ),
+    ("tool.denied", "denial_code"): frozenset({"capability_not_authorized", "policy_denied"}),
+    ("subagent.failed", "failure_category"): frozenset({"subagent_failed"}),
+    ("subagent.cancelled", "reason_code"): frozenset({"user_cancelled", "run_cancelled", "timeout"}),
+    ("artifact.failed", "failure_category"): frozenset({"artifact_failed", "unavailable"}),
+    ("policy.allowed", "decision_code"): frozenset({"allowed"}),
+    ("policy.denied", "decision_code"): frozenset({"capability_not_authorized", "policy_denied"}),
+    ("run.cancelled", "reason_code"): frozenset({"user_cancelled", "policy_cancelled", "timeout"}),
+}
 
 
 def _nonempty(value: object, name: str) -> str:
@@ -401,21 +413,22 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             if value not in {"completed", "max_turns", "cancelled", "failed", "unknown"}:
                 raise V4ProjectionError("v4_stop_category_invalid")
         elif key == "failure_category":
-            allowed_failure = {
-                "invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed",
-                "subagent_failed", "artifact_failed",
-            }
+            allowed_failure = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
             if value not in allowed_failure:
                 raise V4ProjectionError("v4_failure_category_invalid")
         elif key == "denial_code":
-            if value not in {"capability_not_authorized", "policy_denied"}:
+            allowed_denials = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
+            if value not in allowed_denials:
                 raise V4ProjectionError("v4_denial_code_invalid")
         elif key == "reason_code":
-            if value not in {"user_cancelled", "run_cancelled", "timeout", "policy_cancelled"}:
+            allowed_reasons = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
+            if value not in allowed_reasons:
                 raise V4ProjectionError("v4_reason_code_invalid")
         elif key == "decision_code":
-            if value not in {"allowed", "capability_not_authorized", "policy_denied"}:
+            allowed_decisions = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
+            if value not in allowed_decisions:
                 raise V4ProjectionError("v4_decision_code_invalid")
+
         elif key == "status":
             expected_status = {
                 "artifact.created": "created", "artifact.ready": "ready", "artifact.failed": "failed",

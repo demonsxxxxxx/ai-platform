@@ -14,7 +14,8 @@ from redis.asyncio import Redis
 
 from app import schema_migrations
 from app.routes.lambchat_compat import _recover_v4_attach_gap
-from app.streaming.redis import StreamAuthority
+from app.streaming.api import stream_key
+from app.streaming.redis import RedisStreamBridge, StreamAuthority
 from app.streaming.v4 import (
     V4ProjectionError,
     V4RedisStreamBridge,
@@ -582,3 +583,14 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 assert (await index_after.fetchone())["name"] is None
                 fact = await conn.execute("select id, sequence from run_events where id = 'evt4_migration_fact'")
                 assert await fact.fetchone() == {"id": "evt4_migration_fact", "sequence": 1}
+        await schema_migrations.apply_migrations(
+            transaction_factory=lambda: _connection_factory(dsn, schema_name),
+            index_connection_factory=lambda: _index_connection(dsn, schema_name),
+        )
+        async with _connection_factory(dsn, schema_name) as conn:
+            status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True
+            columns = await conn.execute(
+                "select column_name from information_schema.columns where table_schema = current_schema() and table_name = 'run_events' and column_name = 'stream_publication_state'"
+            )
+            assert await columns.fetchone() == {"column_name": "stream_publication_state"}

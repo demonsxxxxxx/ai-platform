@@ -601,6 +601,10 @@ async def rollback_v4_publication_migration(conn: Any) -> None:
         ("idx_run_events_stream_publication_retry",),
     )
     await conn.execute(
+        "delete from schema_migrations where version = %s",
+        (TARGET_SCHEMA_VERSION,),
+    )
+    await conn.execute(
         "alter table run_events drop constraint if exists chk_run_events_stream_publication_state"
     )
     await conn.execute(

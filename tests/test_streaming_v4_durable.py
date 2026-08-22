@@ -120,9 +120,11 @@ async def test_v4_publisher_retries_missing_authority_without_starving_later_row
     published = []
     attempts = []
 
+    remaining = [missing, ready]
+
     async def pending(_conn, *, limit):
-        assert limit == 2
-        return (missing, ready)
+        assert limit == 1
+        return (remaining.pop(0),) if remaining else ()
 
     async def mark_attempt(_conn, *, event_id):
         attempts.append(event_id)
@@ -188,15 +190,17 @@ async def test_v4_publisher_retries_missing_authority_without_starving_later_row
 
 
 @pytest.mark.asyncio
-async def test_v4_retry_cap_suppresses_permanently_stuck_authority_rows(monkeypatch):
+async def test_v4_retry_keeps_permanently_stuck_authority_rows_pending(monkeypatch):
     from app.streaming import worker_projection
 
+    retries = []
     suppressed = []
+
     async def suppress(_conn, *, event_id, reason):
         suppressed.append((event_id, reason))
 
-    async def retry(*_args, **_kwargs):
-        pytest.fail("retry cap should suppress")
+    async def retry(_conn, *, event_id, error):
+        retries.append((event_id, error))
 
     monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
     monkeypatch.setattr(worker_projection, "mark_v4_retry_error", retry)
@@ -207,7 +211,8 @@ async def test_v4_retry_cap_suppresses_permanently_stuck_authority_rows(monkeypa
         attempts=worker_projection.V4_MAX_PUBLICATION_ATTEMPTS,
         reason="stream_authority_missing",
     )
-    assert suppressed == [("evt4_stuck", "stream_authority_missing")]
+    assert retries == [("evt4_stuck", "stream_authority_missing")]
+    assert suppressed == []
 
 
 @pytest.mark.asyncio
@@ -336,9 +341,22 @@ async def test_v4_pending_query_is_exact_visible_due_ordered_skip_locked() -> No
     assert "visible_to_user = true" in normalized
     assert "stream_publication_state = 'pending'" in normalized
     assert "stream_publication_next_attempt_at <= now()" in normalized
-    assert "order by stream_publication_next_attempt_at asc nulls first, created_at asc, id asc" in normalized
+    assert "order by run_id asc, sequence asc limit %s" in normalized
+    assert "not exists" in normalized
     assert "limit %s for update skip locked" in normalized
     assert conn.params == (3,)
+
+
+def test_v4_projection_rejects_event_specific_code_combinations() -> None:
+    invalid = (
+        ("tool.failed", {"operation_id": "op", "category": "read", "display_name": "Read", "duration_ms": 1, "failure_category": "subagent_failed"}),
+        ("policy.allowed", {"decision_id": "decision", "category": "read", "display_name": "Read", "decision_code": "policy_denied"}),
+        ("subagent.cancelled", {"subagent_id": "subagent", "display_name": "Worker", "duration_ms": 1, "reason_code": "policy_cancelled"}),
+    )
+    for event_type, payload in invalid:
+        row = _row(payload, event_type=event_type)
+        row["payload_json"]["__stream_v4"]["message_id"] = opaque_message_id("tenant-a", "run-a")
+        assert project_public_v4(row, authority=_authority()) is None
 
 
 def test_v4_projection_rejects_authority_mismatch() -> None:

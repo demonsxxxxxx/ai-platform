@@ -189,7 +189,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.20.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.20.2"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -287,6 +287,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "run_events",
+            "chk_run_events_stream_publication_state",
+            "c",
+            "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
+            "'pending'::text, 'published'::text, 'suppressed'::text])))",
+        ),
         (
             "files",
             "chk_files_lifecycle_state",
@@ -401,7 +408,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "4638ebddc00b129ebaac79f933786385c5e4839475642c44beb1b75cbd4467bf"
+        "f1c67e18269c803de3c046925d97153d70ee4b2c55509d9367640d626f0bd38d"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -451,6 +458,7 @@ async def test_v4_rollback_removes_only_publication_bookkeeping():
     assert conn.event_facts == [{"id": "evt4_fact", "sequence": 9}]
     assert any("drop index if exists idx_run_events_stream_publication_retry" in item for item in conn.statements)
     assert any("delete from schema_index_migrations" in item for item in conn.statements)
+    assert any("delete from schema_migrations" in item for item in conn.statements)
     assert any("drop constraint if exists chk_run_events_stream_publication_state" in item for item in conn.statements)
     assert any("drop column if exists stream_publication_state" in item for item in conn.statements)
     assert all("delete from run_events" not in item for item in conn.statements)
