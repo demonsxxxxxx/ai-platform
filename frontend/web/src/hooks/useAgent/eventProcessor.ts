@@ -635,6 +635,11 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
     public_operation_id: operationId,
     public_category: category,
+    duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+    evidence_refs: Array.isArray(data.evidence_refs) ? data.evidence_refs : undefined,
+    artifact_refs: Array.isArray(data.artifact_refs) ? data.artifact_refs : undefined,
+    event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    causation_event_id: data.causation_event_id ?? null,
   };
 }
 
@@ -671,6 +676,11 @@ function createPublicSubagentPart(data: EventData, depth: number): Extract<Messa
     error: status === "failed" && typeof data.failure_category === "string" ? data.failure_category : undefined,
     parent_agent_id: typeof data.parent_id === "string" ? data.parent_id : undefined,
     public_operation_id: agentId,
+    duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+    progress_percent: typeof data.progress_percent === "number" ? data.progress_percent : undefined,
+    current_category: typeof data.current_category === "string" ? data.current_category : undefined,
+    event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    causation_event_id: data.causation_event_id ?? null,
   };
 }
 

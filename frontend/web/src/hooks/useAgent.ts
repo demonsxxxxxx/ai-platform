@@ -79,6 +79,7 @@ import {
   type AcceptedRunEventSequence,
   type AcceptedStreamCursor,
   type EventHandlerContext,
+  type V4TerminalFence,
 } from "./useAgent/eventHandlers";
 import {
   connectToSSE,
@@ -719,6 +720,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   });
 
   const v4TerminalEventIdsRef = useRef<Set<string>>(new Set());
+  const v4TerminalFenceRef = useRef<V4TerminalFence | null>(null);
 
   // Track last event timestamp from history
   const lastHistoryTimestampRef = useRef<Date | null>(null);
@@ -926,6 +928,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       sessionAgentAuthorityRef.current = null;
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
+      v4TerminalFenceRef.current = null;
+      v4TerminalEventIdsRef.current.clear();
       clearReconcileOwners();
       clearReconnectTimeout(reconnectTimeoutRef);
       if (abortControllerRef.current) {
@@ -991,6 +995,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       currentRunIdRef.current = null;
       clearReconcileOwners();
       streamVersionRef.current += 1;
+      v4TerminalFenceRef.current = null;
+      v4TerminalEventIdsRef.current.clear();
       clearReconnectTimeout(reconnectTimeoutRef);
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -1174,6 +1180,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       targetRunId: string,
       status: TerminalRunStatus,
       fallbackMessageId: string,
+      onAccepted?: () => void,
     ): Promise<void> => {
       const streamVersion = streamVersionRef.current;
       const isCurrentTerminalHydration = () =>
@@ -1249,6 +1256,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             status,
             hydratedAssistant?.id || fallbackMessageId,
           );
+          onAccepted?.();
         } catch {
           if (isCurrentTerminalHydration()) {
             finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
@@ -1280,6 +1288,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       acceptedRunEventSequenceRef,
       acceptedStreamCursorRef,
       v4TerminalEventIdsRef,
+      v4TerminalFenceRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
       streamVersionRef,
@@ -1292,10 +1301,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // A terminal SSE frame proves only the run state. Rehydrate the exact
       // run before collapsing its process so late persisted steps cannot be
       // hidden behind an older running presentation.
-      onRunTerminal: (runId, status, messageId) => {
+      onRunTerminal: (runId, status, messageId, onAccepted) => {
         const activeSessionId = sessionIdRef.current;
         if (!activeSessionId) return false;
-        void hydrateTerminalRun(activeSessionId, runId, status, messageId);
+        void hydrateTerminalRun(activeSessionId, runId, status, messageId, onAccepted);
         return true;
       },
       onRunStatusUnavailable: finalizeRunStatusUnavailable,
@@ -1391,6 +1400,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       activePreAdmissionSubmissionRef.current = null;
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
+      v4TerminalFenceRef.current = null;
+      v4TerminalEventIdsRef.current.clear();
       statusRetryCountRef.current = 0;
       resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       isLoadingHistoryRef.current = false;
@@ -1455,6 +1466,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       submissionTokenRef.current += 1;
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
+      v4TerminalFenceRef.current = null;
+      v4TerminalEventIdsRef.current.clear();
       clearReconcileOwners();
       isSendingRef.current = false;
       statusRetryCountRef.current = 0;
@@ -1985,6 +1998,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const requestSessionGeneration = sessionGenerationRef.current;
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
+      v4TerminalFenceRef.current = null;
+      v4TerminalEventIdsRef.current.clear();
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
       const isCurrentSubmission = () =>
@@ -2484,6 +2499,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     submissionTokenRef.current += 1;
     publicStreamPresentationRef.current?.invalidate();
     streamVersionRef.current += 1;
+    v4TerminalFenceRef.current = null;
+    v4TerminalEventIdsRef.current.clear();
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;
     isConnectingRef.current = false;

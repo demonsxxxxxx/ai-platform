@@ -33,23 +33,39 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
     case "tool":
       return {
         type: "tool-call",
-        toolCallId: part.public_operation_id || `tool-${index}`,
+        toolCallId: part.public_operation_id || part.id || `tool-${index}`,
         toolName: part.public_operation_id ? part.name : "Tool",
         args: part.public_operation_id && part.public_category
           ? { category: part.public_category }
           : {},
         argsText: "",
         isError: part.success === false,
-      };
+        result: part.result,
+        data: {
+          operationId: part.public_operation_id,
+          category: part.public_category,
+          durationMs: part.duration_ms,
+          evidenceRefs: part.evidence_refs,
+          artifactRefs: part.artifact_refs,
+          eventId: part.event_id,
+          causationEventId: part.causation_event_id,
+        },
+      } as AssistantUiContentPart;
     case "subagent":
       return {
         type: "data-subagent",
         data: {
-          id: part.public_operation_id || part.agent_id,
+          id: part.agent_id,
+          operationId: part.public_operation_id,
           name: part.agent_name,
           parentId: part.parent_agent_id,
+          causationEventId: part.causation_event_id,
           status: part.status,
           depth: part.depth,
+          durationMs: part.duration_ms,
+          progressPercent: part.progress_percent,
+          currentCategory: part.current_category,
+          eventId: part.event_id,
         },
       } as AssistantUiContentPart;
     case "artifact":

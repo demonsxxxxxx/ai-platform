@@ -57,6 +57,7 @@ export interface EventHandlerContext {
   acceptedStreamCursorRef?: React.MutableRefObject<AcceptedStreamCursor>;
   /** v4 terminal fence: stream.end is accepted only after its terminal event. */
   v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
+  v4TerminalFenceRef?: React.MutableRefObject<V4TerminalFence | null>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
   streamVersionRef: React.MutableRefObject<number>;
@@ -69,10 +70,57 @@ export interface EventHandlerContext {
     runId: string,
     status: TerminalRunStatus,
     messageId: string,
+    onAccepted?: () => void,
   ) => boolean;
   onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
   publicStreamPresentation?: PublicStreamPresentation;
+}
+
+export interface V4TerminalFence {
+  sessionId: string;
+  runId: string;
+  streamIncarnation: number;
+  generation?: number;
+  terminalEventId: string;
+}
+
+function matchesV4TerminalFence(
+  event: V4PublicEvent,
+  ctx: EventHandlerContext,
+  terminalEventId: string | undefined,
+): boolean {
+  const fence = ctx.v4TerminalFenceRef?.current;
+  return Boolean(
+    fence &&
+      terminalEventId &&
+      fence.terminalEventId === terminalEventId &&
+      fence.sessionId === ctx.sessionIdRef.current &&
+      fence.runId === ctx.currentRunIdRef.current &&
+      fence.runId === event.runId &&
+      fence.streamIncarnation === event.streamIncarnation &&
+      (fence.generation === undefined || fence.generation === event.generation),
+  );
+}
+
+function terminalFenceFromEvent(
+  event: V4PublicEvent,
+  ctx: EventHandlerContext,
+  terminalEventId: string,
+  onAccepted: () => void,
+): () => void {
+  return () => {
+    const sessionId = ctx.sessionIdRef.current;
+    if (!sessionId || ctx.currentRunIdRef.current !== event.runId) return;
+    ctx.v4TerminalFenceRef!.current = {
+      sessionId,
+      runId: event.runId,
+      streamIncarnation: event.streamIncarnation,
+      generation: event.generation,
+      terminalEventId,
+    };
+    onAccepted();
+  };
 }
 
 /** Durable, bounded public-event cursor for the active session/run stream. */
@@ -187,21 +235,47 @@ export function handlePublicRunStreamEventV4(
   binding?: StreamEventBinding,
   onCommitted?: (semanticApplied: boolean) => void,
 ): boolean {
-  const projected = projectV4EventToLegacyHandler(event, messageId);
-  if (!projected) return false;
   const terminalEventId =
     event.eventType === "stream.end" || event.eventType.startsWith("run.")
       ? ((event.event.payload as unknown as Record<string, unknown>).terminal_event_id as string | undefined)
       : undefined;
-  if (event.eventType === "stream.end" && ctx.v4TerminalEventIdsRef && (!terminalEventId || !ctx.v4TerminalEventIdsRef.current.has(terminalEventId))) {
-    return false;
+  const terminalStatus = terminalRunStatusFromEvent(
+    event.eventType,
+    event.event as unknown as Record<string, unknown>,
+  );
+  if (terminalStatus && event.eventType !== "stream.end") {
+    const owner = presentationOwner(binding, messageId);
+    if (owner) ctx.publicStreamPresentation?.flush(owner);
+    if (!terminalEventId || !ctx.v4TerminalFenceRef || !ctx.onRunTerminal) return false;
+    const accepted = ctx.onRunTerminal(
+      event.runId,
+      terminalStatus,
+      messageId,
+      terminalFenceFromEvent(event, ctx, terminalEventId, () => undefined),
+    );
+    if (!accepted) return false;
+    onCommitted?.(false);
+    return true;
   }
+  if (event.eventType === "stream.end") {
+    const fenced = matchesV4TerminalFence(event, ctx, terminalEventId);
+    const legacyFenced = Boolean(
+      ctx.v4TerminalEventIdsRef &&
+      terminalEventId &&
+      ctx.v4TerminalEventIdsRef.current.has(terminalEventId),
+    );
+    if (!fenced && !legacyFenced) return false;
+  }
+  const projected = projectV4EventToLegacyHandler(event, messageId);
+  if (!projected) return false;
   const accepted = handleStreamEvent(
     projected.streamEvent,
     projected.messageId,
     event.transportCursor,
     event.emittedAt,
-    ctx,
+    event.eventType === "stream.end" && ctx.v4TerminalFenceRef
+      ? { ...ctx, v4TerminalEventIdsRef: undefined }
+      : ctx,
     binding,
     onCommitted,
   );

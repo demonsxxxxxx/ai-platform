@@ -175,11 +175,23 @@ const PAYLOAD_NUMBER_MAX: Record<string, number> = {
   duration_ms: 86400000, turn_count: 10000, progress_percent: 100, size_bytes: 1099511627776,
 };
 
+function parseTransportCursor(value: unknown, runId: string): { incarnation: number; redisId: string } | null {
+  if (typeof value !== "string") return null;
+  const prefix = `${runId}:`;
+  if (!value.startsWith(prefix)) return null;
+  const remainder = value.slice(prefix.length);
+  const separator = remainder.indexOf(":");
+  if (separator <= 0) return null;
+  const incarnationText = remainder.slice(0, separator);
+  if (!/^[1-9][0-9]*$/.test(incarnationText)) return null;
+  const incarnation = Number(incarnationText);
+  const redisId = remainder.slice(separator + 1);
+  if (!Number.isSafeInteger(incarnation) || !REDIS_ID_PATTERN.test(redisId)) return null;
+  return { incarnation, redisId };
+}
+
 function isValidTransportCursor(value: unknown, runId: string, incarnation: number): value is string {
-  if (typeof value !== "string") return false;
-  const prefix = `${runId}:${incarnation}:`;
-  if (!value.startsWith(prefix)) return false;
-  return REDIS_ID_PATTERN.test(value.slice(prefix.length));
+  return parseTransportCursor(value, runId)?.incarnation === incarnation;
 }
 
 function isSafeFilename(value: unknown): value is string {
@@ -231,11 +243,24 @@ function payloadIsValid(eventType: string, payload: unknown, runId: string, inca
     if (numberMax !== undefined && !safeInteger(value, 0, numberMax)) return false;
     if (key === "hydrate_required" && value !== true) return false;
     if (["requested_event_id", "earliest_available_event_id", "latest_available_event_id"].includes(key)) {
-      if (value !== null && !isValidTransportCursor(value, runId, incarnation)) return false;
+      if (value !== null && typeof value !== "string") return false;
     }
     if (["requested_stream_incarnation"].includes(key) && value !== null && !safeInteger(value, 1)) return false;
     if (["current_stream_incarnation"].includes(key) && !safeInteger(value, 1)) return false;
     if (key === "filename" && !isSafeFilename(value)) return false;
+  }
+  if (eventType === "stream.gap") {
+    const requestedIncarnation = payload.requested_stream_incarnation;
+    const currentIncarnation = payload.current_stream_incarnation;
+    if (!safeInteger(requestedIncarnation, 1) || currentIncarnation !== incarnation) return false;
+    const requestedCursor = payload.requested_event_id === null
+      ? null
+      : parseTransportCursor(payload.requested_event_id, runId);
+    if (payload.requested_event_id !== null && (!requestedCursor || requestedCursor.incarnation !== requestedIncarnation)) return false;
+    for (const key of ["earliest_available_event_id", "latest_available_event_id"] as const) {
+      const cursor = payload[key] === null ? null : parseTransportCursor(payload[key], runId);
+      if (payload[key] !== null && (!cursor || cursor.incarnation !== currentIncarnation)) return false;
+    }
   }
   return true;
 }
@@ -248,7 +273,7 @@ function eventShapeIsValid(value: Record<string, unknown>, eventType: V4EventTyp
   const keys = isControl ? CONTROL_KEYS : APPLICATION_KEYS;
   if (Object.keys(value).length !== keys.length || !hasOnlyKeys(value, keys)) return false;
   if (value.schema !== expectedSchema || value.event_type !== eventType) return false;
-  if (!nonEmptyString(value.event_id) || value.event_id.length > 256 || !nonEmptyString(value.run_id) || !RUN_ID_PATTERN.test(value.run_id)) return false;
+  if (!nonEmptyString(value.event_id) || value.event_id.length > 256 || !SAFE_REF_PATTERN.test(value.event_id) || !nonEmptyString(value.run_id) || !RUN_ID_PATTERN.test(value.run_id)) return false;
   if (isControl) {
     if (value.message_id !== null || value.seq !== null || value.trace_ref !== null || typeof value.replayable !== "boolean") return false;
   } else if (
@@ -310,7 +335,14 @@ export interface V4LegacyDispatchEvent {
 /** Convert v4 public events into the existing useAgent handler vocabulary. */
 export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMessageId: string): V4LegacyDispatchEvent | null {
   const payload = (event.event as unknown as { payload: Record<string, unknown> }).payload;
-  const base = { event_id: event.eventId, run_id: event.runId, sequence: event.sequence, timestamp: event.emittedAt };
+  const base = {
+    event_id: event.eventId,
+    run_id: event.runId,
+    sequence: event.sequence,
+    timestamp: event.emittedAt,
+    trace_ref: (event.event as unknown as { trace_ref: string | null }).trace_ref,
+    causation_event_id: event.causationEventId,
+  };
   const messageTarget = event.messageId || fallbackMessageId;
   const activity = (phase: string, message: string, severity: "info" | "warning" | "error" = "info") => ({
     event: "run_event" as const,
@@ -338,6 +370,8 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
       failure_category: payload.failure_category,
       denial_code: payload.denial_code,
       input_summary: payload.input_summary,
+      evidence_refs: payload.evidence_refs,
+      artifact_refs: payload.artifact_refs,
     }),
   });
   const publicSubagent = (status: "started" | "progress" | "completed" | "failed" | "cancelled") => ({
