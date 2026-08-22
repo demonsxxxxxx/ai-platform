@@ -5163,11 +5163,20 @@ test("useAgent presents a safe local card when terminal history hydration fails"
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
   const originalMarkRead = sessionApi.markRead;
   let eventQueries = 0;
   sessionApi.markRead = async () => {};
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "workspace-terminal-hydrate-failure",
+    agent_id: "general-agent",
+    title: "Terminal hydration failure",
+    purpose: "conversation",
+    agent_conversation: null,
+  });
   sessionApi.get = async () => ({
     id: "session-terminal-hydrate-failure",
     agent_id: "general-agent",
@@ -5218,6 +5227,80 @@ test("useAgent presents a safe local card when terminal history hydration fails"
     assert.equal(cards.length, 1);
   } finally {
     sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent presents a safe local card when terminal history has no assistant", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let eventQueries = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "workspace-terminal-no-assistant",
+    agent_id: "general-agent",
+    title: "Terminal no assistant",
+    purpose: "conversation",
+    agent_conversation: null,
+  });
+  sessionApi.get = async () => ({
+    id: "session-terminal-no-assistant",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async () => {
+    eventQueries += 1;
+    return {
+      current_run_id: "run-terminal-no-assistant",
+      events: [{
+        id: "terminal-no-assistant:user",
+        event_type: "user:message",
+        run_id: "run-terminal-no-assistant",
+        timestamp: "2026-07-15T00:00:00Z",
+        data: { content: "结果不可用" },
+      }],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-terminal-no-assistant",
+    run_id: "run-terminal-no-assistant",
+    status: "failed",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-terminal-no-assistant");
+    });
+    await settle(harness.act);
+
+    const cards = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id ===
+            "terminal-result-unavailable:run-terminal-no-assistant",
+      );
+    assert.equal(eventQueries, 2);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(cards.length, 1);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.markRead = originalMarkRead;

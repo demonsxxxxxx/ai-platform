@@ -1234,7 +1234,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 message.role === "assistant" && message.runId === targetRunId,
             );
           if (!hydratedAssistant && status !== "cancelled") {
-            finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
+            if (
+              finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId)
+            ) {
+              onAccepted?.();
+            }
             return;
           }
           if (!hydratedAssistant) {
@@ -1259,7 +1263,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           onAccepted?.();
         } catch {
           if (isCurrentTerminalHydration()) {
-            finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
+            if (
+              finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId)
+            ) {
+              onAccepted?.();
+            }
           }
         } finally {
           if (terminalHydrationOwnerRef.current === owner) {

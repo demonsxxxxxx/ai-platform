@@ -82,6 +82,7 @@ export interface V4TerminalFence {
   runId: string;
   streamIncarnation: number;
   generation?: number;
+  streamVersion?: number;
   terminalEventId: string;
 }
 
@@ -110,6 +111,7 @@ export function acceptV4TerminalFence(
 ): () => void {
   const sessionId = ctx.sessionIdRef.current;
   const runId = event.runId;
+  const streamVersion = ctx.streamVersionRef.current;
   return () => {
     if (!sessionId || ctx.sessionIdRef.current !== sessionId) return;
     if (ctx.currentRunIdRef.current && ctx.currentRunIdRef.current !== runId) return;
@@ -118,6 +120,7 @@ export function acceptV4TerminalFence(
       runId,
       streamIncarnation: event.streamIncarnation,
       generation: event.generation,
+      streamVersion,
       terminalEventId,
     };
     ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
@@ -257,7 +260,10 @@ export function handlePublicRunStreamEventV4(
           ctx.currentRunIdRef.current === binding.runId) ||
           (event.eventType === "stream.end" &&
             fence?.runId === binding.runId &&
-            fence.sessionId === binding.sessionId))),
+            fence.sessionId === binding.sessionId &&
+            (fence.streamVersion === undefined ||
+              fence.streamVersion === binding.streamVersion)))
+      ),
   );
   if (!bindingMatchesCurrentOwner) return false;
   const terminalStatus = terminalRunStatusFromEvent(

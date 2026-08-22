@@ -11,6 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
 import { AssistantUiMessageFrame } from "../MessageFrame";
+import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import type { Message, MessagePart } from "../../../../types";
 
 function setupDom(): { container: HTMLDivElement; root: Root; cleanup: () => void } {
@@ -52,7 +53,16 @@ function renderProjection(
   message: Message,
   actions: { sendMessage: (content: string) => Promise<void>; cancel: () => Promise<void>; reconnect: () => Promise<void>; loadHistory: () => Promise<void> },
 ): void {
-  const renderPart = (part: MessagePart): ReactNode => {
+  const renderPart = (part: MessagePart, partIndex: number): ReactNode => {
+    if (part.type === "artifact") {
+      return createElement(MessagePartRenderer, {
+        key: `${message.id}:artifact:${part.artifact_id}`,
+        part,
+        messageId: message.id,
+        partIndex,
+        isLast: partIndex === (message.parts?.length ?? 1) - 1,
+      });
+    }
     if (part.type === "subagent") {
       return createElement(
         "div",
@@ -67,18 +77,6 @@ function renderProjection(
         part.current_category
           ? createElement("span", { "data-category": true }, `Category: ${part.current_category}`)
           : null,
-      );
-    }
-    if (part.type === "artifact") {
-      return createElement(
-        "a",
-        {
-          key: part.artifact_id,
-          href: part.download_url,
-          "aria-label": part.label,
-          "data-artifact-id": part.artifact_id,
-        },
-        part.label,
       );
     }
     if (part.type === "tool") {
@@ -188,7 +186,7 @@ test("mounted projection delegates one tool action and remains keyboard accessib
   }
 });
 
-test("mounted artifact card exposes only its safe label with keyboard semantics", () => {
+test("mounted artifact card exposes only its safe accessible label", () => {
   const dom = setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
@@ -199,15 +197,14 @@ test("mounted artifact card exposes only its safe label with keyboard semantics"
       label: "Artifact",
       content_type: "application/octet-stream",
       size_bytes: 128,
-      download_url: "/api/ai/artifacts/artifact-public-1/download",
+      download_url: undefined,
     }]), actions);
-    const artifact = dom.container.querySelector("[data-artifact-id=artifact-public-1]") as HTMLAnchorElement | null;
+    const artifact = dom.container.querySelector(
+      '[role="group"][aria-label="Artifact"]',
+    );
     assert.ok(artifact);
     assert.equal(artifact?.getAttribute("aria-label"), "Artifact");
-    assert.equal(artifact?.getAttribute("href"), "/api/ai/artifacts/artifact-public-1/download");
-    artifact.focus();
-    assert.equal(dom.container.ownerDocument.activeElement, artifact);
-    assert.doesNotMatch(dom.container.textContent || "", /private|secret|C:\\\\Users/iu);
+    assert.doesNotMatch(dom.container.textContent || "", /artifact-public-1|private|secret|C:\\\\Users/iu);
   } finally {
     dom.cleanup();
   }
@@ -282,6 +279,11 @@ test("mounted production fence owner accepts its matching end once and rejects a
     assert.equal(adaptedEnd?.eventType, "stream.end");
     assert.equal((adaptedEnd?.event.payload as Record<string, unknown>).terminal_event_id, "terminal-1");
     assert.equal(ctx.v4TerminalFenceRef?.current?.terminalEventId, "terminal-1");
+    const staleEnd = {
+      ...endFrame,
+      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 2 },
+    };
+    assert.equal(handlePublicRunStreamFrameV4(staleEnd as never), false);
     assert.equal(handlePublicRunStreamFrameV4(endFrame as never), true);
     assert.equal(handlePublicRunStreamFrameV4(endFrame as never), false);
     const foreignEnd = { ...endFrame, frame: { ...endFrame.frame, value: { ...endFrame.frame.value, run_id: "run-2" } }, adapterBinding: { runId: "run-2", streamIncarnation: 1 } };
@@ -318,11 +320,12 @@ test("mounted adapter-to-reducer artifact failure exposes a safe accessible labe
   const reduced = processMessageEvent("artifact_card", payload, [], "", [], 0, [], false, "message-1");
   try {
     renderProjection(dom.root, message(reduced.parts), { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined });
-    const artifact = dom.container.querySelector("[data-artifact-id]") as HTMLAnchorElement | null;
+    const artifact = dom.container.querySelector(
+      '[role="group"][aria-label="Artifact unavailable"]',
+    );
     assert.ok(artifact);
     assert.equal(artifact?.getAttribute("aria-label"), "Artifact unavailable");
-    assert.equal(artifact?.textContent, "Artifact unavailable");
-    assert.doesNotMatch(artifact?.getAttribute("aria-label") || "", /artifact-opaque-1|private|secret|token/i);
+    assert.doesNotMatch(dom.container.textContent || "", /artifact-opaque-1|private|secret|token/i);
   } finally {
     dom.cleanup();
   }
