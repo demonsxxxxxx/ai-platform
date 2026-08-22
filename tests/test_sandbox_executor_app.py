@@ -17,8 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.executors.claude.agent_events import ClaudeAgentEventCandidate
+from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.file_parser_contracts import (
     build_attachment_preprocessing_contract,
 )
