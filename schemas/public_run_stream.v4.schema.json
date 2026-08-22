@@ -1,0 +1,432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-platform.invalid/schemas/public_run_stream.v4.schema.json",
+  "title": "AI Platform public Run stream v4",
+  "description": "Strict public Agent-kernel application events, transport controls, and browser-inaccessible internal envelopes.",
+  "$ref": "#/$defs/InternalStreamEnvelopeV4",
+  "$defs": {
+    "SafeRefV4": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$"
+    },
+    "TraceRefV4": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "EventIdV4": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "RunIdV4": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "AttemptIdV4": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "DisplayNameV4": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "NullableSafeRefV4": {
+      "oneOf": [
+        { "$ref": "#/$defs/SafeRefV4" },
+        { "type": "null" }
+      ]
+    },
+    "NullableTraceRefV4": {
+      "oneOf": [
+        { "$ref": "#/$defs/TraceRefV4" },
+        { "type": "null" }
+      ]
+    },
+    "SafeRefArrayV4": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/SafeRefV4" }
+    },
+    "SafeFilenameV4": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\\\u0000-\\u001F\\u007F]+$"
+    },
+    "ToolCategoryV4": {
+      "enum": ["skill", "mcp", "read", "write", "edit", "search", "execute"]
+    },
+    "EmptyPayloadV4": {
+      "type": "object",
+      "maxProperties": 0,
+      "additionalProperties": false
+    },
+    "PublicApplicationEnvelopeV4": {
+      "type": "object",
+      "properties": {
+        "schema": { "const": "ai-platform.public-run-stream-event.v4" },
+        "event_id": { "$ref": "#/$defs/EventIdV4" },
+        "run_id": { "$ref": "#/$defs/RunIdV4" },
+        "message_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "event_type": {
+          "enum": [
+            "message.started", "message.delta", "message.completed",
+            "thinking.started", "thinking.completed", "model.completed",
+            "tool.started", "tool.completed", "tool.failed", "tool.denied",
+            "subagent.started", "subagent.progress", "subagent.completed",
+            "subagent.failed", "subagent.cancelled", "artifact.created",
+            "artifact.ready", "artifact.failed", "policy.checking",
+            "policy.allowed", "policy.denied", "run.cancel_requested",
+            "run.succeeded", "run.cancelled", "run.failed"
+          ]
+        },
+        "stream_incarnation": { "type": "integer", "minimum": 1 },
+        "replayable": { "const": true },
+        "trace_ref": { "$ref": "#/$defs/NullableTraceRefV4" },
+        "causation_event_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+        "emitted_at": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "payload": { "type": "object", "maxProperties": 64 }
+      },
+      "required": [
+        "schema", "event_id", "run_id", "message_id", "seq", "event_type",
+        "stream_incarnation", "replayable", "trace_ref", "causation_event_id",
+        "emitted_at", "payload"
+      ],
+      "if": {
+        "properties": {
+          "event_type": {
+            "enum": [
+              "message.started", "message.delta", "message.completed",
+              "thinking.started", "thinking.completed", "model.completed",
+              "tool.started", "tool.completed", "tool.failed", "tool.denied",
+              "subagent.started", "subagent.progress", "subagent.completed",
+              "subagent.failed", "subagent.cancelled"
+            ]
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "properties": {
+          "message_id": { "$ref": "#/$defs/SafeRefV4" }
+        }
+      }
+    },
+    "PublicMessageApplicationEnvelopeV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "message_id": { "$ref": "#/$defs/SafeRefV4" } }, "required": ["message_id"] }
+      ]
+    },
+    "PublicTransportControlEnvelopeV4": {
+      "type": "object",
+      "properties": {
+        "schema": { "const": "ai-platform.public-run-stream-control.v4" },
+        "event_id": { "$ref": "#/$defs/EventIdV4" },
+        "run_id": { "$ref": "#/$defs/RunIdV4" },
+        "message_id": { "const": null },
+        "seq": { "const": null },
+        "event_type": { "enum": ["stream.open", "stream.heartbeat", "stream.gap", "stream.end"] },
+        "stream_incarnation": { "type": "integer", "minimum": 1 },
+        "replayable": { "type": "boolean" },
+        "trace_ref": { "const": null },
+        "causation_event_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+        "emitted_at": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "payload": { "type": "object", "maxProperties": 64 }
+      },
+      "required": [
+        "schema", "event_id", "run_id", "message_id", "seq", "event_type",
+        "stream_incarnation", "replayable", "trace_ref", "causation_event_id",
+        "emitted_at", "payload"
+      ]
+    },
+    "StreamOpenControlV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicTransportControlEnvelopeV4" },
+        { "type": "object", "properties": {
+          "event_type": { "const": "stream.open" },
+          "replayable": { "const": true },
+          "payload": { "type": "object", "properties": {
+            "design_id": { "const": "ai-platform.redis-streams-sse-event-channel.v4" }
+          }, "required": ["design_id"], "additionalProperties": false }
+        }, "required": ["event_type", "replayable", "payload"] }
+      ],
+      "unevaluatedProperties": false
+    },
+    "StreamHeartbeatControlV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicTransportControlEnvelopeV4" },
+        { "type": "object", "properties": {
+          "event_type": { "const": "stream.heartbeat" },
+          "replayable": { "const": false },
+          "payload": { "type": "object", "properties": {
+            "status": { "enum": ["queued", "running"] }
+          }, "required": ["status"], "additionalProperties": false }
+        }, "required": ["event_type", "replayable", "payload"] }
+      ],
+      "unevaluatedProperties": false
+    },
+    "StreamGapControlV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicTransportControlEnvelopeV4" },
+        { "type": "object", "properties": {
+          "event_type": { "const": "stream.gap" },
+          "replayable": { "const": false },
+          "payload": { "type": "object", "properties": {
+            "reason": { "enum": ["retained_history_unavailable", "stream_missing", "stream_continuity_unproven", "stream_incarnation_mismatch"] },
+            "recovery": { "const": "reload_durable_state" },
+            "requested_event_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+            "requested_stream_incarnation": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+            "current_stream_incarnation": { "type": "integer", "minimum": 1 },
+            "earliest_available_event_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+            "latest_available_event_id": { "$ref": "#/$defs/NullableSafeRefV4" }
+          }, "required": ["reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id"], "additionalProperties": false }
+        }, "required": ["event_type", "replayable", "payload"] }
+      ],
+      "unevaluatedProperties": false
+    },
+    "StreamEndControlV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicTransportControlEnvelopeV4" },
+        { "type": "object", "properties": {
+          "event_type": { "const": "stream.end" },
+          "replayable": { "const": true },
+          "payload": { "type": "object", "properties": {
+            "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" }
+          }, "required": ["terminal_event_id"], "additionalProperties": false }
+        }, "required": ["event_type", "replayable", "payload"] }
+      ],
+      "unevaluatedProperties": false
+    },
+    "MessageStartedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "message.started" }, "payload": { "$ref": "#/$defs/EmptyPayloadV4" } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "MessageDeltaEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "message.delta" }, "payload": { "type": "object", "properties": { "delta": { "type": "string", "minLength": 1, "maxLength": 8192 } }, "required": ["delta"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "MessageCompletedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "message.completed" }, "payload": { "type": "object", "properties": { "content": { "type": "string", "maxLength": 262144 } }, "required": ["content"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ThinkingStartedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "thinking.started" }, "payload": { "$ref": "#/$defs/EmptyPayloadV4" } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ThinkingCompletedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "thinking.completed" }, "payload": { "$ref": "#/$defs/EmptyPayloadV4" } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ModelCompletedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "model.completed" }, "payload": { "type": "object", "properties": { "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }, "turn_count": { "type": "integer", "minimum": 0, "maximum": 10000 }, "stop_category": { "enum": ["completed", "max_turns", "cancelled", "failed", "unknown"] } }, "required": ["duration_ms", "turn_count", "stop_category"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ToolStartedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "tool.started" }, "payload": { "type": "object", "properties": { "operation_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "input_summary": { "type": "string", "maxLength": 512 }, "evidence_refs": { "$ref": "#/$defs/SafeRefArrayV4" } }, "required": ["operation_id", "category", "display_name"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ToolCompletedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "tool.completed" }, "payload": { "type": "object", "properties": { "operation_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }, "result_summary": { "type": "string", "maxLength": 2048 }, "evidence_refs": { "$ref": "#/$defs/SafeRefArrayV4" }, "artifact_refs": { "$ref": "#/$defs/SafeRefArrayV4" } }, "required": ["operation_id", "category", "display_name", "duration_ms"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ToolFailedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "tool.failed" }, "payload": { "type": "object", "properties": { "operation_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }, "failure_category": { "enum": ["invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"] }, "evidence_refs": { "$ref": "#/$defs/SafeRefArrayV4" } }, "required": ["operation_id", "category", "display_name", "duration_ms", "failure_category"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ToolDeniedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "tool.denied" }, "payload": { "type": "object", "properties": { "operation_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "denial_code": { "enum": ["capability_not_authorized", "policy_denied"] } }, "required": ["operation_id", "category", "display_name", "denial_code"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "SubagentStartedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "subagent.started" }, "payload": { "type": "object", "properties": { "subagent_id": { "$ref": "#/$defs/SafeRefV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" } }, "required": ["subagent_id", "display_name"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "SubagentProgressEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "subagent.progress" }, "payload": { "type": "object", "properties": { "subagent_id": { "$ref": "#/$defs/SafeRefV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }, "current_category": { "$ref": "#/$defs/ToolCategoryV4" }, "progress_percent": { "type": "integer", "minimum": 0, "maximum": 100 } }, "required": ["subagent_id", "display_name", "duration_ms", "current_category"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "SubagentCompletedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "subagent.completed" }, "payload": { "type": "object", "properties": { "subagent_id": { "$ref": "#/$defs/SafeRefV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 } }, "required": ["subagent_id", "display_name", "duration_ms"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "SubagentFailedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "subagent.failed" }, "payload": { "type": "object", "properties": { "subagent_id": { "$ref": "#/$defs/SafeRefV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }, "failure_category": { "const": "subagent_failed" } }, "required": ["subagent_id", "display_name", "duration_ms", "failure_category"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "SubagentCancelledEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "subagent.cancelled" }, "payload": { "type": "object", "properties": { "subagent_id": { "$ref": "#/$defs/SafeRefV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }, "reason_code": { "enum": ["user_cancelled", "run_cancelled", "timeout"] } }, "required": ["subagent_id", "display_name", "duration_ms", "reason_code"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ArtifactCreatedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "artifact.created" }, "payload": { "type": "object", "properties": { "artifact_id": { "$ref": "#/$defs/SafeRefV4" }, "filename": { "$ref": "#/$defs/SafeFilenameV4" }, "media_type": { "type": "string", "minLength": 1, "maxLength": 128 }, "size_bytes": { "type": "integer", "minimum": 0, "maximum": 1099511627776 }, "status": { "const": "created" }, "evidence_ref": { "$ref": "#/$defs/NullableSafeRefV4" } }, "required": ["artifact_id", "filename", "media_type", "size_bytes", "status"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ArtifactReadyEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "artifact.ready" }, "payload": { "type": "object", "properties": { "artifact_id": { "$ref": "#/$defs/SafeRefV4" }, "filename": { "$ref": "#/$defs/SafeFilenameV4" }, "media_type": { "type": "string", "minLength": 1, "maxLength": 128 }, "size_bytes": { "type": "integer", "minimum": 0, "maximum": 1099511627776 }, "status": { "const": "ready" }, "evidence_ref": { "$ref": "#/$defs/NullableSafeRefV4" } }, "required": ["artifact_id", "filename", "media_type", "size_bytes", "status"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ArtifactFailedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "artifact.failed" }, "payload": { "type": "object", "properties": { "artifact_id": { "$ref": "#/$defs/SafeRefV4" }, "status": { "const": "failed" }, "failure_category": { "enum": ["artifact_failed", "unavailable"] }, "filename": { "$ref": "#/$defs/SafeFilenameV4" }, "media_type": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["artifact_id", "status", "failure_category"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "PolicyCheckingEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "policy.checking" }, "payload": { "type": "object", "properties": { "decision_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" } }, "required": ["decision_id", "category", "display_name"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "PolicyAllowedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "policy.allowed" }, "payload": { "type": "object", "properties": { "decision_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "decision_code": { "const": "allowed" } }, "required": ["decision_id", "category", "display_name", "decision_code"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "PolicyDeniedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "policy.denied" }, "payload": { "type": "object", "properties": { "decision_id": { "$ref": "#/$defs/SafeRefV4" }, "category": { "$ref": "#/$defs/ToolCategoryV4" }, "display_name": { "$ref": "#/$defs/DisplayNameV4" }, "decision_code": { "enum": ["capability_not_authorized", "policy_denied"] } }, "required": ["decision_id", "category", "display_name", "decision_code"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "RunCancelRequestedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "run.cancel_requested" }, "payload": { "type": "object", "properties": { "source": { "enum": ["user", "system"] } }, "required": ["source"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "RunSucceededEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "run.succeeded" }, "payload": { "type": "object", "properties": { "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" }, "hydrate_required": { "const": true } }, "required": ["terminal_event_id", "hydrate_required"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "RunCancelledEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "run.cancelled" }, "payload": { "type": "object", "properties": { "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" }, "hydrate_required": { "const": true }, "reason_code": { "enum": ["user_cancelled", "policy_cancelled", "timeout"] } }, "required": ["terminal_event_id", "hydrate_required", "reason_code"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "RunFailedEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "run.failed" }, "payload": { "type": "object", "properties": { "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" }, "hydrate_required": { "const": true }, "projection_version": { "const": "ai-platform.chat-public-projection.v1" }, "code": { "type": "string", "minLength": 1, "maxLength": 128 }, "default_message": { "type": "string", "minLength": 1, "maxLength": 1024 }, "detail": { "oneOf": [{ "type": "string", "maxLength": 2048 }, { "type": "null" }] } }, "required": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "PublicApplicationEventV4": {
+      "oneOf": [
+        { "$ref": "#/$defs/MessageStartedEventV4" }, { "$ref": "#/$defs/MessageDeltaEventV4" }, { "$ref": "#/$defs/MessageCompletedEventV4" },
+        { "$ref": "#/$defs/ThinkingStartedEventV4" }, { "$ref": "#/$defs/ThinkingCompletedEventV4" }, { "$ref": "#/$defs/ModelCompletedEventV4" },
+        { "$ref": "#/$defs/ToolStartedEventV4" }, { "$ref": "#/$defs/ToolCompletedEventV4" }, { "$ref": "#/$defs/ToolFailedEventV4" }, { "$ref": "#/$defs/ToolDeniedEventV4" },
+        { "$ref": "#/$defs/SubagentStartedEventV4" }, { "$ref": "#/$defs/SubagentProgressEventV4" }, { "$ref": "#/$defs/SubagentCompletedEventV4" }, { "$ref": "#/$defs/SubagentFailedEventV4" }, { "$ref": "#/$defs/SubagentCancelledEventV4" },
+        { "$ref": "#/$defs/ArtifactCreatedEventV4" }, { "$ref": "#/$defs/ArtifactReadyEventV4" }, { "$ref": "#/$defs/ArtifactFailedEventV4" },
+        { "$ref": "#/$defs/PolicyCheckingEventV4" }, { "$ref": "#/$defs/PolicyAllowedEventV4" }, { "$ref": "#/$defs/PolicyDeniedEventV4" },
+        { "$ref": "#/$defs/RunCancelRequestedEventV4" }, { "$ref": "#/$defs/RunSucceededEventV4" }, { "$ref": "#/$defs/RunCancelledEventV4" }, { "$ref": "#/$defs/RunFailedEventV4" }
+      ]
+    },
+    "PublicTransportControlEventV4": {
+      "oneOf": [
+        { "$ref": "#/$defs/StreamOpenControlV4" }, { "$ref": "#/$defs/StreamHeartbeatControlV4" }, { "$ref": "#/$defs/StreamGapControlV4" }, { "$ref": "#/$defs/StreamEndControlV4" }
+      ]
+    },
+    "PublicRunStreamEventV4": {
+      "oneOf": [
+        { "$ref": "#/$defs/PublicApplicationEventV4" },
+        { "$ref": "#/$defs/PublicTransportControlEventV4" }
+      ]
+    },
+    "RunEventSourceV4": {
+      "type": "object",
+      "properties": { "kind": { "const": "run_event" }, "run_event_id": { "$ref": "#/$defs/SafeRefV4" }, "sequence": { "type": "integer", "minimum": 1 } },
+      "required": ["kind", "run_event_id", "sequence"],
+      "additionalProperties": false
+    },
+    "StreamAuthoritySourceV4": {
+      "type": "object",
+      "properties": { "kind": { "const": "stream_authority" }, "authority_id": { "$ref": "#/$defs/SafeRefV4" } },
+      "required": ["kind", "authority_id"],
+      "additionalProperties": false
+    },
+    "TerminalIntentSourceV4": {
+      "type": "object",
+      "properties": { "kind": { "const": "terminal_intent" }, "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" } },
+      "required": ["kind", "terminal_event_id"],
+      "additionalProperties": false
+    },
+    "InternalStreamEnvelopeV4": {
+      "type": "object",
+      "properties": {
+        "schema": { "const": "ai-platform.stream-event.v4" },
+        "event_id": { "$ref": "#/$defs/EventIdV4" },
+        "tenant_scope": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "run_id": { "$ref": "#/$defs/RunIdV4" },
+        "attempt_id": { "$ref": "#/$defs/AttemptIdV4" },
+        "message_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+        "seq": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "event_type": { "enum": [
+          "message.started", "message.delta", "message.completed", "thinking.started", "thinking.completed", "model.completed",
+          "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled",
+          "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed",
+          "stream.open", "stream.heartbeat", "stream.gap", "stream.end"
+        ] },
+        "stream_incarnation": { "type": "integer", "minimum": 1 },
+        "replayable": { "type": "boolean" },
+        "trace_ref": { "$ref": "#/$defs/NullableTraceRefV4" },
+        "causation_event_id": { "$ref": "#/$defs/NullableSafeRefV4" },
+        "emitted_at": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "projection_version": { "const": "public-stream-v4" },
+        "payload": { "type": "object", "maxProperties": 64 },
+        "source": { "oneOf": [
+          { "$ref": "#/$defs/RunEventSourceV4" },
+          { "$ref": "#/$defs/StreamAuthoritySourceV4" },
+          { "$ref": "#/$defs/TerminalIntentSourceV4" }
+        ] }
+      },
+      "required": [
+        "schema", "event_id", "tenant_scope", "run_id", "attempt_id", "message_id", "seq", "event_type",
+        "stream_incarnation", "replayable", "trace_ref", "causation_event_id", "emitted_at", "projection_version", "payload", "source"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
