@@ -31,24 +31,31 @@ test("assistant-ui projection mounts a non-empty transcript without replacing th
           loadHistory: async () => undefined,
         },
         children: createElement(
-          ThreadPrimitive.Unstable_MessageById,
-          {
-            messageId: "message-1",
-            components: {
-              Message: () =>
-                createElement(
-                  AssistantUiMessageFrame,
-                  null,
-                  createElement("div", { "data-transcript": true }, "visible answer"),
-                ),
+          ThreadPrimitive.Viewport,
+          null,
+          createElement(
+            ThreadPrimitive.Unstable_MessageById,
+            {
+              messageId: "message-1",
+              components: {
+                Message: () =>
+                  createElement(
+                    AssistantUiMessageFrame,
+                    null,
+                    createElement("div", { "data-transcript": true }, "visible answer"),
+                  ),
+              },
             },
-          },
+          ),
         ),
       },
     ),
   );
   assert.match(html, /data-transcript/);
   assert.match(html, /visible answer/);
+  assert.match(html, /role="group"/);
+  assert.match(html, /tabindex="0"/);
+  assert.match(html, /aria-label="Assistant message"/);
 });
 test("assistant-ui projection uses accessible primitive wrappers without replacing legacy layout owners", () => {
   const projection = readFileSync(join(root, "AssistantUiProjection.tsx"), "utf8");
@@ -57,7 +64,11 @@ test("assistant-ui projection uses accessible primitive wrappers without replaci
   assert.match(projection, /AssistantRuntimeProvider/);
   assert.match(projection, /ThreadPrimitive\.Root/);
   assert.match(projection, /data-assistant-ui-projection/);
+  assert.match(projection, /aria-live="polite"/);
   assert.match(frame, /MessagePrimitive\.Root/);
+  assert.match(frame, /role="group"/);
+  assert.match(frame, /tabIndex=\{0\}/);
+  assert.match(frame, /aria-label="Assistant message"/);
   assert.match(runtime, /onNew/);
   assert.match(runtime, /onCancel/);
   assert.match(runtime, /onRefetchThread/);

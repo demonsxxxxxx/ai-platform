@@ -24,7 +24,7 @@ function appendContent(message: AppendMessage): string {
 
 type AssistantUiContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
-function convertPart(part: MessagePart): AssistantUiContentPart | null {
+function convertPart(part: MessagePart, index: number): AssistantUiContentPart | null {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.content };
@@ -33,12 +33,25 @@ function convertPart(part: MessagePart): AssistantUiContentPart | null {
     case "tool":
       return {
         type: "tool-call",
-        toolCallId: "tool",
-        toolName: "Tool",
-        args: {},
+        toolCallId: part.public_operation_id || `tool-${index}`,
+        toolName: part.public_operation_id ? part.name : "Tool",
+        args: part.public_operation_id && part.public_category
+          ? { category: part.public_category }
+          : {},
         argsText: "",
         isError: part.success === false,
       };
+    case "subagent":
+      return {
+        type: "data-subagent",
+        data: {
+          id: part.public_operation_id || part.agent_id,
+          name: part.agent_name,
+          parentId: part.parent_agent_id,
+          status: part.status,
+          depth: part.depth,
+        },
+      } as AssistantUiContentPart;
     case "artifact":
       // Artifact authorization and rendering stay in ChatMessage's renderer.
       return { type: "data-artifact", data: { label: part.label, status: part.status } };
@@ -49,7 +62,7 @@ function convertPart(part: MessagePart): AssistantUiContentPart | null {
 
 export function toAssistantUiMessage(message: Message): ThreadMessageLike {
   const content = (message.parts || [])
-    .map(convertPart)
+    .map((part, index) => convertPart(part, index))
     .filter((part): part is AssistantUiContentPart => part !== null);
   return {
     id: message.id,

@@ -28,7 +28,12 @@ export function AssistantUiProjection({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root asChild>
-        <div data-assistant-ui-projection>{children}</div>
+        <div
+          data-assistant-ui-projection
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+        >{children}</div>
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );

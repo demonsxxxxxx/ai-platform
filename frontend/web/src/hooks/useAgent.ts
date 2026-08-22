@@ -718,6 +718,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     streamIncarnation: null,
   });
 
+  const v4TerminalEventIdsRef = useRef<Set<string>>(new Set());
+
   // Track last event timestamp from history
   const lastHistoryTimestampRef = useRef<Date | null>(null);
 
@@ -1277,6 +1279,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       processedEventIdsRef,
       acceptedRunEventSequenceRef,
       acceptedStreamCursorRef,
+      v4TerminalEventIdsRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
       streamVersionRef,

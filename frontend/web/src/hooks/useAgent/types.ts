@@ -220,7 +220,18 @@ export interface EventData {
   artifact_public_id?: string | null;
   presentation_kind?: string;
   safe_label?: string;
-  // ai-platform artifact_card fields
+  // v4 public Render Contract fields
+  operation_id?: string;
+  subagent_id?: string;
+  category?: string;
+  display_name?: string;
+  input_summary?: string;
+  result_summary?: string;
+  failure_category?: string;
+  denial_code?: string;
+  parent_id?: string;
+  current_category?: string;
+  progress_percent?: number;
   artifact_id?: string;
   artifact_type?: string;
   label?: string;

@@ -55,6 +55,8 @@ export interface EventHandlerContext {
   processedEventIdsRef: React.MutableRefObject<Set<string>>;
   acceptedRunEventSequenceRef?: React.MutableRefObject<AcceptedRunEventSequence>;
   acceptedStreamCursorRef?: React.MutableRefObject<AcceptedStreamCursor>;
+  /** v4 terminal fence: stream.end is accepted only after its terminal event. */
+  v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
   streamVersionRef: React.MutableRefObject<number>;
@@ -187,7 +189,14 @@ export function handlePublicRunStreamEventV4(
 ): boolean {
   const projected = projectV4EventToLegacyHandler(event, messageId);
   if (!projected) return false;
-  return handleStreamEvent(
+  const terminalEventId =
+    event.eventType === "stream.end" || event.eventType.startsWith("run.")
+      ? ((event.event.payload as unknown as Record<string, unknown>).terminal_event_id as string | undefined)
+      : undefined;
+  if (event.eventType === "stream.end" && ctx.v4TerminalEventIdsRef && (!terminalEventId || !ctx.v4TerminalEventIdsRef.current.has(terminalEventId))) {
+    return false;
+  }
+  const accepted = handleStreamEvent(
     projected.streamEvent,
     projected.messageId,
     event.transportCursor,
@@ -196,6 +205,10 @@ export function handlePublicRunStreamEventV4(
     binding,
     onCommitted,
   );
+  if (accepted && terminalEventId && ctx.v4TerminalEventIdsRef) {
+    ctx.v4TerminalEventIdsRef.current.add(terminalEventId);
+  }
+  return accepted;
 }
 
 /** Call-ready v4 composition seam: validate, route gaps, then delegate once. */
@@ -301,6 +314,17 @@ export function handleStreamEvent(
     }
   }
 
+  const semanticEventId =
+    typeof data.event_id === "string" && data.event_id.trim()
+      ? data.event_id
+      : eventId;
+  if (ctx.processedEventIdsRef.current.has(semanticEventId)) {
+    // The reducer already owns this semantic event, but a later Redis entry is
+    // still valid transport progress and may advance Last-Event-ID.
+    onCommitted?.(false);
+    return false;
+  }
+
   const terminalStatus = terminalRunStatusFromEvent(
     eventType,
     data as unknown as Record<string, unknown>,
@@ -322,28 +346,11 @@ export function handleStreamEvent(
     return false;
   }
 
-  const semanticEventId =
-    typeof data.event_id === "string" && data.event_id.trim()
-      ? data.event_id
-      : eventId;
-  if (ctx.processedEventIdsRef.current.has(semanticEventId)) {
-    // The reducer already owns this semantic event, but a later Redis entry is
-    // still valid transport progress and may advance Last-Event-ID.
-    onCommitted?.(false);
-    return false;
-  }
-
   if (eventTimestamp && ctx.lastHistoryTimestampRef.current) {
     const eventTime = parseDate(eventTimestamp);
     const historyTime = ctx.lastHistoryTimestampRef.current;
     if (eventTime <= historyTime) {
-      console.log(
-        "[SSE] Skipping duplicate event by timestamp:",
-        eventId,
-        eventTime.toISOString(),
-        "<=",
-        historyTime.toISOString(),
-      );
+      onCommitted?.(false);
       return false;
     }
   }
@@ -511,6 +518,18 @@ export function handleStreamEvent(
     }
 
     case "end": {
+      const terminalEventId =
+        typeof data.payload === "object" && data.payload !== null && !Array.isArray(data.payload) &&
+        typeof data.payload.terminal_event_id === "string"
+          ? data.payload.terminal_event_id
+          : undefined;
+      if (
+        ctx.v4TerminalEventIdsRef &&
+        terminalEventId !== undefined &&
+        !ctx.v4TerminalEventIdsRef.current.has(terminalEventId)
+      ) {
+        return false;
+      }
       commitAcceptedEvent();
       return true;
     }

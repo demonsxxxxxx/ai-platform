@@ -173,10 +173,10 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     emitted_at: "2026-01-01T00:00:00Z",
     payload: {
       reason: "stream_missing",
-      requested_event_id: "0-1",
+      requested_event_id: "run-1:1:0-1",
       requested_stream_incarnation: 1,
-      earliest_available_event_id: "0-2",
-      latest_available_event_id: "0-3",
+      earliest_available_event_id: "run-1:1:0-2",
+      latest_available_event_id: "run-1:1:0-3",
       current_stream_incarnation: 1,
       recovery: "reload_durable_state",
     },

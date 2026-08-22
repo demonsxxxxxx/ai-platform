@@ -31,6 +31,7 @@ export interface V4PublicEvent {
   readonly generation?: number;
   readonly emittedAt: string;
   readonly semanticKey: string;
+  readonly causationEventId: string | null;
 }
 
 export interface V4AdapterBinding {
@@ -208,7 +209,7 @@ function isRfc3339DateTime(value: unknown): value is string {
   return !Number.isNaN(Date.parse(value));
 }
 
-function payloadIsValid(eventType: string, payload: unknown): payload is Record<string, unknown> {
+function payloadIsValid(eventType: string, payload: unknown, runId: string, incarnation: number): payload is Record<string, unknown> {
   if (!isRecord(payload) || Object.keys(payload).length > 64) return false;
   const allowed = PAYLOAD_KEYS[eventType];
   if (!allowed || !hasOnlyKeys(payload, allowed)) return false;
@@ -229,7 +230,9 @@ function payloadIsValid(eventType: string, payload: unknown): payload is Record<
     const numberMax = PAYLOAD_NUMBER_MAX[key];
     if (numberMax !== undefined && !safeInteger(value, 0, numberMax)) return false;
     if (key === "hydrate_required" && value !== true) return false;
-    if (["requested_event_id", "earliest_available_event_id", "latest_available_event_id"].includes(key) && !isNullableSafeRef(value)) return false;
+    if (["requested_event_id", "earliest_available_event_id", "latest_available_event_id"].includes(key)) {
+      if (value !== null && !isValidTransportCursor(value, runId, incarnation)) return false;
+    }
     if (["requested_stream_incarnation"].includes(key) && value !== null && !safeInteger(value, 1)) return false;
     if (["current_stream_incarnation"].includes(key) && !safeInteger(value, 1)) return false;
     if (key === "filename" && !isSafeFilename(value)) return false;
@@ -261,7 +264,7 @@ function eventShapeIsValid(value: Record<string, unknown>, eventType: V4EventTyp
   if (value.trace_ref !== null && (!nonEmptyString(value.trace_ref) || value.trace_ref.length > 128 || !SAFE_REF_PATTERN.test(value.trace_ref))) return false;
   if (value.causation_event_id !== null && (!nonEmptyString(value.causation_event_id) || !SAFE_REF_PATTERN.test(value.causation_event_id))) return false;
   if (!safeInteger(value.stream_incarnation, 1) || !isRfc3339DateTime(value.emitted_at)) return false;
-  return payloadIsValid(eventType, value.payload);
+  return payloadIsValid(eventType, value.payload, value.run_id as string, value.stream_incarnation as number);
 }
 
 function semanticKey(value: Record<string, unknown>, _eventType: V4EventType): string {
@@ -295,6 +298,7 @@ export function adaptPublicRunStreamEventV4(
     generation: frame.generation,
     emittedAt: frame.value.emitted_at as string,
     semanticKey: semanticKey(frame.value, eventType as V4EventType),
+    causationEventId: (frame.value.causation_event_id as string | null) ?? null,
   };
 }
 
@@ -320,6 +324,36 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
       message,
     }),
   });
+  const publicTool = (status: "started" | "completed" | "failed" | "denied") => ({
+    event: "run_event" as const,
+    data: JSON.stringify({
+      ...base,
+      event_type: "public_tool_activity",
+      operation_id: payload.operation_id,
+      category: payload.category,
+      display_name: payload.display_name,
+      status,
+      duration_ms: payload.duration_ms,
+      result_summary: payload.result_summary,
+      failure_category: payload.failure_category,
+      denial_code: payload.denial_code,
+      input_summary: payload.input_summary,
+    }),
+  });
+  const publicSubagent = (status: "started" | "progress" | "completed" | "failed" | "cancelled") => ({
+    event: "run_event" as const,
+    data: JSON.stringify({
+      ...base,
+      event_type: "public_subagent_activity",
+      subagent_id: payload.subagent_id,
+      display_name: payload.display_name,
+      status,
+      duration_ms: payload.duration_ms,
+      progress_percent: payload.progress_percent,
+      current_category: payload.current_category,
+      parent_id: event.causationEventId,
+    }),
+  });
   switch (event.eventType) {
     case "stream.open":
       return { streamEvent: { event: "stream_open", data: JSON.stringify(base) }, messageId: fallbackMessageId };
@@ -342,23 +376,23 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
     case "model.completed":
       return { streamEvent: activity("model_completed", "Model response complete", "info"), messageId: messageTarget };
     case "tool.started":
-      return { streamEvent: activity("tool_started", payload.display_name as string), messageId: messageTarget };
+      return { streamEvent: publicTool("started"), messageId: messageTarget };
     case "tool.completed":
-      return { streamEvent: activity("tool_completed", payload.display_name as string), messageId: messageTarget };
+      return { streamEvent: publicTool("completed"), messageId: messageTarget };
     case "tool.failed":
-      return { streamEvent: activity("tool_failed", payload.display_name as string, "error"), messageId: messageTarget };
+      return { streamEvent: publicTool("failed"), messageId: messageTarget };
     case "tool.denied":
-      return { streamEvent: activity("tool_denied", payload.display_name as string, "warning"), messageId: messageTarget };
+      return { streamEvent: publicTool("denied"), messageId: messageTarget };
     case "subagent.started":
-      return { streamEvent: activity("subagent_started", payload.display_name as string), messageId: messageTarget };
+      return { streamEvent: publicSubagent("started"), messageId: messageTarget };
     case "subagent.progress":
-      return { streamEvent: activity("subagent_progress", payload.display_name as string), messageId: messageTarget };
+      return { streamEvent: publicSubagent("progress"), messageId: messageTarget };
     case "subagent.completed":
-      return { streamEvent: activity("subagent_completed", payload.display_name as string), messageId: messageTarget };
+      return { streamEvent: publicSubagent("completed"), messageId: messageTarget };
     case "subagent.failed":
-      return { streamEvent: activity("subagent_failed", payload.display_name as string, "error"), messageId: messageTarget };
+      return { streamEvent: publicSubagent("failed"), messageId: messageTarget };
     case "subagent.cancelled":
-      return { streamEvent: activity("subagent_cancelled", payload.display_name as string, "warning"), messageId: messageTarget };
+      return { streamEvent: publicSubagent("cancelled"), messageId: messageTarget };
     case "artifact.created":
     case "artifact.ready":
     case "artifact.failed":

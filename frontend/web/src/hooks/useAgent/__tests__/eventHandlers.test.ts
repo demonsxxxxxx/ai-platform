@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message } from "../../../types";
-import { handleStreamEvent } from "../eventHandlers.ts";
+import {
+  handlePublicRunStreamFrameV4,
+  handleStreamEvent,
+} from "../eventHandlers.ts";
 import type { EventHandlerContext } from "../eventHandlers.ts";
 import type { HistoryEvent, StreamEvent } from "../types.ts";
 import {
@@ -33,6 +36,7 @@ function createContext(
     acceptedStreamCursorRef: {
       current: { sessionId: null, runId: null, eventId: null },
     },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -1316,4 +1320,55 @@ test("sandbox error side effects never expose unknown backend diagnostics", () =
     String(sandboxErrors[0]),
     /private|token|secret|proxy|html|sandbox\.log/i,
   );
+});
+
+test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-1";
+  let terminalCalls = 0;
+  ctx.onRunTerminal = () => {
+    terminalCalls += 1;
+    return true;
+  };
+  const terminal = {
+    eventHeader: "run.succeeded",
+    transportCursor: "run-1:2:1-0",
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "event-terminal",
+      run_id: "run-1",
+      message_id: null,
+      seq: 1,
+      event_type: "run.succeeded",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { terminal_event_id: "terminal-1", hydrate_required: true },
+    },
+  } as const;
+  const end = {
+    eventHeader: "stream.end",
+    transportCursor: "run-1:2:2-0",
+    value: {
+      schema: "ai-platform.public-run-stream-control.v4",
+      event_id: "event-end",
+      run_id: "run-1",
+      message_id: null,
+      seq: null,
+      event_type: "stream.end",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:01Z",
+      payload: { terminal_event_id: "terminal-1" },
+    },
+  } as const;
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), true);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), true);
+  assert.equal(terminalCalls, 1);
 });

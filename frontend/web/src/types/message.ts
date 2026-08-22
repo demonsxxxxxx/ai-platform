@@ -214,6 +214,9 @@ export interface ToolPart {
   cancelled?: boolean;
   depth?: number;
   agent_id?: string;
+  /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
+  public_operation_id?: string;
+  public_category?: string;
 }
 
 export interface SubagentPart {
@@ -234,6 +237,9 @@ export interface SubagentPart {
   completedAt?: number; // Unix timestamp (ms)
   // 状态: pending | running | complete | error | cancelled
   status?: "pending" | "running" | "complete" | "error" | "cancelled";
+  /** Server-authorized parent identity retained for grouped rendering. */
+  parent_agent_id?: string;
+  public_operation_id?: string;
 }
 
 export interface ToolCall {

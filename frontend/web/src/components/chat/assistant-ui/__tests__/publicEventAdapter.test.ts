@@ -117,6 +117,38 @@ test("v4 adapter preserves nullable run-level identity and projects safe activit
   assert.match(projected.streamEvent.data, /cancel_requested/);
 });
 
+test("v4 gap cursors require the canonical run/incarnation/Redis-id grammar", () => {
+  const raw = frame("stream.gap", {
+    reason: "stream_missing",
+    recovery: "reload_durable_state",
+    requested_event_id: "run-1:2:4-0",
+    requested_stream_incarnation: 2,
+    current_stream_incarnation: 2,
+    earliest_available_event_id: "run-1:2:1-0",
+    latest_available_event_id: "run-1:2:9-0",
+  }).value as Record<string, unknown>;
+  const control = {
+    eventHeader: "stream.gap",
+    transportCursor: "run-1:2:10-0",
+    value: {
+      ...raw,
+      schema: "ai-platform.public-run-stream-control.v4",
+      message_id: null,
+      seq: null,
+      trace_ref: null,
+      replayable: false,
+    },
+  };
+  assert.ok(adaptPublicRunStreamEventV4(control, { runId: "run-1" }));
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      { ...control, value: { ...(control.value as Record<string, unknown>), payload: { ...((control.value as Record<string, unknown>).payload as Record<string, unknown>), latest_available_event_id: "4-0" } } },
+      { runId: "run-1" },
+    ),
+    null,
+  );
+});
+
 test("stream.end remains transport-only and preserves its terminal receipt", () => {
   const raw = frame("stream.end", { terminal_event_id: "terminal-1" }).value as Record<string, unknown>;
   const adapted = adaptPublicRunStreamEventV4({

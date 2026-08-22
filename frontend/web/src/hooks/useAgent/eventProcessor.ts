@@ -451,6 +451,20 @@ export function processMessageEvent(
           break;
         }
       }
+      if (data.event_type === "public_tool_activity") {
+        const toolPart = createPublicToolPart(data);
+        if (toolPart) {
+          result.parts = upsertPublicToolPart(parts, toolPart);
+          break;
+        }
+      }
+      if (data.event_type === "public_subagent_activity") {
+        const subagentPart = createPublicSubagentPart(data, depth);
+        if (subagentPart) {
+          result.parts = upsertPublicSubagentPart(parts, subagentPart);
+          break;
+        }
+      }
       if (!shouldProjectRunStatus(data)) {
         break;
       }
@@ -594,9 +608,94 @@ export function processMessageEvent(
   return result;
 }
 
-// ============================================
-// Internal helpers
-// ============================================
+function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "tool" }> | null {
+  const operationId = typeof data.operation_id === "string" ? data.operation_id : "";
+  const displayName = typeof data.display_name === "string" ? data.display_name : "";
+  const category = typeof data.category === "string" ? data.category : "";
+  const status = typeof data.status === "string" ? data.status : "";
+  if (!operationId || !displayName || !category || !status) return null;
+  const failed = status === "failed" || status === "denied";
+  return {
+    type: "tool",
+    id: operationId,
+    name: displayName,
+    args: { category },
+    result: typeof data.result_summary === "string" ? data.result_summary : undefined,
+    success: failed ? false : status === "completed" ? true : undefined,
+    error: failed
+      ? typeof data.failure_category === "string"
+        ? data.failure_category
+        : typeof data.denial_code === "string"
+          ? data.denial_code
+          : undefined
+      : undefined,
+    isPending: status === "started",
+    cancelled: false,
+    depth: typeof data.depth === "number" ? data.depth : 0,
+    agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
+    public_operation_id: operationId,
+    public_category: category,
+  };
+}
+
+function upsertPublicToolPart(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "tool" }>,
+): MessagePart[] {
+  const index = parts.findIndex(
+    (part) => part.type === "tool" && part.public_operation_id === next.public_operation_id,
+  );
+  if (index < 0) return [...parts, next];
+  const updated = [...parts];
+  updated[index] = { ...updated[index], ...next };
+  return updated;
+}
+
+function createPublicSubagentPart(data: EventData, depth: number): Extract<MessagePart, { type: "subagent" }> | null {
+  const agentId = typeof data.subagent_id === "string" ? data.subagent_id : "";
+  const agentName = typeof data.display_name === "string" ? data.display_name : "";
+  const status = typeof data.status === "string" ? data.status : "";
+  if (!agentId || !agentName || !status) return null;
+  const terminal = status === "completed" || status === "failed" || status === "cancelled";
+  return {
+    type: "subagent",
+    agent_id: agentId,
+    agent_name: agentName,
+    input: "",
+    isPending: !terminal,
+    status: status === "progress" ? "running" : status === "started" ? "running" : status === "completed" ? "complete" : status === "cancelled" ? "cancelled" : "error",
+    depth: typeof data.depth === "number" ? data.depth : depth,
+    parts: [],
+    startedAt: typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
+    completedAt: terminal && typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
+    error: status === "failed" && typeof data.failure_category === "string" ? data.failure_category : undefined,
+    parent_agent_id: typeof data.parent_id === "string" ? data.parent_id : undefined,
+    public_operation_id: agentId,
+  };
+}
+
+function upsertPublicSubagentPart(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): MessagePart[] {
+  const index = parts.findIndex(
+    (part) => part.type === "subagent" && part.agent_id === next.agent_id && part.public_operation_id === next.public_operation_id,
+  );
+  if (index < 0) return [...parts, next];
+  const updated = [...parts];
+  const previous = updated[index];
+  if (previous.type === "subagent") {
+    updated[index] = {
+      ...previous,
+      ...next,
+      parts: previous.parts,
+      startedAt: previous.startedAt ?? next.startedAt,
+    };
+  }
+  return updated;
+}
+
+
 
 /** Replace existing sandbox part or append if none exists. */
 function upsertSandboxPart(
@@ -699,16 +798,8 @@ function createExecutionTimelinePart(
     kind: publicEvent.kind,
     presentation_kind: publicEvent.presentation_kind,
     stage: publicEvent.stage,
-    title:
-      typeof publicEvent.title === "string"
-        ? publicEvent.title
-        : typeof publicEvent.safe_label === "string"
-          ? publicEvent.safe_label
-          : undefined,
-    summary:
-      typeof publicEvent.summary === "string"
-        ? publicEvent.summary
-        : undefined,
+    title: undefined,
+    summary: undefined,
     status: publicEvent.status,
     progress: publicEvent.progress,
     safe_file_name: safePublicExecutionFileName(publicEvent.safe_file_name),

@@ -17,9 +17,27 @@ test("assistant-ui composer delegates only text content to the existing send own
   );
 });
 
-test("external message conversion does not expose raw tool results or identifiers", () => {
+test("external message conversion preserves authorized public tool identity without raw results", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
+    role: "assistant",
+    content: "",
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+    parts: [{ type: "tool", id: "operation-1", name: "Read authorized files", args: { category: "read" }, result: "safe summary", public_operation_id: "operation-1", public_category: "read" }],
+  });
+  assert.deepEqual(converted.content, [{
+    type: "tool-call",
+    toolCallId: "operation-1",
+    toolName: "Read authorized files",
+    args: { category: "read" },
+    argsText: "",
+    isError: false,
+  }]);
+});
+
+test("external message conversion hides legacy tool identifiers and results", () => {
+  const converted = toAssistantUiMessage({
+    id: "message-legacy",
     role: "assistant",
     content: "",
     timestamp: new Date("2026-01-01T00:00:00Z"),
@@ -27,11 +45,42 @@ test("external message conversion does not expose raw tool results or identifier
   });
   assert.deepEqual(converted.content, [{
     type: "tool-call",
-    toolCallId: "tool",
+    toolCallId: "tool-0",
     toolName: "Tool",
     args: {},
     argsText: "",
     isError: false,
+  }]);
+});
+
+test("external message conversion preserves public subagent identity and parent grouping metadata", () => {
+  const converted = toAssistantUiMessage({
+    id: "message-1",
+    role: "assistant",
+    content: "",
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+    parts: [{
+      type: "subagent",
+      agent_id: "agent-child",
+      agent_name: "Verification agent",
+      input: "",
+      depth: 1,
+      status: "running",
+      isPending: true,
+      parts: [],
+      public_operation_id: "agent-child",
+      parent_agent_id: "agent-root",
+    }],
+  });
+  assert.deepEqual(converted.content, [{
+    type: "data-subagent",
+    data: {
+      id: "agent-child",
+      name: "Verification agent",
+      parentId: "agent-root",
+      status: "running",
+      depth: 1,
+    },
   }]);
 });
 
