@@ -6,6 +6,33 @@ from app.public_execution import (
 )
 from app.runtime.kernel_contracts import AgentEvent
 
+_V4_EVENT_STAGES = {
+    "message.started": "message",
+    "message.delta": "message",
+    "message.completed": "message",
+    "thinking.started": "message",
+    "thinking.completed": "message",
+    "model.completed": "message",
+    "tool.started": "tool",
+    "tool.completed": "tool",
+    "tool.failed": "tool",
+    "tool.denied": "tool",
+    "subagent.started": "subagent",
+    "subagent.progress": "subagent",
+    "subagent.completed": "subagent",
+    "subagent.failed": "subagent",
+    "subagent.cancelled": "subagent",
+    "artifact.created": "artifact",
+    "artifact.ready": "artifact",
+    "artifact.failed": "artifact",
+    "policy.checking": "tool_policy",
+    "policy.allowed": "tool_policy",
+    "policy.denied": "tool_policy",
+    "run.cancel_requested": "control",
+    "run.succeeded": "runtime",
+    "run.failed": "runtime",
+}
+
 EVENT_STAGE_MAP = {
     "run_queued": "queue",
     "run_started": "runtime",
@@ -62,7 +89,40 @@ def _private_executor_event() -> dict[str, object]:
     }
 
 
+def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
+    """Carry a validated v4 candidate without adding legacy visibility fields."""
+
+    stage = _V4_EVENT_STAGES.get(event.type)
+    if stage is None or not event.run_id or not event.event_id:
+        return _private_executor_event()
+    try:
+        from app.executors.claude.agent_events import ClaudeAgentEventCandidate
+
+        candidate = ClaudeAgentEventCandidate(
+            run_id=event.run_id,
+            event_id=event.event_id,
+            event_type=event.type,
+            message_id=event.message_id,
+            causation_event_id=event.causation_event_id,
+            payload=dict(event.payload),
+        )
+    except (TypeError, ValueError):
+        return _private_executor_event()
+    return {
+        "event_type": candidate.event_type,
+        "stage": stage,
+        "message": "",
+        "payload": candidate.payload,
+        "event_id": candidate.event_id,
+        "run_id": candidate.run_id,
+        "message_id": candidate.message_id,
+        "causation_event_id": candidate.causation_event_id,
+    }
+
+
 def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
+    if event.type in _V4_EVENT_STAGES:
+        return _v4_agent_event_to_executor_event(event)
     if event.type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE:
         payload = validate_public_agent_progress_payload(event.payload)
         if payload is None or event.admin_only or event.message:

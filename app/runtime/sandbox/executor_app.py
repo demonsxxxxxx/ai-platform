@@ -1476,6 +1476,15 @@ async def _default_executor_runner(
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
+    async def on_agent_event(candidate: Any) -> bool:
+        if capability_evidence_error["code"] or not hasattr(candidate, "to_agent_event"):
+            return False
+        try:
+            await emit_event(candidate.to_agent_event())
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
         del skill_name, metadata
 
@@ -1696,6 +1705,9 @@ async def _default_executor_runner(
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
             "on_text": on_text,
+            "on_agent_event": on_agent_event,
+            "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
             "on_skill_use": on_skill_use,
             "on_capability_evidence": on_capability_evidence,
             "on_tool_lifecycle": on_tool_lifecycle,
@@ -2067,6 +2079,10 @@ def create_executor_app(
                     message=agent_event.message,
                     payload=raw_payload,
                     admin_only=agent_event.admin_only,
+                    event_id=agent_event.event_id,
+                    run_id=agent_event.run_id,
+                    message_id=agent_event.message_id,
+                    causation_event_id=agent_event.causation_event_id,
                 )]
                 event_type = agent_event.type
             if event_type == "assistant_delta" and executor_first_token_latency_ms is None:
