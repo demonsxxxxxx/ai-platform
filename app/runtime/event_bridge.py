@@ -90,6 +90,7 @@ _V4_MESSAGE_EVENT_TYPES = frozenset(
 )
 _V4_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _V4_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
+_V4_EVENT_ID_PATTERN = _V4_SAFE_REF_PATTERN
 
 _RAW_TOOL_PRIVATE_FIELDS = frozenset(
     {
@@ -118,7 +119,7 @@ def _private_executor_event() -> dict[str, object]:
 def _v4_envelope_identity_is_valid(event: AgentEvent) -> bool:
     if not isinstance(event.run_id, str) or _V4_RUN_ID_PATTERN.fullmatch(event.run_id) is None:
         return False
-    if not isinstance(event.event_id, str) or not 1 <= len(event.event_id) <= 256:
+    if not isinstance(event.event_id, str) or _V4_EVENT_ID_PATTERN.fullmatch(event.event_id) is None:
         return False
     if event.type in _V4_MESSAGE_EVENT_TYPES:
         if not isinstance(event.message_id, str):
@@ -132,10 +133,44 @@ def _v4_envelope_identity_is_valid(event: AgentEvent) -> bool:
     return True
 
 
+def _v4_public_candidate(event: AgentEvent) -> dict[str, object]:
+    return {
+        "event_type": event.type,
+        "event_id": event.event_id,
+        "run_id": event.run_id,
+        "message_id": event.message_id,
+        "causation_event_id": event.causation_event_id,
+        "message": event.message,
+        "payload": event.payload,
+    }
+
+
+def _without_none_public_values(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_none_public_values(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [
+            _without_none_public_values(item)
+            for item in value
+            if item is not None
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _without_none_public_values(item)
+            for item in value
+            if item is not None
+        )
+    return value
+
+
 def _public_strings_are_identity_safe(value: object) -> bool:
     """Reject public candidates when strict text redaction would change them."""
 
-    return sanitize_public_payload(value) == value
+    return sanitize_public_payload(value) == _without_none_public_values(value)
 
 
 def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
@@ -143,9 +178,7 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
 
     if not _v4_envelope_identity_is_valid(event):
         return _private_executor_event()
-    if not _public_strings_are_identity_safe(event.message):
-        return _private_executor_event()
-    if not _public_strings_are_identity_safe(event.payload):
+    if not _public_strings_are_identity_safe(_v4_public_candidate(event)):
         return _private_executor_event()
     stage = _V4_EVENT_STAGES.get(event.type)
     if stage is None or not event.run_id or not event.event_id:

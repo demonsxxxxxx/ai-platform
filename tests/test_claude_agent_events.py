@@ -41,8 +41,43 @@ def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
         message_id="message-1",
     )
 
+    private_envelope = AgentEvent(
+        type="message.delta",
+        payload={"delta": "safe answer"},
+        event_id="event-agent-workspaces-secret",
+        run_id="run-1187",
+        message_id="message-1",
+        causation_event_id="cause-agent-workspaces-secret",
+    )
+
     assert agent_event_to_executor_event(safe)["event_type"] == "message.delta"
     assert agent_event_to_executor_event(private)["event_type"] == "executor_private_event"
+    assert agent_event_to_executor_event(private_envelope)["event_type"] == "executor_private_event"
+
+
+def test_v4_callback_bridge_rejects_private_envelope_message_identity():
+    private_message = AgentEvent(
+        type="message.delta",
+        message="agent-workspaces/private message",
+        payload={"delta": "safe answer"},
+        event_id="event-3",
+        run_id="run-1187",
+        message_id="message-agent-workspaces-private",
+    )
+
+    assert agent_event_to_executor_event(private_message)["event_type"] == "executor_private_event"
+
+
+def test_v4_candidate_rejects_private_nested_public_strings():
+    with pytest.raises(ValueError, match="private text"):
+        ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="event-4",
+            event_type="message.delta",
+            message_id="message-1",
+            causation_event_id=None,
+            payload={"delta": "agent-workspaces/private nested text"},
+        )
 
 
 def test_answer_candidates_are_gated_and_have_one_stable_message_identity():

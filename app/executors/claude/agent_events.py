@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.control_plane_contracts import sanitize_public_text
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.streaming.events_v4 import PUBLIC_STREAM_EVENT_TYPES
 
 _APPLICATION_EVENT_TYPES = frozenset(
@@ -82,6 +82,7 @@ _ALLOWED_TASK_REASON_CODES = frozenset({"user_cancelled", "run_cancelled", "time
 
 
 _SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
+_EVENT_ID_PATTERN = _SAFE_REF_PATTERN
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
@@ -104,7 +105,7 @@ def _assert_attempt_id(value: object) -> str:
 
 
 def _assert_event_id(value: object) -> str:
-    if not isinstance(value, str) or not 1 <= len(value) <= 256:
+    if not isinstance(value, str) or _EVENT_ID_PATTERN.fullmatch(value) is None:
         raise ValueError("event_id is not a v4 EventId")
     return value
 
@@ -185,6 +186,28 @@ def _stop_category(result: object, *, sealed: bool = False) -> str:
     return "unknown"
 
 
+def _without_none_public_values(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_none_public_values(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [
+            _without_none_public_values(item)
+            for item in value
+            if item is not None
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _without_none_public_values(item)
+            for item in value
+            if item is not None
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class ClaudeAgentEventCandidate:
     """One strict v4 application event before durable envelope assignment."""
@@ -203,6 +226,16 @@ class ClaudeAgentEventCandidate:
             _assert_safe_ref(self.message_id, "message_id")
         if self.causation_event_id is not None:
             _assert_safe_ref(self.causation_event_id, "causation_event_id")
+        public_candidate = {
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "run_id": self.run_id,
+            "message_id": self.message_id,
+            "causation_event_id": self.causation_event_id,
+            "payload": self.payload,
+        }
+        if sanitize_public_payload(public_candidate) != _without_none_public_values(public_candidate):
+            raise ValueError("public event candidate contains private text")
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
         _validate_payload(self.event_type, self.payload)
