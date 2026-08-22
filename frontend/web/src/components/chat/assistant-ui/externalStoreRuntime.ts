@@ -22,6 +22,11 @@ function appendContent(message: AppendMessage): string {
     .join("");
 }
 
+function definedData(values: Record<string, unknown>): Record<string, unknown> | undefined {
+  const data = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
+  return Object.keys(data).length ? data : undefined;
+}
+
 type AssistantUiContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
 function convertPart(part: MessagePart, index: number): AssistantUiContentPart | null {
@@ -30,44 +35,44 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
       return { type: "text", text: part.content };
     case "thinking":
       return { type: "reasoning", text: "", status: part.isStreaming ? { type: "running" } : { type: "complete" } };
-    case "tool":
+    case "tool": {
+      const data = definedData({
+        durationMs: part.duration_ms,
+        evidenceRefs: part.evidence_refs,
+        artifactRefs: part.artifact_refs,
+        eventId: part.event_id,
+        causationEventId: part.causation_event_id,
+      });
       return {
         type: "tool-call",
-        toolCallId: part.public_operation_id || part.id || `tool-${index}`,
+        toolCallId: part.public_operation_id || `tool-${index}`,
         toolName: part.public_operation_id ? part.name : "Tool",
         args: part.public_operation_id && part.public_category
           ? { category: part.public_category }
           : {},
         argsText: "",
         isError: part.success === false,
-        result: part.result,
-        data: {
-          operationId: part.public_operation_id,
-          category: part.public_category,
-          durationMs: part.duration_ms,
-          evidenceRefs: part.evidence_refs,
-          artifactRefs: part.artifact_refs,
-          eventId: part.event_id,
-          causationEventId: part.causation_event_id,
-        },
+        ...(data ? { data } : {}),
       } as AssistantUiContentPart;
-    case "subagent":
-      return {
-        type: "data-subagent",
-        data: {
-          id: part.agent_id,
-          operationId: part.public_operation_id,
-          name: part.agent_name,
-          parentId: part.parent_agent_id,
-          causationEventId: part.causation_event_id,
-          status: part.status,
-          depth: part.depth,
-          durationMs: part.duration_ms,
-          progressPercent: part.progress_percent,
-          currentCategory: part.current_category,
-          eventId: part.event_id,
-        },
-      } as AssistantUiContentPart;
+    }
+    case "subagent": {
+      const data = definedData({
+        id: part.agent_id,
+        operationId: part.public_operation_id && part.public_operation_id !== part.agent_id
+          ? part.public_operation_id
+          : undefined,
+        name: part.agent_name,
+        parentId: part.parent_agent_id,
+        causationEventId: part.causation_event_id,
+        status: part.status,
+        depth: part.depth,
+        durationMs: part.duration_ms,
+        progressPercent: part.progress_percent,
+        currentCategory: part.current_category,
+        eventId: part.event_id,
+      });
+      return { type: "data-subagent", data } as AssistantUiContentPart;
+    }
     case "artifact":
       // Artifact authorization and rendering stay in ChatMessage's renderer.
       return { type: "data-artifact", data: { label: part.label, status: part.status } };

@@ -244,9 +244,16 @@ export function handlePublicRunStreamEventV4(
     event.event as unknown as Record<string, unknown>,
   );
   if (terminalStatus && event.eventType !== "stream.end") {
+    if (terminalEventId && (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) || ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)) return false;
     const owner = presentationOwner(binding, messageId);
     if (owner) ctx.publicStreamPresentation?.flush(owner);
-    if (!terminalEventId || !ctx.v4TerminalFenceRef || !ctx.onRunTerminal) return false;
+    if (!terminalEventId || !ctx.onRunTerminal) return false;
+    if (!ctx.v4TerminalFenceRef) {
+      const accepted = ctx.onRunTerminal(event.runId, terminalStatus, messageId);
+      if (accepted) ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
+      onCommitted?.(false);
+      return accepted;
+    }
     const accepted = ctx.onRunTerminal(
       event.runId,
       terminalStatus,
