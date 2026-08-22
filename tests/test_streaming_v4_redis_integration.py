@@ -7,8 +7,8 @@ from redis.asyncio import Redis
 import pytest
 
 from app.streaming.api import stream_key
-from app.streaming.v4 import V4RedisStreamBridge, project_public_envelope_v4
 from app.streaming.redis import RedisStreamBridge, StreamContractError, StreamTransportUnavailable
+from app.streaming.v4 import V4ProjectionError, V4RedisStreamBridge, project_public_envelope_v4
 
 
 REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"
@@ -21,10 +21,25 @@ def _redis_url() -> str:
     return value
 
 
-def _envelope(*, event_id: str, event_type: str = "message.delta", seq: int = 1, payload: dict[str, object] | None = None) -> dict[str, object]:
+def _envelope(
+    *,
+    event_id: str,
+    event_type: str = "message.delta",
+    seq: int = 1,
+    payload: dict[str, object] | None = None,
+) -> dict[str, object]:
     if payload is None:
         payload = {"delta": "hello"}
-    message_id = "msg4_" + "a" * 64 if event_type.startswith(("message.", "thinking.", "model.", "tool.", "subagent.")) else None
+    message_types = (
+        "message.",
+        "thinking.",
+        "model.",
+        "tool.",
+        "subagent.",
+    )
+    message_id = "msg4_" + "a" * 64 if event_type.startswith(message_types) else None
+    if event_type.startswith("run.") and payload == {"delta": "hello"}:
+        payload = {"terminal_event_id": event_id, "hydrate_required": True}
     return {
         "schema": "ai-platform.stream-event.v4",
         "event_id": event_id,
@@ -45,39 +60,38 @@ def _envelope(*, event_id: str, event_type: str = "message.delta", seq: int = 1,
     }
 
 
-@pytest.mark.asyncio
-async def test_real_redis_duplicate_event_retry_has_one_semantic_identity_per_cursor():
-    url = _redis_url()
-    client = Redis.from_url(url, decode_responses=True)
+async def _stream():
+    client = Redis.from_url(_redis_url(), decode_responses=True)
     key = stream_key(
         tenant_scope_value="scope_v4_evidence",
         run_id="run-v4-evidence",
         stream_incarnation=3,
     )
     state_key = f"{key}:state"
-    bridge = RedisStreamBridge(publish_client=client)
-    v4_bridge = V4RedisStreamBridge(bridge)
+    await client.delete(key, state_key)
+    await client.hset(state_key, mapping={"phase": "open"})
+    return client, key, state_key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+
+@pytest.mark.asyncio
+async def test_real_redis_append_keeps_same_event_identity_across_semantic_retry():
+    client, key, state_key, bridge = await _stream()
     event = _envelope(event_id="evt4_retry")
     try:
-        await client.delete(key, state_key)
-        await client.hset(state_key, mapping={"phase": "open"})
-        first = await v4_bridge.append(event)
-        second = await v4_bridge.append(event)
+        first = await bridge.append(event)
+        second = await bridge.append(event)
         assert first != second
         rows = await client.xrange(key, min="-", max="+")
         assert len(rows) == 2
         decoded = [json.loads(fields["envelope"]) for _, fields in rows]
         assert [item["event_id"] for item in decoded] == ["evt4_retry", "evt4_retry"]
         assert decoded[0] == decoded[1]
-        cursors = {
-            f"run-v4-evidence:3:{redis_id}" for redis_id, _fields in rows
-        }
-        assert len(cursors) == 2
-        public = project_public_envelope_v4(decoded[0])
-        assert public is not None
-        assert "tenant_scope" not in public
-        assert "attempt_id" not in public
-        assert "source" not in public
+        for item in decoded:
+            public = project_public_envelope_v4(item)
+            assert public is not None
+            assert "tenant_scope" not in public
+            assert "attempt_id" not in public
+            assert "source" not in public
     finally:
         await client.delete(key, state_key)
         await client.aclose()
@@ -85,16 +99,7 @@ async def test_real_redis_duplicate_event_retry_has_one_semantic_identity_per_cu
 
 @pytest.mark.asyncio
 async def test_real_redis_terminal_authority_blocks_late_frames_and_preserves_public_projection():
-    url = _redis_url()
-    client = Redis.from_url(url, decode_responses=True)
-    key = stream_key(
-        tenant_scope_value="scope_v4_evidence",
-        run_id="run-v4-evidence",
-        stream_incarnation=3,
-    )
-    state_key = f"{key}:state"
-    bridge = RedisStreamBridge(publish_client=client)
-    v4_bridge = V4RedisStreamBridge(bridge)
+    client, key, state_key, bridge = await _stream()
     terminal = _envelope(
         event_id="evt4_terminal",
         event_type="run.succeeded",
@@ -102,34 +107,27 @@ async def test_real_redis_terminal_authority_blocks_late_frames_and_preserves_pu
         payload={"terminal_event_id": "evt4_terminal", "hydrate_required": True},
     )
     try:
-        await client.delete(key, state_key)
-        await client.hset(state_key, mapping={"phase": "open"})
-        await v4_bridge.append(_envelope(event_id="evt4_before_terminal"))
-        terminal_cursor = await v4_bridge.append(terminal)
-        assert terminal_cursor
+        await bridge.append(_envelope(event_id="evt4_before_terminal"))
+        assert await bridge.append(terminal)
         with pytest.raises(StreamContractError, match="stream_terminal_closed"):
-            await v4_bridge.append(_envelope(event_id="evt4_after_terminal", seq=3))
+            await bridge.append(_envelope(event_id="evt4_after_terminal", seq=3))
         rows = await client.xrange(key, min="-", max="+")
         assert [json.loads(fields["envelope"])["event_id"] for _, fields in rows] == [
             "evt4_before_terminal",
             "evt4_terminal",
         ]
+        public = project_public_envelope_v4(json.loads(rows[-1][1]["envelope"]))
+        assert public is not None
+        assert public["event_type"] == "run.succeeded"
+        assert "tenant_scope" not in public
     finally:
         await client.delete(key, state_key)
         await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_real_redis_outage_is_retryable_before_terminalization():
-    url = _redis_url()
-    client = Redis.from_url(url, decode_responses=True)
-    key = stream_key(
-        tenant_scope_value="scope_v4_evidence",
-        run_id="run-v4-evidence",
-        stream_incarnation=3,
-    )
-    state_key = f"{key}:state"
-    healthy = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+async def test_real_redis_transient_outage_is_retryable_for_same_event():
+    client, key, state_key, healthy = await _stream()
     unavailable_client = Redis.from_url(
         "redis://127.0.0.1:1",
         decode_responses=True,
@@ -137,25 +135,37 @@ async def test_real_redis_outage_is_retryable_before_terminalization():
         socket_timeout=0.05,
     )
     unavailable = V4RedisStreamBridge(RedisStreamBridge(publish_client=unavailable_client))
-    terminal = _envelope(
-        event_id="evt4_terminal_after_outage",
-        event_type="run.succeeded",
-        seq=2,
-        payload={"terminal_event_id": "evt4_terminal_after_outage", "hydrate_required": True},
-    )
+    event = _envelope(event_id="evt4_outage_retry")
     try:
-        await client.delete(key, state_key)
-        await client.hset(state_key, mapping={"phase": "open"})
         with pytest.raises(StreamTransportUnavailable):
-            await unavailable.append(_envelope(event_id="evt4_during_outage"))
-        await healthy.append(_envelope(event_id="evt4_after_retry"))
-        assert await healthy.append(terminal)
+            await unavailable.append(event)
+        redis_id = await healthy.append(event)
+        assert redis_id
         rows = await client.xrange(key, min="-", max="+")
         assert [json.loads(fields["envelope"])["event_id"] for _, fields in rows] == [
-            "evt4_after_retry",
-            "evt4_terminal_after_outage",
+            "evt4_outage_retry"
         ]
     finally:
         await unavailable.aclose()
+        await client.delete(key, state_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_rejects_private_fields_unknown_event_codes_and_cross_version_values():
+    client, key, state_key, bridge = await _stream()
+    try:
+        private = _envelope(event_id="evt4_private", payload={"delta": "ok", "raw_command": "secret"})
+        with pytest.raises(V4ProjectionError):
+            await bridge.append(private)
+        unknown = _envelope(event_id="evt4_unknown", event_type="private.executor.raw", payload={})
+        with pytest.raises(V4ProjectionError):
+            await bridge.append(unknown)
+        cross_version = _envelope(event_id="evt4_v3", event_type="message.delta")
+        cross_version["schema"] = "ai-platform.public-run-stream-event.v3"
+        with pytest.raises(V4ProjectionError):
+            await bridge.append(cross_version)
+        assert await client.xlen(key) == 0
+    finally:
         await client.delete(key, state_key)
         await client.aclose()

@@ -10,26 +10,56 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
+from redis.asyncio import Redis
 
 from app import schema_migrations
-from app.streaming import postgres as ledger
+from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.streaming.redis import StreamAuthority
 from app.streaming.v4 import (
     V4ProjectionError,
+    V4RedisStreamBridge,
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
     recover_v4_rows,
 )
+from app.streaming.worker_projection import publish_pending_v4_events
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
+REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"
+_MESSAGE_EVENT_TYPES = frozenset(
+    {
+        "message.started",
+        "message.delta",
+        "message.completed",
+        "thinking.started",
+        "thinking.completed",
+        "model.completed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "tool.denied",
+        "subagent.started",
+        "subagent.progress",
+        "subagent.completed",
+        "subagent.failed",
+        "subagent.cancelled",
+    }
+)
 
 
 def _dsn() -> str:
     value = os.getenv(POSTGRES_DSN_ENV, "").strip()
     if not value:
         pytest.skip(f"{POSTGRES_DSN_ENV} is not configured")
+    return value
+
+
+def _redis_url() -> str:
+    value = os.getenv(REDIS_URL_ENV, "").strip()
+    if not value:
+        pytest.skip(f"{REDIS_URL_ENV} is not configured")
     return value
 
 
@@ -92,6 +122,15 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
     )
     await conn.execute(
         """
+        insert into sandbox_leases(
+          id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+          trace_id, sandbox_mode, provider, status, expires_at
+        ) values ('lease', %s, %s, %s, %s, %s, %s, %s, 'chat', 'fake', 'active', now() + interval '15 minutes')
+        """,
+        (tenant, workspace, user, session, run, attempt, f"trace_{run}"),
+    )
+    await conn.execute(
+        """
         insert into sse_stream_authorities(
           tenant_id, run_id, attempt_id, design_id, projection_version,
           tenant_scope, stream_incarnation, state, open_event_id,
@@ -112,6 +151,7 @@ async def _schema():
     admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+
         def factory():
             return _connection_factory(dsn, schema_name)
 
@@ -147,21 +187,49 @@ def _authority(tenant: str, run: str, attempt: str, *, incarnation: int = 2) -> 
     )
 
 
-def _metadata(tenant: str, run: str, attempt: str, *, incarnation: int = 2) -> dict[str, object]:
+def _metadata(
+    tenant: str,
+    run: str,
+    attempt: str,
+    event_type: str,
+    *,
+    incarnation: int = 2,
+) -> dict[str, object]:
     return {
         "version": 1,
         "attempt_id": attempt,
         "stream_incarnation": incarnation,
         "authorization_epoch": 4,
-        "message_id": opaque_message_id(tenant, run),
+        "message_id": opaque_message_id(tenant, run) if event_type in _MESSAGE_EVENT_TYPES else None,
         "publication_state": "pending",
         "publication_attempts": 0,
         "execution_lease_id": "lease",
     }
 
 
-async def _insert_v4_row(conn, *, tenant: str, run: str, attempt: str, sequence: int, event_id: str, delta: str, incarnation: int = 2, state: str = "pending") -> None:
-    payload = {"delta": delta, "__stream_v4": _metadata(tenant, run, attempt, incarnation=incarnation)}
+async def _insert_v4_row(
+    conn,
+    *,
+    tenant: str,
+    run: str,
+    attempt: str,
+    sequence: int,
+    event_id: str,
+    event_type: str = "message.delta",
+    payload: dict[str, object] | None = None,
+    incarnation: int = 2,
+    state: str = "pending",
+) -> None:
+    if payload is None:
+        payload = (
+            {"delta": event_id}
+            if event_type == "message.delta"
+            else {
+                "terminal_event_id": event_id,
+                "hydrate_required": True,
+            }
+        )
+    payload = {**payload, "__stream_v4": _metadata(tenant, run, attempt, event_type, incarnation=incarnation)}
     await conn.execute(
         """
         insert into run_events(
@@ -170,131 +238,308 @@ async def _insert_v4_row(conn, *, tenant: str, run: str, attempt: str, sequence:
           stream_publication_state, stream_publication_attempts,
           stream_publication_next_attempt_at
         ) values (%s, %s, %s, %s, 'ai-platform.event-envelope.v1', %s,
-                  'message.delta', 'agent_kernel', '', 'info', true, %s::jsonb,
+                  %s, 'agent_kernel', '', 'info', true, %s::jsonb,
                   %s, 0, now())
         """,
-        (event_id, tenant, run, f"trace_{run}", sequence, json.dumps(payload), state),
+        (event_id, tenant, run, f"trace_{run}", sequence, event_type, json.dumps(payload), state),
     )
 
 
+async def _redis_stream(tenant: str, run: str, *, incarnation: int = 2):
+    client = Redis.from_url(_redis_url(), decode_responses=True)
+    key = stream_key(
+        tenant_scope_value=f"scope_{tenant[2:]}",
+        run_id=run,
+        stream_incarnation=incarnation,
+    )
+    state_key = f"{key}:state"
+    await client.delete(key, state_key)
+    await client.hset(state_key, mapping={"phase": "open"})
+    return client, key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+
 @pytest.mark.asyncio
-async def test_postgres_v4_transaction_rollback_and_duplicate_event_retry_converge():
+async def test_real_pending_publisher_claims_and_orders_concurrent_run_rows():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
-            with pytest.raises(RuntimeError, match="rollback"):
-                async with conn.transaction():
-                    await ledger.append_event(
+            async with conn.transaction():
+                for sequence in range(1, 4):
+                    await _insert_v4_row(
                         conn,
-                        tenant_id=tenant,
-                        run_id=run,
-                        event=ledger.LedgerEvent(
-                            event_type="message.delta",
-                            stage="agent_kernel",
-                            payload={"delta": "discard"},
-                        ),
+                        tenant=tenant,
+                        run=run,
+                        attempt=attempt,
+                        sequence=sequence,
+                        event_id=f"evt4_order_{sequence}",
                     )
-                    raise RuntimeError("rollback")
-            async with conn.transaction():
-                first = await ledger.append_batch(
-                    conn,
-                    tenant_id=tenant,
-                    run_id=run,
-                    attempt_id=attempt,
-                    batch_id="retry-batch",
-                    events=[ledger.LedgerEvent(event_type="message.delta", stage="agent_kernel", payload={"delta": "same"})],
-                )
-            async with conn.transaction():
-                duplicate = await ledger.append_batch(
-                    conn,
-                    tenant_id=tenant,
-                    run_id=run,
-                    attempt_id=attempt,
-                    batch_id="retry-batch",
-                    events=[ledger.LedgerEvent(event_type="message.delta", stage="agent_kernel", payload={"delta": "same"})],
-                )
-            rows = await conn.execute("select count(*) as count from run_events where run_id = %s", (run,))
-            assert (await rows.fetchone())["count"] == 1
-            assert duplicate.duplicate is True
-            assert duplicate.event_ids == first.event_ids
-
-
-@pytest.mark.asyncio
-async def test_postgres_v4_concurrent_publishers_allocate_one_ordered_run_sequence():
-    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
-        first = await psycopg.AsyncConnection.connect(dsn, options=f"-c search_path={schema_name}", row_factory=dict_row)
-        second = await psycopg.AsyncConnection.connect(dsn, options=f"-c search_path={schema_name}", row_factory=dict_row)
-        gate = asyncio.Event()
-        entered = 0
-        mutex = asyncio.Lock()
-
-        async def append(conn, value: str) -> int:
-            nonlocal entered
-            async with conn.transaction():
-                async with mutex:
-                    entered += 1
-                    if entered == 2:
-                        gate.set()
-                await gate.wait()
-                receipt = await ledger.append_event(
-                    conn,
-                    tenant_id=tenant,
-                    run_id=run,
-                    event=ledger.LedgerEvent(event_type="message.delta", stage="agent_kernel", payload={"delta": value}),
-                )
-                return receipt.cursor.sequence
-
+        client, key, bridge = await _redis_stream(tenant, run)
         try:
-            sequences = await asyncio.gather(append(first, "one"), append(second, "two"))
-            assert sorted(sequences) == [1, 2]
+            results = await asyncio.gather(
+                *(
+                    publish_pending_v4_events(
+                        lambda: _connection_factory(dsn, schema_name),
+                        limit=3,
+                        bridge=bridge,
+                    )
+                    for _ in range(4)
+                )
+            )
+            assert sum(results) == 3
+            stream_rows = await client.xrange(key, min="-", max="+")
+            assert [json.loads(fields["envelope"])["seq"] for _, fields in stream_rows] == [1, 2, 3]
+            async with _connection_factory(dsn, schema_name) as conn:
+                rows = await conn.execute(
+                    "select sequence, stream_publication_state from run_events where run_id = %s order by sequence",
+                    (run,),
+                )
+                assert await rows.fetchall() == [
+                    {"sequence": 1, "stream_publication_state": "published"},
+                    {"sequence": 2, "stream_publication_state": "published"},
+                    {"sequence": 3, "stream_publication_state": "published"},
+                ]
         finally:
-            await first.close()
-            await second.close()
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_postgres_v4_recovery_rebinds_old_incarnation_and_strips_internal_fields():
+async def test_real_pending_publisher_retries_same_event_after_pg_disposition_failure():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
             async with conn.transaction():
-                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt, sequence=1, event_id="evt4_old", delta="old", incarnation=1, state="published")
-                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt, sequence=2, event_id="evt4_trimmed", delta="trimmed", state="published")
-                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt, sequence=3, event_id="evt4_latest", delta="latest", state="pending")
-                authority = _authority(tenant, run, attempt)
-                recovery = await recover_v4_rows(conn, tenant_id=tenant, run_id=run, authority=authority)
-                assert [row["sequence"] for row in recovery.rows] == [1, 2, 3]
-                trimmed = await recover_v4_rows(
+                await _insert_v4_row(
                     conn,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
+                    sequence=1,
+                    event_id="evt4_disposition",
+                )
+                await conn.execute(
+                    """
+                    create function fail_v4_disposition() returns trigger
+                    language plpgsql as $$
+                    begin
+                      raise exception 'v4 disposition failure';
+                    end;
+                    $$
+                    """
+                )
+                await conn.execute(
+                    """
+                    create trigger fail_v4_disposition_trigger
+                    before update of stream_publication_state on run_events
+                    for each row when (new.id = 'evt4_disposition')
+                    execute function fail_v4_disposition()
+                    """
+                )
+        client, key, bridge = await _redis_stream(tenant, run)
+        try:
+            with pytest.raises(psycopg.DatabaseError, match="v4 disposition failure"):
+                await publish_pending_v4_events(
+                    lambda: _connection_factory(dsn, schema_name),
+                    limit=1,
+                    bridge=bridge,
+                )
+            async with _connection_factory(dsn, schema_name) as conn:
+                row = await conn.execute(
+                    "select stream_publication_state from run_events where id = 'evt4_disposition'"
+                )
+                assert (await row.fetchone())["stream_publication_state"] == "pending"
+            redis_rows = await client.xrange(key, min="-", max="+")
+            assert len(redis_rows) == 1
+
+            async with _connection_factory(dsn, schema_name) as conn:
+                async with conn.transaction():
+                    await conn.execute("drop trigger fail_v4_disposition_trigger on run_events")
+                    await conn.execute("drop function fail_v4_disposition()")
+            assert await publish_pending_v4_events(
+                lambda: _connection_factory(dsn, schema_name),
+                limit=1,
+                bridge=bridge,
+            ) == 1
+            redis_rows = await client.xrange(key, min="-", max="+")
+            assert [json.loads(fields["envelope"])["event_id"] for _, fields in redis_rows] == [
+                "evt4_disposition",
+                "evt4_disposition",
+            ]
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_terminal_publish_and_restart_need_no_live_execution_lease():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            async with conn.transaction():
+                await conn.execute("update runs set status = 'succeeded' where id = %s", (run,))
+                await conn.execute(
+                    "update sse_stream_authorities set state = 'terminal' where tenant_id = %s and run_id = %s",
+                    (tenant, run),
+                )
+                await conn.execute(
+                    "update sandbox_leases set status = 'released', expires_at = now() where run_id = %s",
+                    (run,),
+                )
+                await _insert_v4_row(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
+                    sequence=1,
+                    event_id="evt4_terminal_restart",
+                    event_type="run.succeeded",
+                )
+        client, key, bridge = await _redis_stream(tenant, run)
+        try:
+            assert await publish_pending_v4_events(
+                lambda: _connection_factory(dsn, schema_name),
+                limit=1,
+                bridge=bridge,
+            ) == 1
+            async with _connection_factory(dsn, schema_name) as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        update run_events
+                        set stream_publication_state = 'pending', stream_publication_redis_id = null,
+                            stream_publication_attempts = 0, stream_publication_next_attempt_at = now(),
+                            payload_json = jsonb_set(
+                              jsonb_set(payload_json, '{__stream_v4,publication_state}', to_jsonb('pending'::text)),
+                              '{__stream_v4,publication_attempts}', to_jsonb(0)
+                            )
+                        where id = 'evt4_terminal_restart'
+                        """
+                    )
+            assert await publish_pending_v4_events(
+                lambda: _connection_factory(dsn, schema_name),
+                limit=1,
+                bridge=bridge,
+            ) == 1
+            rows = await client.xrange(key, min="-", max="+")
+            assert len(rows) == 1
+            assert json.loads(rows[0][1]["envelope"])["event_type"] == "run.succeeded"
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_recovery_route_rebinds_each_frame_cursor_and_exposes_public_only_data():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            async with conn.transaction():
+                await _insert_v4_row(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
+                    sequence=1,
+                    event_id="evt4_old_incarnation",
+                    incarnation=1,
+                )
+                await _insert_v4_row(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
+                    sequence=2,
+                    event_id="evt4_current_incarnation",
+                    incarnation=1,
+                )
+        client, key, bridge = await _redis_stream(tenant, run, incarnation=2)
+        try:
+            authority = _authority(tenant, run, attempt, incarnation=2)
+            async with _connection_factory(dsn, schema_name) as conn:
+                recovery = await _recover_v4_attach_gap(
+                    conn,
+                    bridge=bridge,
                     tenant_id=tenant,
                     run_id=run,
                     authority=authority,
-                    after_sequence=1,
-                    limit=1,
+                    after_sequence=0,
+                    limit=8,
                 )
-                assert [row["sequence"] for row in trimmed.rows] == [2]
-                internal = project_public_v4(recovery.rows[0], authority=authority)
-                assert internal is not None
-                public = project_public_envelope_v4(internal)
+            assert [item["seq"] for item in recovery.rows] == [1, 2]
+            assert len(recovery.transport_cursors) == 2
+            assert recovery.transport_cursors[0] != recovery.transport_cursors[1]
+            redis_rows = await client.xrange(key, min="-", max="+")
+            assert [json.loads(fields["envelope"])["seq"] for _, fields in redis_rows] == [1, 2]
+            for _, fields in redis_rows:
+                public = project_public_envelope_v4(json.loads(fields["envelope"]))
                 assert public is not None
-                assert public["seq"] == 1
                 assert "tenant_scope" not in public
                 assert "attempt_id" not in public
                 assert "source" not in public
-
-                with pytest.raises(V4ProjectionError, match="authority_scope"):
-                    await recover_v4_rows(
-                        conn,
-                        tenant_id=tenant,
-                        run_id=run,
-                        authority=_authority(tenant, "other-run", attempt),
-                    )
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_postgres_v4_migration_index_constraint_and_rollback_preserve_event_facts():
+async def test_recovery_scope_and_private_or_unknown_event_values_fail_closed():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        authority = _authority(tenant, run, attempt)
         async with _connection_factory(dsn, schema_name) as conn:
             async with conn.transaction():
-                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt, sequence=1, event_id="evt4_fact", delta="retained")
+                await _insert_v4_row(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
+                    sequence=1,
+                    event_id="evt4_private",
+                    payload={"delta": "ok", "raw_command": "secret"},
+                )
+                private = await conn.execute(
+                    "select id, tenant_id, run_id, sequence, event_type, visible_to_user, payload_json, stream_publication_state, created_at from run_events where id = 'evt4_private'"
+                )
+                row = await private.fetchone()
+                assert project_public_v4(row, authority=authority) is None
+            with pytest.raises(V4ProjectionError, match="authority_scope"):
+                await recover_v4_rows(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    authority=_authority(tenant, "other", attempt),
+                )
+        unknown = {
+            "schema": "ai-platform.stream-event.v4",
+            "event_id": "evt4_unknown",
+            "tenant_scope": authority.tenant_scope,
+            "run_id": run,
+            "attempt_id": attempt,
+            "message_id": None,
+            "seq": 1,
+            "event_type": "private.executor.raw",
+            "stream_incarnation": 2,
+            "replayable": True,
+            "trace_ref": None,
+            "causation_event_id": None,
+            "emitted_at": "2026-08-20T00:00:00Z",
+            "projection_version": "public-stream-v4",
+            "payload": {},
+            "source": {"kind": "run_event", "run_event_id": "evt4_unknown", "sequence": 1},
+        }
+        assert project_public_envelope_v4(unknown) is None
+
+
+@pytest.mark.asyncio
+async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_back_facts_only():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True
+            async with conn.transaction():
+                await _insert_v4_row(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
+                    sequence=1,
+                    event_id="evt4_migration_fact",
+                )
                 index = await conn.execute(
                     """
                     select indexdef from pg_indexes
@@ -302,17 +547,26 @@ async def test_postgres_v4_migration_index_constraint_and_rollback_preserve_even
                       and indexname = 'idx_run_events_stream_publication_retry'
                     """
                 )
-                definition = (await index.fetchone())["indexdef"]
-                assert "stream_publication_next_attempt_at" in definition
-                assert "stream_publication_state = 'pending'" in definition
+                indexdef = (await index.fetchone())["indexdef"]
+                normalized_index = " ".join(
+                    indexdef.lower().replace("(", " ").replace(")", " ").split()
+                )
+                assert "run_events" in normalized_index
+                assert "using btree" in normalized_index
+                for column in ("stream_publication_next_attempt_at", "created_at", "id"):
+                    assert column in normalized_index
+                assert "visible_to_user = true" in normalized_index
+                assert "stream_publication_state = 'pending'::text" in normalized_index
                 constraint = await conn.execute(
                     """
-                    select pg_get_constraintdef(oid) as definition
+                    select pg_get_constraintdef(oid, true) as definition
                     from pg_constraint
-                    where conname = 'chk_run_events_stream_publication_state'
+                    where conrelid = 'run_events'::regclass
+                      and conname = 'chk_run_events_stream_publication_state'
                     """
                 )
-                assert "pending" in (await constraint.fetchone())["definition"]
+                definition = (await constraint.fetchone())["definition"]
+                assert "pending" in definition and "published" in definition and "suppressed" in definition
                 await schema_migrations.rollback_v4_publication_migration(conn)
                 columns = await conn.execute(
                     """
@@ -322,30 +576,9 @@ async def test_postgres_v4_migration_index_constraint_and_rollback_preserve_even
                     """
                 )
                 assert await columns.fetchall() == []
-                fact = await conn.execute("select id, sequence from run_events where id = 'evt4_fact'")
-                assert await fact.fetchone() == {"id": "evt4_fact", "sequence": 1}
-
-
-@pytest.mark.asyncio
-async def test_postgres_v4_terminal_row_needs_no_execution_lease_after_run_terminalizes():
-    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
-        async with _connection_factory(dsn, schema_name) as conn:
-            async with conn.transaction():
-                await conn.execute("update runs set status = 'succeeded' where id = %s", (run,))
-                await conn.execute("""
-                    insert into sse_authority_leases(
-                      id, tenant_id, run_id, api_instance_id, connection_id,
-                      authorization_epoch, lease_not_after
-                    ) values ('lease_evidence', %s, %s, 'api_evidence', 'conn_evidence', 4, now() + interval '15 seconds')
-                """, (tenant, run))
-                await conn.execute("""
-                    update sse_authority_leases
-                    set closed_at = now(), close_reason = 'worker_restart'
-                    where id = 'lease_evidence'
-                """)
-                await conn.execute("update sse_stream_authorities set state = 'terminal' where tenant_id = %s and run_id = %s", (tenant, run))
-                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt, sequence=1, event_id="evt4_terminal", delta="terminal")
-                lease = await conn.execute("select count(*) as count from sse_authority_leases where run_id = %s and closed_at is null", (run,))
-                assert (await lease.fetchone())["count"] == 0
-                row = await conn.execute("select stream_publication_state from run_events where id = 'evt4_terminal'")
-                assert (await row.fetchone())["stream_publication_state"] == "pending"
+                index_after = await conn.execute(
+                    "select to_regclass('idx_run_events_stream_publication_retry') as name"
+                )
+                assert (await index_after.fetchone())["name"] is None
+                fact = await conn.execute("select id, sequence from run_events where id = 'evt4_migration_fact'")
+                assert await fact.fetchone() == {"id": "evt4_migration_fact", "sequence": 1}
