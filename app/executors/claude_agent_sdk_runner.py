@@ -1255,10 +1255,9 @@ async def run_claude_agent_sdk(
         sanitizer=sanitize_public_text,
         max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
     )
-    if sandbox_tool_lifecycle_governed or effectful_mcp_lifecycle_governed:
-        answer_stream_gate.defer_until_finish()
-    elif required_answer_gate:
-        answer_stream_gate.seal()
+    # Do not publish answer prefixes before the structured terminal result has
+    # validated the whole-answer bound; an overflow cannot retract prior SSE.
+    answer_stream_gate.defer_until_finish()
     sdk_prompt = (
         _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
         if require_selected_skill_invocation

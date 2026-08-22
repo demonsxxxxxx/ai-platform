@@ -10,6 +10,7 @@ from app.executors.claude.agent_events import (
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from app.runtime.event_bridge import agent_event_to_executor_event
+from app.runtime.kernel_contracts import AgentEvent
 
 
 def _adapter():
@@ -22,6 +23,26 @@ def _adapter():
             "qa-review": ("skill", "QA review"),
         },
     )
+
+
+def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
+    safe = AgentEvent(
+        type="message.delta",
+        payload={"delta": "safe answer"},
+        event_id="event-1",
+        run_id="run-1187",
+        message_id="message-1",
+    )
+    private = AgentEvent(
+        type="message.delta",
+        payload={"delta": r"C:\\agent-workspaces\\run-1187\\secret"},
+        event_id="event-2",
+        run_id="run-1187",
+        message_id="message-1",
+    )
+
+    assert agent_event_to_executor_event(safe)["event_type"] == "message.delta"
+    assert agent_event_to_executor_event(private)["event_type"] == "executor_private_event"
 
 
 def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
@@ -499,8 +520,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
     assert result.error is None
     assert [candidate.event_type for candidate in candidates] == [
-        "message.started",
-        "message.delta",
         "policy.checking",
         "policy.allowed",
         "tool.started",
@@ -511,16 +530,101 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "subagent.started",
         "subagent.progress",
         "subagent.completed",
+        "message.started",
         "message.delta",
         "message.completed",
         "model.completed",
     ]
     deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
-    assert deltas == ["safe ", "answer"]
+    assert deltas == ["safe answer"]
     assert all(value not in repr(candidate.as_dict()) for candidate in candidates for value in ("sdk-tool-1", "permission-tool"))
 
 
 @pytest.mark.asyncio
+async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_sdk_max_thinking_tokens=128,
+            claude_agent_sdk_effort="high",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    published: list[str] = []
+    candidates = []
+    answer = "a" * 262_145
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.StreamEvent(
+            uuid="stream-start",
+            session_id="sdk-session",
+            event={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text"},
+            },
+        )
+        for index in range(65):
+            yield sdk.StreamEvent(
+                uuid=f"stream-delta-{index}",
+                session_id="sdk-session",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "a" * 4_096},
+                },
+            )
+        yield sdk.StreamEvent(
+            uuid="stream-stop",
+            session_id="sdk-session",
+            event={"type": "content_block_stop", "index": 0},
+        )
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result=answer,
+        )
+
+    async def on_text(value: str) -> None:
+        published.append(value)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        query_fn=query_fn,
+        on_text=on_text,
+        on_agent_event=candidates.append,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="sandbox_brokered",
+        require_selected_skill_invocation=False,
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.message == ""
+    assert published == []
+    assert candidates == []
+
 @pytest.mark.parametrize(
     ("answer", "expected_error"),
     [

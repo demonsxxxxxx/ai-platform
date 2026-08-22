@@ -1,5 +1,6 @@
 import re
 
+from app.control_plane_contracts import sanitize_public_payload
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
@@ -131,10 +132,20 @@ def _v4_envelope_identity_is_valid(event: AgentEvent) -> bool:
     return True
 
 
+def _public_strings_are_identity_safe(value: object) -> bool:
+    """Reject public candidates when strict text redaction would change them."""
+
+    return sanitize_public_payload(value) == value
+
+
 def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
     """Carry a validated v4 candidate without adding legacy visibility fields."""
 
     if not _v4_envelope_identity_is_valid(event):
+        return _private_executor_event()
+    if not _public_strings_are_identity_safe(event.message):
+        return _private_executor_event()
+    if not _public_strings_are_identity_safe(event.payload):
         return _private_executor_event()
     stage = _V4_EVENT_STAGES.get(event.type)
     if stage is None or not event.run_id or not event.event_id:
