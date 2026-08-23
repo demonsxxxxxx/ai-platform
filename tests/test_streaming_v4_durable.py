@@ -103,6 +103,15 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
     assert first[0]["id"] == second[0]["id"]
     assert len(append_calls) == 1
     assert sum("update run_events" in statement.lower() for statement, _ in conn.statements) == 1
+    metadata = conn.rows[first[0]["id"]]["payload_json"]["__stream_v4"]
+    metadata.update(
+        publication_state="published",
+        publication_attempts=4,
+        suppression_reason="transport_retry",
+    )
+    third = await exercise()
+    assert third[0][0]["id"] == first[0]["id"]
+    assert len(append_calls) == 1
     conn.rows[first[0]["id"]]["payload_json"]["delta"] = "tampered"
     with pytest.raises(v4.V4ProjectionError, match="existing_row_conflict"):
         await v4.append_callback_v4_rows(
@@ -116,6 +125,47 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
             execution_lease_id="lease-a",
         )
     assert len(append_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("tenant_id", "tenant-b", "authority_scope_mismatch"),
+        ("run_id", "run-b", "authority_scope_mismatch"),
+        ("attempt_id", "attempt-b", "authority_scope_mismatch"),
+        ("batch_id", "", "authority_scope_mismatch"),
+        ("execution_lease_id", "", "execution_lease_id_invalid"),
+    ],
+)
+async def test_callback_v4_rows_keep_batch_attempt_lease_and_authority_fences(
+    field, value, error
+):
+    from app.streaming import v4
+
+    conn = _callback_conn()
+    item = v4.V4CallbackItem(
+        callback_index=0,
+        batch_index=1,
+        event_type="message.delta",
+        payload={"delta": "hello"},
+        message_id=opaque_message_id("tenant-a", "run-a"),
+    )
+    values = {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "batch_id": "batch-a",
+        "execution_lease_id": "lease-a",
+    }
+    values[field] = value
+    with pytest.raises((v4.V4ProjectionError, ValueError), match=error):
+        await v4.append_callback_v4_rows(
+            conn,
+            **values,
+            items=(item,),
+            authority=_authority(),
+        )
 
 
 @pytest.mark.asyncio

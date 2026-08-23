@@ -39,6 +39,9 @@ from app.streaming.redis import (
 V4_METADATA_KEY = "__stream_v4"
 V4_PUBLIC_STAGE = "agent_kernel"
 V4_METADATA_VERSION = 1
+_V4_PUBLISHER_MUTABLE_METADATA_FIELDS = frozenset(
+    {"publication_state", "publication_attempts", "suppression_reason"}
+)
 
 
 class V4ProjectionError(ValueError):
@@ -827,6 +830,20 @@ def strip_internal_envelope(envelope: Mapping[str, object]) -> dict[str, object]
 
 
 
+def _immutable_v4_payload(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    payload = dict(value)
+    metadata = payload.get(V4_METADATA_KEY)
+    if isinstance(metadata, Mapping):
+        payload[V4_METADATA_KEY] = {
+            key: item
+            for key, item in metadata.items()
+            if key not in _V4_PUBLISHER_MUTABLE_METADATA_FIELDS
+        }
+    return payload
+
+
 async def append_application_v4_row(
     conn: Any,
     *,
@@ -928,7 +945,8 @@ async def append_application_v4_row(
                 existing.get("run_id") != run_id,
                 existing.get("event_type") != event_type,
                 existing.get("visible_to_user") is not True,
-                existing.get("payload_json") != expected_payload,
+                _immutable_v4_payload(existing.get("payload_json"))
+                != _immutable_v4_payload(expected_payload),
             )
         ):
             raise V4ProjectionError("v4_callback_existing_row_conflict")

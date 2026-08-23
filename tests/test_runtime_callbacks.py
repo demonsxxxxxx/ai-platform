@@ -1194,3 +1194,160 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
     assert heartbeat_calls
     assert heartbeat_calls[0]["ttl_seconds"] == 731
     assert heartbeat_calls[0]["executor_status"] == "running"
+
+
+def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_events(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted = []
+    v4_rows = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def append_batch(conn, **receipt):
+        persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
+    async def append_v4(conn, **kwargs):
+        v4_rows.append(kwargs)
+        return ()
+
+    async def publish_pending(transaction_factory, *, limit):
+        return {"published": 0, "pending": len(v4_rows[-1]["items"])}
+
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import AgentEvent
+
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-a",
+        attempt_id="attempt-a",
+        authorized_capabilities={"Read": {"category": "read", "display_name": "Read"}},
+    )
+    ThinkingBlock = type("ThinkingBlock", (), {})
+    thinking = adapter.accept_content_block(ThinkingBlock(), block_index=0, message_identity="message-a")
+    ToolUseBlock = type("ToolUseBlock", (), {})
+    tool = ToolUseBlock()
+    tool.id, tool.name, tool.input = "tool-1", "Read", {}
+    adapter.accept_content_block(tool)
+    tool_events = (
+        *adapter.accept_hook("PreToolUse", {"tool_use_id": "tool-1", "tool_name": "Read"}, tool_use_id="tool-1"),
+        *adapter.accept_hook("PostToolUse", {"tool_use_id": "tool-1", "tool_name": "Read"}, tool_use_id="tool-1"),
+    )
+    TaskStartedMessage = type("TaskStartedMessage", (), {})
+    task_started = TaskStartedMessage()
+    task_started.task_id, task_started.tool_use_id = "task-1", "tool-1"
+    TaskNotificationMessage = type("TaskNotificationMessage", (), {})
+    task_done = TaskNotificationMessage()
+    task_done.task_id, task_done.status = "task-1", "completed"
+    subagent = (*adapter.accept_task_message(task_started), *adapter.accept_task_message(task_done))
+    Result = type("Result", (), {})
+    result = Result()
+    result.duration_ms, result.num_turns, result.stop_reason = 12, 1, "end_turn"
+    model = adapter.accept_result(result)
+    policy = adapter.accept_policy_decision(tool_name="Read", tool_input={}, allowed=True, tool_use_id="tool-1")
+    artifact = adapter.accept_artifact_reference(
+        {"artifact_id": "artifact-1", "filename": "report.txt", "media_type": "text/plain", "size_bytes": 4, "status": "ready"}
+    )
+    run_event = AgentEvent(
+        type="run.succeeded",
+        event_id="run-event-1",
+        run_id="run-a",
+        payload={"terminal_event_id": "terminal-1", "hydrate_required": True},
+    )
+    candidates = (*thinking, *tool_events, *subagent, *model, *policy, *artifact)
+    events = tuple(
+        candidate.to_agent_event() if hasattr(candidate, "to_agent_event") else candidate
+        for candidate in (*candidates, run_event)
+    )
+
+    authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return authority
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
+    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(batch_id="batch-lifecycle", new_message=None, state_patch={}, events=[event.model_dump() for event in events]),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["event_count"] == len(events) + 1
+    assert len(v4_rows) == 1
+    assert {item.event_type for item in v4_rows[0]["items"]} == {
+        "thinking.started",
+        "thinking.completed",
+        "tool.started",
+        "tool.completed",
+        "subagent.started",
+        "subagent.completed",
+        "model.completed",
+    }
+    assert not {"artifact.ready", "policy.checking", "policy.allowed", "run.succeeded"} & {
+        item.event_type for item in v4_rows[0]["items"]
+    }
+    assert response.json()["accepted"] is True
+
+
+def test_executor_callback_propagates_v4_correctness_errors(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def append_batch(conn, **receipt):
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
+    async def append_v4(conn, **kwargs):
+        return (SimpleNamespace(event_type="message.delta"),)
+
+    async def correctness_error(*_args, **_kwargs):
+        raise RuntimeError("v4 correctness failure")
+
+    from app.routes import runtime_callbacks
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+
+    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return authority
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", correctness_error)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+
+    with pytest.raises(RuntimeError, match="v4 correctness failure"):
+        TestClient(create_app()).post(
+            "/api/ai/runtime/callbacks/executor",
+            headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+            json=callback_payload(batch_id="batch-error", new_message=None, state_patch={}, events=[event.model_dump()]),
+        )

@@ -66,16 +66,6 @@ def _executor_callback_receipt(
     return receipt
 
 
-def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str]]:
-    result: list[tuple[int, str]] = []
-    for index, text in items:
-        if result and len((result[-1][1] + text).encode()) <= 8192:
-            result[-1] = (result[-1][0], result[-1][1] + text)
-        else:
-            result.append((index, text))
-    return result
-
-
 async def record_executor_callback(
     callback: ExecutorCallbackEvent,
 ) -> dict[str, object]:
@@ -277,14 +267,10 @@ async def record_executor_callback(
             # PostgreSQL is authoritative; the worker falls back to bounded polling.
             logger.warning("executor_terminal_signal_unavailable")
     if v4_items:
-        try:
-            await publish_pending_v4_events(
-                transaction,
-                limit=min(max(len(v4_items), 1), 64),
-            )
-        except Exception:
-            # Durable rows remain pending and the callback receipt is accepted.
-            logger.warning("callback_v4_publish_unavailable", exc_info=True)
+        await publish_pending_v4_events(
+            transaction,
+            limit=min(max(len(v4_items), 1), 64),
+        )
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,
