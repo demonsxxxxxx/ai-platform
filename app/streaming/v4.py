@@ -23,11 +23,11 @@ from app.streaming.contracts import ResumeDecision, StreamCursor, StreamGap
 
 from app.streaming import postgres
 from app.streaming.contracts import canonical_json_bytes
-from app.streaming.events_v4 import (
-    INTERNAL_STREAM_EVENT_SCHEMA,
-    PUBLIC_RUN_STREAM_SCHEMA,
-    PUBLIC_STREAM_EVENT_TYPES,
-    STREAM_PROJECTION_VERSION,
+from app.streaming.events import (
+    INTERNAL_STREAM_EVENT_SCHEMA_V4 as INTERNAL_STREAM_EVENT_SCHEMA,
+    PUBLIC_RUN_STREAM_SCHEMA_V4 as PUBLIC_RUN_STREAM_SCHEMA,
+    PUBLIC_STREAM_EVENT_TYPES_V4 as PUBLIC_STREAM_EVENT_TYPES,
+    STREAM_PROJECTION_VERSION_V4 as STREAM_PROJECTION_VERSION,
 )
 from app.streaming.redis import (
     RedisStreamBridge,

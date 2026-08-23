@@ -15,11 +15,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
-from app.streaming.events_v4 import PUBLIC_STREAM_EVENT_TYPES
+from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
 
-_APPLICATION_EVENT_TYPES = frozenset(
-    value for value in PUBLIC_STREAM_EVENT_TYPES if not value.startswith("stream.")
-)
+_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
 _TOOL_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
 _BUILTIN_TOOL_CATEGORIES = {
     "Read": "read",
