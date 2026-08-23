@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Final, Literal, TypeAlias, TypedDict
 
-from app.streaming.domain.protocol_v4 import (
-    INTERNAL_STREAM_EVENT_SCHEMA as INTERNAL_STREAM_EVENT_SCHEMA_V4,
-    PUBLIC_RUN_STREAM_SCHEMA as PUBLIC_RUN_STREAM_SCHEMA_V4,
-    PUBLIC_STREAM_EVENT_TYPES as PUBLIC_STREAM_EVENT_TYPES_V4,
-    STREAM_DESIGN_ID as STREAM_DESIGN_ID_V4,
-    STREAM_PROJECTION_VERSION as STREAM_PROJECTION_VERSION_V4,
-    PublicRunStreamEventV4,
-)
+from app.streaming.domain import protocol_v4 as _protocol_v4
+
+INTERNAL_STREAM_EVENT_SCHEMA_V4: Final = _protocol_v4.INTERNAL_STREAM_EVENT_SCHEMA
+PUBLIC_RUN_STREAM_SCHEMA_V4: Final = _protocol_v4.PUBLIC_RUN_STREAM_SCHEMA
+PUBLIC_STREAM_EVENT_TYPES_V4: Final = _protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+STREAM_DESIGN_ID_V4: Final = _protocol_v4.STREAM_DESIGN_ID
+STREAM_PROJECTION_VERSION_V4: Final = _protocol_v4.STREAM_PROJECTION_VERSION
+PublicRunStreamEventV4: TypeAlias = _protocol_v4.PublicRunStreamEventV4
 
 PUBLIC_RUN_STREAM_SCHEMA: Final = "ai-platform.public-run-stream-event.v3"
 INTERNAL_STREAM_EVENT_SCHEMA: Final = "ai-platform.stream-event.v3"
@@ -26,6 +26,11 @@ PUBLIC_STREAM_EVENT_TYPES: Final = frozenset(
         "terminal",
         "end",
     )
+)
+
+PUBLIC_APPLICATION_EVENT_TYPES_V4: Final = frozenset(
+    value for value in PUBLIC_STREAM_EVENT_TYPES_V4
+    if not value.startswith("stream.")
 )
 
 
@@ -139,9 +144,3 @@ class InternalStreamEnvelopeV3(TypedDict):
     emitted_at: str
     projection_version: Literal["public-stream-v3"]
     payload: dict[str, object]
-
-
-PUBLIC_APPLICATION_EVENT_TYPES_V4: Final = frozenset(
-    value for value in PUBLIC_STREAM_EVENT_TYPES_V4
-    if not value.startswith("stream.")
-)
