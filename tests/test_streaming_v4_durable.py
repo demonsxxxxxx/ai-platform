@@ -33,10 +33,31 @@ def _callback_conn():
 
         async def execute(self, statement, params):
             self.statements.append((statement, params))
-            if statement.lstrip().lower().startswith("select id"):
-                return Cursor(self.rows.get(params[0]))
-            if statement.lstrip().lower().startswith("update run_events"):
-                return Cursor({"id": params[-1]})
+            normalized = " ".join(statement.lower().split())
+            event_id = params[-1]
+            row = self.rows.get(event_id)
+            if normalized.startswith("select id"):
+                return Cursor(row)
+            if "set stream_publication_attempts" in normalized:
+                if row is not None:
+                    metadata = row["payload_json"]["__stream_v4"]
+                    metadata["publication_attempts"] = int(metadata.get("publication_attempts", 0)) + 1
+                return Cursor({"id": event_id})
+            if "set stream_publication_state = 'published'" in normalized:
+                if row is not None and row["stream_publication_state"] == "pending":
+                    row["stream_publication_state"] = "published"
+                    row["payload_json"]["__stream_v4"]["publication_state"] = "published"
+                    return Cursor({"id": event_id})
+                return Cursor(None)
+            if "set stream_publication_state = 'suppressed'" in normalized:
+                if row is not None and row["stream_publication_state"] == "pending":
+                    row["stream_publication_state"] = "suppressed"
+                    row["payload_json"]["__stream_v4"]["publication_state"] = "suppressed"
+                    row["payload_json"]["__stream_v4"]["suppression_reason"] = params[-2]
+                    return Cursor({"id": event_id})
+                return Cursor(None)
+            if normalized.startswith("update run_events"):
+                return Cursor({"id": event_id})
             raise AssertionError(statement)
 
     return Connection()
@@ -103,15 +124,50 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
     assert first[0]["id"] == second[0]["id"]
     assert len(append_calls) == 1
     assert sum("update run_events" in statement.lower() for statement, _ in conn.statements) == 1
-    metadata = conn.rows[first[0]["id"]]["payload_json"]["__stream_v4"]
-    metadata.update(
-        publication_state="published",
-        publication_attempts=4,
-        suppression_reason="transport_retry",
-    )
+    await v4.mark_v4_attempt(conn, event_id=first[0]["id"])
     third = await exercise()
     assert third[0][0]["id"] == first[0]["id"]
+    assert conn.rows[first[0]["id"]]["payload_json"]["__stream_v4"]["publication_attempts"] == 1
     assert len(append_calls) == 1
+
+    assert await v4.mark_v4_published(
+        conn,
+        event_id=first[0]["id"],
+        redis_id="17-0",
+    )
+    fourth = await exercise()
+    assert fourth[0][0]["id"] == first[0]["id"]
+    assert len(append_calls) == 1
+
+    suppressed_item = replace(item, batch_index=2)
+    suppressed_rows = await v4.append_callback_v4_rows(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        batch_id="batch-suppressed",
+        items=(suppressed_item,),
+        authority=authority,
+        execution_lease_id="lease-a",
+    )
+    assert await v4.suppress_v4_event(
+        conn,
+        event_id=suppressed_rows[0]["id"],
+        reason="authority_revoked",
+    )
+    suppressed_retry = await v4.append_callback_v4_rows(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        batch_id="batch-suppressed",
+        items=(suppressed_item,),
+        authority=authority,
+        execution_lease_id="lease-a",
+    )
+    assert suppressed_retry[0]["id"] == suppressed_rows[0]["id"]
+    assert len(append_calls) == 2
+
     conn.rows[first[0]["id"]]["payload_json"]["delta"] = "tampered"
     with pytest.raises(v4.V4ProjectionError, match="existing_row_conflict"):
         await v4.append_callback_v4_rows(
@@ -124,7 +180,82 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
             authority=authority,
             execution_lease_id="lease-a",
         )
-    assert len(append_calls) == 1
+    assert len(append_calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("callback_batch_id", "batch-tampered"),
+        ("callback_index", 9),
+        ("batch_index", 9),
+        ("attempt_id", "attempt-tampered"),
+        ("execution_lease_id", "lease-tampered"),
+        ("message_id", "msg_tampered"),
+        ("source_event_id", "source-event-tampered"),
+        ("source_run_id", "run-tampered"),
+        ("trace_ref", "trace-tampered"),
+        ("causation_event_id", "cause-tampered"),
+    ],
+)
+async def test_callback_v4_existing_row_rejects_each_immutable_callback_fact(field, value, monkeypatch):
+    from app.streaming import v4
+
+    conn = _callback_conn()
+    append_calls = []
+
+    async def append_event(conn, *, tenant_id, run_id, event, event_id):
+        append_calls.append(event_id)
+        conn.rows[event_id] = {
+            "id": event_id,
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "sequence": 9,
+            "event_type": event.event_type,
+            "visible_to_user": True,
+            "payload_json": dict(event.payload),
+            "stream_publication_state": "pending",
+            "stream_publication_attempts": 0,
+            "stream_publication_next_attempt_at": None,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        return EventReceipt(event_id, RunCursor(run_id, 9), "2026-01-01T00:00:00Z")
+
+    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    authority = _authority()
+    item = v4.V4CallbackItem(
+        callback_index=0,
+        batch_index=1,
+        event_type="message.delta",
+        payload={"delta": "hello"},
+        message_id=opaque_message_id("tenant-a", "run-a"),
+    )
+    rows = await v4.append_callback_v4_rows(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        batch_id="batch-a",
+        items=(item,),
+        authority=authority,
+        execution_lease_id="lease-a",
+    )
+    metadata = conn.rows[rows[0]["id"]]["payload_json"]["__stream_v4"]
+    metadata[field] = value
+
+    with pytest.raises(v4.V4ProjectionError, match="existing_row_conflict"):
+        await v4.append_callback_v4_rows(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            batch_id="batch-a",
+            items=(item,),
+            authority=authority,
+            execution_lease_id="lease-a",
+        )
+    assert append_calls == [rows[0]["id"]]
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,9 @@ import pytest
 from redis.asyncio import Redis
 
 from app import schema_migrations
+from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
+from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.streaming.api import stream_key
 from app.streaming.redis import RedisStreamBridge, StreamAuthority
 from app.streaming.v4 import (
@@ -296,6 +298,67 @@ async def test_real_callback_append_registers_pending_v4_row():
             "visible_to_user": True,
             "stream_publication_state": "pending",
         }
+
+
+@pytest.mark.asyncio
+async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "update sandbox_leases set lease_payload_json = jsonb_build_object('attempt_id', %s) where id = 'lease'",
+                    (attempt,),
+                )
+
+        adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
+        callback = ExecutorCallbackEvent(
+            session_id=f"s_{run[2:]}",
+            run_id=run,
+            attempt_id=attempt,
+            callback_token_id=f"cbt:{run}:{attempt}",
+            batch_id="batch-handler-rollback",
+            status="running",
+            progress=20,
+            new_message=None,
+            state_patch={},
+            events=[adapter.accept_answer_text("answer")[0].to_agent_event()],
+        )
+        original_list_leases = runtime_callbacks.repositories.list_current_sandbox_runtime_leases_for_attempt
+        lease_checks = 0
+
+        async def list_leases_with_final_loss(conn, **kwargs):
+            nonlocal lease_checks
+            lease_checks += 1
+            if lease_checks == 1:
+                return await original_list_leases(conn, **kwargs)
+            return []
+
+        async def unexpected_publish(*_args, **_kwargs):
+            raise AssertionError("publication must not run after the transaction rolls back")
+
+        monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
+        monkeypatch.setattr(
+            runtime_callbacks.repositories,
+            "list_current_sandbox_runtime_leases_for_attempt",
+            list_leases_with_final_loss,
+        )
+        monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", unexpected_publish)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await runtime_callbacks.record_executor_callback(callback)
+
+        assert exc_info.value.detail == "sandbox_runtime_attempt_inactive"
+        assert lease_checks == 2
+        async with _connection_factory(dsn, schema_name) as conn:
+            rows = await conn.execute(
+                "select event_type from run_events where tenant_id = %s and run_id = %s order by sequence",
+                (tenant, run),
+            )
+            assert await rows.fetchall() == []
 
 
 @pytest.mark.asyncio

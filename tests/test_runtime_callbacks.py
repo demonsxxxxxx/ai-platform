@@ -1351,3 +1351,398 @@ def test_executor_callback_propagates_v4_correctness_errors(monkeypatch):
             headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
             json=callback_payload(batch_id="batch-error", new_message=None, state_patch={}, events=[event.model_dump()]),
         )
+
+
+@pytest.mark.asyncio
+async def test_record_executor_callback_rolls_back_receipt_and_v4_rows_after_final_attempt_recheck(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.routes import runtime_callbacks
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt:run-a:attempt-a",
+        batch_id="batch-rollback",
+        status="running",
+        progress=20,
+        new_message=None,
+        state_patch={},
+        events=[event],
+    )
+    state = {"receipts": [], "v4_rows": [], "lease_calls": 0, "rolled_back": False, "committed": False}
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            state["receipt_snapshot"] = len(state["receipts"])
+            state["v4_snapshot"] = len(state["v4_rows"])
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            if exc_type is not None:
+                del state["receipts"][state["receipt_snapshot"] :]
+                del state["v4_rows"][state["v4_snapshot"] :]
+                state["rolled_back"] = True
+            else:
+                state["committed"] = True
+            return False
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        state["lease_calls"] += 1
+        if state["lease_calls"] == 1:
+            return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+        return []
+
+    async def append_batch(conn, **kwargs):
+        state["receipts"].append(kwargs)
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
+    async def append_v4(conn, **kwargs):
+        state["v4_rows"].append(kwargs)
+        return tuple(kwargs["items"])
+
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+
+    async def unexpected_publish(*_args, **_kwargs):
+        raise AssertionError("publication must not run after the transaction rolls back")
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", unexpected_publish)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime_callbacks.record_executor_callback(callback)
+
+    assert exc_info.value.detail == "sandbox_runtime_attempt_inactive"
+    assert state["lease_calls"] == 2
+    assert state["rolled_back"] is True
+    assert state["committed"] is False
+    assert state["receipts"] == []
+    assert state["v4_rows"] == []
+
+
+@pytest.mark.asyncio
+async def test_record_executor_callback_duplicate_reuses_v4_identity_after_publication(monkeypatch):
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.routes import runtime_callbacks
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt:run-a:attempt-a",
+        batch_id="batch-duplicate",
+        status="running",
+        progress=20,
+        new_message=None,
+        state_patch={},
+        events=[event],
+    )
+    state = {"receipt_calls": 0, "v4_calls": [], "publication": "pending"}
+    row_identity = {"id": "evt4_handler_duplicate"}
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+
+    async def append_batch(conn, **kwargs):
+        state["receipt_calls"] += 1
+        return {
+            "callback_received_at": "2026-08-09T00:00:00Z",
+            "duplicate": state["receipt_calls"] > 1,
+        }
+
+    async def append_v4(conn, **kwargs):
+        state["v4_calls"].append(kwargs)
+        assert state["publication"] == ("pending" if len(state["v4_calls"]) == 1 else "published")
+        return (row_identity,)
+
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+
+    async def publish_pending(transaction_factory, *, limit):
+        state["publication"] = "published"
+        return 1
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
+
+    first = await runtime_callbacks.record_executor_callback(callback)
+    second = await runtime_callbacks.record_executor_callback(callback)
+
+    assert first == {"accepted": True, "batch_id": "batch-duplicate", "event_count": 2}
+    assert second == {
+        "accepted": True,
+        "batch_id": "batch-duplicate",
+        "event_count": 2,
+        "deduplicated": True,
+    }
+    assert state["receipt_calls"] == 2
+    assert state["v4_calls"][0]["items"] == state["v4_calls"][1]["items"]
+    assert state["publication"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_record_executor_callback_accepts_committed_rows_when_redis_transport_is_unavailable(monkeypatch):
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.routes import runtime_callbacks
+    from app.streaming import worker_projection
+    from app.streaming.redis import StreamTransportUnavailable
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt:run-a:attempt-a",
+        batch_id="batch-transport",
+        status="running",
+        progress=20,
+        new_message=None,
+        state_patch={},
+        events=[event],
+    )
+    state = {"receipts": [], "rows": [], "pending_rows": [], "retry_errors": []}
+
+    class FakeCursor:
+        async def fetchone(self):
+            return {"id": "lease-a"}
+
+    class FakeConnection:
+        async def execute(self, statement, params):
+            return FakeCursor()
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        return [{"id": "lease-a", "lease_payload_json": {"attempt_id": attempt_id}}]
+
+    async def heartbeat(conn, **kwargs):
+        return {"id": kwargs["lease_id"]}
+
+    async def append_batch(conn, **kwargs):
+        state["receipts"].append(kwargs)
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
+    async def append_v4(conn, **kwargs):
+        row = {
+            "id": "evt4_transport_pending",
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "sequence": 1,
+            "event_type": kwargs["items"][0].event_type,
+            "visible_to_user": True,
+            "payload_json": {
+                "delta": "answer",
+                "__stream_v4": {
+                    "attempt_id": "attempt-a",
+                    "stream_incarnation": 2,
+                    "authorization_epoch": 4,
+                    "execution_lease_id": "lease-a",
+                    "publication_state": "pending",
+                },
+            },
+            "stream_publication_state": "pending",
+        }
+        state["rows"].append(row)
+        state["pending_rows"][:] = [row]
+        return (row,)
+
+    authority = SimpleNamespace(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        state="confirmed",
+        stream_incarnation=2,
+        authorization_epoch=4,
+        revocation_state="active",
+    )
+
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return authority
+
+    class FailingPublisher:
+        async def append(self, envelope):
+            raise StreamTransportUnavailable("redis unavailable")
+
+    async def pending_rows(conn, *, limit):
+        if state["pending_rows"]:
+            return (state["pending_rows"].pop(0),)
+        return ()
+
+    async def mark_attempt(conn, *, event_id):
+        state["attempted"] = event_id
+
+    async def mark_retry(conn, *, event_id, error):
+        state["retry_errors"].append((event_id, error))
+
+    async def publish_pending(transaction_factory, *, limit):
+        return await worker_projection.publish_pending_v4_events(
+            transaction_factory,
+            limit=limit,
+            bridge=FailingPublisher(),
+        )
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_heartbeat",
+        heartbeat,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
+    monkeypatch.setattr(worker_projection, "list_pending_v4_rows", pending_rows)
+    monkeypatch.setattr(worker_projection, "mark_v4_attempt", mark_attempt)
+    monkeypatch.setattr(worker_projection, "mark_v4_retry_error", mark_retry)
+    monkeypatch.setattr(worker_projection.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(worker_projection, "get_stream_authority", get_authority)
+
+    async def no_cancel(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(worker_projection.repositories, "is_cancel_requested", no_cancel)
+    monkeypatch.setattr(
+        worker_projection,
+        "project_public_v4",
+        lambda row, authority: {"event_type": row["event_type"]},
+    )
+
+    result = await runtime_callbacks.record_executor_callback(callback)
+
+    assert result == {"accepted": True, "batch_id": "batch-transport", "event_count": 2}
+    assert len(state["receipts"]) == 1
+    assert len(state["rows"]) == 1
+    assert state["rows"][0]["stream_publication_state"] == "pending"
+    assert state["retry_errors"] == [("evt4_transport_pending", "StreamTransportUnavailable")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_detail"),
+    [
+        ("missing_batch", "callback_batch_id_required"),
+        ("wrong_authority", "sse_stream_attempt_inactive"),
+        ("wrong_attempt", "sandbox_runtime_attempt_mismatch"),
+        ("missing_lease", "sandbox_runtime_attempt_inactive"),
+    ],
+)
+async def test_record_executor_callback_enforces_v4_batch_authority_attempt_and_lease_fences(
+    monkeypatch, failure, expected_detail
+):
+    from fastapi import HTTPException
+
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.routes import runtime_callbacks
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt:run-a:attempt-a",
+        batch_id=None if failure == "missing_batch" else "batch-fence",
+        status="running",
+        progress=20,
+        new_message=None,
+        state_patch={},
+        events=[event],
+    )
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        if failure == "missing_lease":
+            return []
+        if failure == "wrong_attempt":
+            return [{"lease_payload_json": {"attempt_id": "attempt-other"}}]
+        return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        if failure == "wrong_authority":
+            return SimpleNamespace(attempt_id="attempt-other", state="confirmed")
+        return SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+
+    async def unexpected_append(*_args, **_kwargs):
+        raise AssertionError("fenced callbacks must not append receipt or public rows")
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", unexpected_append)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", unexpected_append)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime_callbacks.record_executor_callback(callback)
+
+    assert exc_info.value.detail == expected_detail
