@@ -17,7 +17,7 @@ from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.streaming.api import stream_key
-from app.streaming.redis import RedisStreamBridge, StreamAuthority
+from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
 from app.streaming.v4 import (
     V4CallbackItem,
     V4ProjectionError,
@@ -359,6 +359,186 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
                 (tenant, run),
             )
             assert await rows.fetchall() == []
+
+
+@pytest.mark.asyncio
+async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypatch):
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        client, key, bridge = await _redis_stream(tenant, run)
+        try:
+            from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+
+            adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
+            callback = ExecutorCallbackEvent(
+                session_id=f"s_{run[2:]}",
+                run_id=run,
+                attempt_id=attempt,
+                callback_token_id=f"cbt:{run}:{attempt}",
+                batch_id="batch-handler-duplicate",
+                status="running",
+                progress=20,
+                new_message=None,
+                state_patch={},
+                events=[adapter.accept_answer_text("answer")[0].to_agent_event()],
+            )
+
+            async def publish_pending(transaction_factory, *, limit):
+                return await publish_pending_v4_events(
+                    transaction_factory,
+                    limit=limit,
+                    bridge=bridge,
+                )
+
+            monkeypatch.setattr(
+                runtime_callbacks,
+                "transaction",
+                lambda: _connection_factory(dsn, schema_name),
+            )
+            monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
+
+            first = await runtime_callbacks.record_executor_callback(callback)
+            async with _connection_factory(dsn, schema_name) as conn:
+                first_row_cursor = await conn.execute(
+                    """
+                    select id, sequence, stream_publication_state, stream_publication_attempts
+                    from run_events
+                    where tenant_id = %s and run_id = %s and event_type = 'message.started'
+                    """,
+                    (tenant, run),
+                )
+                first_rows = await first_row_cursor.fetchall()
+            assert first == {
+                "accepted": True,
+                "batch_id": "batch-handler-duplicate",
+                "event_count": 2,
+            }
+            assert len(first_rows) == 1
+            first_row = first_rows[0]
+            assert first_row["stream_publication_state"] == "published"
+            assert first_row["stream_publication_attempts"] == 1
+
+            second = await runtime_callbacks.record_executor_callback(callback)
+            async with _connection_factory(dsn, schema_name) as conn:
+                row_cursor = await conn.execute(
+                    """
+                    select id, sequence, stream_publication_state, stream_publication_attempts
+                    from run_events
+                    where tenant_id = %s and run_id = %s and event_type = 'message.started'
+                    order by sequence
+                    """,
+                    (tenant, run),
+                )
+                rows = await row_cursor.fetchall()
+                receipt_cursor = await conn.execute(
+                    """
+                    select count(*) as count
+                    from run_events
+                    where tenant_id = %s and run_id = %s and event_type = 'executor_callback'
+                    """,
+                    (tenant, run),
+                )
+                receipts = await receipt_cursor.fetchone()
+            stream_rows = await client.xrange(key, min="-", max="+")
+
+            assert second == {
+                "accepted": True,
+                "batch_id": "batch-handler-duplicate",
+                "event_count": 2,
+                "deduplicated": True,
+            }
+            assert rows == [first_row]
+            assert receipts["count"] == 1
+            assert len(stream_rows) == 1
+            assert json.loads(stream_rows[0][1]["envelope"])["event_id"] == first_row["id"]
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_callback_handler_commits_pending_row_before_redis_outage(monkeypatch):
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+
+        adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
+        callback = ExecutorCallbackEvent(
+            session_id=f"s_{run[2:]}",
+            run_id=run,
+            attempt_id=attempt,
+            callback_token_id=f"cbt:{run}:{attempt}",
+            batch_id="batch-handler-transport",
+            status="running",
+            progress=20,
+            new_message=None,
+            state_patch={},
+            events=[adapter.accept_answer_text("answer")[0].to_agent_event()],
+        )
+        observed_at_bridge: list[dict[str, object]] = []
+
+        class FailingPublisher:
+            async def append(self, envelope):
+                del envelope
+                async with _connection_factory(dsn, schema_name) as observer:
+                    result = await observer.execute(
+                        """
+                        select count(*) as count, min(stream_publication_state) as state
+                        from run_events
+                        where tenant_id = %s and run_id = %s and event_type = 'message.started'
+                        """,
+                        (tenant, run),
+                    )
+                    observed_at_bridge.append(await result.fetchone())
+                raise StreamTransportUnavailable("redis unavailable")
+
+        async def publish_pending(transaction_factory, *, limit):
+            return await publish_pending_v4_events(
+                transaction_factory,
+                limit=limit,
+                bridge=FailingPublisher(),
+            )
+
+        monkeypatch.setattr(
+            runtime_callbacks,
+            "transaction",
+            lambda: _connection_factory(dsn, schema_name),
+        )
+        monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
+
+        result = await runtime_callbacks.record_executor_callback(callback)
+
+        assert result == {
+            "accepted": True,
+            "batch_id": "batch-handler-transport",
+            "event_count": 2,
+        }
+        assert observed_at_bridge == [{"count": 1, "state": "pending"}]
+        async with _connection_factory(dsn, schema_name) as conn:
+            row_cursor = await conn.execute(
+                """
+                select id, sequence, stream_publication_state, stream_publication_attempts,
+                       stream_publication_last_error, stream_publication_redis_id
+                from run_events
+                where tenant_id = %s and run_id = %s and event_type = 'message.started'
+                """,
+                (tenant, run),
+            )
+            rows = await row_cursor.fetchall()
+            receipt_cursor = await conn.execute(
+                """
+                select count(*) as count
+                from run_events
+                where tenant_id = %s and run_id = %s and event_type = 'executor_callback'
+                """,
+                (tenant, run),
+            )
+            receipts = await receipt_cursor.fetchone()
+        assert len(rows) == 1
+        assert rows[0]["sequence"] > 0
+        assert rows[0]["stream_publication_state"] == "pending"
+        assert rows[0]["stream_publication_attempts"] == 1
+        assert rows[0]["stream_publication_last_error"] == "StreamTransportUnavailable"
+        assert rows[0]["stream_publication_redis_id"] is None
+        assert receipts["count"] == 1
 
 
 @pytest.mark.asyncio
