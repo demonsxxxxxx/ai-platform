@@ -2152,12 +2152,12 @@ def test_foundation_alpha_readiness_prefers_smallest_runtime_delta_evidence_over
     def fake_runtime_delta(base: str, source: str) -> list[str] | None:
         assert source == NEWER_SOURCE_SHA
         if base == CURRENT_SOURCE_SHA:
-            return ["app/b2_sandbox_readiness.py"]
+            return ["app/office_context_readiness.py"]
         if base == ACTIVE_RUNTIME_SUBJECT_SHA:
             return [
                 "app/capacity_baseline.py",
                 "app/foundation_runtime_concurrency.py",
-                "app/b2_sandbox_readiness.py",
+                "app/office_context_readiness.py",
             ]
         return None
 

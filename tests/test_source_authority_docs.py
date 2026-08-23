@@ -279,7 +279,6 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
         ROOT / "frontend/web/scripts/prd-closure-browser-smoke.mjs",
         ROOT / "app/settings.py",
         ROOT / "app/office_context_readiness.py",
-        ROOT / "app/b2_sandbox_readiness.py",
         ROOT / "deploy/ai-platform/docker-compose.yml",
         ROOT / "scripts/generate_executor_context_pack_evidence.py",
         ROOT / "scripts/verify_executor_context_pack.py",
