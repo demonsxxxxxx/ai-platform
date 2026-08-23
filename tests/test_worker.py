@@ -9024,6 +9024,45 @@ def _task6_assert_no_executor_calls(calls):
 
 
 @pytest.mark.asyncio
+async def test_worker_terminalizes_execution_spec_compilation_failure_without_capability_audit(
+    monkeypatch,
+):
+    raw, registry, _, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"openai_api_key": "sk-" + "a" * 32},
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "execution_spec_invalid"
+    failed = next(call[1] for call in calls if call[0] == "fail")
+    assert failed["error_code"] == "execution_spec_invalid"
+    error_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "error"
+    )
+    assert error_event["stage"] == "worker"
+    assert error_event["payload"] == {
+        "visible_to_user": False,
+        "severity": "error",
+        "error_code": "execution_spec_invalid",
+    }
+    assert not any(
+        call[0] == "audit"
+        and call[1]["action"] == "capability_distribution.denied"
+        for call in calls
+    )
+    assert not any(
+        call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+        for call in calls
+    )
+    assert "sk-" not in repr(calls)
+    assert not any(call[0] in {"sandbox_create", "adapter"} for call in calls)
+
+
+@pytest.mark.asyncio
 async def test_worker_bash_text_does_not_create_required_capability(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,

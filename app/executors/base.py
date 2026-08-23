@@ -258,7 +258,31 @@ class RunPayload:
                     skill_id=self.skill_id,
                     skill_version=self.skill_version,
                 ),
-            )
+                )
+
+
+class ExecutionSpecProjection(Protocol):
+    """Minimal Runs-owned value surface accepted by the legacy executor DTO."""
+
+    def to_mapping(self) -> dict[str, Any]: ...
+
+
+def project_execution_spec_to_run_payload(
+    execution_spec: ExecutionSpecProjection,
+    *,
+    attempt_id: str,
+) -> RunPayload:
+    """Project a fresh legacy DTO; attempt authority stays outside the spec."""
+
+    payload = execution_spec.to_mapping()
+    payload.pop("schema_version")
+    run_payload_schema_version = str(payload.pop("run_payload_schema_version"))
+    payload.pop("executor_type")
+    return RunPayload(
+        **payload,
+        attempt_id=attempt_id,
+        schema_version=run_payload_schema_version,
+    )
 
 
 class ExecutorAdapter(Protocol):

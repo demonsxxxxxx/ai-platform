@@ -114,6 +114,9 @@ separate identities under
 The Agent Apps application, persistence, transaction, composition, and
 compatibility target is defined by
 [`agent-profile-persistence-boundary.md`](agent-profile-persistence-boundary.md).
+The immutable admitted execution specification, durable attempt authority, and
+their mixed-version migration are defined by
+[`execution-spec-and-attempt-lifecycle.md`](execution-spec-and-attempt-lifecycle.md).
 
 ### 2.2 Kernel and platform limits
 
