@@ -23,7 +23,6 @@ from app.streaming.v4 import (
     V4CallbackItem,
     V4ProjectionError,
     V4RedisStreamBridge,
-    append_artifact_ready_v4_row,
     append_callback_v4_rows,
     append_run_terminal_v4_row,
     opaque_message_id,
@@ -542,59 +541,6 @@ async def test_real_callback_handler_commits_pending_row_before_redis_outage(mon
         assert rows[0]["stream_publication_last_error"] == "StreamTransportUnavailable"
         assert rows[0]["stream_publication_redis_id"] is None
         assert receipts["count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_artifact_row_and_ready_event_roll_back_together():
-    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
-        async with _connection_factory(dsn, schema_name) as conn:
-            with pytest.raises(RuntimeError, match="force_artifact_rollback"):
-                async with conn.transaction():
-                    await repositories.create_artifact(
-                        conn,
-                        artifact_id="art-ready-a",
-                        tenant_id=tenant,
-                        run_id=run,
-                        trace_id=f"trace_{run}",
-                        artifact_type="report",
-                        label="report.pdf",
-                        content_type="application/pdf",
-                        storage_key="private/storage/report.pdf",
-                        size_bytes=123,
-                        manifest_json={
-                            "schema_version": "ai-platform.artifact-manifest.v1",
-                            "artifact_type": "report",
-                        },
-                    )
-                    await append_artifact_ready_v4_row(
-                        conn,
-                        tenant_id=tenant,
-                        run_id=run,
-                        artifact_id="art-ready-a",
-                        filename="report.pdf",
-                        media_type="application/pdf",
-                        size_bytes=123,
-                        execution_lease_id="lease",
-                        trace_ref=f"trace_{run}",
-                    )
-                    artifact_count = await conn.execute(
-                        "select count(*) as count from artifacts where id = 'art-ready-a'"
-                    )
-                    event_count = await conn.execute(
-                        "select count(*) as count from run_events where event_type = 'artifact.ready'"
-                    )
-                    assert (await artifact_count.fetchone())["count"] == 1
-                    assert (await event_count.fetchone())["count"] == 1
-                    raise RuntimeError("force_artifact_rollback")
-
-            artifact_count = await conn.execute(
-                "select count(*) as count from artifacts where id = 'art-ready-a'"
-            )
-            event_count = await conn.execute(
-                "select count(*) as count from run_events where event_type = 'artifact.ready'"
-            )
-            assert (await artifact_count.fetchone())["count"] == 0
-            assert (await event_count.fetchone())["count"] == 0
 
 
 @pytest.mark.asyncio

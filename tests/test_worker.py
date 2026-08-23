@@ -77,14 +77,7 @@ def stub_sse_stream_publisher(monkeypatch):
         async def aclose(self):
             return None
 
-    async def append_artifact_ready_v4_row(*_args, **_kwargs):
-        return {"id": "evt4-artifact-test", "sequence": 1}
-
     monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
-    monkeypatch.setattr(
-        "app.execution.application.artifact_delivery.append_artifact_ready_v4_row",
-        append_artifact_ready_v4_row,
-    )
 
 
 def test_worker_preserves_only_typed_safe_executor_failures():
@@ -3133,18 +3126,6 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     initial_permission_check = asyncio.Event()
     permission_inserted = asyncio.Event()
 
-    class ArtifactAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"artifacts": True},
-                result={"message": "done"},
-                artifacts=[reviewed_docx_artifact()],
-            )
-
     class TransactionConnection:
         def __init__(self):
             self.pending_writes = []
@@ -3174,10 +3155,6 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     async def create_artifact(conn, **kwargs):
         conn.pending_writes.append(("artifact", kwargs["artifact_type"]))
 
-    async def append_artifact_ready_v4_row(conn, **kwargs):
-        conn.pending_writes.append(("artifact_v4", kwargs["artifact_id"]))
-        return {"id": "evt4-artifact-a", "sequence": 1}
-
     async def append_message(conn, **kwargs):
         conn.pending_writes.append(("message", kwargs["role"]))
         return "msg-a"
@@ -3201,10 +3178,6 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr(
-        "app.execution.application.artifact_delivery.append_artifact_ready_v4_row",
-        append_artifact_ready_v4_row,
-    )
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -3214,7 +3187,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     injector = asyncio.create_task(insert_permission_after_initial_check())
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": ArtifactAdapter()}),
+        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
     )
     await injector
 
@@ -3225,7 +3198,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
         "A pending tool-permission request blocked successful completion.",
     )
     assert ("fail", "tool_permission_pending") in visible_writes
-    assert not any(kind in {"artifact", "artifact_v4", "message"} for kind, *_ in visible_writes)
+    assert not any(kind in {"artifact", "message"} for kind, *_ in visible_writes)
     assert not any(
         kind == "event" and event_type in {"artifact_created", "assistant_message_created", "run_succeeded", "status"}
         for kind, event_type in visible_writes
@@ -6876,8 +6849,6 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
 async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     created = []
     events = []
-    v4_events = []
-    timeline = []
 
     class ArtifactAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -6914,51 +6885,25 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
         return True
 
     async def create_artifact(conn, **kwargs):
-        timeline.append("artifact.db")
         created.append(kwargs)
-
-    async def append_artifact_ready_v4_row(conn, **kwargs):
-        timeline.append("artifact.v4")
-        v4_events.append(kwargs)
-        return {"id": "evt4-artifact-a", "sequence": 1}
 
     async def append_event(conn, **kwargs):
         events.append(kwargs)
         return "evt-a"
 
     async def complete_run(conn, **kwargs):
-        timeline.append("run.complete")
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr(
-        "app.execution.application.artifact_delivery.append_artifact_ready_v4_row",
-        append_artifact_ready_v4_row,
-    )
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ArtifactAdapter()}))
 
     assert outcome.status == "succeeded"
-    assert timeline == ["artifact.db", "artifact.v4", "run.complete"]
-    assert v4_events == [
-        {
-            "tenant_id": "tenant-a",
-            "run_id": "run-a",
-            "artifact_id": created[0]["artifact_id"],
-            "filename": "批注 Word",
-            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "size_bytes": 10,
-            "execution_lease_id": "lease-test-default",
-            "trace_ref": "trace_run_a",
-        }
-    ]
-    assert "storage_key" not in v4_events[0]
-    assert "manifest_json" not in v4_events[0]
     assert created[0]["trace_id"] == "trace_run_a"
     assert created[0]["manifest_json"]["schema_version"] == "ai-platform.artifact-manifest.v1"
     assert created[0]["manifest_json"]["artifact_type"] == "reviewed_docx"

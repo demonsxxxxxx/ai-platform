@@ -218,28 +218,6 @@ def _stable_run_event_id(
     return f"evt4_run_{digest}"
 
 
-def _stable_artifact_event_id(
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    stream_incarnation: int,
-    artifact_id: str,
-) -> str:
-    digest = hashlib.sha256(
-        canonical_json_bytes(
-            [
-                "ai-platform-agent-kernel-artifact-event-id-v4",
-                tenant_id,
-                run_id,
-                attempt_id,
-                stream_incarnation,
-                artifact_id,
-                "artifact.ready",
-            ]
-        )
-    ).hexdigest()
-    return f"evt4_artifact_{digest}"
-
 
 def callback_item_to_v4(
     item: Mapping[str, object],
@@ -1110,54 +1088,6 @@ async def append_run_v4_row(
         terminal_intent_id=terminal_intent_id,
         trace_ref=trace_ref,
         source_event_id=terminal_intent_id,
-        source_run_id=run_id,
-    )
-
-
-async def append_artifact_ready_v4_row(
-    conn: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    artifact_id: str,
-    filename: str,
-    media_type: str,
-    size_bytes: int,
-    execution_lease_id: str,
-    trace_ref: str | None = None,
-) -> Mapping[str, object]:
-    """Append one durable, disclosure-safe Artifact-ready fact."""
-
-    authority = await get_stream_authority(conn, tenant_id=tenant_id, run_id=run_id)
-    if authority is None or authority.state != "confirmed":
-        raise V4ProjectionError("v4_artifact_authority_unavailable")
-    event_id = _stable_artifact_event_id(
-        tenant_id,
-        run_id,
-        authority.attempt_id,
-        authority.stream_incarnation,
-        artifact_id,
-    )
-    return await append_application_v4_row(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        attempt_id=authority.attempt_id,
-        batch_id=event_id,
-        callback_index=0,
-        batch_index=0,
-        event_type="artifact.ready",
-        payload={
-            "artifact_id": artifact_id,
-            "filename": filename,
-            "media_type": media_type,
-            "size_bytes": size_bytes,
-            "status": "ready",
-        },
-        authority=authority,
-        execution_lease_id=execution_lease_id,
-        event_id=event_id,
-        trace_ref=trace_ref,
         source_run_id=run_id,
     )
 
