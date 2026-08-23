@@ -1436,10 +1436,10 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   } as const;
   const binding = { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 2, generation: 7 } as const;
   const adapterBinding = { runId: "run-1", streamIncarnation: 2, generation: 7 } as const;
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding }), false);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding }), true);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding }), false);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding }), true);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), true);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), true);
   assert.equal(terminalCalls, 1);
 });
 
@@ -1477,12 +1477,31 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     streamIncarnation: 3,
     generation: 4,
   } as const;
+  for (const invalidGeneration of [undefined, -1, 1.5, Infinity] as unknown[]) {
+    assert.equal(handlePublicRunStreamFrameV4({
+      frame,
+      adapterBinding,
+      messageId: "assistant-authority",
+      ctx,
+      binding,
+      currentGeneration: invalidGeneration as number,
+    }), false);
+  }
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame,
+    adapterBinding,
+    messageId: "assistant-authority",
+    ctx,
+    binding,
+    currentGeneration: 3,
+  }), false);
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
     adapterBinding,
     messageId: "assistant-authority",
     ctx,
     binding: undefined as never,
+    currentGeneration: 4,
   }), false);
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
@@ -1490,6 +1509,7 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     messageId: "assistant-authority",
     ctx,
     binding,
+    currentGeneration: 4,
   }), false);
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
@@ -1497,6 +1517,7 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     messageId: "assistant-authority",
     ctx,
     binding: { ...binding, generation: 5 },
+    currentGeneration: 4,
   }), false);
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
@@ -1504,6 +1525,7 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     messageId: "assistant-authority",
     ctx,
     binding: { ...binding, streamIncarnation: 2 },
+    currentGeneration: 4,
   }), false);
   assert.equal(handlePublicRunStreamFrameV4({
     frame: { ...frame, generation: undefined },
@@ -1511,5 +1533,6 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     messageId: "assistant-authority",
     ctx,
     binding,
+    currentGeneration: 4,
   }), false);
 });

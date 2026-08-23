@@ -405,6 +405,7 @@ export function handlePublicRunStreamFrameV4({
   messageId,
   ctx,
   binding,
+  currentGeneration,
   onGap,
   onCommitted,
 }: {
@@ -413,10 +414,18 @@ export function handlePublicRunStreamFrameV4({
   messageId: string;
   ctx: EventHandlerContext;
   binding?: StreamEventBinding;
+  currentGeneration: number;
   onGap?: (event: V4PublicEvent) => void;
   onCommitted?: (semanticApplied: boolean) => void;
 }): boolean {
-  if (!isStrictV4Binding(binding)) return false;
+  if (
+    !isStrictV4Binding(binding) ||
+    !Number.isSafeInteger(currentGeneration) ||
+    currentGeneration < 0 ||
+    currentGeneration !== binding.generation
+  ) {
+    return false;
+  }
   if (
     adapterBinding.runId !== binding.runId ||
     adapterBinding.generation !== binding.generation ||

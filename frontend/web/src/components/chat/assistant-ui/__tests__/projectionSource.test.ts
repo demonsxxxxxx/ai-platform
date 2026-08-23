@@ -269,6 +269,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
       messageId: "message-1",
       ctx,
       binding: { sessionId: "session-1", runId: "run-1", streamVersion: 3, streamIncarnation: 1, generation: 3 },
+      currentGeneration: 3,
     };
     const adaptedEnd = adaptPublicRunStreamEventV4(endFrame.frame, endFrame.adapterBinding);
     assert.equal(adaptedEnd?.runId, "run-1");
