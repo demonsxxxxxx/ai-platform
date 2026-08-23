@@ -59,6 +59,13 @@ if ARGV[5] == 'stream_open' then
   if phase
      and redis.call('HGET',KEYS[2],'open_event_id') == ARGV[2]
      and redis.call('HGET',KEYS[2],'open_digest') == ARGV[6] then
+    if redis.call('XLEN',KEYS[1]) == 0 then
+      local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
+      redis.call('HSET',KEYS[2],'phase','open','open_redis_id',id)
+      redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
+      redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
+      return id
+    end
     if phase == 'open' then
       redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
     end
@@ -661,8 +668,35 @@ async def create_or_get_stream_admission_v4(
         current = _authority(row)
         if current.attempt_id != attempt_id or current.tenant_scope != tenant_scope:
             raise SseAuthorityConflictError("sse_stream_attempt_conflict")
-        if "ai-platform.stream-event.v4" not in str(current.open_payload_bytes):
-            raise SseAuthorityConflictError("sse_stream_protocol_conflict")
+        try:
+            from app.streaming.v4 import _validate_internal_envelope
+
+            raw = current.open_payload_bytes
+            if (
+                row.get("design_id") != "ai-platform.redis-streams-sse-event-channel.v4"
+                or row.get("projection_version") != "public-stream-v4"
+                or not raw
+                or _sha256(raw) != current.open_payload_digest
+                or raw != canonical_json_bytes(json.loads(raw)).decode()
+            ):
+                raise ValueError("authority_metadata_mismatch")
+            envelope = _validate_internal_envelope(json.loads(raw))
+            if (
+                envelope["event_type"] != "stream.open"
+                or envelope["event_id"] != current.open_event_id
+                or envelope["tenant_scope"] != current.tenant_scope
+                or envelope["run_id"] != current.run_id
+                or envelope["attempt_id"] != current.attempt_id
+                or envelope["stream_incarnation"] != current.stream_incarnation
+                or envelope["projection_version"] != "public-stream-v4"
+                or envelope["payload"]
+                != {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+                or envelope["source"]
+                != {"kind": "stream_authority", "authority_id": current.open_event_id}
+            ):
+                raise ValueError("authority_envelope_mismatch")
+        except Exception as exc:
+            raise SseAuthorityConflictError("sse_stream_protocol_conflict") from exc
         return current
     incarnation = 1
     event_id = _semantic_id(

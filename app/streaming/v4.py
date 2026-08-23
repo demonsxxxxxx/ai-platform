@@ -1061,19 +1061,45 @@ class V4RedisStreamBridge:
         terminal_event_id = ""
         if event_type in {"run.succeeded", "run.cancelled", "run.failed"}:
             terminal_event_id = _nonempty(internal["event_id"], "event_id")
+            if _nonempty(internal["payload"].get("terminal_event_id"), "terminal_event_id") != terminal_event_id:
+                raise StreamContractError("v4_terminal_event_id_mismatch")
         elif event_type == "stream.end":
             terminal_event_id = _nonempty(
                 _validate_control_payload(event_type, internal["payload"])["terminal_event_id"],
                 "terminal_event_id",
             )
         try:
-            return await self._bridge.append_canonical(
+            redis_id = await self._bridge.append_canonical(
                 tenant_scope_value=tenant_scope,
                 run_id=run_id,
                 stream_incarnation=incarnation,
                 event_id=_nonempty(internal.get("event_id"), "event_id"),
                 event_type=event_type,
                 envelope_bytes=payload,
+                terminal_event_id=terminal_event_id,
+            )
+            if event_type not in {"run.succeeded", "run.cancelled", "run.failed"}:
+                return redis_id
+            terminal_event_id = _nonempty(internal["event_id"], "event_id")
+            end = build_v4_control(
+                event_id=stream_end_event_id(terminal_event_id),
+                tenant_scope=tenant_scope,
+                run_id=run_id,
+                attempt_id=_nonempty(internal.get("attempt_id"), "attempt_id"),
+                stream_incarnation=incarnation,
+                event_type="stream.end",
+                payload={"terminal_event_id": terminal_event_id},
+                source={"kind": "terminal_intent", "terminal_event_id": terminal_event_id},
+                causation_event_id=terminal_event_id,
+                emitted_at=internal["emitted_at"],
+            )
+            return await self._bridge.append_canonical(
+                tenant_scope_value=tenant_scope,
+                run_id=run_id,
+                stream_incarnation=incarnation,
+                event_id=str(end["event_id"]),
+                event_type="stream.end",
+                envelope_bytes=canonical_json_bytes(end),
                 terminal_event_id=terminal_event_id,
             )
         except StreamContractError:
@@ -1085,12 +1111,18 @@ class V4RedisStreamBridge:
                 raise
             raise StreamTransportUnavailable("v4_stream_append_unavailable") from exc
 
-    async def publish_non_replayable(self, envelope: Mapping[str, object]) -> None:
-        """Publish heartbeat/gap live-only; these controls never get a cursor."""
+    async def publish_non_replayable(self, envelope: Mapping[str, object]) -> str:
+        """Publish heartbeat/gap live-only and return the latest real cursor."""
 
         internal = _validate_internal_envelope(envelope)
         if internal["event_type"] not in {"stream.heartbeat", "stream.gap"}:
             raise StreamContractError("v4_control_replayable")
+        latest_cursor = await self.latest_cursor(
+            tenant_scope_value=str(internal["tenant_scope"]),
+            run_id=str(internal["run_id"]),
+            attempt_id=str(internal["attempt_id"]),
+            stream_incarnation=int(internal["stream_incarnation"]),
+        )
         channel = stream_key(
             tenant_scope_value=str(internal["tenant_scope"]),
             run_id=str(internal["run_id"]),
@@ -1101,8 +1133,128 @@ class V4RedisStreamBridge:
                 channel,
                 json.dumps(dict(internal), separators=(",", ":"), sort_keys=True),
             )
+            return latest_cursor
         except Exception as exc:
             raise StreamTransportUnavailable("v4_control_publish_unavailable") from exc
+
+    async def latest_cursor(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+    ) -> str:
+        """Return the latest retained cursor owned by the current Redis stream."""
+
+        bounds = await self.retained_bounds(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+        )
+        if bounds is None:
+            raise StreamTransportUnavailable("v4_stream_cursor_unavailable")
+        return bounds[1].cursor.event_id
+
+    async def build_heartbeat(
+        self,
+        *,
+        event_id: str,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+        status: str,
+        emitted_at: str | datetime | None = None,
+    ) -> tuple[dict[str, object], str]:
+        """Build a live-only heartbeat and bind it to a real retained cursor."""
+
+        if status not in {"queued", "running"}:
+            raise V4ProjectionError("v4_stream_heartbeat_status_invalid")
+        cursor = await self.latest_cursor(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+        )
+        envelope = build_v4_control(
+            event_id=event_id,
+            tenant_scope=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+            event_type="stream.heartbeat",
+            payload={"status": status},
+            source={"kind": "stream_authority", "authority_id": event_id},
+            emitted_at=emitted_at,
+        )
+        return envelope, cursor
+
+    async def build_gap(
+        self,
+        *,
+        event_id: str,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        requested_event_id: str | None,
+        requested_stream_incarnation: int | None,
+        current_stream_incarnation: int,
+        reason: str,
+        emitted_at: str | datetime | None = None,
+    ) -> tuple[dict[str, object], str]:
+        """Build a gap from Redis-owned retained bounds, never caller bounds."""
+
+        requested_redis_id: str | None = None
+        if requested_event_id is not None:
+            try:
+                parsed = StreamCursor.parse(requested_event_id, run_id=run_id)
+                if requested_stream_incarnation != parsed.stream_incarnation:
+                    raise StreamContractError("v4_gap_cursor_incarnation_invalid")
+                requested_redis_id = parsed.redis_id
+            except StreamContractError:
+                try:
+                    _redis_id_tuple(requested_event_id)
+                except Exception as exc:
+                    raise StreamContractError("v4_gap_cursor_invalid") from exc
+                requested_redis_id = requested_event_id
+        bounds = await self.retained_bounds(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=current_stream_incarnation,
+        )
+        if bounds is None:
+            raise StreamTransportUnavailable("v4_gap_bounds_unavailable")
+        first, last = bounds
+        envelope = build_v4_control(
+            event_id=event_id,
+            tenant_scope=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=current_stream_incarnation,
+            event_type="stream.gap",
+            payload={
+                "reason": reason,
+                "recovery": "reload_durable_state",
+                "requested_event_id": requested_redis_id,
+                "requested_stream_incarnation": requested_stream_incarnation,
+                "current_stream_incarnation": current_stream_incarnation,
+                "earliest_available_event_id": first.cursor.redis_id,
+                "latest_available_event_id": last.cursor.redis_id,
+            },
+            source={"kind": "stream_authority", "authority_id": event_id},
+            emitted_at=emitted_at,
+        )
+        return envelope, last.cursor.event_id
+
+    async def publish_gap(self, **kwargs: object) -> tuple[dict[str, object], str]:
+        envelope, cursor = await self.build_gap(**kwargs)
+        published_cursor = await self.publish_non_replayable(envelope)
+        if published_cursor != cursor:
+            raise StreamContractError("v4_gap_cursor_changed")
+        return envelope, cursor
 
     async def ensure_open(self, open_payload_bytes: str | bytes) -> str | None:
         """Re-append the persisted v4 open authority before durable recovery."""
@@ -1116,7 +1268,15 @@ class V4RedisStreamBridge:
             raise V4ProjectionError("v4_open_authority_invalid")
         return await self.append(internal)
 
-    def _decode(self, row: tuple[object, Mapping[str, object]], *, run_id: str, stream_incarnation: int) -> V4StreamEntry:
+    def _decode(
+        self,
+        row: tuple[object, Mapping[str, object]],
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+    ) -> V4StreamEntry:
         redis_id = str(row[0])
         _redis_id_tuple(redis_id)
         fields = row[1]
@@ -1127,12 +1287,22 @@ class V4RedisStreamBridge:
             envelope = _validate_internal_envelope(json.loads(raw))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StreamContractError("v4_stream_envelope_invalid") from exc
-        if envelope["run_id"] != run_id or envelope["stream_incarnation"] != stream_incarnation:
+        if (
+            envelope["tenant_scope"] != tenant_scope_value
+            or envelope["run_id"] != run_id
+            or envelope["attempt_id"] != attempt_id
+            or envelope["stream_incarnation"] != stream_incarnation
+        ):
             raise StreamContractError("v4_stream_authority_mismatch")
         return V4StreamEntry(StreamCursor(run_id, stream_incarnation, redis_id), envelope)
 
     async def retained_bounds(
-        self, *, tenant_scope_value: str, run_id: str, stream_incarnation: int
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
     ) -> tuple[V4StreamEntry, V4StreamEntry] | None:
         key = stream_key(
             tenant_scope_value=tenant_scope_value,
@@ -1148,17 +1318,40 @@ class V4RedisStreamBridge:
             return None
         if not first or not last:
             raise StreamTransportUnavailable("v4_stream_bounds_unproven")
-        return self._decode(first[0], run_id=run_id, stream_incarnation=stream_incarnation), self._decode(last[0], run_id=run_id, stream_incarnation=stream_incarnation)
+        return self._decode(
+            first[0],
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+        ), self._decode(
+            last[0],
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+        )
 
     async def resolve_resume(
-        self, *, tenant_scope_value: str, run_id: str, current_stream_incarnation: int, last_event_id: str | None
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        current_stream_incarnation: int,
+        last_event_id: str | None,
     ) -> ResumeDecision:
         cursor = StreamCursor.parse(last_event_id, run_id=run_id) if last_event_id else None
         if cursor and cursor.stream_incarnation > current_stream_incarnation:
             raise StreamContractError("stream_cursor_future_incarnation")
         if cursor and cursor.stream_incarnation < current_stream_incarnation:
             return ResumeDecision(None, StreamGap("stream_incarnation_mismatch", cursor.event_id, cursor.stream_incarnation, current_stream_incarnation))
-        bounds = await self.retained_bounds(tenant_scope_value=tenant_scope_value, run_id=run_id, stream_incarnation=current_stream_incarnation)
+        bounds = await self.retained_bounds(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=current_stream_incarnation,
+        )
         if bounds is None:
             return ResumeDecision(None, StreamGap("stream_missing", cursor.event_id if cursor else None, cursor.stream_incarnation if cursor else None, current_stream_incarnation))
         first, last = bounds
@@ -1176,7 +1369,14 @@ class V4RedisStreamBridge:
         return ResumeDecision(cursor.redis_id if exact else None, None if exact else StreamGap("stream_continuity_unproven", cursor.event_id, cursor.stream_incarnation, current_stream_incarnation, first.cursor.event_id, last.cursor.event_id))
 
     async def replay_page(
-        self, *, tenant_scope_value: str, run_id: str, stream_incarnation: int, after_redis_id: str, through_redis_id: str
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+        after_redis_id: str,
+        through_redis_id: str,
     ) -> tuple[V4StreamEntry, ...]:
         after = _redis_id_tuple(after_redis_id)
         through = _redis_id_tuple(through_redis_id)
@@ -1187,12 +1387,34 @@ class V4RedisStreamBridge:
             rows = await self._bridge._publish_client.xrange(key, min=f"({after_redis_id}", max=through_redis_id, count=128)
         except Exception as exc:
             raise StreamTransportUnavailable("v4_stream_replay_unavailable") from exc
-        return tuple(self._decode(row, run_id=run_id, stream_incarnation=stream_incarnation) for row in rows or ())
+        return tuple(
+            self._decode(
+                row,
+                tenant_scope_value=tenant_scope_value,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stream_incarnation=stream_incarnation,
+            )
+            for row in rows or ()
+        )
 
     def decode_live_publication(
-        self, *, redis_id: str, envelope_json: str, run_id: str, stream_incarnation: int
+        self,
+        *,
+        redis_id: str,
+        envelope_json: str,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
     ) -> V4StreamEntry:
-        return self._decode((redis_id, {"envelope": envelope_json}), run_id=run_id, stream_incarnation=stream_incarnation)
+        return self._decode(
+            (redis_id, {"envelope": envelope_json}),
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+        )
 
 
 async def recover_v4_rows(
@@ -1254,11 +1476,41 @@ async def recover_v4_and_resume(
         limit=limit,
     )
     open_payload_bytes = authority.open_payload_bytes
-    if isinstance(open_payload_bytes, (str, bytes)) and open_payload_bytes not in ("", "{}", b"{}"):
+    if not isinstance(open_payload_bytes, (str, bytes)) or not open_payload_bytes:
+        raise V4ProjectionError("v4_open_authority_invalid")
+    if isinstance(bridge, V4RedisStreamBridge):
+        try:
+            raw_open = (
+                open_payload_bytes.decode("utf-8")
+                if isinstance(open_payload_bytes, bytes)
+                else open_payload_bytes
+            )
+            open_internal = _validate_internal_envelope(json.loads(raw_open))
+            if (
+                raw_open != canonical_json_bytes(open_internal).decode()
+                or hashlib.sha256(raw_open.encode("utf-8")).hexdigest()
+                != authority.open_payload_digest
+                or open_internal["event_type"] != "stream.open"
+                or open_internal["event_id"] != authority.open_event_id
+                or open_internal["tenant_scope"] != authority.tenant_scope
+                or open_internal["run_id"] != authority.run_id
+                or open_internal["attempt_id"] != authority.attempt_id
+                or open_internal["stream_incarnation"] != authority.stream_incarnation
+                or open_internal["payload"]
+                != {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+                or open_internal["source"]
+                != {"kind": "stream_authority", "authority_id": authority.open_event_id}
+            ):
+                raise ValueError("v4_open_authority_mismatch")
+        except Exception as exc:
+            raise V4ProjectionError("v4_open_authority_invalid") from exc
+        await bridge.ensure_open(open_payload_bytes)
+    elif hasattr(bridge, "ensure_open"):
+        # Non-production protocol fakes may opt into the same restoration hook;
+        # the strict authority owner above remains mandatory for the live bridge.
         await bridge.ensure_open(open_payload_bytes)
     projected: list[Mapping[str, object]] = []
     transport_cursors: list[str] = []
-    terminal_types = {"run.succeeded", "run.cancelled", "run.failed"}
     for row in recovery.rows:
         internal = project_public_v4(row, authority=authority)
         if internal is None:
@@ -1268,21 +1520,6 @@ async def recover_v4_and_resume(
         public = project_public_envelope_v4(internal)
         if public is not None:
             projected.append(public)
-        if internal["event_type"] in terminal_types:
-            terminal_event_id = str(internal["event_id"])
-            end = build_v4_control(
-                event_id=stream_end_event_id(terminal_event_id),
-                tenant_scope=str(internal["tenant_scope"]),
-                run_id=str(internal["run_id"]),
-                attempt_id=str(internal["attempt_id"]),
-                stream_incarnation=int(internal["stream_incarnation"]),
-                event_type="stream.end",
-                payload={"terminal_event_id": terminal_event_id},
-                source={"kind": "terminal_intent", "terminal_event_id": terminal_event_id},
-                causation_event_id=terminal_event_id,
-                emitted_at=internal["emitted_at"],
-            )
-            transport_cursors.append(await bridge.append(end))
     return V4Recovery(
         tuple(projected),
         transport_cursors[-1] if transport_cursors else None,
