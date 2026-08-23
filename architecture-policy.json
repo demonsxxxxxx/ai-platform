@@ -105,7 +105,6 @@
     "app/artifact_preview.py",
     "app/auth.py",
     "app/auth_sessions.py",
-    "app/backend_stage_closure_evidence.py",
     "app/capabilities.py",
     "app/capability_distribution.py",
     "app/capacity_baseline.py",
