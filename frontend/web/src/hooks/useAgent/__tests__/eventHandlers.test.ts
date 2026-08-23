@@ -1447,24 +1447,42 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
   const ctx = createContext([], null);
   ctx.currentRunIdRef.current = "run-authority";
   const frame = {
-    eventHeader: "stream.end",
+    eventHeader: "stream.gap",
     transportCursor: "run-authority:3:1-0",
     generation: 4,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
-      event_id: "authority-end",
+      event_id: "authority-gap",
       run_id: "run-authority",
       message_id: null,
       seq: null,
-      event_type: "stream.end",
+      event_type: "stream.gap",
       stream_incarnation: 3,
-      replayable: true,
+      replayable: false,
       trace_ref: null,
       causation_event_id: null,
       emitted_at: "2026-01-01T00:00:00Z",
-      payload: { terminal_event_id: "terminal-authority" },
+      payload: {
+        reason: "stream_missing",
+        requested_event_id: "run-authority:3:0-1",
+        requested_stream_incarnation: 3,
+        earliest_available_event_id: "run-authority:3:0-2",
+        latest_available_event_id: "run-authority:3:0-3",
+        current_stream_incarnation: 3,
+        recovery: "reload_durable_state",
+      },
     },
   } as const;
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-authority",
+    eventId: null,
+    streamIncarnation: 3,
+  };
+  let gapCalls = 0;
+  const onGap = () => {
+    gapCalls += 1;
+  };
   const binding = {
     sessionId: "session-1",
     runId: "run-authority",
@@ -1485,7 +1503,9 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
       ctx,
       binding,
       currentGeneration: invalidGeneration as number,
+      onGap,
     }), false);
+    assert.equal(gapCalls, 0);
   }
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
@@ -1493,8 +1513,20 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     messageId: "assistant-authority",
     ctx,
     binding,
-    currentGeneration: 3,
+    currentGeneration: 5,
+    onGap,
   }), false);
+  assert.equal(gapCalls, 0);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame,
+    adapterBinding,
+    messageId: "assistant-authority",
+    ctx,
+    binding,
+    currentGeneration: 4,
+    onGap,
+  }), false);
+  assert.equal(gapCalls, 1);
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
     adapterBinding,

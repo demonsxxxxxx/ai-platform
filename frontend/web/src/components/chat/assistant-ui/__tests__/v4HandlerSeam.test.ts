@@ -485,22 +485,41 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     },
   };
   let gapEventId = "";
+  const currentCtx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    streamVersionRef: { current: 0 },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
+  } as EventHandlerContext;
   const accepted = handlePublicRunStreamFrameV4({
     frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue },
     adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
     messageId: "message-1",
-    ctx: {
-      sessionIdRef: { current: "session-1" },
-      currentRunIdRef: { current: "run-1" },
-      streamVersionRef: { current: 0 },
-      acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
-    } as EventHandlerContext,
+    ctx: currentCtx,
     binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
     currentGeneration: 3,
     onGap: (event) => { gapEventId = event.eventId; },
   });
   assert.equal(accepted, false);
   assert.equal(gapEventId, "event-gap");
+
+  const callGap = (currentGeneration: unknown, onGap: () => void) =>
+    handlePublicRunStreamFrameV4({
+      frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue },
+      adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+      messageId: "message-1",
+      ctx: currentCtx,
+      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
+      currentGeneration: currentGeneration as number,
+      onGap,
+    });
+  let invalidGapCalls = 0;
+  for (const invalidGeneration of [undefined, -1, 1.5, Infinity] as unknown[]) {
+    assert.equal(callGap(invalidGeneration, () => { invalidGapCalls += 1; }), false);
+    assert.equal(invalidGapCalls, 0);
+  }
+  assert.equal(callGap(4, () => { invalidGapCalls += 1; }), false);
+  assert.equal(invalidGapCalls, 0);
 
   const staleCases = [
     { name: "session", ctx: { sessionIdRef: { current: "session-2" }, currentRunIdRef: { current: "run-1" }, streamVersionRef: { current: 0 }, acceptedStreamCursorRef: { current: { sessionId: "session-2", runId: "run-1", eventId: null, streamIncarnation: 1 } } } },
