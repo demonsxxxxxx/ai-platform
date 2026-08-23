@@ -13,6 +13,7 @@ import pytest
 from redis.asyncio import Redis
 
 from app import schema_migrations
+from app.repositories import complete_run
 from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
@@ -903,3 +904,37 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 "select column_name from information_schema.columns where table_schema = current_schema() and table_name = 'run_events' and column_name = 'stream_publication_state'"
             )
             assert await columns.fetchone() == {"column_name": "stream_publication_state"}
+
+
+@pytest.mark.asyncio
+async def test_complete_run_writes_one_v4_terminal_row_with_existing_intent_identity():
+    async with _schema() as (_dsn_value, schema_name, ids):
+        tenant, run, _attempt = ids
+        async with _connection_factory(_dsn(), schema_name) as conn:
+            assert await complete_run(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                result_json={"message": "done"},
+            ) is True
+            events_cursor = await conn.execute(
+                """
+                select id, sequence, event_type, payload_json
+                from run_events
+                where tenant_id = %s and run_id = %s
+                order by sequence
+                """,
+                (tenant, run),
+            )
+            events = await events_cursor.fetchall()
+            terminal_events = [
+                event for event in events if event["event_type"] == "run.succeeded"
+            ]
+            assert len(terminal_events) == 1
+            terminal = terminal_events[0]
+            assert terminal["id"] == terminal["payload_json"]["terminal_event_id"]
+            assert terminal["payload_json"]["hydrate_required"] is True
+            metadata = terminal["payload_json"]["__stream_v4"]
+            assert metadata["terminal_intent_id"] == terminal["id"]
+            assert metadata["execution_lease_id"] is None
+            assert len({event["sequence"] for event in terminal_events}) == 1

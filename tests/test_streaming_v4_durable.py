@@ -789,3 +789,83 @@ async def test_v4_bridge_uses_existing_atomic_append_boundary() -> None:
     assert calls[0]["event_type"] == "message.delta"
     assert b"attempt-a" in calls[0]["envelope_bytes"]
     assert b"tenant-a" in calls[0]["envelope_bytes"]
+
+
+@pytest.mark.asyncio
+async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(monkeypatch):
+    from dataclasses import replace
+    from app.streaming import v4
+
+    conn = _callback_conn()
+    captured: list[str] = []
+    terminal_authority = replace(_authority(), state="terminal")
+
+    async def authority(*_args, **_kwargs):
+        return terminal_authority
+
+    async def append_event(conn, *, tenant_id, run_id, event, event_id):
+        captured.append(event_id)
+        conn.rows[event_id] = {
+            "id": event_id,
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "sequence": 21,
+            "event_type": event.event_type,
+            "visible_to_user": True,
+            "payload_json": dict(event.payload),
+            "stream_publication_state": "pending",
+            "stream_publication_attempts": 0,
+            "stream_publication_next_attempt_at": None,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        return EventReceipt(event_id, RunCursor(run_id, 21), "2026-01-01T00:00:00Z")
+
+    monkeypatch.setattr(v4, "get_stream_authority", authority)
+    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    terminal_id = f"sev_{'a' * 64}"
+    row = await v4.append_run_terminal_v4_row(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        status="failed",
+        terminal_event_id=terminal_id,
+        error_code="executor_private_exception",
+        trace_ref="trace-a",
+    )
+
+    assert row is not None
+    assert captured == [terminal_id]
+    assert row["payload_json"]["code"] == "run_failed"
+    assert row["payload_json"]["detail"] is None
+    assert "executor_private_exception" not in str(row["payload_json"])
+    metadata = row["payload_json"]["__stream_v4"]
+    assert metadata["terminal_intent_id"] == terminal_id
+    assert metadata["execution_lease_id"] is None
+    assert metadata["lease_fence"] == "not_required"
+    assert project_public_v4(row, authority=terminal_authority)["event_type"] == "run.failed"
+
+
+@pytest.mark.asyncio
+async def test_run_v4_terminal_row_rejects_a_second_terminal_identity(monkeypatch):
+    from dataclasses import replace
+    from app.streaming import v4
+
+    async def authority(*_args, **_kwargs):
+        return replace(_authority(), state="terminal")
+
+    monkeypatch.setattr(v4, "get_stream_authority", authority)
+    first_terminal_id = f"sev_{'a' * 64}"
+    second_terminal_id = f"sev_{'b' * 64}"
+    with pytest.raises(v4.V4ProjectionError, match="terminal_intent_identity"):
+        await v4.append_run_v4_row(
+            _callback_conn(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            event_type="run.succeeded",
+            payload={"terminal_event_id": first_terminal_id, "hydrate_required": True},
+            batch_id=first_terminal_id,
+            event_id=first_terminal_id,
+            terminal_intent_id=second_terminal_id,
+        )

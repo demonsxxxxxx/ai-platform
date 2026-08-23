@@ -17,6 +17,7 @@ from typing import Any
 
 from redis.exceptions import ResponseError
 
+from app.run_projection import CHAT_PUBLIC_PROJECTION_VERSION, public_terminal_projection
 from app.streaming.api import redis_id_tuple as _redis_id_tuple, stream_key
 from app.streaming.contracts import ResumeDecision, StreamCursor, StreamGap
 
@@ -33,6 +34,7 @@ from app.streaming.redis import (
     StreamContractError,
     StreamTransportUnavailable,
     StreamAuthority,
+    get_stream_authority,
 )
 
 
@@ -194,7 +196,27 @@ def _stable_event_id(
     return f"evt4_{digest}"
 
 
-_CALLBACK_EVENT_MAP = {event_type: event_type for event_type in _MESSAGE_EVENT_TYPES}
+def _stable_run_event_id(
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    stream_incarnation: int,
+    event_type: str,
+) -> str:
+    digest = hashlib.sha256(
+        canonical_json_bytes(
+            [
+                "ai-platform-agent-kernel-run-event-id-v4",
+                tenant_id,
+                run_id,
+                attempt_id,
+                stream_incarnation,
+                event_type,
+            ]
+        )
+    ).hexdigest()
+    return f"evt4_run_{digest}"
+
 
 
 def callback_item_to_v4(
@@ -213,7 +235,7 @@ def callback_item_to_v4(
 
     event_type = item.get("event_type")
     payload = item.get("payload")
-    if event_type not in _CALLBACK_EVENT_MAP or not isinstance(payload, Mapping):
+    if event_type not in _MESSAGE_EVENT_TYPES or not isinstance(payload, Mapping):
         return None
     source_event_id = item.get("event_id")
     source_run_id = item.get("run_id")
@@ -274,6 +296,9 @@ _APPLICATION_EVENT_TYPES = PUBLIC_STREAM_EVENT_TYPES - {
     "stream.gap",
     "stream.end",
 }
+_RUN_DOMAIN_EVENT_TYPES = frozenset(
+    {"run.cancel_requested", "run.succeeded", "run.failed", "run.cancelled"}
+)
 _CONTROL_EVENT_TYPES = frozenset({"stream.open", "stream.heartbeat", "stream.gap", "stream.end"})
 _CONTROL_SCHEMA = "ai-platform.public-run-stream-control.v4"
 _CONTROL_REPLAYABLE = {"stream.open": True, "stream.heartbeat": False, "stream.gap": False, "stream.end": True}
@@ -754,7 +779,13 @@ def project_public_v4(
         event_type = row.get("event_type")
         if (
             not isinstance(row_id, str)
-            or not row_id.startswith("evt4_")
+            or not (
+                row_id.startswith("evt4_")
+                or (
+                    event_type in {"run.succeeded", "run.failed", "run.cancelled"}
+                    and row_id.startswith("sev_")
+                )
+            )
             or row.get("tenant_id") != authority.tenant_id
             or run_id != authority.run_id
             or not isinstance(event_type, str)
@@ -856,7 +887,9 @@ async def append_application_v4_row(
     event_type: str,
     payload: Mapping[str, object],
     authority: StreamAuthority,
-    execution_lease_id: str,
+    execution_lease_id: str | None,
+    event_id: str | None = None,
+    terminal_intent_id: str | None = None,
     message_id: str | None = None,
     trace_ref: str | None = None,
     causation_event_id: str | None = None,
@@ -865,16 +898,47 @@ async def append_application_v4_row(
 ) -> Mapping[str, object]:
     """Append one idempotent application row without touching Redis."""
 
-    _nonempty(execution_lease_id, "execution_lease_id")
+    if not isinstance(event_type, str) or event_type not in _APPLICATION_EVENT_TYPES:
+        raise V4ProjectionError("v4_callback_item_invalid")
+    is_run_domain = event_type in _RUN_DOMAIN_EVENT_TYPES
+    if execution_lease_id is None:
+        expected_authority_state = (
+            "confirmed" if event_type == "run.cancel_requested" else "terminal"
+        )
+        if not is_run_domain or authority.state != expected_authority_state:
+            raise V4ProjectionError("v4_run_authority_scope_mismatch")
+    else:
+        _nonempty(execution_lease_id, "execution_lease_id")
+        if authority.state != "confirmed":
+            raise V4ProjectionError("v4_callback_authority_scope_mismatch")
     if (
         tenant_id != authority.tenant_id
         or run_id != authority.run_id
         or attempt_id != authority.attempt_id
-        or authority.state != "confirmed"
+        or (not is_run_domain and authority.state != "confirmed")
         or not isinstance(batch_id, str)
         or not batch_id
     ):
         raise V4ProjectionError("v4_callback_authority_scope_mismatch")
+    if is_run_domain and event_id is None:
+        event_id = _stable_run_event_id(
+            tenant_id,
+            run_id,
+            attempt_id,
+            authority.stream_incarnation,
+            event_type,
+        )
+    if event_id is not None:
+        _safe_ref(event_id, name="event_id")
+    if terminal_intent_id is not None:
+        _safe_ref(terminal_intent_id, name="terminal_intent_id")
+    if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
+        terminal_payload_id = payload.get("terminal_event_id") if isinstance(payload, Mapping) else None
+        if event_id != terminal_payload_id:
+            raise V4ProjectionError("v4_terminal_event_id_mismatch")
+        if terminal_intent_id is None or terminal_intent_id != event_id:
+            raise V4ProjectionError("v4_terminal_intent_identity_mismatch")
+
     if (
         isinstance(callback_index, bool)
         or not isinstance(callback_index, int)
@@ -883,8 +947,6 @@ async def append_application_v4_row(
         or not isinstance(batch_index, int)
         or batch_index < 0
     ):
-        raise V4ProjectionError("v4_callback_item_invalid")
-    if not isinstance(event_type, str) or event_type not in _APPLICATION_EVENT_TYPES:
         raise V4ProjectionError("v4_callback_item_invalid")
     _validate_payload(event_type, payload)
     if event_type in _MESSAGE_EVENT_TYPES:
@@ -917,9 +979,10 @@ async def append_application_v4_row(
         "causation_event_id": causation_event_id,
         "source_event_id": source_event_id,
         "source_run_id": source_run_id,
+        "terminal_intent_id": terminal_intent_id,
         "publication_state": "pending",
         "publication_attempts": 0,
-        "lease_fence": "active",
+        "lease_fence": "active" if execution_lease_id is not None else "not_required",
         "cancellation_fence": "not_requested",
     }
     expected_payload = {**dict(payload), V4_METADATA_KEY: metadata}
@@ -930,7 +993,7 @@ async def append_application_v4_row(
         visible_to_user=True,
         trace_id=trace_ref,
     )
-    event_id = _stable_event_id(
+    event_id = event_id or _stable_event_id(
         tenant_id, run_id, attempt_id, batch_id, callback_index, batch_index
     )
     existing_result = await conn.execute(
@@ -982,6 +1045,144 @@ async def append_application_v4_row(
         "stream_publication_next_attempt_at": datetime.now(timezone.utc),
         "created_at": receipt.created_at,
     }
+
+
+async def append_run_v4_row(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    event_type: str,
+    payload: Mapping[str, object],
+    batch_id: str,
+    event_id: str | None = None,
+    terminal_intent_id: str | None = None,
+    trace_ref: str | None = None,
+) -> Mapping[str, object] | None:
+    """Append one Run-owned v4 row on the caller's PostgreSQL transaction."""
+
+    authority = await get_stream_authority(
+        conn, tenant_id=tenant_id, run_id=run_id, for_update=True
+    )
+    if authority is None:
+        return None
+    if not attempt_id:
+        attempt_id = authority.attempt_id
+    if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
+        if event_id is None or terminal_intent_id != event_id:
+            raise V4ProjectionError("v4_terminal_intent_identity_mismatch")
+    return await append_application_v4_row(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        batch_id=batch_id,
+        callback_index=0,
+        batch_index=0,
+        event_type=event_type,
+        payload=payload,
+        authority=authority,
+        execution_lease_id=None,
+        event_id=event_id,
+        terminal_intent_id=terminal_intent_id,
+        trace_ref=trace_ref,
+        source_event_id=terminal_intent_id,
+        source_run_id=run_id,
+    )
+
+
+async def append_run_cancel_requested_v4_row(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    source: str,
+    trace_ref: str | None = None,
+) -> Mapping[str, object] | None:
+    """Append the first authoritative cancellation request on its Run transaction."""
+
+    if source not in {"user", "system"}:
+        raise V4ProjectionError("v4_run_cancel_source_invalid")
+    return await append_run_v4_row(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id="",
+        event_type="run.cancel_requested",
+        payload={"source": source},
+        batch_id=f"cancel-request-{run_id}",
+        trace_ref=trace_ref,
+    )
+
+
+def _run_terminal_payload(
+    *,
+    status: str,
+    terminal_event_id: str,
+    error_code: object = None,
+    reason_code: str = "user_cancelled",
+) -> dict[str, object]:
+    if status == "succeeded":
+        return {"terminal_event_id": terminal_event_id, "hydrate_required": True}
+    if status == "cancelled":
+        if reason_code not in {"user_cancelled", "policy_cancelled", "timeout"}:
+            raise V4ProjectionError("v4_run_cancel_reason_invalid")
+        return {
+            "terminal_event_id": terminal_event_id,
+            "hydrate_required": True,
+            "reason_code": reason_code,
+        }
+    if status != "failed":
+        raise V4ProjectionError("v4_run_terminal_status_invalid")
+    projection = public_terminal_projection(status, error_code)
+    if projection is None or projection.get("detail_kind") != "failed":
+        raise V4ProjectionError("v4_run_public_terminal_projection_unavailable")
+    detail_code = str(projection.get("detail_code") or "")
+    default_message = str(projection.get("message") or "")
+    if not detail_code or not default_message:
+        raise V4ProjectionError("v4_run_public_terminal_projection_invalid")
+    return {
+        "terminal_event_id": terminal_event_id,
+        "hydrate_required": True,
+        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+        "code": detail_code,
+        "default_message": default_message,
+        "detail": None,
+    }
+
+
+async def append_run_terminal_v4_row(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    status: str,
+    terminal_event_id: str,
+    error_code: object = None,
+    reason_code: str = "user_cancelled",
+    trace_ref: str | None = None,
+) -> Mapping[str, object] | None:
+    """Append the terminal Run event using the existing terminal intent identity."""
+
+    return await append_run_v4_row(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        event_type=f"run.{status}",
+        payload=_run_terminal_payload(
+            status=status,
+            terminal_event_id=terminal_event_id,
+            error_code=error_code,
+            reason_code=reason_code,
+        ),
+        batch_id=terminal_event_id,
+        event_id=terminal_event_id,
+        terminal_intent_id=terminal_event_id,
+        trace_ref=trace_ref,
+    )
 
 
 async def append_callback_v4_rows(
@@ -1780,6 +1981,7 @@ __all__ = [
     "V4RedisStreamBridge",
     "V4StreamEntry",
     "append_application_v4_row",
+    "append_run_v4_row",
     "append_callback_v4_rows",
     "build_public_v4_control",
     "build_v4_control",

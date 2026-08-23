@@ -33,6 +33,7 @@ from app.platform.postgres.sandbox_leases import (
     record_sandbox_executor_terminal,
 )
 from app.streaming import redis as streaming_redis
+from app.streaming import v4 as streaming_v4
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -8307,6 +8308,8 @@ async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = DecisionCancelRaceConnection()
 
     decision_task = asyncio.create_task(
@@ -8381,6 +8384,8 @@ async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeyp
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = RequestCancelRaceConnection()
 
     request_task = asyncio.create_task(
@@ -8471,6 +8476,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
     monkeypatch.setattr(repositories, "append_event", record_event)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_audit)
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
     conn = Connection()
 
@@ -9537,6 +9544,8 @@ async def test_allow_once_consumption_loses_a_barrier_synchronized_cancel_race(m
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = ConsumeCancelRaceConnection()
 
     consume_task = asyncio.create_task(
@@ -9607,6 +9616,8 @@ async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(mon
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = ReuseCancelRaceConnection()
 
     reuse_task = asyncio.create_task(
