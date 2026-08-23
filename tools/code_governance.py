@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -927,6 +928,67 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_pull_request_review_record(
+    head_ref: str,
+    *,
+    validator_path: Path | None = None,
+) -> None:
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return
+    governance_head_ref = os.environ.get("GOVERNANCE_HEAD_REF")
+    governance_pr_number = os.environ.get("GOVERNANCE_PR_NUMBER")
+    if governance_head_ref is None and governance_pr_number is None:
+        return
+    if (
+        governance_head_ref != head_ref
+        or governance_pr_number is None
+        or re.fullmatch(r"[1-9][0-9]*", governance_pr_number) is None
+    ):
+        raise GovernanceError(
+            "review_record_authority_context_invalid",
+            "pull-request review validation requires the exact protected governance context",
+        )
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        raise GovernanceError(
+            "review_record_event_missing",
+            "GITHUB_EVENT_PATH is required for pull-request review validation",
+        )
+    resolved_validator_path = (
+        validator_path
+        if validator_path is not None
+        else Path(__file__).resolve().with_name("validate_pr_review_record.py")
+    )
+    if not resolved_validator_path.is_file():
+        raise GovernanceError(
+            "review_record_validator_unavailable",
+            "trusted review-record validator is unavailable",
+        )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            str(resolved_validator_path),
+            "--github-event",
+            event_path,
+            "--expected-head",
+            head_ref,
+            "--format",
+            "text",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise GovernanceError(
+            "review_record_invalid",
+            detail or "pull-request review record validation failed",
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface and return 0, 2, or 3."""
     arguments = list(argv) if argv is not None else sys.argv[1:]
@@ -934,6 +996,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _build_parser().parse_args(arguments)
         evaluation = CodeGovernanceEvaluator(Path.cwd()).evaluate(args.base_ref, args.head_ref)
+        _validate_pull_request_review_record(evaluation.head_ref)
     except GovernanceError as error:
         if requested_format == "json":
             print(json.dumps(_error_payload(error), ensure_ascii=False, indent=2, sort_keys=True))

@@ -18,6 +18,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 TRUSTED_GOVERNANCE_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-trusted-governance.yml"
 FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
+CODE_GOVERNANCE = ROOT / "tools" / "code_governance.py"
 AGENT_RULES = ROOT / "AGENTS.md"
 ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 TRUSTED_RUFF_REGEX = r"[0-9]+\.[0-9]+\.[0-9]+"
@@ -81,6 +82,9 @@ BACKEND_TEST_SHARDS = {
     "release-governance-policy": (
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
+        "tests/test_code_governance.py",
+        "tests/test_pr_review_record.py",
+        "tests/test_source_authority_docs.py",
         "tests/test_ci_image_scope.py",
         "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
@@ -177,7 +181,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 38
+    assert len(all_selectors) == len(set(all_selectors)) == 41
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job
@@ -206,6 +210,25 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert 'test "$VALIDATION_RESULT" = "success"' in required_job
     assert 'test "$BACKEND_TESTS_RESULT" = "success"' in required_job
     assert "if: ${{ always() }}" in required_job
+
+
+def test_code_governance_authority_uses_its_sibling_pr_review_record_validator():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    validation_job = _workflow_job_block(workflow, "backend-validation")
+    authority = CODE_GOVERNANCE.read_text(encoding="utf-8")
+
+    assert "validate_pr_review_record.py" not in validation_job
+    assert 'os.environ.get("GITHUB_EVENT_NAME") != "pull_request"' in authority
+    assert 'os.environ.get("GITHUB_EVENT_PATH")' in authority
+    assert 'Path(__file__).resolve().with_name("validate_pr_review_record.py")' in authority
+    assert '"--expected-head",' in authority
+    assert "review_record_event_missing" in authority
+    assert "review_record_authority_context_invalid" in authority
+    assert "review_record_validator_unavailable" in authority
+    assert "review_record_invalid" in authority
+    assert "tests/test_code_governance.py" in workflow
+    assert "tests/test_pr_review_record.py" in workflow
+    assert "tests/test_source_authority_docs.py" in workflow
 
 
 def test_agent_skill_contract_job_is_bounded_and_required():
