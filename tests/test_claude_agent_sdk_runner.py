@@ -1844,6 +1844,90 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabilities(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    candidate_batches = []
+    evidence_calls = []
+    first = _subject(server_id="first-server", tool_name="search")
+    second = _subject(server_id="second-server", tool_name="lookup")
+    first["write_capable"] = True
+    second["write_capable"] = True
+    steps = [
+        *_mcp_hook_steps(first, call_id="mcp-call-1"),
+        ("assistant", "first verified answer"),
+        ("hook", (
+            "PreToolUse",
+            {
+                "tool_name": second["identity"],
+                "tool_use_id": "mcp-call-2",
+                "tool_input": {"private": "safe-synthetic-value"},
+            },
+            "mcp-call-2",
+        )),
+        ("assistant", "second capability in-flight text"),
+        *_mcp_hook_steps(second, call_id="mcp-call-2", terminal="failed")[1:],
+    ]
+
+    async def acknowledge(evidence):
+        evidence_calls.append(dict(evidence))
+        return evidence["tool_call_id"] != "mcp-call-2" or evidence["lifecycle_phase"] != "completed"
+
+    async def acknowledge_candidates(candidates):
+        candidate_batches.append(tuple(candidates))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text="first verified answer second capability in-flight text",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[first, second],
+        on_text=deltas.append,
+        on_agent_event=acknowledge_candidates,
+        on_capability_evidence=acknowledge,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+    )
+
+    candidate_events = [event for batch in candidate_batches for event in batch]
+    assert [
+        (item["tool_call_id"], item["lifecycle_phase"])
+        for item in evidence_calls
+    ] == [
+        ("mcp-call-1", "invocation_requested"),
+        ("mcp-call-1", "completed"),
+        ("mcp-call-2", "invocation_requested"),
+        ("mcp-call-2", "completed"),
+    ]
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+    assert deltas == []
+    assert all(
+        body not in repr(event.as_dict())
+        for event in candidate_events
+        for body in ("first verified answer", "second capability in-flight text")
+    )
+
+
+@pytest.mark.asyncio
 async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(monkeypatch, tmp_path):
     captured, deltas = {}, []
     skill_name = "qa-review"

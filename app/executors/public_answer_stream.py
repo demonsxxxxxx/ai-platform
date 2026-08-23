@@ -124,7 +124,16 @@ class PublicAnswerStreamGate:
         if private_replacements is not None:
             self._add_replacements(private_replacements)
         if self._deferred_until_finish:
+            # Each governed capability starts a fresh disclosure boundary. Keep
+            # the emitted suffix for split-token detection, but retire all body
+            # state from the previous capability before accepting new text.
+            self._pending = ""
+            self._logical_view = ""
+            self._logical_overflowed = False
+            self._accepted_text = False
+            self._public_answer_text = ""
             self._capability_boundary_seen = True
+            self._released_after_verified_capability = False
             self._sealed = True
             return
         self._sealed = True
@@ -165,6 +174,8 @@ class PublicAnswerStreamGate:
             return
         self._pending = ""
         self._logical_view = ""
+        self._logical_overflowed = False
+        self._accepted_text = False
         self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = True

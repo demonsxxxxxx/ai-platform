@@ -68,6 +68,32 @@ def test_v4_callback_bridge_rejects_private_envelope_message_identity():
     assert agent_event_to_executor_event(private_message)["event_type"] == "executor_private_event"
 
 
+def test_v4_callback_bridge_rejects_non_empty_legacy_message_even_when_safe():
+    legacy_message = AgentEvent(
+        type="message.delta",
+        message="legacy visible text",
+        payload={"delta": "safe answer"},
+        event_id="event-legacy-message",
+        run_id="run-1187",
+        message_id="message-1",
+    )
+
+    assert agent_event_to_executor_event(legacy_message)["event_type"] == "executor_private_event"
+
+
+def test_v4_callback_bridge_rejects_admin_only_event_even_when_schema_valid():
+    admin_only = AgentEvent(
+        type="message.delta",
+        payload={"delta": "safe answer"},
+        event_id="event-admin-only",
+        run_id="run-1187",
+        message_id="message-1",
+        admin_only=True,
+    )
+
+    assert agent_event_to_executor_event(admin_only)["event_type"] == "executor_private_event"
+
+
 def test_v4_candidate_rejects_private_nested_public_strings():
     with pytest.raises(ValueError, match="private text"):
         ClaudeAgentEventCandidate(

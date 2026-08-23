@@ -176,6 +176,8 @@ def _public_strings_are_identity_safe(value: object) -> bool:
 def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
     """Carry a validated v4 candidate without adding legacy visibility fields."""
 
+    if event.admin_only or event.message:
+        return _private_executor_event()
     if not _v4_envelope_identity_is_valid(event):
         return _private_executor_event()
     if not _public_strings_are_identity_safe(_v4_public_candidate(event)):
