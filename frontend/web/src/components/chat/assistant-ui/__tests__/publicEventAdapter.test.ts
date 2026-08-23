@@ -149,6 +149,13 @@ test("v4 gap cursors require the canonical run/incarnation/Redis-id grammar", ()
   );
 });
 
+test("v4 adapter preserves causation as an event identity for reducer resolution", () => {
+  const raw = frame("subagent.started", { subagent_id: "child-1", display_name: "Child" });
+  raw.value = { ...(raw.value as Record<string, unknown>), causation_event_id: "parent-event-1" };
+  const adapted = adaptPublicRunStreamEventV4(raw, { runId: "run-1", streamIncarnation: 2 });
+  assert.equal(adapted?.causationEventId, "parent-event-1");
+  assert.equal((adapted?.event as Record<string, unknown>).parent_id, undefined);
+});
 test("artifact.failed without a filename projects a fixed safe visible label", () => {
   const adapted = adaptPublicRunStreamEventV4(
     frame("artifact.failed", {

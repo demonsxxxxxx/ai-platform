@@ -1949,7 +1949,6 @@ test("projects v4 subagent lifecycle with parent event identity resolution", () 
       status: "started",
       event_id: "child-event-1",
       causation_event_id: "parent-event-1",
-      parent_id: "forbidden-fallback",
     },
     root.parts, "", [], 0, [], true, "message-1",
   );
@@ -2020,7 +2019,6 @@ test("does not invent a parent agent from an unresolved causation event", () => 
       status: "started",
       event_id: "child-event-2",
       causation_event_id: "missing-parent-event",
-      parent_id: "raw-agent-id",
     },
     [], "", [], 0, [], true, "message-1",
   );

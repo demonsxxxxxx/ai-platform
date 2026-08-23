@@ -234,7 +234,6 @@ export interface EventData {
   result_summary?: string;
   failure_category?: string;
   denial_code?: string;
-  parent_id?: string | null;
   current_category?: string;
   progress_percent?: number;
   artifact_id?: string;

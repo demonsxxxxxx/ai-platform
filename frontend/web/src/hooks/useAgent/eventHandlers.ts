@@ -179,6 +179,47 @@ function isStrictV4Binding(
   );
 }
 
+function isCurrentV4Owner(
+  ctx: EventHandlerContext,
+  binding: V4StreamEventBinding,
+): boolean {
+  const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+  return (
+    ctx.sessionIdRef.current === binding.sessionId &&
+    ctx.currentRunIdRef.current === binding.runId &&
+    ctx.streamVersionRef.current === binding.streamVersion &&
+    acceptedCursor?.sessionId === binding.sessionId &&
+    acceptedCursor.runId === binding.runId &&
+    acceptedCursor.streamIncarnation === binding.streamIncarnation
+  );
+}
+
+function claimV4TerminalSequence(
+  event: V4PublicEvent,
+  ctx: EventHandlerContext,
+  binding: V4StreamEventBinding,
+): boolean {
+  if (event.sequence === null) return true;
+  const accepted = ctx.acceptedRunEventSequenceRef?.current;
+  if (!accepted) return false;
+  if (
+    accepted.sessionId === binding.sessionId &&
+    accepted.runId === binding.runId &&
+    accepted.sequence !== null &&
+    event.sequence <= accepted.sequence
+  ) {
+    return false;
+  }
+  if (ctx.acceptedRunEventSequenceRef) {
+    ctx.acceptedRunEventSequenceRef.current = {
+      sessionId: binding.sessionId,
+      runId: binding.runId,
+      sequence: event.sequence,
+    };
+  }
+  return true;
+}
+
 function presentationOwner(
   binding: StreamEventBinding | undefined,
   messageId: string,
@@ -307,6 +348,7 @@ export function handlePublicRunStreamEventV4(
   }
   if (terminalStatus && event.eventType !== "stream.end") {
     if (terminalEventId && (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) || ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)) return false;
+    if (!claimV4TerminalSequence(event, ctx, binding)) return false;
     const owner = presentationOwner(binding, messageId);
     if (owner) ctx.publicStreamPresentation?.flush(owner);
     if (!terminalEventId || !ctx.onRunTerminal) return false;
@@ -386,6 +428,7 @@ export function handlePublicRunStreamFrameV4({
   const event = adaptPublicRunStreamEventV4(frame, adapterBinding);
   if (!event) return false;
   if (event.eventType === "stream.gap") {
+    if (!isCurrentV4Owner(ctx, binding)) return false;
     onGap?.(event);
     return false;
   }

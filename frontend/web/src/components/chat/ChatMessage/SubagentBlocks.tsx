@@ -4,6 +4,7 @@ import {
   useCallback,
   useRef,
   useLayoutEffect,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { clsx } from "clsx";
 import {
@@ -521,6 +522,17 @@ export function SubagentBlock({
     });
   }, [formattedAgentName, panelStatus, subtitle, panelKey, agent_id]);
 
+  const handleTriggerKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      // Prevent native click synthesis so explicit keyboard support cannot
+      // double-open the panel when the browser also dispatches activation.
+      event.preventDefault();
+      handleOpenInPanel();
+    },
+    [handleOpenInPanel],
+  );
+
   return (
     <div
       data-subagent-id={agent_id}
@@ -549,6 +561,7 @@ export function SubagentBlock({
         data-subagent-trigger={agent_id}
         className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer transition-colors hover:bg-white/60 dark:hover:bg-white/5"
         onClick={handleOpenInPanel}
+        onKeyDown={handleTriggerKeyDown}
       >
         <div
           className={clsx(

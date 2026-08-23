@@ -259,7 +259,8 @@ test("v4 terminal end waits for authoritative hydration and scopes the fence", (
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     processedEventIdsRef: { current: new Set<string>() },
-    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: null } },
+    acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: null } },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 3 } },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 7 },
@@ -340,7 +341,8 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
       sessionIdRef: { current: "session-1" },
       currentRunIdRef: { current: "run-1" },
       processedEventIdsRef: { current: new Set<string>() },
-      acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null } },
+      acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: null } },
+      acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
       lastHistoryTimestampRef: { current: null },
       activeSubagentStackRef: { current: [] },
       streamVersionRef: { current: 4 },
@@ -404,6 +406,54 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
   }
 });
 
+test("v4 terminal business sequence rejects lower replay despite a later transport cursor", () => {
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: 5 } },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:5-0", streamIncarnation: 1 } },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => true,
+  } as unknown as EventHandlerContext;
+  const adapted = frame("run.succeeded", { terminal_event_id: "terminal-high", hydrate_required: true });
+  assert.ok(adapted);
+  const lower = {
+    eventHeader: "run.succeeded",
+    transportCursor: "run-1:1:9-0",
+    generation: 3,
+    value: { ...adapted.event, event_id: "terminal-low", seq: 4, payload: { terminal_event_id: "terminal-low", hydrate_required: true } },
+  };
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: lower,
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+    messageId: "message-1",
+    ctx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
+  }), false);
+  assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 5);
+  const higher = {
+    ...lower,
+    transportCursor: "run-1:1:10-0",
+    value: { ...lower.value, event_id: "terminal-high", seq: 6, payload: { terminal_event_id: "terminal-high", hydrate_required: true } },
+  };
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: higher,
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+    messageId: "message-1",
+    ctx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
+  }), true);
+  assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 6);
+});
 test("v4 handler delegates stream gaps to the existing recovery owner", () => {
   const frameValue = {
     schema: "ai-platform.public-run-stream-control.v4",
@@ -432,10 +482,47 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue },
     adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
     messageId: "message-1",
-    ctx: {} as EventHandlerContext,
+    ctx: {
+      sessionIdRef: { current: "session-1" },
+      currentRunIdRef: { current: "run-1" },
+      streamVersionRef: { current: 0 },
+      acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
+    } as EventHandlerContext,
     binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
     onGap: (event) => { gapEventId = event.eventId; },
   });
   assert.equal(accepted, false);
   assert.equal(gapEventId, "event-gap");
+
+  const staleCases = [
+    { name: "session", ctx: { sessionIdRef: { current: "session-2" }, currentRunIdRef: { current: "run-1" }, streamVersionRef: { current: 0 }, acceptedStreamCursorRef: { current: { sessionId: "session-2", runId: "run-1", eventId: null, streamIncarnation: 1 } } } },
+    { name: "run", ctx: { sessionIdRef: { current: "session-1" }, currentRunIdRef: { current: "run-2" }, streamVersionRef: { current: 0 }, acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-2", eventId: null, streamIncarnation: 1 } } } },
+    { name: "stream version", ctx: { sessionIdRef: { current: "session-1" }, currentRunIdRef: { current: "run-1" }, streamVersionRef: { current: 1 }, acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } } } },
+    { name: "incarnation", ctx: { sessionIdRef: { current: "session-1" }, currentRunIdRef: { current: "run-1" }, streamVersionRef: { current: 0 }, acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 2 } } } },
+  ];
+  for (const stale of staleCases) {
+    let called = false;
+    assert.equal(handlePublicRunStreamFrameV4({
+      frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue },
+      adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+      messageId: "message-1",
+      ctx: stale.ctx as unknown as EventHandlerContext,
+      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
+      onGap: () => { called = true; },
+    }), false, stale.name);
+    assert.equal(called, false, stale.name);
+  }
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 4, value: frameValue },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+    messageId: "message-1",
+    ctx: {
+      sessionIdRef: { current: "session-1" },
+      currentRunIdRef: { current: "run-1" },
+      streamVersionRef: { current: 0 },
+      acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
+    } as unknown as EventHandlerContext,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
+    onGap: () => { throw new Error("stale generation gap recovered"); },
+  }), false);
 });

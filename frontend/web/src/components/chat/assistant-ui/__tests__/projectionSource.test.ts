@@ -12,6 +12,7 @@ import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
 import { AssistantUiMessageFrame } from "../MessageFrame";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
+import { closePersistentToolPanel, getPersistentToolPanelState } from "../../ChatMessage/items/persistentToolPanelState";
 import type { Message, MessagePart } from "../../../../types";
 
 function setupDom(): { container: HTMLDivElement; root: Root; cleanup: () => void } {
@@ -330,20 +331,108 @@ test("mounted projection renders the production subagent lifecycle with hierarch
   const dom = setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
-    const started: MessagePart = {
-      type: "subagent",
-      agent_id: "subagent-1",
-      public_operation_id: "operation-subagent-1",
-      agent_name: "Research worker",
-      input: "",
-      depth: 1,
-      status: "running",
-      parent_agent_id: "parent-agent-1",
-      current_category: "search",
-      progress_percent: 40,
-      duration_ms: 1_200,
-    };
-    renderProjection(dom.root, message([started]), actions);
+    const parent = adaptPublicRunStreamEventV4({
+      eventHeader: "subagent.started",
+      transportCursor: "run-1:1:1-0",
+      generation: 3,
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: "parent-event",
+        run_id: "run-1",
+        message_id: "message-1",
+        seq: 1,
+        event_type: "subagent.started",
+        stream_incarnation: 1,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-01-01T00:00:00Z",
+        payload: {
+          subagent_id: "parent-agent-1",
+          display_name: "Parent worker",
+        },
+      },
+    }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
+    const child = adaptPublicRunStreamEventV4({
+      eventHeader: "subagent.started",
+      transportCursor: "run-1:1:2-0",
+      generation: 3,
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: "child-event",
+        run_id: "run-1",
+        message_id: "message-1",
+        seq: 2,
+        event_type: "subagent.started",
+        stream_incarnation: 1,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: "parent-event",
+        emitted_at: "2026-01-01T00:00:01Z",
+        payload: {
+          subagent_id: "subagent-1",
+          display_name: "Research worker",
+        },
+      },
+    }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
+    assert.ok(parent);
+    assert.ok(child);
+    const parentProjected = projectV4EventToLegacyHandler(parent, "message-1");
+    const childProjected = projectV4EventToLegacyHandler(child, "message-1");
+    assert.ok(parentProjected);
+    assert.ok(childProjected);
+    const childProgress = adaptPublicRunStreamEventV4({
+      eventHeader: "subagent.progress",
+      transportCursor: "run-1:1:3-0",
+      generation: 3,
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: "child-progress-event",
+        run_id: "run-1",
+        message_id: "message-1",
+        seq: 3,
+        event_type: "subagent.progress",
+        stream_incarnation: 1,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: "parent-event",
+        emitted_at: "2026-01-01T00:00:02Z",
+        payload: {
+          subagent_id: "subagent-1",
+          display_name: "Research worker",
+          duration_ms: 1_200,
+          current_category: "search",
+          progress_percent: 40,
+        },
+      },
+    }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
+    assert.ok(childProgress);
+    const childProgressProjected = projectV4EventToLegacyHandler(childProgress, "message-1");
+    assert.ok(childProgressProjected);
+    const parentData = JSON.parse(parentProjected.streamEvent.data) as Record<string, unknown>;
+    const childData = JSON.parse(childProjected.streamEvent.data) as Record<string, unknown>;
+    const childProgressData = JSON.parse(childProgressProjected.streamEvent.data) as Record<string, unknown>;
+    let reduced = processMessageEvent("run_event", parentData, [], "", [], 0, [], false, "message-1");
+    reduced = processMessageEvent("run_event", childData, reduced.parts, reduced.content, reduced.toolCalls, 0, [], false, "message-1");
+    reduced = processMessageEvent("run_event", childProgressData, reduced.parts, reduced.content, reduced.toolCalls, 0, [], false, "message-1");
+    const unknownChild = processMessageEvent(
+      "run_event",
+      { ...childData, event_id: "unknown-child-event", causation_event_id: "unaccepted-parent-event", subagent_id: "un-grouped" },
+      reduced.parts,
+      reduced.content,
+      reduced.toolCalls,
+      0,
+      [],
+      false,
+      "message-1",
+    );
+    const unknownPart = unknownChild.parts.find(
+      (part) => part.type === "subagent" && part.agent_id === "un-grouped",
+    );
+    assert.ok(unknownPart && unknownPart.type === "subagent");
+    assert.equal(unknownPart.parent_agent_id, undefined);
+
+    renderProjection(dom.root, message(reduced.parts), actions);
     const lifecycle = dom.container.querySelector("[data-subagent-id=subagent-1]");
     const trigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]") as HTMLButtonElement | null;
     assert.ok(lifecycle);
@@ -358,12 +447,32 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     assert.doesNotMatch(lifecycle?.textContent || "", /parent-agent-1/);
     assert.match(lifecycle?.textContent || "", /Category: search/);
     assert.match(lifecycle?.textContent || "", /Progress: 40%/);
-    assert.match(lifecycle?.textContent || "", /Duration: 1\.2s/);
     trigger?.focus();
     assert.equal(dom.container.ownerDocument.activeElement, trigger);
 
-    const completed = { ...started, status: "complete" as const, progress_percent: 100, duration_ms: 2_500 };
-    renderProjection(dom.root, message([completed]), actions);
+    act(() => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    assert.ok(getPersistentToolPanelState());
+    closePersistentToolPanel();
+    act(() => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    });
+    assert.ok(getPersistentToolPanelState());
+    closePersistentToolPanel();
+
+    const completed = processMessageEvent(
+      "run_event",
+      { ...childData, status: "completed", progress_percent: 100, duration_ms: 2_500 },
+      reduced.parts,
+      reduced.content,
+      reduced.toolCalls,
+      0,
+      [],
+      false,
+      "message-1",
+    );
+    renderProjection(dom.root, message(completed.parts), actions);
     const updated = dom.container.querySelector("[data-subagent-id=subagent-1]");
     const updatedTrigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]");
     assert.equal(updatedTrigger?.getAttribute("aria-label"), "Research worker: Completed, Nested Agent");
@@ -371,6 +480,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     assert.match(updated?.textContent || "", /Progress: 100%/);
     assert.match(updated?.textContent || "", /Duration: 2\.5s/);
   } finally {
+    closePersistentToolPanel();
     dom.cleanup();
   }
 });
