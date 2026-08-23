@@ -9,6 +9,7 @@ import pytest
 from redis.asyncio import Redis
 
 from app.streaming.api import stream_key
+from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 
 from app.streaming.contracts import canonical_json_bytes
 from app.streaming.redis import (
@@ -16,9 +17,11 @@ from app.streaming.redis import (
     SseAuthorityConflictError,
     StreamAuthority,
     StreamContractError,
+    StreamEnvelope,
     create_or_get_stream_admission_v4,
 )
 from app.streaming.v4 import (
+    V4ProjectionError,
     V4RedisStreamBridge,
     build_v4_control,
     project_public_envelope_v4,
@@ -32,6 +35,7 @@ class FakeRedis:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
         self.rows: list[tuple[str, dict[str, str]]] = []
+        self.published: list[tuple[object, object]] = []
 
     async def eval(self, *args: object) -> str:
         self.calls.append(args)
@@ -65,7 +69,8 @@ class FakeRedis:
         rows = list(reversed(self.rows))
         return rows[:count] if count is not None else rows
 
-    async def publish(self, *_args: object) -> int:
+    async def publish(self, *args: object) -> int:
+        self.published.append(args)
         return 1
 
 
@@ -180,6 +185,41 @@ def test_v4_controls_are_strict_and_public_projection_preserves_replayability() 
     assert project_public_envelope_v4(controls[0])["schema"] == "ai-platform.public-run-stream-control.v4"
 
 
+
+def test_v4_controls_reject_malformed_expanded_and_private_payloads() -> None:
+    valid = control("stream.heartbeat", {"status": "running"})
+    for payload in (
+        {"status": "running", "private": "secret"},
+        {"status": "invalid"},
+        {"status": "running", "raw_command": "rm -rf"},
+    ):
+        invalid = dict(valid)
+        invalid["payload"] = payload
+        assert project_public_envelope_v4(invalid) is None
+
+
+def test_v4_live_decode_rejects_corrupt_cross_version_and_cursor_identity() -> None:
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
+    valid = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    cases = [
+        ("not-json", "1-0"),
+        (json.dumps({**valid, "schema": "ai-platform.public-run-stream-event.v3"}), "1-0"),
+        (json.dumps(valid), "bad-cursor"),
+    ]
+    for envelope_json, redis_id in cases:
+        with pytest.raises((StreamContractError, V4ProjectionError)):
+            bridge.decode_live_publication(
+                redis_id=redis_id,
+                envelope_json=envelope_json,
+                tenant_scope_value="scope-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                stream_incarnation=2,
+            )
+
+
 @pytest.mark.asyncio
 async def test_v4_dot_controls_use_existing_lua_authority_and_heartbeat_has_no_cursor() -> None:
     client = FakeRedis()
@@ -189,6 +229,162 @@ async def test_v4_dot_controls_use_existing_lua_authority_and_heartbeat_has_no_c
     with pytest.raises(StreamContractError, match="v4_control_not_replayable"):
         await bridge.append(control("stream.heartbeat", {"status": "running"}))
     await bridge.publish_non_replayable(control("stream.heartbeat", {"status": "running"}))
+
+
+@pytest.mark.asyncio
+async def test_v4_nonreplayable_publication_uses_the_shared_live_parser_shape() -> None:
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    await bridge.append(
+        control(
+            "stream.open",
+            {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        )
+    )
+    envelope = control("stream.heartbeat", {"status": "running"})
+    cursor = await bridge.publish_non_replayable(envelope)
+    channel, publication = client.published[-1]
+    parsed = RedisLiveFanoutSource._parse_publication(
+        channel=str(channel), value=publication
+    )
+    assert parsed.redis_id == "1-0"
+    assert cursor == "run-a:2:1-0"
+    decoded = bridge.decode_live_publication(
+        redis_id=parsed.redis_id,
+        envelope_json=parsed.envelope_json,
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert decoded.envelope["event_type"] == "stream.heartbeat"
+
+
+@pytest.mark.asyncio
+async def test_real_redis_v3_terminal_phase_does_not_reopen_after_stream_loss():
+    redis_url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
+    if not redis_url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+    client = Redis.from_url(redis_url, decode_responses=True)
+    bridge = RedisStreamBridge(publish_client=client)
+    key = stream_key(
+        tenant_scope_value="scope-v3-no-reopen",
+        run_id="run-v3-no-reopen",
+        stream_incarnation=1,
+    )
+    opening = StreamEnvelope(
+        event_id="open-v3-no-reopen",
+        tenant_scope="scope-v3-no-reopen",
+        run_id="run-v3-no-reopen",
+        attempt_id="attempt-v3-no-reopen",
+        stream_incarnation=1,
+        event_type="stream_open",
+        emitted_at="2026-01-01T00:00:00Z",
+        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+    )
+    terminal = StreamEnvelope(
+        event_id="terminal-v3-no-reopen",
+        tenant_scope="scope-v3-no-reopen",
+        run_id="run-v3-no-reopen",
+        attempt_id="attempt-v3-no-reopen",
+        stream_incarnation=1,
+        event_type="terminal",
+        emitted_at="2026-01-01T00:00:01Z",
+        payload={
+            "event_id": "terminal-v3-no-reopen",
+            "hydrate_required": True,
+            "status": "succeeded",
+        },
+    )
+    try:
+        await client.delete(key, f"{key}:state")
+        opened = await bridge.append(opening)
+        await bridge.append(terminal, terminal=True)
+        await client.delete(key)
+        assert await bridge.append(opening) == opened
+        assert await client.xlen(key) == 0
+        assert await client.hget(f"{key}:state", "phase") == "terminal"
+    finally:
+        await client.delete(key, f"{key}:state")
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_v4_restore_rebuilds_all_rows_before_requested_window():
+    redis_url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
+    if not redis_url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+    client = Redis.from_url(redis_url, decode_responses=True)
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    key = stream_key(
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        stream_incarnation=2,
+    )
+
+    class PagedConnection:
+        def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
+            self.rows = rows
+
+        async def execute(self, _statement: str, params: tuple[object, ...]) -> Result:
+            after = int(params[2])
+            limit = int(params[3])
+            return Result(
+                tuple(
+                    item
+                    for item in self.rows
+                    if int(item["sequence"]) > after
+                )[:limit]
+            )
+
+    first = row()
+    second = dict(first)
+    second["id"] = "evt4_delta_second"
+    second["sequence"] = 2
+    second["payload_json"] = dict(first["payload_json"])
+    second["payload_json"]["delta"] = "second"
+    terminal = dict(first)
+    terminal["id"] = "evt4_terminal_rebuild"
+    terminal["sequence"] = 3
+    terminal["event_type"] = "run.succeeded"
+    terminal["payload_json"] = {
+        "terminal_event_id": "evt4_terminal_rebuild",
+        "hydrate_required": True,
+        "__stream_v4": dict(first["payload_json"]["__stream_v4"]),
+    }
+    terminal["payload_json"]["__stream_v4"]["message_id"] = None
+    terminal["payload_json"]["__stream_v4"]["attempt_id"] = "attempt-a"
+    terminal["payload_json"]["__stream_v4"]["stream_incarnation"] = 2
+    terminal["payload_json"]["__stream_v4"]["publication_state"] = "published"
+    terminal["stream_publication_state"] = "published"
+    connection = PagedConnection((first, second, terminal))
+    opening = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    try:
+        await client.delete(key, f"{key}:state")
+        await bridge.append(opening)
+        await client.delete(key)
+        recovered = await recover_v4_and_resume(
+            connection,
+            bridge=bridge,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            authority=authority(),
+            after_sequence=2,
+            limit=1,
+        )
+        assert [item["event_id"] for item in recovered.rows] == [
+            "evt4_terminal_rebuild"
+        ]
+        rows = await client.xrange(key, min="-", max="+")
+        assert len(rows) == 5
+        assert json.loads(rows[1][1]["envelope"])["event_id"] == "evt4_delta"
+        assert json.loads(rows[2][1]["envelope"])["event_id"] == "evt4_delta_second"
+        assert json.loads(rows[-1][1]["envelope"])["event_type"] == "stream.end"
+    finally:
+        await client.delete(key, f"{key}:state")
+        await client.aclose()
 
 
 @pytest.mark.asyncio

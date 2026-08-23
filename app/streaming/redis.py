@@ -59,12 +59,9 @@ if ARGV[5] == 'stream_open' then
   if phase
      and redis.call('HGET',KEYS[2],'open_event_id') == ARGV[2]
      and redis.call('HGET',KEYS[2],'open_digest') == ARGV[6] then
-    if redis.call('XLEN',KEYS[1]) == 0 then
-      local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
-      redis.call('HSET',KEYS[2],'phase','open','open_redis_id',id)
-      redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
-      redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
-      return id
+    local stored_protocol=redis.call('HGET',KEYS[2],'open_protocol')
+    if ARGV[8] == 'v4' and stored_protocol ~= 'v4' then
+      return redis.error_reply('stream_open_protocol_conflict')
     end
     if phase == 'open' then
       redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
@@ -94,7 +91,11 @@ elseif phase ~= 'open' then
 end
 local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
 if ARGV[5] == 'stream_open' then
-  redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id)
+  if ARGV[8] then
+    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id,'open_protocol',ARGV[8])
+  else
+    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id)
+  end
 end
 if ARGV[5] == 'terminal' then
   redis.call('HSET',KEYS[2],'phase','terminal','terminal_event_id',ARGV[2],'terminal_digest',ARGV[6],'terminal_redis_id',id)
@@ -107,10 +108,33 @@ redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
 return id
 """.strip()
 
+_RESTORE_V4_OPEN_LUA = """
+local phase=redis.call('HGET',KEYS[2],'phase')
+if redis.call('XLEN',KEYS[1]) ~= 0 then return '0' end
+if phase and redis.call('HGET',KEYS[2],'open_protocol') ~= 'v4' then
+  return redis.error_reply('stream_restore_protocol_conflict')
+end
+if phase
+   and (redis.call('HGET',KEYS[2],'open_event_id') ~= ARGV[2]
+     or redis.call('HGET',KEYS[2],'open_digest') ~= ARGV[5]) then
+  return redis.error_reply('stream_restore_authority_conflict')
+end
+local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
+redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[5],'open_redis_id',id,'open_protocol','v4')
+redis.call('HDEL',KEYS[2],'terminal_event_id','terminal_digest','terminal_redis_id','end_event_id','end_digest','end_redis_id')
+redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
+redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
+return id
+""".strip()
+
 _SCRIPT_CONTRACT_ERRORS = frozenset(
     {
         "stream_end_without_terminal",
         "stream_open_conflict",
+        "stream_open_protocol_conflict",
+        "stream_restore_authority_conflict",
+        "stream_restore_not_missing",
+        "stream_restore_protocol_conflict",
         "stream_terminal_closed",
         "stream_terminal_conflict",
     }
@@ -189,8 +213,11 @@ class RedisStreamBridge:
         event_type: str,
         envelope_bytes: bytes,
         terminal_event_id: str = "",
+        protocol: str = "v4",
     ) -> str:
         """Append a validated canonical envelope through the frozen Lua authority."""
+        if protocol not in {"v3", "v4"}:
+            raise StreamContractError("stream_protocol_invalid")
 
         key = stream_key(
             tenant_scope_value=tenant_scope_value,
@@ -222,6 +249,7 @@ class RedisStreamBridge:
                 transport_type,
                 _sha256(envelope_bytes),
                 terminal_event_id,
+                protocol,
             )
             return redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
         except ResponseError as exc:
@@ -279,6 +307,52 @@ class RedisStreamBridge:
             raise StreamTransportUnavailable("stream_append_unavailable") from exc
         except Exception as exc:
             raise StreamTransportUnavailable("stream_append_unavailable") from exc
+
+    async def restore_v4_open(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+        event_id: str,
+        envelope_bytes: bytes,
+    ) -> str | None:
+        """Restore only a missing v4 stream through its dedicated Lua owner."""
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        live_channel = stream_live_channel(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        try:
+            redis_id = await self._publish_client.eval(
+                _RESTORE_V4_OPEN_LUA,
+                3,
+                key,
+                f"{key}:state",
+                live_channel,
+                SSE_STREAM_MAXLEN,
+                event_id,
+                envelope_bytes.decode("utf-8"),
+                SSE_STREAM_ACTIVE_IDLE_TTL_MS,
+                _sha256(envelope_bytes),
+            )
+            redis_id = redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
+            return None if redis_id == "0" else redis_id
+        except ResponseError as exc:
+            reason = next((value for value in _SCRIPT_CONTRACT_ERRORS if value in str(exc)), None)
+            if reason is not None:
+                raise StreamContractError(reason) from exc
+            raise StreamTransportUnavailable("stream_restore_unavailable") from exc
+        except Exception as exc:
+            if isinstance(exc, StreamContractError | StreamTransportUnavailable):
+                raise
+            raise StreamTransportUnavailable("stream_restore_unavailable") from exc
 
     async def retained_bounds(
         self, *, tenant_scope_value: str, run_id: str, stream_incarnation: int
