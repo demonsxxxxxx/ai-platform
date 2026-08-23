@@ -82,8 +82,7 @@ def stub_sse_stream_publisher(monkeypatch):
 
     monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
     monkeypatch.setattr(
-        worker_module,
-        "append_artifact_ready_v4_row",
+        "app.execution.application.artifact_delivery.append_artifact_ready_v4_row",
         append_artifact_ready_v4_row,
     )
 
@@ -3203,8 +3202,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr(
-        worker_module,
-        "append_artifact_ready_v4_row",
+        "app.execution.application.artifact_delivery.append_artifact_ready_v4_row",
         append_artifact_ready_v4_row,
     )
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
@@ -6937,8 +6935,7 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr(
-        worker_module,
-        "append_artifact_ready_v4_row",
+        "app.execution.application.artifact_delivery.append_artifact_ready_v4_row",
         append_artifact_ready_v4_row,
     )
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
