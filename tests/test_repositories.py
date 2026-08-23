@@ -8449,7 +8449,7 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
         return {"id": "run-a"}
 
     async def progress(_conn, **_kwargs):
-        if len(events) == 1:
+        if "run_cancelled" not in events:
             await repositories.append_event(
                 _conn,
                 tenant_id="tenant-a",
@@ -8469,6 +8469,9 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     async def no_leases(*_args, **_kwargs):
         return []
 
+    async def record_cancel_v4(_conn, **_kwargs):
+        events.append("v4.run.cancel_requested")
+
     async def no_audit(*_args, **_kwargs):
         return None
 
@@ -8476,8 +8479,7 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
     monkeypatch.setattr(repositories, "append_event", record_event)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", record_cancel_v4)
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
     conn = Connection()
 
@@ -8485,7 +8487,7 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     second = await repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
 
     assert first["status"] == second["status"] == "cancelled"
-    assert events == ["cancel_requested", "run_cancelled"]
+    assert events == ["cancel_requested", "v4.run.cancel_requested", "run_cancelled"]
 
 
 @pytest.mark.asyncio

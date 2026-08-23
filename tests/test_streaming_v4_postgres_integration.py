@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 from redis.asyncio import Redis
 
-from app import schema_migrations
+from app import repositories, schema_migrations
 from app.repositories import complete_run
 from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
@@ -24,6 +24,7 @@ from app.streaming.v4 import (
     V4ProjectionError,
     V4RedisStreamBridge,
     append_callback_v4_rows,
+    append_run_terminal_v4_row,
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
@@ -938,3 +939,172 @@ async def test_complete_run_writes_one_v4_terminal_row_with_existing_intent_iden
             assert metadata["terminal_intent_id"] == terminal["id"]
             assert metadata["execution_lease_id"] is None
             assert len({event["sequence"] for event in terminal_events}) == 1
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+@pytest.mark.asyncio
+async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_closed(status):
+    async with _schema() as (_dsn_value, schema_name, ids):
+        tenant, run, attempt = ids
+        async with _connection_factory(_dsn(), schema_name) as conn:
+            if status == "failed":
+                progress = await repositories.fail_run(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    error_code="executor_private_exception",
+                    error_message="private path C:/tenant/secret",
+                )
+            else:
+                progress = await repositories.cancel_run(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                )
+            assert progress.did_transition is True
+            assert progress.status == status
+
+            cursor = await conn.execute(
+                """
+                select id, sequence, event_type, payload_json
+                from run_events
+                where tenant_id = %s and run_id = %s and event_type = %s
+                order by sequence
+                """,
+                (tenant, run, f"run.{status}"),
+            )
+            rows = await cursor.fetchall()
+            assert len(rows) == 1
+            terminal = rows[0]
+            assert terminal["id"] == terminal["payload_json"]["terminal_event_id"]
+            metadata = terminal["payload_json"]["__stream_v4"]
+            assert metadata["terminal_intent_id"] == terminal["id"]
+            assert metadata["execution_lease_id"] is None
+            if status == "failed":
+                assert terminal["payload_json"]["code"] == "run_failed"
+                assert terminal["payload_json"]["detail"] is None
+                assert "executor_private_exception" not in str(terminal["payload_json"])
+                assert "C:/tenant/secret" not in str(terminal["payload_json"])
+
+            retried = await append_run_terminal_v4_row(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                status=status,
+                terminal_event_id=terminal["id"],
+                error_code="executor_private_exception" if status == "failed" else None,
+                reason_code="user_cancelled" if status == "cancelled" else None,
+            )
+            assert retried is not None
+            assert retried["sequence"] == terminal["sequence"]
+
+            with pytest.raises(V4ProjectionError, match="v4_run_existing_row_conflict"):
+                await append_run_terminal_v4_row(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                    status="cancelled" if status == "failed" else "failed",
+                    terminal_event_id=terminal["id"],
+                    error_code="run_failed" if status == "cancelled" else None,
+                    reason_code="user_cancelled" if status == "failed" else None,
+                )
+
+            count_cursor = await conn.execute(
+                """
+                select count(*) as event_count
+                from run_events
+                where tenant_id = %s and run_id = %s and event_type = %s
+                """,
+                (tenant, run, f"run.{status}"),
+            )
+            assert (await count_cursor.fetchone())["event_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_precedes_cancelled_terminal_and_is_exact_once():
+    async with _schema() as (_dsn_value, schema_name, ids):
+        tenant, run, _attempt = ids
+        user = f"u_{tenant[2:]}"
+        async with _connection_factory(_dsn(), schema_name) as conn:
+            first = await repositories.request_run_cancel(
+                conn,
+                tenant_id=tenant,
+                user_id=user,
+                run_id=run,
+            )
+            second = await repositories.request_run_cancel(
+                conn,
+                tenant_id=tenant,
+                user_id=user,
+                run_id=run,
+            )
+            assert first is not None and second is not None
+            progress = await repositories.cancel_run(conn, tenant_id=tenant, run_id=run)
+            assert progress.did_transition is True
+            assert progress.status == "cancelled"
+
+            cursor = await conn.execute(
+                """
+                select sequence, event_type
+                from run_events
+                where tenant_id = %s and run_id = %s
+                  and event_type in ('run.cancel_requested', 'run.cancelled')
+                order by sequence
+                """,
+                (tenant, run),
+            )
+            rows = await cursor.fetchall()
+            assert [row["event_type"] for row in rows] == [
+                "run.cancel_requested",
+                "run.cancelled",
+            ]
+            assert rows[0]["sequence"] < rows[1]["sequence"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_and_terminal_rows_roll_back_with_run_state():
+    async with _schema() as (_dsn_value, schema_name, ids):
+        tenant, run, _attempt = ids
+        user = f"u_{tenant[2:]}"
+        async with _connection_factory(_dsn(), schema_name) as conn:
+            with pytest.raises(RuntimeError, match="force_cancel_rollback"):
+                async with conn.transaction():
+                    assert await repositories.request_run_cancel(
+                        conn,
+                        tenant_id=tenant,
+                        user_id=user,
+                        run_id=run,
+                    ) is not None
+                    progress = await repositories.cancel_run(
+                        conn,
+                        tenant_id=tenant,
+                        run_id=run,
+                    )
+                    assert progress.did_transition is True
+                    raise RuntimeError("force_cancel_rollback")
+
+            run_cursor = await conn.execute(
+                """
+                select status, cancel_requested_at, permission_terminalization_target
+                from runs where tenant_id = %s and id = %s
+                """,
+                (tenant, run),
+            )
+            run_row = await run_cursor.fetchone()
+            assert run_row == {
+                "status": "running",
+                "cancel_requested_at": None,
+                "permission_terminalization_target": None,
+            }
+            event_cursor = await conn.execute(
+                """
+                select count(*) as event_count
+                from run_events
+                where tenant_id = %s and run_id = %s
+                  and event_type in ('run.cancel_requested', 'run.cancelled')
+                """,
+                (tenant, run),
+            )
+            assert (await event_cursor.fetchone())["event_count"] == 0
