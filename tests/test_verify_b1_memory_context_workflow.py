@@ -398,6 +398,21 @@ def test_b1_memory_context_workflow_smoke_verifies_policy_context_delete_and_pro
     assert payload["checks"]["deleted_memory_absent_from_future_context"]["passed"] is True
     assert payload["checks"]["long_term_memory_fail_closed"]["passed"] is True
     assert payload["checks"]["no_private_projection_leakage"]["passed"] is True
+    assert payload["workflow"]["agent_id"] == "document-review"
+    assert payload["workflow"]["capability_id"] == "document_review"
+    assert payload["live_worker_payload"]["live_worker_run_observed"] is True
+    assert payload["live_worker_payload"]["context_snapshot_id_present"] is True
+    assert payload["provenance"]["context_snapshot_public_provenance"] is True
+    assert payload["delete_redaction"]["deleted_memory_absent_from_future_context"] is True
+    assert payload["rollback_disable"]["memory_policy_disabled_blocks_create"] is True
+    assert payload["rollback_disable"]["memory_policy_disabled_blocks_list"] is True
+    assert payload["same_tenant_boundary"]["owner_context_visible"] is True
+    assert payload["same_tenant_boundary"]["same_tenant_cross_user_denied"] is True
+    assert payload["admin_visibility"]["ordinary_user_admin_overview_denied"] is True
+    assert payload["deny_path"]["cross_tenant_context_denied"] is True
+    assert payload["policy_posture"]["session_workspace_scope"] is True
+    assert payload["policy_posture"]["retention_policy_present"] is True
+    assert payload["policy_posture"]["export_projection_only"] is True
     assert payload["non_expansion_invariants"] == {
         "long_term_cross_session_memory_enabled": False,
         "stores_private_executor_material_as_memory": False,
@@ -484,3 +499,73 @@ def test_b1_memory_context_workflow_smoke_cli_emits_safe_json_and_exit_status():
     assert payload["ok"] is True
     assert payload["schema_version"] == SCHEMA_VERSION
     assert "test-secret" not in result.stdout
+
+
+def test_b1_verifier_redaction_scan_distinguishes_policy_labels_from_private_material():
+    smoke = load_smoke_module()
+    safe_projection = {
+        "memory_context": {
+            "status": "visible",
+            "redaction": {
+                "private_payloads_removed": True,
+                "forbidden_classes": [
+                    "executor private runtime payloads",
+                    "sandbox working directories",
+                    "raw storage keys",
+                ],
+            },
+        }
+    }
+
+    assert smoke._contains_private_projection_term(safe_projection) is False
+    for projection in (
+        {"executor_private_payload": {"summary": "blocked"}},
+        {"detail": "raw_storage_key present in response"},
+        {"message": "callback_token=secret-value"},
+        {"path": "/tmp/ai-platform/private"},
+    ):
+        assert smoke._contains_private_projection_term(projection) is True
+
+
+def test_b1_verifier_contract_fixture_outputs_safe_local_source_contract():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path("tools") / "verify_b1_memory_context_workflow.py"),
+            "--contract-fixture",
+            "--commit-sha",
+            "local-contract",
+            "--runtime-subject-commit-sha",
+            "local-contract",
+            "--image",
+            "ai-platform:local-contract",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["target"] == "source_contract_fixture"
+    assert payload["does_not_run_live_target"] is True
+    assert payload["does_not_close_b1_gate"] is True
+    assert payload["workflow"]["agent_id"] == "document-review"
+    assert payload["workflow"]["capability_id"] == "document_review"
+    assert payload["admin_visibility"]["ordinary_user_admin_overview_denied"] is True
+    assert payload["same_tenant_boundary"]["cross_tenant_context_denied"] is True
+    assert payload["rollback_disable"]["memory_policy_disabled_blocks_create"] is True
+    assert payload["policy_posture"]["long_term_memory_fail_closed"] is True
+    serialized = json.dumps(payload, ensure_ascii=False).lower()
+    for marker in (
+        "executor_private_payload",
+        "raw_storage_key",
+        "sandbox_workdir",
+        "callback_token",
+        "authorization",
+        "bearer",
+        "api_key",
+        "password",
+    ):
+        assert marker not in serialized
