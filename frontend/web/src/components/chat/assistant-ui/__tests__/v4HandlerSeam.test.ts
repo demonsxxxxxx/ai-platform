@@ -15,6 +15,7 @@ function frame(eventType: string, payload: Record<string, unknown>, messageId: s
     {
       eventHeader: eventType,
       transportCursor: "run-1:1:1-0",
+      generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
         event_id: "event-1",
@@ -30,7 +31,7 @@ function frame(eventType: string, payload: Record<string, unknown>, messageId: s
         payload,
       },
     },
-    { runId: "run-1", streamIncarnation: 1 },
+    { runId: "run-1", streamIncarnation: 1, generation: 3 },
   );
 }
 
@@ -77,12 +78,13 @@ test("v4 handler is executable assembly through the existing event owner", () =>
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
   } as unknown as EventHandlerContext;
-  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0 };
+  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 };
   let committed = 0;
   const accepted = handlePublicRunStreamFrameV4({
     frame: {
       eventHeader: "stream.open",
       transportCursor: "run-1:1:1700000000000-0",
+      generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-control.v4",
         event_id: "event-open",
@@ -98,7 +100,7 @@ test("v4 handler is executable assembly through the existing event owner", () =>
         payload: { design_id: "ai-platform.redis-streams-sse-event-channel.v4" },
       },
     },
-    adapterBinding: { runId: "run-1", streamIncarnation: 1 },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
     messageId: "message-1",
     ctx,
     binding,
@@ -123,10 +125,11 @@ test("v4 handler advances transport cursor for semantic duplicates without reapp
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
   } as unknown as EventHandlerContext;
-  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0 };
+  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 };
   const first = {
     eventHeader: "stream.heartbeat",
     transportCursor: "run-1:1:1-0",
+    generation: 3,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
       event_id: "heartbeat-1",
@@ -152,8 +155,8 @@ test("v4 handler advances transport cursor for semantic duplicates without reapp
       ? (semanticCommits === 1 ? "run-1:1:1-0" : ctx.acceptedStreamCursorRef!.current.eventId)
       : "run-1:1:2-0";
   };
-  assert.equal(handlePublicRunStreamFrameV4({ frame: first, adapterBinding: { runId: "run-1", streamIncarnation: 1 }, messageId: "message-1", ctx, binding, onCommitted }), true);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: second, adapterBinding: { runId: "run-1", streamIncarnation: 1 }, messageId: "message-1", ctx, binding, onCommitted }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: first, adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 }, messageId: "message-1", ctx, binding, onCommitted }), true);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: second, adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 }, messageId: "message-1", ctx, binding, onCommitted }), false);
   assert.equal(semanticCommits, 1);
   assert.equal(transportOnlyCommits, 1);
   assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-1:1:2-0");
@@ -192,7 +195,7 @@ test("v4 terminal binding is checked before hydration side effects", () => {
     adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 4 },
     messageId: "message-1",
     ctx,
-    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 7 },
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 7, streamIncarnation: 1, generation: 4 },
   }), false);
 });
 
@@ -241,12 +244,13 @@ test("v4 terminal rejects a foreign Run before hydration", () => {
     frame: {
       eventHeader: "run.succeeded",
       transportCursor: "run-2:1:1-0",
+      generation: 3,
       value: foreign.event,
     },
-    adapterBinding: { runId: "run-2", streamIncarnation: 1 },
+    adapterBinding: { runId: "run-2", streamIncarnation: 1, generation: 3 },
     messageId: "message-2",
     ctx,
-    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 8 },
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 8, streamIncarnation: 1, generation: 3 },
   }), false);
 });
 
@@ -275,7 +279,7 @@ test("v4 terminal end waits for authoritative hydration and scopes the fence", (
       return true;
     },
   } as unknown as EventHandlerContext;
-  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 7 };
+  const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 7, streamIncarnation: 3, generation: 2 };
   let hydrationAccepted: (() => void) | undefined;
   const terminal = {
     eventHeader: "run.succeeded",
@@ -376,7 +380,7 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
         payload: { terminal_event_id: payload.terminal_event_id },
       },
     };
-    const binding = { sessionId: "session-1", runId: "run-1", streamVersion: 4 };
+    const binding = { sessionId: "session-1", runId: "run-1", streamVersion: 4, streamIncarnation: 1, generation: 3 };
     assert.equal(handlePublicRunStreamFrameV4({
       frame: {
         eventHeader: eventType,
@@ -425,10 +429,11 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
   };
   let gapEventId = "";
   const accepted = handlePublicRunStreamFrameV4({
-    frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", value: frameValue },
-    adapterBinding: { runId: "run-1", streamIncarnation: 1 },
+    frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
     messageId: "message-1",
     ctx: {} as EventHandlerContext,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
     onGap: (event) => { gapEventId = event.eventId; },
   });
   assert.equal(accepted, false);

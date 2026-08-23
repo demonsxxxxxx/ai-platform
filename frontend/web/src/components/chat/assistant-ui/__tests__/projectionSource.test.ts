@@ -64,20 +64,13 @@ function renderProjection(
       });
     }
     if (part.type === "subagent") {
-      return createElement(
-        "div",
-        {
-          key: part.public_operation_id || part.agent_id,
-          role: "group",
-          "aria-label": `${part.agent_name} lifecycle`,
-          "data-subagent-id": part.agent_id,
-          "data-subagent-status": part.status,
-        },
-        createElement("span", { "data-status-label": true }, part.status === "complete" ? "Completed" : "Running"),
-        part.current_category
-          ? createElement("span", { "data-category": true }, `Category: ${part.current_category}`)
-          : null,
-      );
+      return createElement(MessagePartRenderer, {
+        key: `${message.id}:subagent:${part.public_operation_id || part.agent_id}`,
+        part,
+        messageId: message.id,
+        partIndex,
+        isLast: partIndex === (message.parts?.length ?? 1) - 1,
+      });
     }
     if (part.type === "tool") {
       return createElement(
@@ -215,6 +208,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
   const terminalEvent = adaptPublicRunStreamEventV4({
     eventHeader: "run.succeeded",
     transportCursor: "run-1:1:1-0",
+    generation: 3,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
       event_id: "terminal-1",
@@ -229,7 +223,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
       emitted_at: "2026-01-01T00:00:00Z",
       payload: { terminal_event_id: "terminal-1", hydrate_required: true },
     },
-  }, { runId: "run-1", streamIncarnation: 1 });
+  }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
   assert.ok(terminalEvent);
   const ctx = {
     sessionIdRef: { current: "session-1" },
@@ -254,6 +248,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
       frame: {
         eventHeader: "stream.end",
         transportCursor: "run-1:1:2-0",
+        generation: 3,
         value: {
           schema: "ai-platform.public-run-stream-control.v4",
           event_id: "end-1",
@@ -269,10 +264,10 @@ test("mounted production fence owner accepts its matching end once and rejects a
           payload: { terminal_event_id: "terminal-1" },
         },
       },
-      adapterBinding: { runId: "run-1", streamIncarnation: 1 },
+      adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
       messageId: "message-1",
       ctx,
-      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 3 },
+      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 3, streamIncarnation: 1, generation: 3 },
     };
     const adaptedEnd = adaptPublicRunStreamEventV4(endFrame.frame, endFrame.adapterBinding);
     assert.equal(adaptedEnd?.runId, "run-1");
@@ -281,12 +276,12 @@ test("mounted production fence owner accepts its matching end once and rejects a
     assert.equal(ctx.v4TerminalFenceRef?.current?.terminalEventId, "terminal-1");
     const staleEnd = {
       ...endFrame,
-      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 2 },
+      binding: { sessionId: "session-1", runId: "run-1", streamVersion: 2, streamIncarnation: 1, generation: 3 },
     };
     assert.equal(handlePublicRunStreamFrameV4(staleEnd as never), false);
     assert.equal(handlePublicRunStreamFrameV4(endFrame as never), true);
     assert.equal(handlePublicRunStreamFrameV4(endFrame as never), false);
-    const foreignEnd = { ...endFrame, frame: { ...endFrame.frame, value: { ...endFrame.frame.value, run_id: "run-2" } }, adapterBinding: { runId: "run-2", streamIncarnation: 1 } };
+    const foreignEnd = { ...endFrame, frame: { ...endFrame.frame, value: { ...endFrame.frame.value, run_id: "run-2" } }, adapterBinding: { runId: "run-2", streamIncarnation: 1, generation: 3 } };
     assert.equal(handlePublicRunStreamFrameV4(foreignEnd as never), false);
   } finally {
     dom.cleanup();
@@ -331,7 +326,7 @@ test("mounted adapter-to-reducer artifact failure exposes a safe accessible labe
   }
 });
 
-test("mounted projection renders grouped subagent lifecycle with non-color state text", () => {
+test("mounted projection renders the production subagent lifecycle with hierarchy, metadata, and keyboard state", () => {
   const dom = setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
@@ -343,23 +338,38 @@ test("mounted projection renders grouped subagent lifecycle with non-color state
       input: "",
       depth: 1,
       status: "running",
+      parent_agent_id: "parent-agent-1",
       current_category: "search",
       progress_percent: 40,
+      duration_ms: 1_200,
     };
     renderProjection(dom.root, message([started]), actions);
     const lifecycle = dom.container.querySelector("[data-subagent-id=subagent-1]");
+    const trigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]") as HTMLButtonElement | null;
     assert.ok(lifecycle);
-    assert.equal(lifecycle?.getAttribute("role"), "group");
-    assert.equal(lifecycle?.textContent, "RunningCategory: search");
-    assert.equal(lifecycle?.getAttribute("data-subagent-status"), "running");
+    assert.equal(lifecycle?.getAttribute("data-parent-agent-id"), "parent-agent-1");
+    assert.ok(lifecycle?.className.includes("ml-4"));
+    assert.ok(lifecycle?.className.includes("border-l-2"));
+    assert.ok(trigger);
+    assert.equal(trigger?.tagName, "BUTTON");
+    assert.equal(trigger?.getAttribute("aria-label"), "Research worker: Running, Nested Agent");
+    assert.match(lifecycle?.textContent || "", /Running/);
+    assert.match(lifecycle?.textContent || "", /Nested Agent/);
+    assert.doesNotMatch(lifecycle?.textContent || "", /parent-agent-1/);
+    assert.match(lifecycle?.textContent || "", /Category: search/);
+    assert.match(lifecycle?.textContent || "", /Progress: 40%/);
+    assert.match(lifecycle?.textContent || "", /Duration: 1\.2s/);
+    trigger?.focus();
+    assert.equal(dom.container.ownerDocument.activeElement, trigger);
 
-    const completed = { ...started, status: "complete" as const, progress_percent: 100 };
+    const completed = { ...started, status: "complete" as const, progress_percent: 100, duration_ms: 2_500 };
     renderProjection(dom.root, message([completed]), actions);
-    assert.equal(lifecycle?.getAttribute("data-subagent-status"), "running");
     const updated = dom.container.querySelector("[data-subagent-id=subagent-1]");
-    assert.equal(updated?.getAttribute("data-subagent-status"), "complete");
-    assert.equal(updated?.textContent, "CompletedCategory: search");
-    assert.match(dom.container.textContent || "", /Completed/);
+    const updatedTrigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]");
+    assert.equal(updatedTrigger?.getAttribute("aria-label"), "Research worker: Completed, Nested Agent");
+    assert.match(updated?.textContent || "", /Completed/);
+    assert.match(updated?.textContent || "", /Progress: 100%/);
+    assert.match(updated?.textContent || "", /Duration: 2\.5s/);
   } finally {
     dom.cleanup();
   }

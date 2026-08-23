@@ -676,6 +676,40 @@ function acceptedSubagentIdForEvent(
   return undefined;
 }
 
+const PUBLIC_SUBAGENT_CATEGORIES = new Set([
+  "skill",
+  "mcp",
+  "read",
+  "write",
+  "edit",
+  "search",
+  "execute",
+]);
+
+function boundedSubagentDuration(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 86_400_000
+    ? value
+    : undefined;
+}
+
+function boundedSubagentProgress(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 100
+    ? value
+    : undefined;
+}
+
+function boundedSubagentCategory(value: unknown): string | undefined {
+  return typeof value === "string" && PUBLIC_SUBAGENT_CATEGORIES.has(value)
+    ? value
+    : undefined;
+}
+
 function createPublicSubagentPart(
   data: EventData,
   depth: number,
@@ -692,6 +726,9 @@ function createPublicSubagentPart(
   const parentAgentId = causationEventId
     ? acceptedSubagentIdForEvent(parts, causationEventId)
     : undefined;
+  const durationMs = boundedSubagentDuration(data.duration_ms);
+  const progressPercent = boundedSubagentProgress(data.progress_percent);
+  const currentCategory = boundedSubagentCategory(data.current_category);
   return {
     type: "subagent",
     agent_id: agentId,
@@ -706,9 +743,9 @@ function createPublicSubagentPart(
     error: status === "failed" && typeof data.failure_category === "string" ? data.failure_category : undefined,
     parent_agent_id: parentAgentId,
     public_operation_id: agentId,
-    duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
-    progress_percent: typeof data.progress_percent === "number" ? data.progress_percent : undefined,
-    current_category: typeof data.current_category === "string" ? data.current_category : undefined,
+    duration_ms: durationMs,
+    progress_percent: progressPercent,
+    current_category: currentCategory,
     origin_event_id: typeof data.event_id === "string" ? data.event_id : undefined,
     event_id: typeof data.event_id === "string" ? data.event_id : undefined,
     causation_event_id: causationEventId,
@@ -729,7 +766,9 @@ function upsertPublicSubagentPart(
     updated[index] = {
       ...previous,
       ...next,
+      parent_agent_id: previous.parent_agent_id ?? next.parent_agent_id,
       origin_event_id: previous.origin_event_id ?? next.origin_event_id,
+      causation_event_id: previous.causation_event_id ?? next.causation_event_id,
       parts: previous.parts,
       startedAt: previous.startedAt ?? next.startedAt,
     };

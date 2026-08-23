@@ -452,9 +452,9 @@ export function isSequencedPublicChatEvent(
     (PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)
       ? isPublicExecutionEvent(eventType, data)
       : eventType === "run_event" ||
-      (eventType === "message:chunk" &&
-        isAssistantTextProjection(data) &&
-        data.projection_kind === "assistant_delta"))
+        eventType === "artifact_card" ||
+        (eventType === "message:chunk" &&
+          isAssistantTextProjection(data)))
   );
 }
 

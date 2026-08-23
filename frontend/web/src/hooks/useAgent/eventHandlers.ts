@@ -99,7 +99,7 @@ function matchesV4TerminalFence(
       fence.sessionId === ctx.sessionIdRef.current &&
       fence.runId === event.runId &&
       fence.streamIncarnation === event.streamIncarnation &&
-      (fence.generation === undefined || fence.generation === event.generation),
+      fence.generation === event.generation,
   );
 }
 
@@ -147,6 +147,36 @@ export interface StreamEventBinding {
   sessionId: string;
   runId: string;
   streamVersion: number;
+  streamIncarnation?: number;
+  generation?: number;
+}
+
+/**
+ * v4 frames are accepted only from the exact current connection owner. The
+ * stream incarnation and generation are deliberately required here; an
+ * omitted value must never act as a wildcard for terminal or end frames.
+ */
+export interface V4StreamEventBinding extends StreamEventBinding {
+  streamIncarnation: number;
+  generation: number;
+}
+
+function isStrictV4Binding(
+  binding: StreamEventBinding | undefined,
+): binding is V4StreamEventBinding {
+  return Boolean(
+    binding &&
+      binding.sessionId &&
+      binding.runId &&
+      Number.isSafeInteger(binding.streamVersion) &&
+      binding.streamVersion >= 0 &&
+      typeof binding.streamIncarnation === "number" &&
+      Number.isSafeInteger(binding.streamIncarnation) &&
+      binding.streamIncarnation >= 1 &&
+      typeof binding.generation === "number" &&
+      Number.isSafeInteger(binding.generation) &&
+      binding.generation >= 0,
+  );
 }
 
 function presentationOwner(
@@ -237,33 +267,32 @@ export function handlePublicRunStreamEventV4(
   event: V4PublicEvent,
   messageId: string,
   ctx: EventHandlerContext,
-  binding?: StreamEventBinding,
+  binding: StreamEventBinding | undefined,
   onCommitted?: (semanticApplied: boolean) => void,
 ): boolean {
+  if (!isStrictV4Binding(binding)) return false;
   const terminalEventId =
     event.eventType === "stream.end" || event.eventType.startsWith("run.")
       ? ((event.event.payload as unknown as Record<string, unknown>).terminal_event_id as string | undefined)
       : undefined;
-  const fence = ctx.v4TerminalFenceRef?.current;
+  const terminalEndFenced =
+    event.eventType === "stream.end" &&
+    matchesV4TerminalFence(event, ctx, terminalEventId) &&
+    ctx.v4TerminalFenceRef?.current?.streamVersion === binding.streamVersion;
   if (
-    binding &&
-    event.eventType !== "stream.end" &&
-    (event.runId !== binding.runId ||
-      event.runId !== ctx.currentRunIdRef.current)
+    event.runId !== binding.runId ||
+    (!terminalEndFenced && event.runId !== ctx.currentRunIdRef.current) ||
+    ctx.sessionIdRef.current !== binding.sessionId ||
+    (!terminalEndFenced && ctx.streamVersionRef.current !== binding.streamVersion) ||
+    event.streamIncarnation !== binding.streamIncarnation ||
+    event.generation !== binding.generation
   ) {
     return false;
   }
-  const bindingMatchesCurrentOwner = Boolean(
-    !binding ||
-      (ctx.sessionIdRef.current === binding.sessionId &&
-        ((ctx.streamVersionRef.current === binding.streamVersion &&
-          ctx.currentRunIdRef.current === binding.runId) ||
-          (event.eventType === "stream.end" &&
-            fence?.runId === binding.runId &&
-            fence.sessionId === binding.sessionId &&
-            (fence.streamVersion === undefined ||
-              fence.streamVersion === binding.streamVersion)))
-      ),
+  const bindingMatchesCurrentOwner = terminalEndFenced || Boolean(
+    ctx.sessionIdRef.current === binding.sessionId &&
+      ctx.streamVersionRef.current === binding.streamVersion &&
+      ctx.currentRunIdRef.current === binding.runId,
   );
   if (!bindingMatchesCurrentOwner) return false;
   const terminalStatus = terminalRunStatusFromEvent(
@@ -272,8 +301,7 @@ export function handlePublicRunStreamEventV4(
   );
   if (
     terminalStatus &&
-    (event.runId !== ctx.currentRunIdRef.current ||
-      (binding && event.runId !== binding.runId))
+    event.runId !== ctx.currentRunIdRef.current
   ) {
     return false;
   }
@@ -346,6 +374,15 @@ export function handlePublicRunStreamFrameV4({
   onGap?: (event: V4PublicEvent) => void;
   onCommitted?: (semanticApplied: boolean) => void;
 }): boolean {
+  if (!isStrictV4Binding(binding)) return false;
+  if (
+    adapterBinding.runId !== binding.runId ||
+    adapterBinding.generation !== binding.generation ||
+    adapterBinding.streamIncarnation !== binding.streamIncarnation ||
+    frame.generation !== binding.generation
+  ) {
+    return false;
+  }
   const event = adaptPublicRunStreamEventV4(frame, adapterBinding);
   if (!event) return false;
   if (event.eventType === "stream.gap") {

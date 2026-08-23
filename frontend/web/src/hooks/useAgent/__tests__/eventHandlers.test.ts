@@ -1322,9 +1322,74 @@ test("sandbox error side effects never expose unknown backend diagnostics", () =
   );
 });
 
+test("v4 assistant final and artifact events share the run-local sequence fence", () => {
+  const ctx = createContext([
+    {
+      id: "assistant-sequence",
+      role: "assistant",
+      content: "",
+      timestamp: new Date("2026-07-15T01:00:00.000Z"),
+      parts: [],
+      isStreaming: true,
+    },
+  ], null);
+  ctx.currentRunIdRef.current = "run-sequence";
+
+  assert.equal(handleStreamEvent({
+    event: "message:chunk",
+    data: JSON.stringify({
+      run_id: "run-sequence",
+      sequence: 20,
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_final",
+      content: "accepted final",
+    }),
+  } as StreamEvent, "assistant-sequence", "cursor-20", undefined, ctx), true);
+  assert.equal(handleStreamEvent({
+    event: "artifact_card",
+    data: JSON.stringify({
+      run_id: "run-sequence",
+      sequence: 21,
+      artifact_id: "artifact-sequence",
+      artifact_type: "document",
+      label: "Accepted artifact",
+      size_bytes: 1,
+      download_url: "/api/ai/artifacts/artifact-sequence/download",
+      status: "available",
+    }),
+  } as StreamEvent, "assistant-sequence", "cursor-21", undefined, ctx), true);
+  assert.equal(handleStreamEvent({
+    event: "message:chunk",
+    data: JSON.stringify({
+      run_id: "run-sequence",
+      sequence: 19,
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_final",
+      content: "stale final",
+    }),
+  } as StreamEvent, "assistant-sequence", "cursor-22", undefined, ctx), false);
+  assert.equal(handleStreamEvent({
+    event: "artifact_card",
+    data: JSON.stringify({
+      run_id: "run-sequence",
+      sequence: 20,
+      artifact_id: "stale-artifact",
+      artifact_type: "document",
+      label: "Stale artifact",
+      size_bytes: 1,
+      download_url: "/api/ai/artifacts/stale-artifact/download",
+      status: "available",
+    }),
+  } as StreamEvent, "assistant-sequence", "cursor-23", undefined, ctx), false);
+  assert.match(ctx.messages()[0]?.content || "", /accepted final/);
+  assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), ["text", "artifact"]);
+});
+
 test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", () => {
   const ctx = createContext([], null);
   ctx.currentRunIdRef.current = "run-1";
+  ctx.v4TerminalFenceRef = { current: null };
+  ctx.v4TerminalEventIdsRef = { current: new Set<string>() };
   let terminalCalls = 0;
   ctx.onRunTerminal = (_runId, _status, _messageId, onAccepted) => {
     terminalCalls += 1;
@@ -1334,6 +1399,7 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   const terminal = {
     eventHeader: "run.succeeded",
     transportCursor: "run-1:2:1-0",
+    generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
       event_id: "event-terminal",
@@ -1352,6 +1418,7 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   const end = {
     eventHeader: "stream.end",
     transportCursor: "run-1:2:2-0",
+    generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
       event_id: "event-end",
@@ -1367,9 +1434,82 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
       payload: { terminal_event_id: "terminal-1" },
     },
   } as const;
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), false);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), true);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), false);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding: { runId: "run-1" }, messageId: "assistant-1", ctx }), true);
+  const binding = { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 2, generation: 7 } as const;
+  const adapterBinding = { runId: "run-1", streamIncarnation: 2, generation: 7 } as const;
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding }), true);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding }), true);
   assert.equal(terminalCalls, 1);
+});
+
+test("v4 frames fail closed without exact session, incarnation, and generation authority", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-authority";
+  const frame = {
+    eventHeader: "stream.end",
+    transportCursor: "run-authority:3:1-0",
+    generation: 4,
+    value: {
+      schema: "ai-platform.public-run-stream-control.v4",
+      event_id: "authority-end",
+      run_id: "run-authority",
+      message_id: null,
+      seq: null,
+      event_type: "stream.end",
+      stream_incarnation: 3,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { terminal_event_id: "terminal-authority" },
+    },
+  } as const;
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-authority",
+    streamVersion: 0,
+    streamIncarnation: 3,
+    generation: 4,
+  } as const;
+  const adapterBinding = {
+    runId: "run-authority",
+    streamIncarnation: 3,
+    generation: 4,
+  } as const;
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame,
+    adapterBinding,
+    messageId: "assistant-authority",
+    ctx,
+    binding: undefined as never,
+  }), false);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame,
+    adapterBinding: { runId: "run-authority", streamIncarnation: 3 },
+    messageId: "assistant-authority",
+    ctx,
+    binding,
+  }), false);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame,
+    adapterBinding,
+    messageId: "assistant-authority",
+    ctx,
+    binding: { ...binding, generation: 5 },
+  }), false);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame,
+    adapterBinding,
+    messageId: "assistant-authority",
+    ctx,
+    binding: { ...binding, streamIncarnation: 2 },
+  }), false);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: { ...frame, generation: undefined },
+    adapterBinding: { runId: "run-authority", streamIncarnation: 3 },
+    messageId: "assistant-authority",
+    ctx,
+    binding,
+  }), false);
 });
