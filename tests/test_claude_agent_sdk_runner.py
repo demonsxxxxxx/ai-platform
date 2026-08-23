@@ -325,7 +325,7 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
 
     pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
     assert result.error is None
-    assert result.message == "done"
+    assert result.message == ""
     assert captured["allowed_tools"] == [
         "Read",
         "Glob",
@@ -915,7 +915,7 @@ async def test_sandbox_local_tool_call_id_is_redacted_from_terminal_answer(
         "completed",
     ]
     assert result.error is None
-    assert result.message == "Completed tool invocation."
+    assert result.message == ""
     assert "".join(deltas) == result.message
     assert call_id not in result.message
 
@@ -1012,8 +1012,8 @@ async def test_prior_mcp_completion_does_not_publish_before_bash_failure_termina
     )
 
     assert result.error is None
-    assert result.message == "must remain private after MCP"
-    assert deltas == ["must remain private after MCP"]
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -1260,8 +1260,8 @@ async def test_required_sandbox_bash_releases_only_after_acknowledged_completion
         ("bash-call-1", "completed"),
     ]
     assert result.error is None
-    assert result.message == "command completed"
-    assert deltas == ["command completed"]
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -1733,11 +1733,11 @@ async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_
     assert published_before_hook == []
     assert published_before_terminal == []
     terminal_chunks = deltas[len(published_before_terminal):]
-    assert terminal_chunks == ["Before external tool. After tool invocation."]
-    assert "".join(deltas) == "Before external tool. After tool invocation."
+    assert terminal_chunks == [" After tool invocation."]
+    assert "".join(deltas) == " After tool invocation."
     assert "".join(deltas).count("tool invocation.") == 1
     assert result.error is None
-    assert result.message == "Before external tool. After tool invocation."
+    assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
         subject["mcp_server_config"]["url"],
@@ -1830,8 +1830,8 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == ["Verified MCP final answer streams "]
-    assert deltas == ["Verified MCP final answer streams ", "safely."]
+    assert observed_before_result == []
+    assert deltas == [verified_answer]
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -1841,6 +1841,90 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         "invocation_requested",
         "completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabilities(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    candidate_batches = []
+    evidence_calls = []
+    first = _subject(server_id="first-server", tool_name="search")
+    second = _subject(server_id="second-server", tool_name="lookup")
+    first["write_capable"] = True
+    second["write_capable"] = True
+    steps = [
+        *_mcp_hook_steps(first, call_id="mcp-call-1"),
+        ("assistant", "first verified answer"),
+        ("hook", (
+            "PreToolUse",
+            {
+                "tool_name": second["identity"],
+                "tool_use_id": "mcp-call-2",
+                "tool_input": {"private": "safe-synthetic-value"},
+            },
+            "mcp-call-2",
+        )),
+        ("assistant", "second capability in-flight text"),
+        *_mcp_hook_steps(second, call_id="mcp-call-2", terminal="failed")[1:],
+    ]
+
+    async def acknowledge(evidence):
+        evidence_calls.append(dict(evidence))
+        return evidence["tool_call_id"] != "mcp-call-2" or evidence["lifecycle_phase"] != "completed"
+
+    async def acknowledge_candidates(candidates):
+        candidate_batches.append(tuple(candidates))
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text="first verified answer second capability in-flight text",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[first, second],
+        on_text=deltas.append,
+        on_agent_event=acknowledge_candidates,
+        on_capability_evidence=acknowledge,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+    )
+
+    candidate_events = [event for batch in candidate_batches for event in batch]
+    assert [
+        (item["tool_call_id"], item["lifecycle_phase"])
+        for item in evidence_calls
+    ] == [
+        ("mcp-call-1", "invocation_requested"),
+        ("mcp-call-1", "completed"),
+        ("mcp-call-2", "invocation_requested"),
+        ("mcp-call-2", "failed"),
+    ]
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+    assert deltas == []
+    assert all(
+        body not in repr(event.as_dict())
+        for event in candidate_events
+        for body in ("first verified answer", "second capability in-flight text")
+    )
 
 
 @pytest.mark.asyncio
@@ -2011,8 +2095,8 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     )
 
     assert "Authoritative platform MCP requirement:" not in _captured_sdk_prompt(captured)
-    assert observed_before_result == ["Skill answer streams "]
-    assert deltas == ["Skill answer streams ", "safely."]
+    assert observed_before_result == []
+    assert deltas == [text]
     assert "".join(deltas) == text
     assert result.error is None
     assert result.message == text
@@ -2123,8 +2207,8 @@ async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == ["Verified Skill final answer streams "]
-    assert deltas == ["Verified Skill final answer streams ", "safely."]
+    assert observed_before_result == []
+    assert deltas == [verified_answer]
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -2525,9 +2609,9 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == ["Short safe public "]
-    assert deltas == ["Short safe public ", "answer."]
-    assert "".join(deltas) == streamed_text
+    assert result_gate == []
+    assert deltas == [streamed_text]
+    assert len(deltas) == 1
     assert result.message == streamed_text
 
 
@@ -2594,7 +2678,7 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monke
         on_text=deltas.append,
     )
 
-    assert deltas == ["short "]
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -2618,7 +2702,7 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(m
 
     assert captured["include_partial_messages"] is True
     assert result.error == "claude_agent_sdk_tool_admission_failed"
-    assert deltas == ["safe partial must "]
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -2627,10 +2711,18 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     cleaned_up = asyncio.Event()
 
     class AssistantMessage:
-        pass
+        def __init__(self, *, content, model):
+            self.content = content
+            self.model = model
 
     class TextBlock:
         pass
+
+    class ToolUseBlock:
+        def __init__(self, *, id, name, input):
+            self.id = id
+            self.name = name
+            self.input = input
 
     class StreamEvent:
         pass
@@ -2648,15 +2740,20 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
             pass
 
     async def query(*, prompt, options):
-        del options
         _ = [item async for item in prompt]
+        yield AssistantMessage(
+            content=[ToolUseBlock(id="late-tool", name="Read", input={})],
+            model="model-a",
+        )
         started.set()
         try:
             await asyncio.Event().wait()
         finally:
-            cleaned_up.set()
-        if False:
-            yield ResultMessage()
+            try:
+                pre = options.hooks["PreToolUse"][0].hooks[0]
+                await pre({"tool_name": "Read", "tool_input": {}, "tool_use_id": "late-tool"}, "late-tool", {})
+            finally:
+                cleaned_up.set()
 
     monkeypatch.setitem(
         sys.modules,
@@ -2668,17 +2765,23 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
             ResultMessage=ResultMessage,
             StreamEvent=StreamEvent,
             TextBlock=TextBlock,
+            ToolUseBlock=ToolUseBlock,
             query=query,
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
+    events = []
     task = asyncio.create_task(
         run_claude_agent_sdk(
             prompt="cancel me",
             cwd=tmp_path,
             skill_id="general-chat",
             execution_policy="worker_local_legacy",
+            on_agent_event=lambda batch: events.extend(batch) or True,
+            run_id="run-cancel",
+            attempt_id="attempt-cancel",
+            tool_policy_subjects=[_subject(tool_name="Read", public_tool_label="Read file")],
         )
     )
     await started.wait()
@@ -2687,3 +2790,4 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     with pytest.raises(asyncio.CancelledError):
         await task
     assert cleaned_up.is_set()
+    assert events == []
