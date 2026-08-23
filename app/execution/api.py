@@ -16,7 +16,7 @@ from app.execution.application.executor_reconciliation import (
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
 )
-from app.execution.application.claude_agent_events import (
+from app.execution.infrastructure.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
 )
