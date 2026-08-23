@@ -195,8 +195,11 @@ class RedisStreamBridge:
             run_id=run_id,
             stream_incarnation=stream_incarnation,
         )
-        terminal = event_type in {"terminal", "run.succeeded", "run.cancelled", "run.failed"}
-        transport_type = "terminal" if terminal else event_type
+        terminal = event_type in {"terminal", "end", "stream.end", "run.succeeded", "run.cancelled", "run.failed"}
+        transport_type = {
+            "stream.open": "stream_open",
+            "stream.end": "end",
+        }.get(event_type, "terminal" if terminal else event_type)
         ttl = SSE_STREAM_TERMINAL_TTL_MS if terminal else SSE_STREAM_ACTIVE_IDLE_TTL_MS
         try:
             redis_id = await self._publish_client.eval(
@@ -624,6 +627,66 @@ async def create_or_get_stream_admission(
             attempt_id,
             STREAM_DESIGN_ID,
             STREAM_PROJECTION_VERSION,
+            tenant_scope,
+            incarnation,
+            event_id,
+            payload,
+            _sha256(payload),
+        ),
+    )
+    row = await result.fetchone()
+    if row is None:
+        raise SseAuthorityConflictError("sse_stream_admission_unavailable")
+    return _authority(row)
+
+
+async def create_or_get_stream_admission_v4(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    tenant_scope: str,
+) -> StreamAuthority:
+    """Persist a strict v4 stream.open authority without changing v3 callers."""
+
+    from app.streaming.v4 import build_v4_control
+
+    result = await conn.execute(
+        "select * from sse_stream_authorities where tenant_id = %s and run_id = %s for update",
+        (tenant_id, run_id),
+    )
+    row = await result.fetchone()
+    if row is not None:
+        current = _authority(row)
+        if current.attempt_id != attempt_id or current.tenant_scope != tenant_scope:
+            raise SseAuthorityConflictError("sse_stream_attempt_conflict")
+        if "ai-platform.stream-event.v4" not in str(current.open_payload_bytes):
+            raise SseAuthorityConflictError("sse_stream_protocol_conflict")
+        return current
+    incarnation = 1
+    event_id = _semantic_id(
+        "ai-platform-stream-open-v4", tenant_scope, run_id, attempt_id, incarnation
+    )
+    envelope = build_v4_control(
+        event_id=event_id,
+        tenant_scope=tenant_scope,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        stream_incarnation=incarnation,
+        event_type="stream.open",
+        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        source={"kind": "stream_authority", "authority_id": event_id},
+    )
+    payload = canonical_json_bytes(envelope).decode()
+    result = await conn.execute(
+        """insert into sse_stream_authorities(tenant_id,run_id,attempt_id,design_id,projection_version,tenant_scope,stream_incarnation,state,open_event_id,open_payload_bytes,open_payload_digest) values (%s,%s,%s,%s,%s,%s,%s,'admission_pending',%s,%s,%s) returning *""",
+        (
+            tenant_id,
+            run_id,
+            attempt_id,
+            "ai-platform.redis-streams-sse-event-channel.v4",
+            "public-stream-v4",
             tenant_scope,
             incarnation,
             event_id,
