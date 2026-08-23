@@ -9,6 +9,12 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import repositories
+from app.artifacts.api import (
+    append_artifact_links,
+    build_artifact_records,
+    public_artifact_records,
+    sanitize_artifact_manifest,
+)
 from app.agent_apps.capability_state import (
     bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
@@ -35,6 +41,8 @@ from app.control_plane_contracts import (
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
+    artifact_lineage_contract,
+    artifact_manifest_contract,
     sanitize_public_text,
     standard_trace_id,
 )
@@ -43,12 +51,6 @@ from app.execution.api import (
     WorkerRunCancelled, restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
-)
-from app.execution.application.artifact_delivery import (
-    append_artifact_links,
-    build_artifact_records,
-    persist_ready_artifacts,
-    public_artifact_records,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
@@ -84,6 +86,7 @@ from app.runtime.sandbox.executor_client import (
     normalize_executor_reported_failure,
 )
 from app.settings import get_settings
+from app.streaming.api import append_artifact_ready_v4_row
 from app.streaming.redis import RunStreamPublisher
 from app.streaming.worker_projection import (
     finalize_parent_and_publish,
@@ -2788,7 +2791,10 @@ async def process_run_payload(
     event_observability_kwargs = _event_observability_kwargs(observability, result.executor_payload)
     terminal_event_kwargs = {"trace_id": trace_id, **event_observability_kwargs} if event_observability_kwargs else {}
 
-    artifact_records = build_artifact_records(result.artifacts)
+    artifact_records = build_artifact_records(
+        result.artifacts,
+        new_id=repositories.new_id,
+    )
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
         project_agent_capability_state(
@@ -2964,14 +2970,55 @@ async def process_run_payload(
                     if runtime_sandbox_lease is not None
                     else ""
                 )
-                await persist_ready_artifacts(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    trace_id=trace_id,
-                    execution_lease_id=artifact_execution_lease_id,
-                    artifact_records=artifact_records,
-                )
+                for artifact in artifact_records:
+                    manifest_json = artifact_manifest_contract(
+                        artifact_type=artifact["artifact_type"],
+                        manifest=sanitize_artifact_manifest(artifact["manifest_json"]),
+                    )
+                    lineage = artifact_lineage_contract(
+                        manifest_json,
+                        source_run_id=payload.run_id,
+                    )
+                    await repositories.create_artifact(
+                        conn,
+                        artifact_id=artifact["id"],
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        artifact_type=artifact["artifact_type"],
+                        label=artifact["label"],
+                        content_type=artifact["content_type"],
+                        storage_key=artifact["storage_key"],
+                        size_bytes=artifact["size_bytes"],
+                        trace_id=trace_id,
+                        manifest_json=manifest_json,
+                    )
+                    await append_artifact_ready_v4_row(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        artifact_id=artifact["id"],
+                        filename=artifact["label"],
+                        media_type=artifact["content_type"],
+                        size_bytes=artifact["size_bytes"],
+                        execution_lease_id=artifact_execution_lease_id,
+                        trace_ref=trace_id,
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="artifact_ready",
+                        stage="artifact",
+                        message="Artifact is ready",
+                        payload={
+                            "visible_to_user": True,
+                            "severity": "info",
+                            "artifact_id": artifact["id"],
+                            "artifact_type": artifact["artifact_type"],
+                            "download_url": artifact["download_url"],
+                            "lineage": lineage,
+                        },
+                    )
             if agent_capability_state is not None:
                 agent_capability_state = project_agent_capability_state(
                     required_skill_id=required_agent_skill_id or "",
