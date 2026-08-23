@@ -35,15 +35,13 @@ from app.runtime.sandbox.executor_signals import (
     publish_executor_terminal_signal,
 )
 from app.settings import get_settings
-from app.streaming.redis import (
-    RedisStreamBridge,
-    StreamContractError,
-    StreamTransportUnavailable,
-    canonical_assistant_delta_event,
-    get_stream_authority,
-    new_envelope,
-    stable_event_id,
+from app.streaming.redis import get_stream_authority
+from app.streaming.v4 import (
+    V4ProjectionError,
+    append_callback_v4_rows,
+    callback_item_to_v4,
 )
+from app.streaming.worker_projection import publish_pending_v4_events
 from app.storage import ObjectStorage
 
 router = APIRouter()
@@ -87,26 +85,15 @@ async def record_executor_callback(
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
-    callback_for_events = callback
-    if callback.status == "running" and callback.new_message is not None:
-        raw_delta = (
-            callback.new_message["delta"]
-            if "delta" in callback.new_message
-            else callback.new_message.get("text")
-        )
-        if (
-            canonical_assistant_delta_event(
-                stage="message", payload={"delta": raw_delta}
-            )
-            is None
-        ):
-            callback_for_events = callback.model_copy(update={"new_message": None})
+    # Compatibility fields are retained in the private callback receipt only;
+    # v4 public rows come from the typed post-bridge event subset.
+    callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
-    public_deltas: list[tuple[int, str]] = []
+    v4_items = []
     authority = None
-    callback_emitted_at: str | None = None
     callback_deduplicated = False
     tenant_id = ""
+    lease_id = ""
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(
             conn, run_id=callback.run_id, for_update=True
@@ -146,59 +133,53 @@ async def record_executor_callback(
                 },
             }
         ]
+        lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
         for item_index, event in enumerate(events):
             executor_event = agent_event_to_executor_event(event)
-            executor_event_type = str(executor_event["event_type"])
-            executor_payload = dict(executor_event["payload"])
-            if executor_event_type == "assistant_delta":
-                canonical_delta = canonical_assistant_delta_event(
-                    stage=str(executor_event["stage"]),
-                    payload=executor_payload,
-                )
-                if canonical_delta is None:
-                    continue
-                event_stage, event_message, event_payload = canonical_delta
-                public_deltas.append((item_index, str(event_payload["delta"])))
-                # The public delta must be replayable after a terminal hydration.
-                # Keep its durable ledger row in the same idempotent callback batch
-                # as the executor receipt; Redis remains the live delivery channel.
+            item = callback_item_to_v4(
+                executor_event,
+                callback_index=item_index,
+                batch_index=item_index,
+                message_id=executor_event.get("message_id"),
+            )
+            if item is not None and item.source_run_id == callback.run_id:
+                v4_items.append(item)
+                continue
+            executor_event_type = str(executor_event.get("event_type") or "unknown")
+            if (
+                executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES
+                and executor_event_type not in {"assistant_delta", PUBLIC_AGENT_PROGRESS_EVENT_TYPE}
+            ):
                 event_batch.append(
                     {
-                        "event_type": "assistant_delta",
-                        "stage": event_stage,
-                        "message": event_message,
-                        "payload": event_payload,
+                        "event_type": executor_event_type,
+                        "stage": str(executor_event.get("stage") or "executor"),
+                        "message": str(executor_event.get("message") or ""),
+                        "payload": {
+                            **dict(executor_event.get("payload") or {}),
+                            "source": "executor_callback",
+                            "visible_to_user": False,
+                        },
                     }
                 )
                 continue
-            else:
-                event_stage = str(executor_event["stage"])
-                event_message = str(executor_event["message"])
-                event_payload = executor_payload
-            if executor_event_type in PUBLIC_EXECUTION_EVENT_TYPES:
-                event_payload = {
-                    "source": "executor_callback",
-                    "source_event_type": executor_event_type,
-                    "visible_to_user": False,
-                }
-                executor_event_type = "executor_private_event"
-                event_stage = "executor"
-                event_message = "Executor event withheld from public projection"
-            if (
-                executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES
-                and executor_event_type
-                not in {"assistant_delta", PUBLIC_AGENT_PROGRESS_EVENT_TYPE}
-            ):
-                event_payload["source"] = "executor_callback"
             event_batch.append(
                 {
-                    "event_type": executor_event_type,
-                    "stage": event_stage,
-                    "message": event_message,
-                    "payload": event_payload,
+                    "event_type": "executor_private_event",
+                    "stage": "executor",
+                    "message": "Executor event withheld from public projection",
+                    "payload": {
+                        "source": "executor_callback",
+                        "source_event_type": str(executor_event.get("event_type") or "unknown"),
+                        "visible_to_user": False,
+                    },
                 }
             )
-        if public_deltas:
+        if v4_items:
+            if not callback.batch_id:
+                raise HTTPException(
+                    status_code=409, detail="callback_batch_id_required"
+                )
             authority = await get_stream_authority(
                 conn, tenant_id=tenant_id, run_id=callback.run_id
             )
@@ -209,10 +190,6 @@ async def record_executor_callback(
             ):
                 raise HTTPException(
                     status_code=409, detail="sse_stream_attempt_inactive"
-                )
-            if not callback.batch_id:
-                raise HTTPException(
-                    status_code=409, detail="callback_batch_id_required"
                 )
         if callback.batch_id:
             receipt = await repositories.append_event_batch(
@@ -226,18 +203,22 @@ async def record_executor_callback(
             callback_deduplicated = bool(
                 receipt.get("duplicate") if isinstance(receipt, dict) else False
             )
-            if public_deltas:
-                candidate = (
-                    receipt.get("callback_received_at")
-                    if isinstance(receipt, dict)
-                    else None
-                )
-                if not isinstance(candidate, str) or not candidate:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="callback_batch_receipt_timestamp_unavailable",
+            if v4_items:
+                try:
+                    await append_callback_v4_rows(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=callback.run_id,
+                        attempt_id=callback.attempt_id,
+                        batch_id=callback.batch_id,
+                        items=v4_items,
+                        authority=authority,
+                        execution_lease_id=lease_id,
                     )
-                callback_emitted_at = candidate
+                except V4ProjectionError as exc:
+                    raise HTTPException(
+                        status_code=409, detail="callback_v4_projection_invalid"
+                    ) from exc
         else:
             for event in event_batch:
                 await repositories.append_event(
@@ -303,76 +284,15 @@ async def record_executor_callback(
         except ExecutorSignalUnavailable:
             # PostgreSQL is authoritative; the worker falls back to bounded polling.
             logger.warning("executor_terminal_signal_unavailable")
-    if public_deltas:
-        # The callback receipt is already durable. Re-check the run and stream
-        # authority after that commit so a concurrently committed terminal run
-        # suppresses a late live delta without coupling Redis I/O to PG locks.
-        async with transaction() as conn:
-            current_run = await repositories.get_run_identity(
-                conn,
-                run_id=callback.run_id,
-            )
-            if (
-                current_run is None
-                or str(current_run.get("tenant_id") or "") != tenant_id
-                or str(current_run.get("session_id") or "") != callback.session_id
-            ):
-                raise HTTPException(
-                    status_code=409, detail="callback_run_authority_changed"
-                )
-            if str(current_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
-                return _executor_callback_receipt(
-                    callback,
-                    deduplicated=callback_deduplicated,
-                )
-            await _require_current_runtime_attempt(
-                conn,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-            )
-            authority = await get_stream_authority(
-                conn,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-            )
-        if (
-            authority is None
-            or authority.attempt_id != callback.attempt_id
-            or authority.state != "confirmed"
-            or callback_emitted_at is None
-        ):
-            raise HTTPException(status_code=409, detail="sse_stream_attempt_inactive")
-        bridge = RedisStreamBridge()
+    if v4_items:
         try:
-            for item_index, delta in _coalesce_public_deltas(public_deltas):
-                await bridge.append(
-                    new_envelope(
-                        event_id=stable_event_id(
-                            tenant_scope_value=authority.tenant_scope,
-                            run_id=callback.run_id,
-                            attempt_id=callback.attempt_id,
-                            batch_id=str(callback.batch_id),
-                            item_index=item_index,
-                        ),
-                        tenant_scope_value=authority.tenant_scope,
-                        run_id=callback.run_id,
-                        attempt_id=callback.attempt_id,
-                        stream_incarnation=authority.stream_incarnation,
-                        event_type="assistant_text_delta",
-                        payload={"delta": delta},
-                        emitted_at=callback_emitted_at,
-                    )
-                )
-        except StreamContractError as exc:
-            if str(exc) != "stream_terminal_closed":
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except StreamTransportUnavailable as exc:
-            raise HTTPException(
-                status_code=503, detail="sse_stream_unavailable"
-            ) from exc
-        finally:
-            await bridge.aclose()
+            await publish_pending_v4_events(
+                transaction,
+                limit=min(max(len(v4_items), 1), 64),
+            )
+        except Exception:
+            # Durable rows remain pending and the callback receipt is accepted.
+            logger.warning("callback_v4_publish_unavailable", exc_info=True)
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,
