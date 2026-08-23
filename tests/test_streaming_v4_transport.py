@@ -29,6 +29,13 @@ from app.streaming.v4 import (
     opaque_message_id,
     stream_end_event_id,
 )
+from app.streaming.worker_projection import publish_pending_v4_events
+from tests.test_streaming_v4_postgres_integration import (
+    _connection_factory as _pg_connection_factory,
+    _insert_v4_row as _pg_insert_v4_row,
+    _redis_stream as _pg_redis_stream,
+    _schema as _pg_schema,
+)
 
 
 class FakeRedis:
@@ -86,9 +93,13 @@ class Connection:
     def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
         self.rows = rows
         self.statements: list[str] = []
+        self._page_returned = False
 
     async def execute(self, statement: str, _params: object) -> Result:
         self.statements.append(statement)
+        if self._page_returned:
+            return Result(())
+        self._page_returned = True
         return Result(self.rows)
 
 
@@ -413,6 +424,166 @@ async def test_v4_recovery_reads_published_rows_only() -> None:
     assert len(published) == 1
     assert recovery.transport_cursors == ("7-0",)
     assert project_public_envelope_v4(published[0]) is not None
+
+
+@pytest.mark.asyncio
+async def test_real_v4_admission_persists_and_revalidates_canonical_open() -> None:
+    async with _pg_schema() as (dsn, schema_name, (tenant, run, attempt)):
+        tenant_scope = f"scope_{tenant[2:]}"
+        async with _pg_connection_factory(dsn, schema_name) as conn:
+            await conn.execute(
+                "delete from sse_stream_authorities where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+            first = await create_or_get_stream_admission_v4(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                tenant_scope=tenant_scope,
+            )
+            second = await create_or_get_stream_admission_v4(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                tenant_scope=tenant_scope,
+            )
+        assert second.open_event_id == first.open_event_id
+        assert second.open_payload_bytes == first.open_payload_bytes
+        async with _pg_connection_factory(dsn, schema_name) as conn:
+            result = await conn.execute(
+                """
+                select design_id, projection_version, tenant_scope,
+                       stream_incarnation, state, open_event_id,
+                       open_payload_bytes, open_payload_digest
+                from sse_stream_authorities
+                where tenant_id = %s and run_id = %s
+                """,
+                (tenant, run),
+            )
+            persisted = await result.fetchone()
+        assert persisted is not None
+        assert persisted["design_id"] == "ai-platform.redis-streams-sse-event-channel.v4"
+        assert persisted["projection_version"] == "public-stream-v4"
+        assert persisted["tenant_scope"] == tenant_scope
+        assert persisted["stream_incarnation"] == 1
+        assert persisted["state"] == "admission_pending"
+        assert persisted["open_event_id"] == first.open_event_id
+        assert persisted["open_payload_bytes"] == first.open_payload_bytes
+        assert persisted["open_payload_digest"] == hashlib.sha256(
+            first.open_payload_bytes.encode()
+        ).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_real_pending_terminal_end_partial_retry_keeps_row_pending() -> None:
+    async with _pg_schema() as (dsn, schema_name, (tenant, run, attempt)):
+        terminal_id = "evt4_terminal_end_retry"
+        async with _pg_connection_factory(dsn, schema_name) as conn:
+            await conn.execute("update runs set status = 'succeeded' where id = %s", (run,))
+            await conn.execute(
+                "update sse_stream_authorities set state = 'terminal' where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+            await _pg_insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=1,
+                event_id=terminal_id,
+                event_type="run.succeeded",
+                payload={"terminal_event_id": terminal_id, "hydrate_required": True},
+            )
+        client, key, _ = await _pg_redis_stream(tenant, run)
+
+        class FailEndRedis:
+            def __init__(self, delegate) -> None:
+                self.delegate = delegate
+                self.fail_end_once = True
+                self.calls: list[tuple[str, str]] = []
+
+            def __getattr__(self, name: str):
+                return getattr(self.delegate, name)
+
+            async def eval(self, *args: object):
+                transport_type = str(args[9])
+                event_id = str(args[6])
+                self.calls.append((transport_type, event_id))
+                if transport_type == "end" and self.fail_end_once:
+                    self.fail_end_once = False
+                    raise RuntimeError("deterministic end unavailable")
+                return await self.delegate.eval(*args)
+
+        failing_client = FailEndRedis(client)
+        bridge = V4RedisStreamBridge(
+            RedisStreamBridge(publish_client=failing_client)
+        )
+        try:
+            assert await publish_pending_v4_events(
+                lambda: _pg_connection_factory(dsn, schema_name),
+                limit=1,
+                bridge=bridge,
+            ) == 0
+            async with _pg_connection_factory(dsn, schema_name) as conn:
+                result = await conn.execute(
+                    """
+                    select stream_publication_state, stream_publication_redis_id
+                    from run_events where id = %s
+                    """,
+                    (terminal_id,),
+                )
+                pending = await result.fetchone()
+            assert pending == {
+                "stream_publication_state": "pending",
+                "stream_publication_redis_id": None,
+            }
+            partial_rows = await client.xrange(key, min="-", max="+")
+            assert [json.loads(fields["envelope"])["event_id"] for _, fields in partial_rows] == [
+                terminal_id
+            ]
+
+            async with _pg_connection_factory(dsn, schema_name) as conn:
+                await conn.execute(
+                    "update run_events set stream_publication_next_attempt_at = now() where id = %s",
+                    (terminal_id,),
+                )
+            assert await publish_pending_v4_events(
+                lambda: _pg_connection_factory(dsn, schema_name),
+                limit=1,
+                bridge=bridge,
+            ) == 1
+            async with _pg_connection_factory(dsn, schema_name) as conn:
+                result = await conn.execute(
+                    """
+                    select stream_publication_state, stream_publication_redis_id
+                    from run_events where id = %s
+                    """,
+                    (terminal_id,),
+                )
+                published_row = await result.fetchone()
+            rows = await client.xrange(key, min="-", max="+")
+            envelopes = [json.loads(fields["envelope"]) for _, fields in rows]
+            end_id = stream_end_event_id(terminal_id)
+            assert [item["event_id"] for item in envelopes] == [terminal_id, end_id]
+            assert [item["event_type"] for item in envelopes] == [
+                "run.succeeded",
+                "stream.end",
+            ]
+            assert failing_client.calls == [
+                ("terminal", terminal_id),
+                ("end", end_id),
+                ("terminal", terminal_id),
+                ("end", end_id),
+            ]
+            assert published_row == {
+                "stream_publication_state": "published",
+                "stream_publication_redis_id": rows[-1][0],
+            }
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
 
 
 @pytest.mark.asyncio
