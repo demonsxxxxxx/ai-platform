@@ -103,6 +103,19 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
     assert first[0]["id"] == second[0]["id"]
     assert len(append_calls) == 1
     assert sum("update run_events" in statement.lower() for statement, _ in conn.statements) == 1
+    conn.rows[first[0]["id"]]["payload_json"]["delta"] = "tampered"
+    with pytest.raises(v4.V4ProjectionError, match="existing_row_conflict"):
+        await v4.append_callback_v4_rows(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            batch_id="batch-a",
+            items=(item,),
+            authority=authority,
+            execution_lease_id="lease-a",
+        )
+    assert len(append_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -511,10 +524,15 @@ def test_v4_projection_rejects_unknown_payload_keys() -> None:
     ) is None
 
 
-def test_v4_projection_rejects_invalid_payload_types_and_nonopaque_message_ids() -> None:
+def test_v4_projection_accepts_adapter_message_ids() -> None:
     assert project_public_v4(_row({"delta": 3}), authority=_authority()) is None
     row = _row({"delta": "hello"})
-    row["payload_json"]["__stream_v4"]["message_id"] = "attempt-a"
+    row["payload_json"]["__stream_v4"]["message_id"] = "msg_run_a_attempt_a"
+    projected = project_public_v4(row, authority=_authority())
+    assert projected is not None
+    assert projected["message_id"] == "msg_run_a_attempt_a"
+
+    row["payload_json"]["__stream_v4"]["message_id"] = r"C:\private\message"
     assert project_public_v4(row, authority=_authority()) is None
 
 

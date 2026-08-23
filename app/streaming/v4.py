@@ -765,7 +765,9 @@ def project_public_v4(
         sequence = _positive_int(sequence, name="seq")
         message_id = metadata.get("message_id")
         if event_type in _MESSAGE_EVENT_TYPES:
-            if message_id != opaque_message_id(authority.tenant_id, authority.run_id):
+            try:
+                _safe_ref(message_id, name="message_id")
+            except V4ProjectionError:
                 return None
         elif message_id is not None:
             try:
@@ -863,14 +865,15 @@ async def append_application_v4_row(
         or isinstance(batch_index, bool)
         or not isinstance(batch_index, int)
         or batch_index < 0
-        or event_type not in _APPLICATION_EVENT_TYPES
     ):
         raise V4ProjectionError("v4_callback_item_invalid")
+    if not isinstance(event_type, str) or event_type not in _APPLICATION_EVENT_TYPES:
+        raise V4ProjectionError("v4_callback_item_invalid")
     _validate_payload(event_type, payload)
-    expected_message_id = opaque_message_id(tenant_id, run_id)
     if event_type in _MESSAGE_EVENT_TYPES:
-        if message_id != expected_message_id:
+        if not isinstance(message_id, str):
             raise V4ProjectionError("v4_callback_message_id_invalid")
+        _safe_ref(message_id, name="message_id")
     elif message_id is not None:
         _safe_ref(message_id, name="message_id")
     if source_event_id is not None:
@@ -883,16 +886,6 @@ async def append_application_v4_row(
         _safe_ref(trace_ref, name="trace_ref")
     if causation_event_id is not None:
         _safe_ref(causation_event_id, name="causation_event_id")
-    event_id = _stable_event_id(
-        tenant_id, run_id, attempt_id, batch_id, callback_index, batch_index
-    )
-    existing_result = await conn.execute(
-        "select id, tenant_id, run_id, sequence, event_type, visible_to_user, payload_json, stream_publication_state, stream_publication_attempts, stream_publication_next_attempt_at, created_at from run_events where id = %s for update",
-        (event_id,),
-    )
-    existing = await existing_result.fetchone()
-    if existing is not None:
-        return existing
     metadata = {
         "version": V4_METADATA_VERSION,
         "callback_batch_id": batch_id,
@@ -912,13 +905,34 @@ async def append_application_v4_row(
         "lease_fence": "active",
         "cancellation_fence": "not_requested",
     }
+    expected_payload = {**dict(payload), V4_METADATA_KEY: metadata}
     event = postgres.LedgerEvent(
         event_type=event_type,
         stage=V4_PUBLIC_STAGE,
-        payload={**dict(payload), V4_METADATA_KEY: metadata},
+        payload=expected_payload,
         visible_to_user=True,
         trace_id=trace_ref,
     )
+    event_id = _stable_event_id(
+        tenant_id, run_id, attempt_id, batch_id, callback_index, batch_index
+    )
+    existing_result = await conn.execute(
+        "select id, tenant_id, run_id, sequence, event_type, visible_to_user, payload_json, stream_publication_state, stream_publication_attempts, stream_publication_next_attempt_at, created_at from run_events where id = %s for update",
+        (event_id,),
+    )
+    existing = await existing_result.fetchone()
+    if existing is not None:
+        if not isinstance(existing, Mapping) or any(
+            (
+                existing.get("tenant_id") != tenant_id,
+                existing.get("run_id") != run_id,
+                existing.get("event_type") != event_type,
+                existing.get("visible_to_user") is not True,
+                existing.get("payload_json") != expected_payload,
+            )
+        ):
+            raise V4ProjectionError("v4_callback_existing_row_conflict")
+        return existing
     receipt = await postgres.append_event(
         conn,
         tenant_id=tenant_id,

@@ -102,29 +102,6 @@ def patch_active_attempt(
     )
 
 
-def patch_callback_stream(monkeypatch, runtime_callbacks, published):
-    authority = SimpleNamespace(
-        tenant_scope="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=1,
-        state="confirmed",
-    )
-
-    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
-        return authority
-
-    class Bridge:
-        async def append(self, envelope):
-            published.append(envelope)
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
-    monkeypatch.setattr(runtime_callbacks, "RedisStreamBridge", Bridge)
-
-
 def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     lease_checks = []
@@ -766,14 +743,15 @@ def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatc
     persisted = [call for call in calls if call[0] != "identity"]
     assert [item[0:3] for item in persisted] == [
         ("executor_callback", "executor", "Executor callback: running"),
-        ("tool_call_delta", "tool", "accepted"),
-        ("checkpoint_created", "checkpoint", "checkpoint saved"),
-        ("subagent_started", "subagent", "reviewer started"),
-        ("agent_step_completed", "agent", "code agent completed"),
+        ("executor_private_event", "executor", "Executor event withheld from public projection"),
+        ("executor_private_event", "executor", "Executor event withheld from public projection"),
+        ("executor_private_event", "executor", "Executor event withheld from public projection"),
+        ("executor_private_event", "executor", "Executor event withheld from public projection"),
     ]
-    assert persisted[2][3]["checkpoint_id"] == "checkpoint-a"
-    assert persisted[2][3]["source"] == "executor_callback"
-    assert persisted[4][3]["visible_to_user"] is True
+    private_payloads = [item[3] for item in persisted[1:]]
+    assert all(payload["visible_to_user"] is False for payload in private_payloads)
+    assert all("checkpoint_id" not in payload for payload in private_payloads)
+    assert all("reviewer started" not in str(payload) for payload in private_payloads)
 
 
 def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
@@ -822,11 +800,14 @@ def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
     )
 
     assert response.status_code == 200
-    browser_event = next(call for call in calls if call[0] == "browser_snapshot")
-    assert browser_event[1] == "browser"
-    assert browser_event[3]["visible_to_user"] is False
-    assert browser_event[3]["admin_only"] is True
-    assert browser_event[3]["source"] == "executor_callback"
+    browser_event = next(call for call in calls if call[0] == "executor_private_event")
+    assert browser_event[1] == "executor"
+    assert browser_event[3] == {
+        "source": "executor_callback",
+        "source_event_type": "browser_snapshot",
+        "source_class": "rejected",
+        "visible_to_user": False,
+    }
 
 
 def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypatch):
@@ -883,6 +864,7 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
     assert execution["payload"] == {
         "source": "executor_callback",
         "source_event_type": "execution_step",
+        "source_class": "rejected",
         "visible_to_user": False,
     }
     row = {
@@ -1032,10 +1014,11 @@ def test_executor_callback_rejects_arbitrary_v2_lifecycles_without_public_persis
     assert "Caller selected Skill" not in str(persisted)
 
 
-def test_executor_callback_is_the_ordered_assistant_delta_ingress(monkeypatch):
+def test_executor_callback_uses_adapter_events_and_pending_publisher(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []
-    published = []
+    v4_rows = []
+    publish_limits = []
 
     class FakeTransaction:
         async def __aenter__(self):
@@ -1047,158 +1030,71 @@ def test_executor_callback_is_the_ordered_assistant_delta_ingress(monkeypatch):
     async def fake_get_run_identity(conn, *, run_id, for_update=False):
         return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
 
-    async def fake_append_event(conn, **event):
-        persisted.append(event)
-        return f"evt_{len(persisted)}"
-
     async def fake_append_batch(conn, **receipt):
         persisted.extend(receipt["events"])
         return {"callback_received_at": "2026-08-09T00:00:00Z"}
 
+    async def fake_append_v4_rows(conn, **kwargs):
+        v4_rows.append(kwargs)
+        return ()
+
+    async def fake_publish_pending(transaction_factory, *, limit):
+        publish_limits.append(limit)
+
+    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
+
+    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    sdk_events = tuple(event.to_agent_event() for event in adapter.accept_answer_text("answer"))
+    authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+    async def fake_get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return authority
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
+    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", fake_append_v4_rows)
+    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", fake_publish_pending)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", fake_get_authority)
     patch_active_attempt(monkeypatch, runtime_callbacks)
-    patch_callback_stream(monkeypatch, runtime_callbacks, published)
-    client = TestClient(create_app())
-    responses = [
-        client.post(
-            "/api/ai/runtime/callbacks/executor",
-            headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-            json=callback_payload(
-                batch_id="batch-a",
-                new_message=None,
-                state_patch={},
-                events=[
-                    {
-                        "type": "assistant_delta",
-                        "message": "executor message must not persist",
-                        "payload": {
-                            "delta": "safe ",
-                            "command": "private command",
-                            "path": "/private/path",
-                            "token": "private-token",
-                            "tool_name": "private-tool",
-                            "stdout": "private stdout",
-                            "stderr": "private stderr",
-                        },
-                    }
-                ],
-            ),
-        ),
-        client.post(
-            "/api/ai/runtime/callbacks/executor",
-            headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-            json=callback_payload(
-                batch_id="batch-b",
-                new_message=None,
-                state_patch={},
-                events=[
-                    {
-                        "type": "assistant_delta",
-                        "message": "executor message must not persist",
-                        "payload": {"delta": "answer"},
-                    }
-                ],
-            ),
-        ),
-    ]
-
-    assert [response.status_code for response in responses] == [200, 200]
-    assert [response.json() for response in responses] == [
-        {"accepted": True, "batch_id": "batch-a", "event_count": 2},
-        {"accepted": True, "batch_id": "batch-b", "event_count": 2},
-    ]
-    assert [event["event_type"] for event in persisted] == [
-        "executor_callback",
-        "assistant_delta",
-        "executor_callback",
-        "assistant_delta",
-    ]
-    persisted_deltas = [
-        event["payload"]
-        for event in persisted
-        if event["event_type"] == "assistant_delta"
-    ]
-    assert persisted_deltas == [
-        {
-            "delta": "safe ",
-            "source": "worker_answer_delta_v1",
-            "visible_to_user": True,
-            "severity": "info",
-        },
-        {
-            "delta": "answer",
-            "source": "worker_answer_delta_v1",
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    ]
-    assert [event.event_type for event in published] == [
-        "assistant_text_delta",
-        "assistant_text_delta",
-    ]
-    assert [event.payload for event in published] == [
-        {"delta": "safe "},
-        {"delta": "answer"},
-    ]
-    assert published[0].event_id != published[1].event_id
-    assert "private command" not in "".join(
-        event.canonical_bytes.decode() for event in published
-    )
-
-
-def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_commit(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret"))
-    persisted = []
-    published = []
-    identity_reads = 0
-
-    class FakeTransaction:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    async def get_run_identity(conn, *, run_id, for_update=False):
-        nonlocal identity_reads
-        identity_reads += 1
-        return {
-            "tenant_id": "tenant-a",
-            "id": run_id,
-            "session_id": "session-a",
-            "status": "running" if identity_reads == 1 else "succeeded",
-        }
-
-    async def append_batch(conn, **receipt):
-        persisted.extend(receipt["events"])
-        return {"callback_received_at": "2026-08-09T00:00:00Z"}
-
-    from app.routes import runtime_callbacks
-
-    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
-    patch_active_attempt(monkeypatch, runtime_callbacks)
-    patch_callback_stream(monkeypatch, runtime_callbacks, published)
 
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(batch_id="batch-a", new_message={"type": "assistant", "delta": "late"}, state_patch={}),
+        json=callback_payload(
+            batch_id="batch-a",
+            new_message=None,
+            state_patch={},
+            events=[
+                {
+                    "type": "assistant_delta",
+                    "message": "private callback text",
+                    "payload": {"delta": "private callback payload"},
+                },
+                *[event.model_dump() for event in sdk_events],
+            ],
+        ),
     )
 
     assert response.status_code == 200
+    assert response.json() == {"accepted": True, "batch_id": "batch-a", "event_count": 4}
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
-        "assistant_delta",
+        "executor_private_event",
+        "executor_private_event",
+        "executor_private_event",
     ]
-    assert identity_reads == 2
-    assert published == []
+    assert all(event["payload"]["visible_to_user"] is False for event in persisted[1:])
+    assert all("delta" not in event["payload"] for event in persisted[1:])
+    assert "private callback text" not in str(persisted)
+    assert "private callback payload" not in str(persisted)
+    assert len(v4_rows) == 1
+    items = v4_rows[0]["items"]
+    assert [item.callback_index for item in items] == [1, 2]
+    assert [item.batch_index for item in items] == [1, 2]
+    assert {item.message_id for item in items} == {adapter.message_id}
+    assert adapter.message_id.startswith("msg_")
+    assert publish_limits == [2]
 
 
 @pytest.mark.parametrize("delta", ["", 7])
@@ -1238,111 +1134,17 @@ def test_executor_callback_rejects_empty_or_non_string_assistant_delta(monkeypat
 
     assert response.status_code == 200
     assert response.json() == {"accepted": True, "event_count": 2}
-    assert [event["event_type"] for event in persisted] == ["executor_callback"]
-
-
-@pytest.mark.parametrize(
-    "new_message",
-    [
-        {"type": "assistant", "delta": ""},
-        {"type": "assistant", "delta": 7},
-        {"type": "assistant", "delta": "", "text": "non-authoritative fallback"},
-        {"type": "assistant", "delta": 7, "text": "non-authoritative fallback"},
-    ],
-)
-def test_executor_callback_rejects_empty_or_non_string_new_message_delta(monkeypatch, new_message):
-    patch_callback_settings(monkeypatch, callback_settings("secret"))
-    persisted = []
-
-    class FakeTransaction:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    async def fake_get_run_identity(conn, *, run_id, for_update=False):
-        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
-
-    async def fake_append_event(conn, **event):
-        persisted.append(event)
-        return f"evt_{len(persisted)}"
-
-    from app.routes import runtime_callbacks
-
-    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
-    patch_active_attempt(monkeypatch, runtime_callbacks)
-    response = TestClient(create_app()).post(
-        "/api/ai/runtime/callbacks/executor",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(new_message=new_message, state_patch={}),
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 1}
-    assert [event["event_type"] for event in persisted] == ["executor_callback"]
-
-
-def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret"))
-    persisted = []
-    published = []
-
-    class FakeTransaction:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    async def fake_get_run_identity(conn, *, run_id, for_update=False):
-        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
-
-    async def fake_append_event(conn, **event):
-        persisted.append(event)
-        return f"evt_{len(persisted)}"
-
-    async def fake_append_batch(conn, **receipt):
-        persisted.extend(receipt["events"])
-        return {"callback_received_at": "2026-08-09T00:00:00Z"}
-
-    from app.routes import runtime_callbacks
-
-    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
-    patch_active_attempt(monkeypatch, runtime_callbacks)
-    patch_callback_stream(monkeypatch, runtime_callbacks, published)
-    response = TestClient(create_app()).post(
-        "/api/ai/runtime/callbacks/executor",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(
-            batch_id="batch-a",
-            new_message={"type": "assistant", "text": "text fallback"},
-            state_patch={},
-        ),
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "accepted": True,
-        "batch_id": "batch-a",
-        "event_count": 1,
-    }
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
-        "assistant_delta",
+        "executor_private_event",
     ]
     assert persisted[1]["payload"] == {
-        "delta": "text fallback",
-        "source": "worker_answer_delta_v1",
-        "visible_to_user": True,
-        "severity": "info",
+        "source": "executor_callback",
+        "source_event_type": "assistant_delta",
+        "source_class": "rejected",
+        "visible_to_user": False,
     }
-    assert published[0].payload == {"delta": "text fallback"}
+    assert "private" not in str(persisted[1]["payload"])
 
 
 def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):

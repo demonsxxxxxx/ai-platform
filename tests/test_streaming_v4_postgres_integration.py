@@ -17,8 +17,10 @@ from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.streaming.api import stream_key
 from app.streaming.redis import RedisStreamBridge, StreamAuthority
 from app.streaming.v4 import (
+    V4CallbackItem,
     V4ProjectionError,
     V4RedisStreamBridge,
+    append_callback_v4_rows,
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
@@ -257,6 +259,43 @@ async def _redis_stream(tenant: str, run: str, *, incarnation: int = 2):
     await client.delete(key, state_key)
     await client.hset(state_key, mapping={"phase": "open"})
     return client, key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+
+@pytest.mark.asyncio
+async def test_real_callback_append_registers_pending_v4_row():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        authority = _authority(tenant, run, attempt)
+        item = V4CallbackItem(
+            callback_index=0,
+            batch_index=0,
+            event_type="message.delta",
+            payload={"delta": "adapter answer"},
+            message_id="msg_run_attempt",
+        )
+        async with _connection_factory(dsn, schema_name) as conn:
+            async with conn.transaction():
+                rows = await append_callback_v4_rows(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                    batch_id="batch-real",
+                    items=(item,),
+                    authority=authority,
+                    execution_lease_id="lease",
+                )
+        assert rows[0]["stream_publication_state"] == "pending"
+        async with _connection_factory(dsn, schema_name) as conn:
+            result = await conn.execute(
+                "select event_type, visible_to_user, stream_publication_state from run_events where id = %s",
+                (rows[0]["id"],),
+            )
+            stored = await result.fetchone()
+        assert stored == {
+            "event_type": "message.delta",
+            "visible_to_user": True,
+            "stream_publication_state": "pending",
+        }
 
 
 @pytest.mark.asyncio

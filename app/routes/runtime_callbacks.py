@@ -14,10 +14,6 @@ from app.context.retrieval import (
 )
 from app.db import transaction
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
-from app.public_execution import (
-    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
-    PUBLIC_EXECUTION_EVENT_TYPES,
-)
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -144,20 +140,15 @@ async def record_executor_callback(
             )
             if item is not None and item.source_run_id == callback.run_id:
                 v4_items.append(item)
-                continue
-            executor_event_type = str(executor_event.get("event_type") or "unknown")
-            if (
-                executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES
-                and executor_event_type not in {"assistant_delta", PUBLIC_AGENT_PROGRESS_EVENT_TYPE}
-            ):
                 event_batch.append(
                     {
-                        "event_type": executor_event_type,
-                        "stage": str(executor_event.get("stage") or "executor"),
-                        "message": str(executor_event.get("message") or ""),
+                        "event_type": "executor_private_event",
+                        "stage": "executor",
+                        "message": "Executor event projected to v4",
                         "payload": {
-                            **dict(executor_event.get("payload") or {}),
                             "source": "executor_callback",
+                            "source_event_type": item.event_type,
+                            "source_class": "public_v4",
                             "visible_to_user": False,
                         },
                     }
@@ -170,7 +161,8 @@ async def record_executor_callback(
                     "message": "Executor event withheld from public projection",
                     "payload": {
                         "source": "executor_callback",
-                        "source_event_type": str(executor_event.get("event_type") or "unknown"),
+                        "source_event_type": event.type,
+                        "source_class": "rejected",
                         "visible_to_user": False,
                     },
                 }
