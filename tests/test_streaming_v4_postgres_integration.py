@@ -999,7 +999,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
             assert retried is not None
             assert retried["sequence"] == terminal["sequence"]
 
-            with pytest.raises(V4ProjectionError, match="v4_run_existing_row_conflict"):
+            with pytest.raises(V4ProjectionError, match="v4_callback_existing_row_conflict"):
                 await append_run_terminal_v4_row(
                     conn,
                     tenant_id=tenant,
