@@ -4,6 +4,7 @@ import {
   useCallback,
   useRef,
   useLayoutEffect,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { clsx } from "clsx";
 import {
@@ -88,11 +89,26 @@ export function buildSubagentPanelState(data: SubagentPanelData) {
             ? "cancelled"
             : "idle";
   const subtitle = data.startedAt ? formatDateTime(data.startedAt) : undefined;
+  const statusLabel =
+    effectiveStatus === "running"
+      ? "Running"
+      : effectiveStatus === "complete"
+        ? "Completed"
+        : effectiveStatus === "error"
+          ? "Failed"
+          : effectiveStatus === "cancelled"
+            ? "Cancelled"
+            : "Pending";
 
   return {
     effectiveStatus,
     panelStatus,
     subtitle: subtitle || undefined,
+    statusLabel,
+    parentAgentId: data.parentAgentId,
+    durationMs: data.durationMs,
+    progressPercent: data.progressPercent,
+    currentCategory: data.currentCategory,
     panelKey: createSubagentPanelKey(data.agentId),
     formattedAgentName: formatSubagentName(data.agentName),
   };
@@ -364,6 +380,10 @@ export function SubagentBlock({
   status,
   error,
   artifactDownloadScope,
+  parent_agent_id,
+  duration_ms,
+  progress_percent,
+  current_category,
 }: {
   agent_id: string;
   agent_name: string;
@@ -377,13 +397,22 @@ export function SubagentBlock({
   status?: "pending" | "running" | "complete" | "error" | "cancelled";
   error?: string;
   artifactDownloadScope?: ArtifactDownloadScope;
+  parent_agent_id?: string;
+  duration_ms?: number;
+  progress_percent?: number;
+  current_category?: string;
 }) {
   const {
     effectiveStatus,
     panelStatus,
     subtitle,
+    statusLabel,
     panelKey,
     formattedAgentName,
+    parentAgentId,
+    durationMs,
+    progressPercent,
+    currentCategory,
   } = buildSubagentPanelState({
     agentId: agent_id,
     agentName: agent_name,
@@ -397,6 +426,10 @@ export function SubagentBlock({
     startedAt,
     completedAt,
     status,
+    currentCategory: current_category,
+    parentAgentId: parent_agent_id,
+    durationMs: duration_ms,
+    progressPercent: progress_percent,
   });
   // Keep sidebar panel data in sync
   useEffect(() => {
@@ -413,6 +446,10 @@ export function SubagentBlock({
       startedAt,
       completedAt,
       status: effectiveStatus as SubagentPanelData["status"],
+      parentAgentId: parent_agent_id,
+      durationMs: duration_ms,
+      progressPercent: progress_percent,
+      currentCategory: current_category,
     });
 
     // Auto-open only when no panel is open; multiple running subagents should not steal focus.
@@ -460,6 +497,10 @@ export function SubagentBlock({
     subtitle,
     formattedAgentName,
     panelKey,
+    parent_agent_id,
+    duration_ms,
+    progress_percent,
+    current_category,
   ]);
 
   useEffect(() => {
@@ -481,11 +522,26 @@ export function SubagentBlock({
     });
   }, [formattedAgentName, panelStatus, subtitle, panelKey, agent_id]);
 
+  const handleTriggerKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      // Prevent native click synthesis so explicit keyboard support cannot
+      // double-open the panel when the browser also dispatches activation.
+      event.preventDefault();
+      handleOpenInPanel();
+    },
+    [handleOpenInPanel],
+  );
+
   return (
     <div
+      data-subagent-id={agent_id}
+      data-parent-agent-id={parentAgentId}
       className={clsx(
         "my-1.5 rounded-xl overflow-hidden min-w-0 group",
         "border transition-all duration-200",
+        parentAgentId &&
+          "ml-4 border-l-2 border-l-stone-300 pl-2 dark:border-l-stone-600",
         effectiveStatus === "running" &&
           "border-stone-200/60 dark:border-stone-700/40 bg-stone-50/50 dark:bg-stone-800/30",
         effectiveStatus === "complete" &&
@@ -498,9 +554,14 @@ export function SubagentBlock({
           "border-stone-200/60 dark:border-stone-700/40",
       )}
     >
-      <div
-        className="flex items-center gap-3 px-3.5 py-2.5 cursor-pointer transition-colors hover:bg-white/60 dark:hover:bg-white/5"
+      <button
+        type="button"
+        aria-label={`${formattedAgentName}: ${statusLabel}${parentAgentId ? ", Nested Agent" : ""}`}
+        aria-haspopup="dialog"
+        data-subagent-trigger={agent_id}
+        className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer transition-colors hover:bg-white/60 dark:hover:bg-white/5"
         onClick={handleOpenInPanel}
+        onKeyDown={handleTriggerKeyDown}
       >
         <div
           className={clsx(
@@ -557,8 +618,15 @@ export function SubagentBlock({
               {input}
             </p>
           )}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-stone-500 dark:text-stone-400">
+            <span data-subagent-status>{statusLabel}</span>
+            {parentAgentId && <span data-subagent-nested-label>Nested Agent</span>}
+            {currentCategory && <span>Category: {currentCategory}</span>}
+            {progressPercent !== undefined && <span>Progress: {progressPercent}%</span>}
+            {durationMs !== undefined && <span>Duration: {(durationMs / 1000).toFixed(1)}s</span>}
+          </div>
         </div>
-      </div>
+      </button>
     </div>
   );
 }

@@ -259,6 +259,10 @@ export function MessagePartRenderer({
         completedAt={part.completedAt}
         status={part.status}
         error={part.error}
+        parent_agent_id={part.parent_agent_id}
+        duration_ms={part.duration_ms}
+        progress_percent={part.progress_percent}
+        current_category={part.current_category}
         artifactDownloadScope={artifactDownloadScope}
       />
     );
@@ -650,6 +654,8 @@ function ArtifactCardItem({
 
   return (
     <div
+      role="group"
+      aria-label={part.label}
       className={clsx(
         "my-1 flex min-w-0 max-w-xl items-center gap-3 rounded-lg border px-3 py-2.5",
         "flex-wrap",

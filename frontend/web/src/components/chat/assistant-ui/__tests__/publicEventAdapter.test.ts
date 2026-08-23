@@ -1,0 +1,196 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  adaptPublicRunStreamEventV4,
+  projectV4EventToLegacyHandler,
+} from "../publicEventAdapter";
+
+function frame(eventType: string, payload: Record<string, unknown> = {}, seq = 1): {
+  eventHeader: string;
+  transportCursor: string;
+  value: Record<string, unknown>;
+} {
+  return {
+    eventHeader: eventType,
+    transportCursor: `run-1:2:${seq}-0`,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: `event-${seq}`,
+      run_id: "run-1",
+      message_id: "message-1",
+      seq,
+      event_type: eventType,
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload,
+    },
+  };
+}
+
+test("v4 adapter accepts generated message delta and retains transport identity", () => {
+  const adapted = adaptPublicRunStreamEventV4(frame("message.delta", { delta: "hi" }), {
+    runId: "run-1",
+    streamIncarnation: 2,
+  });
+  assert.equal(adapted?.eventType, "message.delta");
+  assert.equal(adapted?.messageId, "message-1");
+  assert.equal(adapted?.transportCursor, "run-1:2:1-0");
+});
+
+test("v4 adapter rejects unknown payload fields and foreign run/incarnation", () => {
+  assert.equal(
+    adaptPublicRunStreamEventV4(frame("message.delta", { delta: "hi", secret: "no" }), { runId: "run-1" }),
+    null,
+  );
+  assert.equal(adaptPublicRunStreamEventV4(frame("message.delta", { delta: "hi" }), { runId: "run-2" }), null);
+  assert.equal(
+    adaptPublicRunStreamEventV4(frame("message.delta", { delta: "hi" }), { runId: "run-1", streamIncarnation: 3 }),
+    null,
+  );
+});
+
+test("v4 adapter keeps semantic identity separate from the Redis transport cursor", () => {
+  const first = adaptPublicRunStreamEventV4(frame("message.delta", { delta: "a" }, 1), { runId: "run-1" });
+  const replay = adaptPublicRunStreamEventV4({
+    ...frame("message.delta", { delta: "a" }, 2),
+    value: { ...(frame("message.delta", { delta: "a" }, 2).value as Record<string, unknown>), event_id: "event-1" },
+  }, { runId: "run-1" });
+  assert.ok(first);
+  assert.ok(replay);
+  assert.equal(first.semanticKey, "event-1");
+  assert.equal(replay.semanticKey, "event-1");
+  assert.equal(first.transportCursor, "run-1:2:1-0");
+  assert.equal(replay.transportCursor, "run-1:2:2-0");
+});
+
+test("v4 adapter enforces generated run, date-time, nullable, and exact payload rules", () => {
+  const valid = frame("run.failed", {
+    terminal_event_id: "terminal-1",
+    hydrate_required: true,
+    projection_version: "ai-platform.chat-public-projection.v1",
+    code: "failed",
+    default_message: "Run failed",
+    detail: null,
+  });
+  assert.ok(adaptPublicRunStreamEventV4(valid, { runId: "run-1" }));
+  const invalidRun = { ...valid, value: { ...(valid.value as Record<string, unknown>), run_id: `x${"a".repeat(128)}` } };
+  assert.equal(adaptPublicRunStreamEventV4(invalidRun, { runId: `x${"a".repeat(128)}` }), null);
+  const invalidDate = { ...valid, value: { ...(valid.value as Record<string, unknown>), emitted_at: "2026-02-30T00:00:00Z" } };
+  assert.equal(adaptPublicRunStreamEventV4(invalidDate, { runId: "run-1" }), null);
+  const invalidExtra = { ...valid, value: { ...(valid.value as Record<string, unknown>), payload: { ...(valid.value as Record<string, unknown>).payload as Record<string, unknown>, secret: true } } };
+  assert.equal(adaptPublicRunStreamEventV4(invalidExtra, { runId: "run-1" }), null);
+});
+
+test("v4 adapter requires a stream-incarnation Redis transport cursor", () => {
+  const value = frame("message.delta", { delta: "hi" });
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      { ...value, transportCursor: "cursor-1" },
+      { runId: "run-1", streamIncarnation: 2 },
+    ),
+    null,
+  );
+  assert.ok(
+    adaptPublicRunStreamEventV4(value, {
+      runId: "run-1",
+      streamIncarnation: 2,
+    }),
+  );
+});
+
+test("v4 adapter preserves nullable run-level identity and projects safe activity", () => {
+  const value = frame("run.cancel_requested", { source: "user" });
+  value.value = {
+    ...(value.value as Record<string, unknown>),
+    message_id: null,
+    seq: 2,
+  };
+  const adapted = adaptPublicRunStreamEventV4(value, { runId: "run-1" });
+  assert.ok(adapted);
+  assert.equal(adapted.messageId, null);
+  const projected = projectV4EventToLegacyHandler(adapted, "message-1");
+  assert.ok(projected);
+  assert.equal(projected.streamEvent.event, "run_event");
+  assert.match(projected.streamEvent.data, /cancel_requested/);
+});
+
+test("v4 gap cursors require the canonical run/incarnation/Redis-id grammar", () => {
+  const raw = frame("stream.gap", {
+    reason: "stream_missing",
+    recovery: "reload_durable_state",
+    requested_event_id: "run-1:2:4-0",
+    requested_stream_incarnation: 2,
+    current_stream_incarnation: 2,
+    earliest_available_event_id: "run-1:2:1-0",
+    latest_available_event_id: "run-1:2:9-0",
+  }).value as Record<string, unknown>;
+  const control = {
+    eventHeader: "stream.gap",
+    transportCursor: "run-1:2:10-0",
+    value: {
+      ...raw,
+      schema: "ai-platform.public-run-stream-control.v4",
+      message_id: null,
+      seq: null,
+      trace_ref: null,
+      replayable: false,
+    },
+  };
+  assert.ok(adaptPublicRunStreamEventV4(control, { runId: "run-1" }));
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      { ...control, value: { ...(control.value as Record<string, unknown>), payload: { ...((control.value as Record<string, unknown>).payload as Record<string, unknown>), latest_available_event_id: "4-0" } } },
+      { runId: "run-1" },
+    ),
+    null,
+  );
+});
+
+test("v4 adapter preserves causation as an event identity for reducer resolution", () => {
+  const raw = frame("subagent.started", { subagent_id: "child-1", display_name: "Child" });
+  raw.value = { ...(raw.value as Record<string, unknown>), causation_event_id: "parent-event-1" };
+  const adapted = adaptPublicRunStreamEventV4(raw, { runId: "run-1", streamIncarnation: 2 });
+  assert.equal(adapted?.causationEventId, "parent-event-1");
+  assert.equal((adapted?.event as Record<string, unknown>).parent_id, undefined);
+});
+test("artifact.failed without a filename projects a fixed safe visible label", () => {
+  const adapted = adaptPublicRunStreamEventV4(
+    frame("artifact.failed", {
+      artifact_id: "artifact-private-raw-id",
+      status: "failed",
+      failure_category: "artifact_failed",
+    }),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+  assert.ok(adapted);
+  const projected = projectV4EventToLegacyHandler(adapted, "message-1");
+  assert.ok(projected);
+  const data = JSON.parse(projected.streamEvent.data) as Record<string, unknown>;
+  assert.equal(data.label, "Artifact unavailable");
+  assert.notEqual(data.label, "artifact-private-raw-id");
+});
+
+test("stream.end remains transport-only and preserves its terminal receipt", () => {
+  const raw = frame("stream.end", { terminal_event_id: "terminal-1" }).value as Record<string, unknown>;
+  const adapted = adaptPublicRunStreamEventV4({
+    eventHeader: "stream.end",
+    transportCursor: "run-1:2:1-0",
+    value: {
+      ...raw,
+      schema: "ai-platform.public-run-stream-control.v4",
+      message_id: null,
+      seq: null,
+      trace_ref: null,
+    },
+  }, { runId: "run-1" });
+  assert.ok(adapted);
+  const projected = projectV4EventToLegacyHandler(adapted, "message-1");
+  assert.ok(projected);
+  assert.equal(projected.streamEvent.event, "end");
+  const data = JSON.parse(projected.streamEvent.data) as Record<string, unknown>;
+  assert.deepEqual(data.payload, { terminal_event_id: "terminal-1" });
+  assert.equal(data.status, undefined);
+});

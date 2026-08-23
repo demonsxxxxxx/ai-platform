@@ -214,6 +214,14 @@ export interface ToolPart {
   cancelled?: boolean;
   depth?: number;
   agent_id?: string;
+  /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
+  public_operation_id?: string;
+  public_category?: string;
+  duration_ms?: number;
+  evidence_refs?: string[];
+  artifact_refs?: string[];
+  event_id?: string;
+  causation_event_id?: string | null;
 }
 
 export interface SubagentPart {
@@ -234,6 +242,16 @@ export interface SubagentPart {
   completedAt?: number; // Unix timestamp (ms)
   // 状态: pending | running | complete | error | cancelled
   status?: "pending" | "running" | "complete" | "error" | "cancelled";
+  /** Server-authorized parent identity retained for grouped rendering. */
+  parent_agent_id?: string;
+  public_operation_id?: string;
+  duration_ms?: number;
+  progress_percent?: number;
+  current_category?: string;
+  /** Immutable origin event used to retain parent causation across lifecycle updates. */
+  origin_event_id?: string;
+  event_id?: string;
+  causation_event_id?: string | null;
 }
 
 export interface ToolCall {

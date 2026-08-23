@@ -119,6 +119,7 @@ const CHAT_PUBLIC_COMMENTARY_EVENT_TYPES: ReadonlySet<string> = new Set(
 );
 const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
   ...CHAT_PUBLIC_COMMENTARY_EVENT_TYPES,
+  "public_activity",
   "error",
 ]);
 const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;
@@ -450,6 +451,21 @@ export function processMessageEvent(
           break;
         }
       }
+      if (data.event_type === "public_tool_activity") {
+        const toolPart = createPublicToolPart(data);
+        if (toolPart) {
+          result.parts = upsertPublicToolPart(parts, toolPart);
+          break;
+        }
+      }
+      if (data.event_type === "public_subagent_activity") {
+        const subagentPart = createPublicSubagentPart(data, depth, parts);
+
+        if (subagentPart) {
+          result.parts = upsertPublicSubagentPart(parts, subagentPart);
+          break;
+        }
+      }
       if (!shouldProjectRunStatus(data)) {
         break;
       }
@@ -593,9 +609,174 @@ export function processMessageEvent(
   return result;
 }
 
-// ============================================
-// Internal helpers
-// ============================================
+function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "tool" }> | null {
+  const operationId = typeof data.operation_id === "string" ? data.operation_id : "";
+  const displayName = typeof data.display_name === "string" ? data.display_name : "";
+  const category = typeof data.category === "string" ? data.category : "";
+  const status = typeof data.status === "string" ? data.status : "";
+  if (!operationId || !displayName || !category || !status) return null;
+  const failed = status === "failed" || status === "denied";
+  return {
+    type: "tool",
+    id: operationId,
+    name: displayName,
+    args: { category },
+    result: typeof data.result_summary === "string" ? data.result_summary : undefined,
+    success: failed ? false : status === "completed" ? true : undefined,
+    error: failed
+      ? typeof data.failure_category === "string"
+        ? data.failure_category
+        : typeof data.denial_code === "string"
+          ? data.denial_code
+          : undefined
+      : undefined,
+    isPending: status === "started",
+    cancelled: false,
+    depth: typeof data.depth === "number" ? data.depth : 0,
+    agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
+    public_operation_id: operationId,
+    public_category: category,
+    duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+    evidence_refs: Array.isArray(data.evidence_refs) ? data.evidence_refs : undefined,
+    artifact_refs: Array.isArray(data.artifact_refs) ? data.artifact_refs : undefined,
+    event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    causation_event_id: data.causation_event_id ?? null,
+  };
+}
+
+function upsertPublicToolPart(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "tool" }>,
+): MessagePart[] {
+  const index = parts.findIndex(
+    (part) => part.type === "tool" && part.public_operation_id === next.public_operation_id,
+  );
+  if (index < 0) return [...parts, next];
+  const updated = [...parts];
+  updated[index] = { ...updated[index], ...next };
+  return updated;
+}
+
+function acceptedSubagentIdForEvent(
+  parts: MessagePart[],
+  parentEventId: string,
+): string | undefined {
+  for (const part of parts) {
+    if (
+      part.type === "subagent" &&
+      (part.origin_event_id === parentEventId || part.event_id === parentEventId)
+    ) {
+      return part.public_operation_id || part.agent_id;
+    }
+    if (part.type === "subagent" && part.parts) {
+      const nested = acceptedSubagentIdForEvent(part.parts, parentEventId);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+const PUBLIC_SUBAGENT_CATEGORIES = new Set([
+  "skill",
+  "mcp",
+  "read",
+  "write",
+  "edit",
+  "search",
+  "execute",
+]);
+
+function boundedSubagentDuration(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 86_400_000
+    ? value
+    : undefined;
+}
+
+function boundedSubagentProgress(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 100
+    ? value
+    : undefined;
+}
+
+function boundedSubagentCategory(value: unknown): string | undefined {
+  return typeof value === "string" && PUBLIC_SUBAGENT_CATEGORIES.has(value)
+    ? value
+    : undefined;
+}
+
+function createPublicSubagentPart(
+  data: EventData,
+  depth: number,
+  parts: MessagePart[],
+): Extract<MessagePart, { type: "subagent" }> | null {
+  const agentId = typeof data.subagent_id === "string" ? data.subagent_id : "";
+  const agentName = typeof data.display_name === "string" ? data.display_name : "";
+  const status = typeof data.status === "string" ? data.status : "";
+  if (!agentId || !agentName || !status) return null;
+  const terminal = status === "completed" || status === "failed" || status === "cancelled";
+  const causationEventId = typeof data.causation_event_id === "string"
+    ? data.causation_event_id
+    : null;
+  const parentAgentId = causationEventId
+    ? acceptedSubagentIdForEvent(parts, causationEventId)
+    : undefined;
+  const durationMs = boundedSubagentDuration(data.duration_ms);
+  const progressPercent = boundedSubagentProgress(data.progress_percent);
+  const currentCategory = boundedSubagentCategory(data.current_category);
+  return {
+    type: "subagent",
+    agent_id: agentId,
+    agent_name: agentName,
+    input: "",
+    isPending: !terminal,
+    status: status === "progress" ? "running" : status === "started" ? "running" : status === "completed" ? "complete" : status === "cancelled" ? "cancelled" : "error",
+    depth: typeof data.depth === "number" ? data.depth : depth,
+    parts: [],
+    startedAt: typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
+    completedAt: terminal && typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
+    error: status === "failed" && typeof data.failure_category === "string" ? data.failure_category : undefined,
+    parent_agent_id: parentAgentId,
+    public_operation_id: agentId,
+    duration_ms: durationMs,
+    progress_percent: progressPercent,
+    current_category: currentCategory,
+    origin_event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    causation_event_id: causationEventId,
+  };
+}
+
+function upsertPublicSubagentPart(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): MessagePart[] {
+  const index = parts.findIndex(
+    (part) => part.type === "subagent" && part.agent_id === next.agent_id && part.public_operation_id === next.public_operation_id,
+  );
+  if (index < 0) return [...parts, next];
+  const updated = [...parts];
+  const previous = updated[index];
+  if (previous.type === "subagent") {
+    updated[index] = {
+      ...previous,
+      ...next,
+      parent_agent_id: previous.parent_agent_id ?? next.parent_agent_id,
+      origin_event_id: previous.origin_event_id ?? next.origin_event_id,
+      causation_event_id: previous.causation_event_id ?? next.causation_event_id,
+      parts: previous.parts,
+      startedAt: previous.startedAt ?? next.startedAt,
+    };
+  }
+  return updated;
+}
+
+
 
 /** Replace existing sandbox part or append if none exists. */
 function upsertSandboxPart(
@@ -698,16 +879,8 @@ function createExecutionTimelinePart(
     kind: publicEvent.kind,
     presentation_kind: publicEvent.presentation_kind,
     stage: publicEvent.stage,
-    title:
-      typeof publicEvent.title === "string"
-        ? publicEvent.title
-        : typeof publicEvent.safe_label === "string"
-          ? publicEvent.safe_label
-          : undefined,
-    summary:
-      typeof publicEvent.summary === "string"
-        ? publicEvent.summary
-        : undefined,
+    title: undefined,
+    summary: undefined,
     status: publicEvent.status,
     progress: publicEvent.progress,
     safe_file_name: safePublicExecutionFileName(publicEvent.safe_file_name),
