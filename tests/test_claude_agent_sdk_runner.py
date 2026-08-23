@@ -1915,7 +1915,7 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
         ("mcp-call-1", "invocation_requested"),
         ("mcp-call-1", "completed"),
         ("mcp-call-2", "invocation_requested"),
-        ("mcp-call-2", "completed"),
+        ("mcp-call-2", "failed"),
     ]
     assert result.error == "required_tool_completion_evidence_mismatch"
     assert result.message == ""
