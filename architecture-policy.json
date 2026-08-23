@@ -113,7 +113,6 @@
     "app/chat_session_projection.py",
     "app/context_builder.py",
     "app/context_manifest.py",
-    "app/context_retrieval.py",
     "app/control_plane_contracts.py",
     "app/data_retention.py",
     "app/db.py",
