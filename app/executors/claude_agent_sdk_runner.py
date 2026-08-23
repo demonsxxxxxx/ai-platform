@@ -1371,9 +1371,6 @@ async def run_claude_agent_sdk(
             capability_evidence.append(evidence)
             if (
                 lifecycle_phase == "completed"
-                and not required_builtin_declarations
-                and not sandbox_tool_lifecycle_governed
-                and not effectful_mcp_lifecycle_governed
                 and capability_completion_error() is None
             ):
                 answer_stream_gate.release_after_verified_capability()
@@ -1477,6 +1474,8 @@ async def run_claude_agent_sdk(
             record_read_only_lifecycle_denial()
             return True
         invocation_states[invocation_key] = lifecycle
+        if lifecycle == "completed" and capability_completion_error() is None:
+            answer_stream_gate.release_after_verified_capability()
         if lifecycle == "failed" and is_required_builtin:
             return reject_governed_lifecycle()
         return True
@@ -2121,7 +2120,7 @@ async def run_claude_agent_sdk(
                 )
                 if not await publish_agent_candidates(tuple(terminal_candidates)):
                     terminal_error = "agent_event_callback_not_acknowledged"
-            if terminal_error is None and on_text is not None:
+            if terminal_error is None and on_text is not None and finished_answer.final_text:
                 callback_result = on_text(finished_answer.final_text)
                 if isawaitable(callback_result):
                     await callback_result

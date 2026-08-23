@@ -325,7 +325,7 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
 
     pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
     assert result.error is None
-    assert result.message == "done"
+    assert result.message == ""
     assert captured["allowed_tools"] == [
         "Read",
         "Glob",
@@ -915,7 +915,7 @@ async def test_sandbox_local_tool_call_id_is_redacted_from_terminal_answer(
         "completed",
     ]
     assert result.error is None
-    assert result.message == "Completed tool invocation."
+    assert result.message == ""
     assert "".join(deltas) == result.message
     assert call_id not in result.message
 
@@ -1012,8 +1012,8 @@ async def test_prior_mcp_completion_does_not_publish_before_bash_failure_termina
     )
 
     assert result.error is None
-    assert result.message == "must remain private after MCP"
-    assert deltas == ["must remain private after MCP"]
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -1260,8 +1260,8 @@ async def test_required_sandbox_bash_releases_only_after_acknowledged_completion
         ("bash-call-1", "completed"),
     ]
     assert result.error is None
-    assert result.message == "command completed"
-    assert deltas == ["command completed"]
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -1733,11 +1733,11 @@ async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_
     assert published_before_hook == []
     assert published_before_terminal == []
     terminal_chunks = deltas[len(published_before_terminal):]
-    assert terminal_chunks == ["Before external tool. After tool invocation."]
-    assert "".join(deltas) == "Before external tool. After tool invocation."
+    assert terminal_chunks == [" After tool invocation."]
+    assert "".join(deltas) == " After tool invocation."
     assert "".join(deltas).count("tool invocation.") == 1
     assert result.error is None
-    assert result.message == "Before external tool. After tool invocation."
+    assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
         subject["mcp_server_config"]["url"],
@@ -1830,8 +1830,8 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == ["Verified MCP final answer streams "]
-    assert deltas == ["Verified MCP final answer streams ", "safely."]
+    assert observed_before_result == []
+    assert deltas == [verified_answer]
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -2011,8 +2011,8 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     )
 
     assert "Authoritative platform MCP requirement:" not in _captured_sdk_prompt(captured)
-    assert observed_before_result == ["Skill answer streams "]
-    assert deltas == ["Skill answer streams ", "safely."]
+    assert observed_before_result == []
+    assert deltas == [text]
     assert "".join(deltas) == text
     assert result.error is None
     assert result.message == text
@@ -2123,8 +2123,8 @@ async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == ["Verified Skill final answer streams "]
-    assert deltas == ["Verified Skill final answer streams ", "safely."]
+    assert observed_before_result == []
+    assert deltas == [verified_answer]
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer

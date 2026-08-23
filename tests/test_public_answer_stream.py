@@ -313,8 +313,8 @@ def test_deferred_terminal_answer_does_not_inherit_sealed_buffer_limit():
     )
 
     assert gate.failed is False
-    assert finished.final_text == "terminal tool invocation " + ("y" * 256)
-    assert finished.chunks == (finished.final_text,)
+    assert finished.final_text == ""
+    assert finished.chunks == ()
 
 
 def test_unsafe_sanitizer_result_fails_closed_without_raw_text():

@@ -40,6 +40,7 @@ class PublicAnswerStreamGate:
         self._public_answer_text = ""
         self._sealed = False
         self._deferred_until_finish = False
+        self._capability_boundary_seen = False
         self._released_after_verified_capability = False
         self._failed = (
             not callable(sanitizer)
@@ -80,7 +81,7 @@ class PublicAnswerStreamGate:
             return ()
         if not text:
             return ()
-        if self._deferred_until_finish:
+        if self._deferred_until_finish and not self._released_after_verified_capability:
             return ()
         self._accepted_text = True
         self._extend_logical_view(text)
@@ -97,7 +98,7 @@ class PublicAnswerStreamGate:
             if stable_candidate is None:
                 return ()
             self._pending = raw_candidate[-raw_hold:]
-            return self._emit(stable_candidate)
+            return () if self._deferred_until_finish else self._emit(stable_candidate)
         candidate = self._project(raw_candidate)
         if candidate is None:
             return ()
@@ -113,7 +114,7 @@ class PublicAnswerStreamGate:
             return ()
         emitted = candidate[:-held_chars] if held_chars else candidate
         self._pending = candidate[-held_chars:] if held_chars else ""
-        return self._emit(emitted)
+        return () if self._deferred_until_finish else self._emit(emitted)
 
     def seal(self, private_replacements: Mapping[str, str] | None = None) -> None:
         """Seal later text and add private tokens learned from an actual invocation."""
@@ -123,6 +124,8 @@ class PublicAnswerStreamGate:
         if private_replacements is not None:
             self._add_replacements(private_replacements)
         if self._deferred_until_finish:
+            self._capability_boundary_seen = True
+            self._sealed = True
             return
         self._sealed = True
         self._released_after_verified_capability = False
@@ -161,6 +164,7 @@ class PublicAnswerStreamGate:
         if self._failed or self._finished or not self._sealed:
             return
         self._pending = ""
+        self._logical_view = ""
         self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = True
@@ -183,7 +187,9 @@ class PublicAnswerStreamGate:
         safe_final = self._project(final_text)
         if safe_final is None:
             return self._discard()
-        if self._logical_overflowed or len(safe_final) > self._max_sealed_chars:
+        if self._logical_overflowed or (
+            not self._capability_boundary_seen and len(safe_final) > self._max_sealed_chars
+        ):
             self._fail()
             return self._discard()
 
@@ -194,7 +200,13 @@ class PublicAnswerStreamGate:
                 return self._discard()
 
         if self._released_after_verified_capability:
-            candidate = self._pending
+            candidate = (
+                self._logical_view
+                if self._deferred_until_finish
+                else self._pending
+            )
+        elif self._capability_boundary_seen:
+            candidate = ""
         elif not self._accepted_text:
             candidate = safe_final
         elif self._sealed and not self._published_text:
@@ -208,8 +220,10 @@ class PublicAnswerStreamGate:
         self._pending = ""
         self._finished = True
         public_final_text = (
-            self._public_answer_text
+            self._logical_view
             if self._released_after_verified_capability
+            else ""
+            if self._capability_boundary_seen
             else safe_final
         )
         return PublicAnswerFinish(chunks, public_final_text)
