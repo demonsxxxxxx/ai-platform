@@ -11,7 +11,7 @@ from redis.asyncio import Redis
 from app.streaming.api import stream_key
 from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 
-from app.streaming.contracts import canonical_json_bytes
+from app.streaming.contracts import STREAM_DESIGN_ID, canonical_json_bytes
 from app.streaming.redis import (
     RedisStreamBridge,
     SseAuthorityConflictError,
@@ -291,7 +291,7 @@ async def test_real_redis_v3_terminal_phase_does_not_reopen_after_stream_loss():
         stream_incarnation=1,
         event_type="stream_open",
         emitted_at="2026-01-01T00:00:00Z",
-        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        payload={"design_id": STREAM_DESIGN_ID},
     )
     terminal = StreamEnvelope(
         event_id="terminal-v3-no-reopen",
@@ -336,10 +336,12 @@ async def test_real_redis_v4_restore_rebuilds_all_rows_before_requested_window()
     class PagedConnection:
         def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
             self.rows = rows
+            self.after_sequences: list[int] = []
 
         async def execute(self, _statement: str, params: tuple[object, ...]) -> Result:
             after = int(params[2])
             limit = int(params[3])
+            self.after_sequences.append(after)
             return Result(
                 tuple(
                     item
@@ -368,7 +370,19 @@ async def test_real_redis_v4_restore_rebuilds_all_rows_before_requested_window()
     terminal["payload_json"]["__stream_v4"]["stream_incarnation"] = 2
     terminal["payload_json"]["__stream_v4"]["publication_state"] = "published"
     terminal["stream_publication_state"] = "published"
-    connection = PagedConnection((first, second, terminal))
+    rejected_rows: list[dict[str, object]] = []
+    for sequence in range(3, 259):
+        rejected = dict(first)
+        rejected["id"] = f"evt4_stale_{sequence}"
+        rejected["sequence"] = sequence
+        rejected_payload = dict(first["payload_json"])
+        rejected_metadata = dict(rejected_payload["__stream_v4"])
+        rejected_metadata["attempt_id"] = "attempt-stale"
+        rejected_payload["__stream_v4"] = rejected_metadata
+        rejected["payload_json"] = rejected_payload
+        rejected_rows.append(rejected)
+    terminal["sequence"] = 259
+    connection = PagedConnection((first, second, *rejected_rows, terminal))
     opening = control(
         "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
     )
@@ -385,6 +399,7 @@ async def test_real_redis_v4_restore_rebuilds_all_rows_before_requested_window()
             after_sequence=2,
             limit=1,
         )
+        assert connection.after_sequences == [0, 256]
         assert [item["event_id"] for item in recovered.rows] == [
             "evt4_terminal_rebuild"
         ]
@@ -393,6 +408,7 @@ async def test_real_redis_v4_restore_rebuilds_all_rows_before_requested_window()
         assert json.loads(rows[1][1]["envelope"])["event_id"] == "evt4_delta"
         assert json.loads(rows[2][1]["envelope"])["event_id"] == "evt4_delta_second"
         assert json.loads(rows[-1][1]["envelope"])["event_type"] == "stream.end"
+        assert await client.hget(f"{key}:state", "phase") == "terminal"
     finally:
         await client.delete(key, f"{key}:state")
         await client.aclose()

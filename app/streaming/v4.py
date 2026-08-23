@@ -78,6 +78,13 @@ class V4Recovery:
     transport_cursors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _V4RecoveryPage:
+    rows: tuple[Mapping[str, object], ...]
+    last_sequence: int | None
+    exhausted: bool
+
+
 # Callback compatibility is intentionally narrow.  A private or unknown
 # executor callback never becomes public merely because it has a similar name.
 _CALLBACK_EVENT_MAP = {"assistant_delta": "message.delta"}
@@ -1434,6 +1441,51 @@ class V4RedisStreamBridge:
         )
 
 
+async def _recover_v4_page(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    authority: StreamAuthority,
+    after_sequence: int,
+    limit: int,
+) -> _V4RecoveryPage:
+    result = await conn.execute(
+        """
+        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+               payload_json, stream_publication_state, created_at
+        from run_events
+        where tenant_id = %s and run_id = %s and sequence > %s
+          and visible_to_user = true
+          and stream_publication_state = 'published'
+        order by sequence asc
+        limit %s
+        """,
+        (tenant_id, run_id, after_sequence, limit),
+    )
+    raw_rows = tuple(await result.fetchall())
+    last_sequence = after_sequence
+    for row in raw_rows:
+        sequence = row.get("sequence")
+        if (
+            isinstance(sequence, bool)
+            or not isinstance(sequence, int)
+            or sequence <= last_sequence
+        ):
+            raise V4ProjectionError("v4_recovery_sequence_not_advancing")
+        last_sequence = sequence
+    rows: list[Mapping[str, object]] = []
+    for row in raw_rows:
+        rebound = _row_for_current_authority(row, authority=authority)
+        if rebound is not None:
+            rows.append(rebound)
+    return _V4RecoveryPage(
+        tuple(rows),
+        last_sequence if raw_rows else None,
+        len(raw_rows) < limit,
+    )
+
+
 async def recover_v4_rows(
     conn: Any,
     *,
@@ -1451,25 +1503,15 @@ async def recover_v4_rows(
         raise ValueError("v4_recovery_sequence_invalid")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 256:
         raise ValueError("v4_recovery_limit_invalid")
-    result = await conn.execute(
-        """
-        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-               payload_json, stream_publication_state, created_at
-        from run_events
-        where tenant_id = %s and run_id = %s and sequence > %s
-          and visible_to_user = true
-          and stream_publication_state = 'published'
-        order by sequence asc
-        limit %s
-        """,
-        (tenant_id, run_id, after_sequence, limit),
+    page = await _recover_v4_page(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        authority=authority,
+        after_sequence=after_sequence,
+        limit=limit,
     )
-    rows: list[Mapping[str, object]] = []
-    for row in await result.fetchall():
-        rebound = _row_for_current_authority(row, authority=authority)
-        if rebound is not None:
-            rows.append(rebound)
-    return V4Recovery(tuple(rows))
+    return V4Recovery(page.rows)
 
 
 async def _recover_all_v4_rows(
@@ -1484,7 +1526,7 @@ async def _recover_all_v4_rows(
     rows: list[Mapping[str, object]] = []
     after_sequence = 0
     while True:
-        page = await recover_v4_rows(
+        page = await _recover_v4_page(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -1492,16 +1534,12 @@ async def _recover_all_v4_rows(
             after_sequence=after_sequence,
             limit=256,
         )
-        if not page.rows:
-            return tuple(rows)
-        next_sequence = after_sequence
-        for row in page.rows:
-            sequence = row.get("sequence")
-            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= next_sequence:
-                raise V4ProjectionError("v4_recovery_sequence_not_advancing")
-            next_sequence = sequence
         rows.extend(page.rows)
-        after_sequence = next_sequence
+        if page.exhausted:
+            return tuple(rows)
+        if page.last_sequence is None or page.last_sequence <= after_sequence:
+            raise V4ProjectionError("v4_recovery_sequence_not_advancing")
+        after_sequence = page.last_sequence
 
 
 async def recover_v4_and_resume(
