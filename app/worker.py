@@ -35,8 +35,6 @@ from app.control_plane_contracts import (
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
-    artifact_lineage_contract,
-    artifact_manifest_contract,
     sanitize_public_text,
     standard_trace_id,
 )
@@ -45,6 +43,12 @@ from app.execution.api import (
     WorkerRunCancelled, restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
+)
+from app.execution.application.artifact_delivery import (
+    append_artifact_links,
+    build_artifact_records,
+    persist_ready_artifacts,
+    public_artifact_records,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
@@ -400,32 +404,6 @@ def _mcp_tool_call_id(
     return f"mcp_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
 
-def _strip_local_output_paths(message: str) -> str:
-    lines = []
-    for line in message.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("详细报告:", "批注文档:")) and "/tmp/" in stripped:
-            continue
-        lines.append(line)
-    return "\n".join(lines).strip()
-
-
-def _artifact_download_url(artifact_id: str) -> str:
-    return f"/api/ai/artifacts/{artifact_id}/download"
-
-
-FORBIDDEN_ARTIFACT_MARKERS = ("/tmp/", "tenants/", "workspaces/", ":\\", ":/")
-FORBIDDEN_ARTIFACT_KEYS = {
-    "storage_key",
-    "local_path",
-    "review_result",
-    "artifact_path",
-    "output_path",
-    "runner",
-    "runner_path",
-    "executable_path",
-    "cwd",
-}
 AGENT_STEP_EVENT_STATUS = {
     "agent_step_started": "running",
     "agent_step_reused": "succeeded",
@@ -433,24 +411,6 @@ AGENT_STEP_EVENT_STATUS = {
     "agent_step_blocked": "failed",
     "agent_step_failed": "failed",
 }
-
-def _sanitize_artifact_manifest(value: Any) -> Any:
-    if isinstance(value, dict):
-        cleaned = {}
-        for key, item in value.items():
-            normalized_key = str(key).lower()
-            if normalized_key in FORBIDDEN_ARTIFACT_KEYS:
-                continue
-            sanitized = _sanitize_artifact_manifest(item)
-            if sanitized is not None:
-                cleaned[key] = sanitized
-        return cleaned
-    if isinstance(value, list):
-        cleaned_items = [_sanitize_artifact_manifest(item) for item in value]
-        return [item for item in cleaned_items if item is not None]
-    if isinstance(value, str) and any(marker in value for marker in FORBIDDEN_ARTIFACT_MARKERS):
-        return None
-    return value
 
 
 async def append_user_event(
@@ -501,15 +461,6 @@ async def append_user_event(
         payload=merged,
         **event_kwargs,
     )
-
-
-def _append_artifact_links(message: str, artifact_records: list[dict[str, Any]]) -> str:
-    base = _strip_local_output_paths(message)
-    if not artifact_records:
-        return base
-    links = [f"- {item['label']}: {item['download_url']}" for item in artifact_records]
-    suffix = "输出文件:\n" + "\n".join(links)
-    return f"{base}\n\n{suffix}" if base else suffix
 
 
 def _int_payload_value(payload: dict[str, Any], key: str, default: int = 0) -> int:
@@ -2837,21 +2788,7 @@ async def process_run_payload(
     event_observability_kwargs = _event_observability_kwargs(observability, result.executor_payload)
     terminal_event_kwargs = {"trace_id": trace_id, **event_observability_kwargs} if event_observability_kwargs else {}
 
-    artifact_records = []
-    for artifact in result.artifacts:
-        artifact_id = repositories.new_id("art")
-        artifact_records.append(
-            {
-                "id": artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "label": artifact.label,
-                "content_type": artifact.content_type,
-                "storage_key": artifact.storage_key,
-                "size_bytes": artifact.size_bytes,
-                "download_url": _artifact_download_url(artifact_id),
-                "manifest_json": artifact.manifest,
-            }
-        )
+    artifact_records = build_artifact_records(result.artifacts)
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
         project_agent_capability_state(
@@ -2875,18 +2812,8 @@ async def process_run_payload(
     result_payload = {
         **public_result,
         **observability,
-        "message": _append_artifact_links(str(result.result.get("message") or ""), artifact_records),
-        "artifacts": [
-            {
-                "id": item["id"],
-                "artifact_type": item["artifact_type"],
-                "label": item["label"],
-                "content_type": item["content_type"],
-                "size_bytes": item["size_bytes"],
-                "download_url": item["download_url"],
-            }
-            for item in artifact_records
-        ],
+        "message": append_artifact_links(str(result.result.get("message") or ""), artifact_records),
+        "artifacts": public_artifact_records(artifact_records),
         "executor": {
             "schema_version": result.schema_version,
             "adapter_version": result.adapter_version,
@@ -3029,38 +2956,21 @@ async def process_run_payload(
                             "count": agent_capability_state.optional_not_invoked_count,
                         },
                     )
-            for artifact in artifact_records:
-                manifest_json = artifact_manifest_contract(
-                    artifact_type=artifact["artifact_type"],
-                    manifest=_sanitize_artifact_manifest(artifact["manifest_json"]),
+            if artifact_records:
+                artifact_execution_lease_id = (
+                    str(reconciliation.lease_row["id"])
+                    if reconciliation is not None
+                    else runtime_sandbox_lease.lease_id
+                    if runtime_sandbox_lease is not None
+                    else ""
                 )
-                lineage = artifact_lineage_contract(manifest_json, source_run_id=payload.run_id)
-                await repositories.create_artifact(
+                await persist_ready_artifacts(
                     conn,
-                    artifact_id=artifact["id"],
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    artifact_type=artifact["artifact_type"],
-                    label=artifact["label"],
-                    content_type=artifact["content_type"],
-                    storage_key=artifact["storage_key"],
-                    size_bytes=artifact["size_bytes"],
                     trace_id=trace_id,
-                    manifest_json=manifest_json,
-                )
-                await append_user_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="artifact_ready",
-                    stage="artifact",
-                    message="Artifact is ready",
-                    payload={
-                        "artifact_id": artifact["id"],
-                        "artifact_type": artifact["artifact_type"],
-                        "download_url": artifact["download_url"],
-                        "lineage": lineage,
-                    },
+                    execution_lease_id=artifact_execution_lease_id,
+                    artifact_records=artifact_records,
                 )
             if agent_capability_state is not None:
                 agent_capability_state = project_agent_capability_state(

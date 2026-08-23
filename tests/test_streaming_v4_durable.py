@@ -792,6 +792,82 @@ async def test_v4_bridge_uses_existing_atomic_append_boundary() -> None:
 
 
 @pytest.mark.asyncio
+async def test_artifact_ready_v4_rows_are_safe_stable_and_fenced(monkeypatch):
+    from app.streaming import v4
+
+    conn = _callback_conn()
+
+    async def authority(*_args, **_kwargs):
+        return _authority()
+
+    async def append_event(conn, *, tenant_id, run_id, event, event_id):
+        sequence = len(conn.rows) + 1
+        conn.rows[event_id] = {
+            "id": event_id,
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "sequence": sequence,
+            "event_type": event.event_type,
+            "visible_to_user": True,
+            "payload_json": dict(event.payload),
+            "stream_publication_state": "pending",
+            "stream_publication_attempts": 0,
+            "stream_publication_next_attempt_at": None,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        return EventReceipt(event_id, RunCursor(run_id, sequence), "2026-01-01T00:00:00Z")
+
+    monkeypatch.setattr(v4, "get_stream_authority", authority)
+    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    kwargs = {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "artifact_id": "art-a",
+        "filename": "report.docx",
+        "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "size_bytes": 123,
+        "execution_lease_id": "lease-a",
+        "trace_ref": "trace-a",
+    }
+    first = await v4.append_artifact_ready_v4_row(conn, **kwargs)
+    retried = await v4.append_artifact_ready_v4_row(conn, **kwargs)
+    second = await v4.append_artifact_ready_v4_row(
+        conn,
+        **{**kwargs, "artifact_id": "art-b", "filename": "evidence.pdf"},
+    )
+
+    assert first["id"] == retried["id"]
+    assert first["sequence"] == retried["sequence"]
+    assert second["id"] != first["id"]
+    assert first["payload_json"]["status"] == "ready"
+    assert first["payload_json"]["filename"] == "report.docx"
+    assert "storage_key" not in first["payload_json"]
+    assert "download_url" not in first["payload_json"]
+    assert first["payload_json"]["__stream_v4"]["execution_lease_id"] == "lease-a"
+
+    with pytest.raises(v4.V4ProjectionError, match="v4_callback_existing_row_conflict"):
+        await v4.append_artifact_ready_v4_row(
+            conn,
+            **{**kwargs, "filename": "different.docx"},
+        )
+    with pytest.raises(v4.V4ProjectionError, match="v4_execution_lease_id_invalid"):
+        await v4.append_artifact_ready_v4_row(
+            conn,
+            **{**kwargs, "artifact_id": "art-c", "execution_lease_id": ""},
+        )
+
+    async def terminal_authority(*_args, **_kwargs):
+        return replace(_authority(), state="terminal")
+
+    monkeypatch.setattr(v4, "get_stream_authority", terminal_authority)
+    with pytest.raises(v4.V4ProjectionError, match="v4_artifact_authority_unavailable"):
+        await v4.append_artifact_ready_v4_row(
+            conn,
+            **{**kwargs, "artifact_id": "art-d"},
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(monkeypatch):
     from dataclasses import replace
     from app.streaming import v4
