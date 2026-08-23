@@ -1041,11 +1041,15 @@ def test_executor_callback_uses_adapter_events_and_pending_publisher(monkeypatch
     async def fake_publish_pending(transaction_factory, *, limit):
         publish_limits.append(limit)
 
-    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
 
     adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
-    sdk_events = tuple(event.to_agent_event() for event in adapter.accept_answer_text("answer"))
+    from app.runtime.kernel_contracts import AgentEvent
+    sdk_events = tuple(
+        AgentEvent(**event.as_agent_event_fields())
+        for event in adapter.accept_answer_text("answer")
+    )
     authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
     async def fake_get_authority(conn, *, tenant_id, run_id, for_update=False):
         return authority
@@ -1222,7 +1226,7 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
     async def publish_pending(transaction_factory, *, limit):
         return {"published": 0, "pending": len(v4_rows[-1]["items"])}
 
-    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
     from app.runtime.kernel_contracts import AgentEvent
 
@@ -1264,7 +1268,7 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
     )
     candidates = (*thinking, *tool_events, *subagent, *model, *policy, *artifact)
     events = tuple(
-        candidate.to_agent_event() if hasattr(candidate, "to_agent_event") else candidate
+        AgentEvent(**candidate.as_agent_event_fields()) if hasattr(candidate, "as_agent_event_fields") else candidate
         for candidate in (*candidates, run_event)
     )
 
@@ -1328,10 +1332,11 @@ def test_executor_callback_propagates_v4_correctness_errors(monkeypatch):
         raise RuntimeError("v4 correctness failure")
 
     from app.routes import runtime_callbacks
-    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.execution.api import ClaudeSdkAgentEventAdapter
+    from app.runtime.kernel_contracts import AgentEvent
 
     adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
-    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    event = AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())
     authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
 
     async def get_authority(conn, *, tenant_id, run_id, for_update=False):
@@ -1357,12 +1362,13 @@ def test_executor_callback_propagates_v4_correctness_errors(monkeypatch):
 async def test_record_executor_callback_rolls_back_receipt_and_v4_rows_after_final_attempt_recheck(monkeypatch):
     from fastapi import HTTPException
 
-    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import AgentEvent
 
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
-    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    event = AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
@@ -1454,12 +1460,13 @@ async def test_record_executor_callback_enforces_v4_batch_authority_attempt_and_
 ):
     from fastapi import HTTPException
 
-    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import AgentEvent
 
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
-    event = adapter.accept_answer_text("answer")[0].to_agent_event()
+    event = AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",

@@ -186,7 +186,7 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
     if stage is None or not event.run_id or not event.event_id:
         return _private_executor_event()
     try:
-        from app.executors.claude.agent_events import ClaudeAgentEventCandidate
+        from app.execution.api import ClaudeAgentEventCandidate
 
         candidate = ClaudeAgentEventCandidate(
             run_id=event.run_id,

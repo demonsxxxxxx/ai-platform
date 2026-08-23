@@ -248,20 +248,16 @@ class ClaudeAgentEventCandidate:
             "payload": dict(self.payload),
         }
 
-    def to_agent_event(self) -> Any:
-        """Convert only at the existing executor callback seam."""
-
-        from app.runtime.kernel_contracts import AgentEvent
-
-        return AgentEvent(
-            type=self.event_type,
-            message="",
-            payload=dict(self.payload),
-            event_id=self.event_id,
-            run_id=self.run_id,
-            message_id=self.message_id,
-            causation_event_id=self.causation_event_id,
-        )
+    def as_agent_event_fields(self) -> dict[str, object]:
+        return {
+            "type": self.event_type,
+            "message": "",
+            "payload": dict(self.payload),
+            "event_id": self.event_id,
+            "run_id": self.run_id,
+            "message_id": self.message_id,
+            "causation_event_id": self.causation_event_id,
+        }
 
 
 def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:

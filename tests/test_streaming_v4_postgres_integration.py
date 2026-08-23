@@ -306,7 +306,8 @@ async def test_real_callback_append_registers_pending_v4_row():
 async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(monkeypatch):
     from fastapi import HTTPException
 
-    from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+    from app.execution.api import ClaudeSdkAgentEventAdapter
+    from app.runtime.kernel_contracts import AgentEvent
 
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
@@ -327,7 +328,7 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
             progress=20,
             new_message=None,
             state_patch={},
-            events=[adapter.accept_answer_text("answer")[0].to_agent_event()],
+            events=[AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())],
         )
         original_list_leases = runtime_callbacks.repositories.list_current_sandbox_runtime_leases_for_attempt
         lease_checks = 0
@@ -368,7 +369,8 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         client, key, bridge = await _redis_stream(tenant, run)
         try:
-            from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+            from app.execution.api import ClaudeSdkAgentEventAdapter
+            from app.runtime.kernel_contracts import AgentEvent
 
             adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
             callback = ExecutorCallbackEvent(
@@ -381,7 +383,7 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
                 progress=20,
                 new_message=None,
                 state_patch={},
-                events=[adapter.accept_answer_text("answer")[0].to_agent_event()],
+                events=[AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())],
             )
 
             async def publish_pending(transaction_factory, *, limit):
@@ -460,7 +462,8 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
 @pytest.mark.asyncio
 async def test_real_callback_handler_commits_pending_row_before_redis_outage(monkeypatch):
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
-        from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+        from app.execution.api import ClaudeSdkAgentEventAdapter
+        from app.runtime.kernel_contracts import AgentEvent
 
         adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
         callback = ExecutorCallbackEvent(
@@ -473,7 +476,7 @@ async def test_real_callback_handler_commits_pending_row_before_redis_outage(mon
             progress=20,
             new_message=None,
             state_patch={},
-            events=[adapter.accept_answer_text("answer")[0].to_agent_event()],
+            events=[AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())],
         )
         observed_at_bridge: list[dict[str, object]] = []
 

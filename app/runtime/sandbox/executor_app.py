@@ -1481,7 +1481,7 @@ async def _default_executor_runner(
         if capability_evidence_error["code"] or not candidates:
             return False
         try:
-            events = [candidate.to_agent_event() for candidate in candidates]
+            events = [AgentEvent(**candidate.as_agent_event_fields()) for candidate in candidates]
         except Exception:  # noqa: BLE001
             events = []
         if not events:

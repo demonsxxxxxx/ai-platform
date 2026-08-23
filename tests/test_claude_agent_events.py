@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.executors.claude.agent_events import (
+from app.execution.api import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
 )
@@ -287,19 +287,21 @@ def test_result_and_cancel_seal_late_candidates():
 
 def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields():
     event = _adapter().accept_answer_text("safe", already_gated=True)[1]
-    bridged = agent_event_to_executor_event(event.to_agent_event())
+    bridged = agent_event_to_executor_event(AgentEvent(**event.as_agent_event_fields()))
     assert bridged["event_type"] == "message.delta"
     assert bridged["payload"] == {"delta": "safe"}
     assert bridged["event_id"] == event.event_id
 
-    malformed = ClaudeAgentEventCandidate(
-        run_id="run-1187",
-        event_id="evt-malformed",
-        event_type="message.delta",
-        message_id="msg-1",
-        causation_event_id=None,
-        payload={"delta": "safe"},
-    ).to_agent_event()
+    malformed = AgentEvent(
+        **ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="evt-malformed",
+            event_type="message.delta",
+            message_id="msg-1",
+            causation_event_id=None,
+            payload={"delta": "safe"},
+        ).as_agent_event_fields()
+    )
     malformed.event_id = None
     assert agent_event_to_executor_event(malformed)["event_type"] == "executor_private_event"
 
@@ -315,7 +317,7 @@ def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields()
             "reason_code": "user_cancelled",
         },
     )
-    assert agent_event_to_executor_event(cancelled.to_agent_event())["event_type"] == "run.cancelled"
+    assert agent_event_to_executor_event(AgentEvent(**cancelled.as_agent_event_fields()))["event_type"] == "run.cancelled"
 
 
 

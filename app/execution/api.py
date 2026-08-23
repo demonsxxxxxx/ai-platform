@@ -16,11 +16,17 @@ from app.execution.application.executor_reconciliation import (
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
 )
+from app.execution.application.claude_agent_events import (
+    ClaudeAgentEventCandidate,
+    ClaudeSdkAgentEventAdapter,
+)
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
 
 __all__ = [
+    "ClaudeAgentEventCandidate",
+    "ClaudeSdkAgentEventAdapter",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",
     "context_file_failure_event_fields",

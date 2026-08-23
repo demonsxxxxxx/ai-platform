@@ -4,6 +4,7 @@ import gc
 import hashlib
 import io
 import json
+import os
 import shutil
 import threading
 import time
@@ -17,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app.executors.claude.agent_events import ClaudeAgentEventCandidate
+from app.execution.api import ClaudeAgentEventCandidate
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.file_parser_contracts import (
     build_attachment_preprocessing_contract,
@@ -2343,8 +2344,15 @@ def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_pa
     write_minimal_docx(workspace / "source.docx")
     skills_root = Path(__file__).parents[1] / "skills"
     staged_skills = workspace / ".claude" / "skills"
-    shutil.copytree(skills_root / "qa-file-reviewer", staged_skills / "qa-file-reviewer")
-    shutil.copytree(skills_root / "minimax-docx", staged_skills / "minimax-docx")
+
+    def copy_skill(source: Path, target: Path) -> None:
+        if os.name == "nt":
+            shutil.copytree(f"\\\\?\\{source.resolve()}", f"\\\\?\\{target.resolve()}")
+        else:
+            shutil.copytree(source, target)
+
+    copy_skill(skills_root / "qa-file-reviewer", staged_skills / "qa-file-reviewer")
+    copy_skill(skills_root / "minimax-docx", staged_skills / "minimax-docx")
 
     async def sdk_must_not_run(**_kwargs):
         raise AssertionError("the real staged QA Skill must not be left to SDK discretion")
@@ -3259,6 +3267,10 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
                 "message": "late",
                 "payload": {"delta": "late"},
                 "admin_only": False,
+                "event_id": None,
+                "run_id": None,
+                "message_id": None,
+                "causation_event_id": None,
             }
         ]
         assert not callbacks[-1].get("events")

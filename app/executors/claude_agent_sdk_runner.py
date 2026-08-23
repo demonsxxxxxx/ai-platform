@@ -42,7 +42,7 @@ from app.executors.claude.prompts import (
     translation_target_language as _prompt_translation_target_language,
     with_selected_skill_invocation_requirement as _with_selected_skill_invocation_requirement,
 )
-from app.executors.claude.agent_events import ClaudeSdkAgentEventAdapter
+from app.execution.api import ClaudeSdkAgentEventAdapter
 from app.executors.claude_stream_projection import ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
