@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import secrets
 from collections.abc import Callable, Mapping
@@ -11,8 +12,17 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.streaming.application.durable_v4 import V4PublicationClaim
+from app.streaming.application.recovery_v4 import (
+    V4SuccessorRebuildClaim,
+    V4SuccessorRebuildItem,
+)
 from app.streaming.domain.protocol_v4 import STREAM_DESIGN_ID, STREAM_PROJECTION_VERSION
-from app.streaming.domain.public_events_v4 import project_public_v4
+from app.streaming.domain.public_events_v4 import (
+    build_v4_control,
+    project_public_v4,
+    project_public_v4_successor,
+    successor_stream_open_event_id,
+)
 from app.streaming.domain.transport import canonical_json_bytes
 
 
@@ -365,6 +375,362 @@ class PostgresV4PublicationClaims:
             return await result.fetchone() is not None
 
 
+class V4SuccessorRebuildAuthorityError(ValueError):
+    """The requested successor snapshot is not a quiesced current authority."""
+
+
+class PostgresV4SuccessorRebuilds:
+    """Prepare one terminal successor snapshot in a short PostgreSQL transaction."""
+
+    def __init__(
+        self,
+        transaction_factory: TransactionFactory,
+        *,
+        claim_token_factory: ClaimTokenFactory | None = None,
+    ) -> None:
+        self._transaction_factory = transaction_factory
+        self._claim_token_factory = claim_token_factory or (
+            lambda: secrets.token_urlsafe(32)
+        )
+
+    async def prepare(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        source_incarnation: int,
+        claim_ttl: timedelta = DEFAULT_CLAIM_TTL,
+    ) -> V4SuccessorRebuildClaim | None:
+        _scope(tenant_id, run_id, attempt_id)
+        _incarnation(source_incarnation)
+        _positive_seconds(claim_ttl, "v4_rebuild_claim_ttl_invalid")
+        claim_token = self._claim_token_factory()
+        _token(claim_token)
+        claim_token_digest = hashlib.sha256(claim_token.encode("utf-8")).hexdigest()
+
+        async with self._transaction_factory() as conn:
+            terminal_cursor = await conn.execute(
+                """
+                select run_record.status as run_status,
+                       attempt.status as attempt_status
+                from runs as run_record
+                join run_attempts as attempt
+                  on attempt.tenant_id = run_record.tenant_id
+                 and attempt.run_id = run_record.id
+                 and attempt.id = %s
+                where run_record.tenant_id = %s and run_record.id = %s
+                for update of run_record, attempt
+                """,
+                (attempt_id, tenant_id, run_id),
+            )
+            terminal = await terminal_cursor.fetchone()
+            if terminal is None:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_rebuild_terminal_authority_missing"
+                )
+            run_status = _row_text(terminal, "run_status")
+            attempt_status = _row_text(terminal, "attempt_status")
+            if (
+                run_status not in {"succeeded", "failed", "cancelled"}
+                or attempt_status != run_status
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_rebuild_run_not_quiesced"
+                )
+
+            authority_cursor = await conn.execute(
+                """
+                select tenant_id, tenant_scope, run_id, attempt_id,
+                       stream_incarnation, authorization_epoch, design_id,
+                       projection_version, state, revocation_state,
+                       open_event_id, open_payload_digest
+                from sse_stream_authorities
+                where tenant_id = %s and run_id = %s
+                for update
+                """,
+                (tenant_id, run_id),
+            )
+            authority_row = await authority_cursor.fetchone()
+            if authority_row is None:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_rebuild_stream_authority_missing"
+                )
+            authority = _stream_authority(authority_row)
+            if (
+                authority.attempt_id != attempt_id
+                or authority.stream_incarnation != source_incarnation
+                or authority_row.get("state") != "terminal"
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_rebuild_stream_authority_conflict"
+                )
+
+            clock_cursor = await conn.execute(
+                "select clock_timestamp() as current_time"
+            )
+            clock_row = await clock_cursor.fetchone()
+            current_time = clock_row.get("current_time") if clock_row else None
+            if not isinstance(current_time, datetime):
+                raise RuntimeError("v4_rebuild_clock_unavailable")
+
+            active_cursor = await conn.execute(
+                """
+                select id, claim_expires_at
+                from sse_stream_rebuilds
+                where tenant_id = %s and run_id = %s
+                  and state in ('building', 'ready')
+                for update
+                """,
+                (tenant_id, run_id),
+            )
+            active = await active_cursor.fetchone()
+            if active is not None:
+                expires_at = active.get("claim_expires_at")
+                if not isinstance(expires_at, datetime):
+                    raise RuntimeError("v4_rebuild_expiry_unavailable")
+                if expires_at > current_time:
+                    return None
+                await conn.execute(
+                    """
+                    update sse_stream_rebuilds
+                    set state = 'expired', updated_at = clock_timestamp()
+                    where id = %s and state in ('building', 'ready')
+                      and claim_expires_at <= clock_timestamp()
+                    """,
+                    (_row_text(active, "id"),),
+                )
+
+            incarnation_cursor = await conn.execute(
+                """
+                select greatest(
+                  %s::bigint,
+                  coalesce(max(successor_incarnation), %s::bigint)
+                ) + 1 as successor_incarnation
+                from sse_stream_rebuilds
+                where tenant_id = %s and run_id = %s
+                """,
+                (
+                    authority.stream_incarnation,
+                    authority.stream_incarnation,
+                    tenant_id,
+                    run_id,
+                ),
+            )
+            incarnation_row = await incarnation_cursor.fetchone()
+            successor_incarnation = _row_int(
+                incarnation_row or {}, "successor_incarnation"
+            )
+            successor_epoch = authority.authorization_epoch + 1
+
+            event_cursor = await conn.execute(
+                """
+                select next_sequence - 1 as source_through_sequence
+                from run_event_cursors
+                where tenant_id = %s and run_id = %s
+                for update
+                """,
+                (tenant_id, run_id),
+            )
+            event_cursor_row = await event_cursor.fetchone()
+            source_cursor_sequence = _row_int(
+                event_cursor_row or {}, "source_through_sequence"
+            )
+            rows_cursor = await conn.execute(
+                """
+                select id, tenant_id, run_id, sequence, event_type,
+                       visible_to_user, payload_json,
+                       stream_publication_state, created_at
+                from run_events
+                where tenant_id = %s and run_id = %s
+                  and sequence <= %s
+                  and visible_to_user = true
+                  and payload_json ? '__stream_v4'
+                order by sequence asc, id asc
+                for update
+                """,
+                (tenant_id, run_id, source_cursor_sequence),
+            )
+            rows = tuple(await rows_cursor.fetchall())
+            eligible_rows: list[Mapping[str, object]] = []
+            for row in rows:
+                state = row.get("stream_publication_state")
+                if state == "suppressed":
+                    continue
+                if state not in {"pending", "published"}:
+                    raise V4SuccessorRebuildAuthorityError(
+                        "v4_rebuild_source_publication_state_invalid"
+                    )
+                eligible_rows.append(row)
+            if not eligible_rows:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_rebuild_source_events_missing"
+                )
+            expected_terminal = f"run.{run_status}"
+            terminal_positions = [
+                index
+                for index, row in enumerate(eligible_rows)
+                if row.get("event_type")
+                in {"run.succeeded", "run.failed", "run.cancelled"}
+            ]
+            if terminal_positions != [len(eligible_rows) - 1] or (
+                eligible_rows[-1].get("event_type") != expected_terminal
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_rebuild_terminal_barrier_invalid"
+                )
+            terminal_sequence = _row_int(eligible_rows[-1], "sequence")
+            source_through_sequence = terminal_sequence
+
+            source_fingerprint = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "tenant_id": authority.tenant_id,
+                        "tenant_scope": authority.tenant_scope,
+                        "run_id": authority.run_id,
+                        "attempt_id": authority.attempt_id,
+                        "stream_incarnation": authority.stream_incarnation,
+                        "authorization_epoch": authority.authorization_epoch,
+                        "open_event_id": _row_text(authority_row, "open_event_id"),
+                        "open_payload_digest": _row_text(
+                            authority_row, "open_payload_digest"
+                        ),
+                        "state": "terminal",
+                        "run_status": run_status,
+                        "source_cursor_sequence": source_cursor_sequence,
+                        "source_through_sequence": source_through_sequence,
+                    }
+                )
+            ).hexdigest()
+            open_event_id = successor_stream_open_event_id(
+                tenant_scope=authority.tenant_scope,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stream_incarnation=successor_incarnation,
+            )
+            opening = build_v4_control(
+                event_id=open_event_id,
+                tenant_scope=authority.tenant_scope,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stream_incarnation=successor_incarnation,
+                event_type="stream.open",
+                payload={"design_id": STREAM_DESIGN_ID},
+                source={
+                    "kind": "stream_authority",
+                    "authority_id": open_event_id,
+                },
+                emitted_at=current_time,
+            )
+            open_bytes = canonical_json_bytes(opening)
+            open_digest = hashlib.sha256(open_bytes).hexdigest()
+            items: list[V4SuccessorRebuildItem] = []
+            for row in eligible_rows:
+                envelope = project_public_v4_successor(
+                    row,
+                    source_authority=authority,
+                    successor_incarnation=successor_incarnation,
+                    successor_authorization_epoch=successor_epoch,
+                )
+                envelope_bytes = canonical_json_bytes(envelope)
+                items.append(
+                    V4SuccessorRebuildItem(
+                        event_id=_row_text(row, "id"),
+                        sequence=_row_int(row, "sequence"),
+                        event_type=_row_text(row, "event_type"),
+                        canonical_envelope_bytes=envelope_bytes,
+                        envelope_digest=hashlib.sha256(envelope_bytes).hexdigest(),
+                    )
+                )
+
+            rebuild_id = "srb_" + hashlib.sha256(
+                canonical_json_bytes(
+                    [
+                        tenant_id,
+                        run_id,
+                        attempt_id,
+                        source_incarnation,
+                        successor_incarnation,
+                        claim_token_digest,
+                    ]
+                )
+            ).hexdigest()
+            claim_expires_at = current_time + claim_ttl
+            await conn.execute(
+                """
+                insert into sse_stream_rebuilds(
+                  id, tenant_id, run_id, attempt_id,
+                  source_incarnation, source_authorization_epoch,
+                  successor_incarnation, successor_authorization_epoch,
+                  source_authority_fingerprint, source_cursor_sequence,
+                  source_through_sequence,
+                  successor_open_event_id, successor_open_bytes,
+                  successor_open_digest, state, claim_token_digest,
+                  claim_expires_at, item_count, built_through_sequence
+                ) values (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, 'building', %s, %s, %s, 0
+                )
+                """,
+                (
+                    rebuild_id,
+                    tenant_id,
+                    run_id,
+                    attempt_id,
+                    source_incarnation,
+                    authority.authorization_epoch,
+                    successor_incarnation,
+                    successor_epoch,
+                    source_fingerprint,
+                    source_cursor_sequence,
+                    source_through_sequence,
+                    open_event_id,
+                    open_bytes.decode("utf-8"),
+                    open_digest,
+                    claim_token_digest,
+                    claim_expires_at,
+                    len(items),
+                ),
+            )
+            for item in items:
+                await conn.execute(
+                    """
+                    insert into sse_stream_rebuild_items(
+                      rebuild_id, sequence, event_id, event_type,
+                      canonical_envelope_bytes, envelope_digest
+                    ) values (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        rebuild_id,
+                        item.sequence,
+                        item.event_id,
+                        item.event_type,
+                        item.canonical_envelope_bytes.decode("utf-8"),
+                        item.envelope_digest,
+                    ),
+                )
+            return V4SuccessorRebuildClaim(
+                rebuild_id=rebuild_id,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                tenant_scope=authority.tenant_scope,
+                source_incarnation=authority.stream_incarnation,
+                source_authorization_epoch=authority.authorization_epoch,
+                successor_incarnation=successor_incarnation,
+                successor_authorization_epoch=successor_epoch,
+                source_authority_fingerprint=source_fingerprint,
+                source_cursor_sequence=source_cursor_sequence,
+                source_through_sequence=source_through_sequence,
+                successor_open_event_id=open_event_id,
+                successor_open_bytes=open_bytes,
+                successor_open_digest=open_digest,
+                items=tuple(items),
+                claim_token=claim_token,
+                claim_expires_at=claim_expires_at,
+            )
+
+
 async def _lock_run(conn: Any, *, tenant_id: str, run_id: str) -> bool:
     cursor = await conn.execute(
         """
@@ -489,5 +855,7 @@ __all__ = [
     "DEFAULT_CLAIM_TTL",
     "DEFAULT_RETRY_DELAY",
     "PostgresV4PublicationClaims",
+    "PostgresV4SuccessorRebuilds",
     "V4PublicationAuthorityError",
+    "V4SuccessorRebuildAuthorityError",
 ]

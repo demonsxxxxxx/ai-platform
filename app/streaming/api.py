@@ -11,6 +11,12 @@ from app.streaming.application.durable_v4 import (
     V4PublicationTransportUnavailable,
     publish_claimed_v4_events,
 )
+from app.streaming.application.recovery_v4 import (
+    V4SuccessorRebuildClaim,
+    V4SuccessorRebuildItem,
+    V4SuccessorRebuilds,
+    prepare_v4_successor_rebuild,
+)
 from app.streaming.application.live_fanout import (
     LiveSubscription,
     LiveSubscriptionClosed,
@@ -52,7 +58,9 @@ from app.streaming.domain.public_events_v4 import (
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
+    project_public_v4_successor,
     stream_end_event_id,
+    successor_stream_open_event_id,
     strip_internal_envelope as strip_internal_envelope,
     validate_internal_envelope_v4,
 )
@@ -82,14 +90,20 @@ __all__ = [
     "V4PublicationTransport",
     "V4PublicationTransportUnavailable",
     "V4StreamEntry",
+    "V4SuccessorRebuildClaim",
+    "V4SuccessorRebuildItem",
+    "V4SuccessorRebuilds",
     "build_public_v4_control",
     "build_v4_control",
     "callback_item_to_v4",
     "opaque_message_id",
     "project_public_envelope_v4",
     "project_public_v4",
+    "project_public_v4_successor",
     "publish_claimed_v4_events",
+    "prepare_v4_successor_rebuild",
     "stream_end_event_id",
+    "successor_stream_open_event_id",
     "validate_internal_envelope_v4",
     "ResumeDecision",
     "RunStreamHub",

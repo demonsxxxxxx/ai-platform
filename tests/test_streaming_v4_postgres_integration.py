@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
+import hashlib
 import json
 import os
 from unittest.mock import patch
@@ -21,7 +22,11 @@ from app.platform.public_payload import sanitize_public_payload, sanitize_public
 from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
-from app.streaming.api import publish_claimed_v4_events, stream_key
+from app.streaming.api import (
+    prepare_v4_successor_rebuild,
+    publish_claimed_v4_events,
+    stream_key,
+)
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
 from app.streaming.v4 import (
     V4CallbackItem,
@@ -36,7 +41,9 @@ from app.streaming.v4 import (
 )
 from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
+    PostgresV4SuccessorRebuilds,
     V4PublicationAuthorityError,
+    V4SuccessorRebuildAuthorityError,
 )
 from app.streaming.worker_projection import V4RedisPublicationTransport
 
@@ -290,6 +297,85 @@ async def _insert_v4_row(
                   %s, 0, now())
         """,
         (event_id, tenant, run, f"trace_{run}", sequence, event_type, json.dumps(payload), state),
+    )
+
+
+async def _terminal_rebuild_source(
+    conn,
+    *,
+    tenant: str,
+    run: str,
+    attempt: str,
+    status: str = "succeeded",
+) -> None:
+    spec_json = '{"schema_version":"1"}'
+    await conn.execute(
+        "update runs set status = %s, updated_at = clock_timestamp() where tenant_id = %s and id = %s",
+        (status, tenant, run),
+    )
+    await conn.execute(
+        """
+        insert into run_attempts(
+          id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+          queue_attempt_id, execution_spec_schema_version, execution_spec_json,
+          execution_spec_canonical_json, execution_spec_sha256, finished_at
+        ) values (%s, %s, %s, 1, %s, 'queue_worker', 'worker-a',
+                  %s, '1', %s::jsonb, %s, %s, clock_timestamp())
+        """,
+        (
+            attempt,
+            tenant,
+            run,
+            status,
+            f"queue_{attempt}",
+            spec_json,
+            spec_json,
+            hashlib.sha256(spec_json.encode("utf-8")).hexdigest(),
+        ),
+    )
+    await conn.execute(
+        """
+        update sse_stream_authorities
+        set state = 'terminal', updated_at = clock_timestamp()
+        where tenant_id = %s and run_id = %s
+        """,
+        (tenant, run),
+    )
+    await _insert_v4_row(
+        conn,
+        tenant=tenant,
+        run=run,
+        attempt=attempt,
+        sequence=1,
+        event_id="evt4_rebuild_delta",
+    )
+    await _insert_v4_row(
+        conn,
+        tenant=tenant,
+        run=run,
+        attempt=attempt,
+        sequence=2,
+        event_id=f"evt4_rebuild_{status}",
+        event_type=f"run.{status}",
+    )
+    await conn.execute(
+        """
+        insert into run_events(
+          id, tenant_id, run_id, trace_id, schema_version, sequence,
+          event_type, stage, message, severity, visible_to_user, payload_json
+        ) values ('evt4_rebuild_audit', %s, %s, %s,
+                  'ai-platform.event-envelope.v1', 3, 'run.audit',
+                  'run', '', 'info', false, '{}'::jsonb)
+        """,
+        (tenant, run, f"trace_{run}"),
+    )
+    await conn.execute(
+        """
+        insert into run_event_cursors(tenant_id, run_id, next_sequence)
+        values (%s, %s, 4)
+        on conflict (tenant_id, run_id) do update set next_sequence = excluded.next_sequence
+        """,
+        (tenant, run),
     )
 
 
@@ -967,6 +1053,199 @@ async def test_recovery_scope_and_private_or_unknown_event_values_fail_closed():
 
 
 @pytest.mark.asyncio
+async def test_successor_rebuild_prepares_terminal_snapshot_without_activation():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-one",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert claim is not None
+        assert claim.source_incarnation == 2
+        assert claim.source_authorization_epoch == 4
+        assert claim.successor_incarnation == 3
+        assert claim.successor_authorization_epoch == 5
+        assert claim.source_cursor_sequence == 3
+        assert claim.source_through_sequence == 2
+        assert [item.sequence for item in claim.items] == [1, 2]
+        assert [item.event_type for item in claim.items] == [
+            "message.delta",
+            "run.succeeded",
+        ]
+        assert all(
+            json.loads(item.canonical_envelope_bytes)["stream_incarnation"] == 3
+            for item in claim.items
+        )
+        assert json.loads(claim.successor_open_bytes)["event_type"] == "stream.open"
+
+        async with _connection_factory(dsn, schema_name) as conn:
+            operation = await conn.execute(
+                """
+                select state, successor_incarnation, successor_authorization_epoch,
+                       claim_token_digest, item_count, built_through_sequence
+                from sse_stream_rebuilds where id = %s
+                """,
+                (claim.rebuild_id,),
+            )
+            row = await operation.fetchone()
+            assert row == {
+                "state": "building",
+                "successor_incarnation": 3,
+                "successor_authorization_epoch": 5,
+                "claim_token_digest": hashlib.sha256(
+                    b"rebuild-token-one"
+                ).hexdigest(),
+                "item_count": 2,
+                "built_through_sequence": 0,
+            }
+            assert "rebuild-token-one" not in json.dumps(row)
+            source_rows = await conn.execute(
+                """
+                select sequence, stream_publication_state
+                from run_events where id like 'evt4_rebuild_%'
+                order by sequence
+                """
+            )
+            assert await source_rows.fetchall() == [
+                {"sequence": 1, "stream_publication_state": "pending"},
+                {"sequence": 2, "stream_publication_state": "pending"},
+                {"sequence": 3, "stream_publication_state": None},
+            ]
+            authority = await conn.execute(
+                """
+                select stream_incarnation, authorization_epoch, state
+                from sse_stream_authorities
+                where tenant_id = %s and run_id = %s
+                """,
+                (tenant, run),
+            )
+            assert await authority.fetchone() == {
+                "stream_incarnation": 2,
+                "authorization_epoch": 4,
+                "state": "terminal",
+            }
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_serializes_and_never_reuses_expired_incarnation():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        tokens = iter(("rebuild-token-one", "rebuild-token-two", "rebuild-token-three"))
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: next(tokens),
+        )
+        concurrent = await asyncio.gather(
+            *(
+                prepare_v4_successor_rebuild(
+                    rebuilds,
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                    source_incarnation=2,
+                    claim_ttl=timedelta(seconds=30),
+                )
+                for _ in range(2)
+            )
+        )
+        first = next(item for item in concurrent if item is not None)
+        assert sum(item is not None for item in concurrent) == 1
+        async with _connection_factory(dsn, schema_name) as conn:
+            await conn.execute(
+                """
+                update sse_stream_rebuilds
+                set claim_expires_at = clock_timestamp() - interval '1 second'
+                where id = %s
+                """,
+                (first.rebuild_id,),
+            )
+        takeover = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert takeover is not None
+        assert takeover.rebuild_id != first.rebuild_id
+        assert takeover.successor_incarnation == first.successor_incarnation + 1
+        async with _connection_factory(dsn, schema_name) as conn:
+            states = await conn.execute(
+                """
+                select successor_incarnation, state
+                from sse_stream_rebuilds
+                where tenant_id = %s and run_id = %s
+                order by successor_incarnation
+                """,
+                (tenant, run),
+            )
+            assert await states.fetchall() == [
+                {"successor_incarnation": 3, "state": "expired"},
+                {"successor_incarnation": 4, "state": "building"},
+            ]
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_rejects_nonterminal_or_malformed_source_atomically():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token",
+        )
+        with pytest.raises(
+            V4SuccessorRebuildAuthorityError, match="terminal_authority_missing"
+        ):
+            await prepare_v4_successor_rebuild(
+                rebuilds,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=2,
+                claim_ttl=timedelta(seconds=30),
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+            await conn.execute(
+                """
+                update run_events
+                set payload_json = jsonb_set(
+                  payload_json, '{__stream_v4,attempt_id}', '"wrong"'::jsonb
+                )
+                where id = 'evt4_rebuild_delta'
+                """
+            )
+        with pytest.raises(ValueError, match="v4_successor_source_invalid"):
+            await prepare_v4_successor_rebuild(
+                rebuilds,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=2,
+                claim_ttl=timedelta(seconds=30),
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            count = await conn.execute("select count(*) as count from sse_stream_rebuilds")
+            assert await count.fetchone() == {"count": 0}
+
+
+@pytest.mark.asyncio
 async def test_publication_claims_serialize_takeover_and_fence_stale_tokens():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
@@ -1254,6 +1533,17 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 )
                 assert "tenant_id, run_id, sequence, id" in normalized_claim_index
                 assert "payload_json ? '__stream_v4'::text" in normalized_claim_index
+                await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
+                successor_tables = await conn.execute(
+                    """
+                    select to_regclass('sse_stream_rebuilds') as rebuilds,
+                           to_regclass('sse_stream_rebuild_items') as items
+                    """
+                )
+                assert await successor_tables.fetchone() == {
+                    "rebuilds": None,
+                    "items": None,
+                }
                 await schema_migrations.rollback_v4_publication_migration(conn)
                 columns = await conn.execute(
                     """
@@ -1272,7 +1562,7 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 assert await index_after.fetchone() == {"retry": None, "claim": None}
                 schema_ledger = await conn.execute(
                     "select version from schema_migrations where version = %s",
-                    (schema_migrations.TARGET_SCHEMA_VERSION,),
+                    (schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,),
                 )
                 assert await schema_ledger.fetchone() is None
                 index_ledger = await conn.execute(

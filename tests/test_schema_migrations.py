@@ -211,7 +211,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.24.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.25.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -219,6 +219,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "run_attempts",
         "run_skill_materializations",
         "run_events",
+        "sse_stream_rebuilds",
+        "sse_stream_rebuild_items",
         "messages",
         "files",
         "artifacts",
@@ -473,6 +475,67 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "stream_publication_claim_expires_at IS NOT NULL)",
         ),
         (
+            "sse_stream_rebuilds",
+            "chk_sse_stream_rebuild_identity",
+            "c",
+            "CHECK (id <> ''::text AND attempt_id <> ''::text "
+            "AND successor_open_event_id <> ''::text AND successor_open_bytes <> ''::text "
+            "AND source_authority_fingerprint ~ '^[0-9a-f]{64}$'::text "
+            "AND successor_open_digest ~ '^[0-9a-f]{64}$'::text "
+            "AND claim_token_digest ~ '^[0-9a-f]{64}$'::text)",
+        ),
+        (
+            "sse_stream_rebuilds",
+            "chk_sse_stream_rebuild_authority",
+            "c",
+            "CHECK (source_incarnation > 0 AND successor_incarnation > source_incarnation "
+            "AND source_authorization_epoch > 0 "
+            "AND successor_authorization_epoch > source_authorization_epoch)",
+        ),
+        (
+            "sse_stream_rebuilds",
+            "chk_sse_stream_rebuild_progress",
+            "c",
+            "CHECK (source_cursor_sequence >= source_through_sequence "
+            "AND source_through_sequence > 0 AND item_count > 0 "
+            "AND built_through_sequence >= 0 "
+            "AND built_through_sequence <= source_through_sequence)",
+        ),
+        (
+            "sse_stream_rebuilds",
+            "chk_sse_stream_rebuild_state",
+            "c",
+            "CHECK (state = ANY (ARRAY['building'::text, 'ready'::text, "
+            "'cutover'::text, 'aborted'::text, 'expired'::text]))",
+        ),
+        (
+            "sse_stream_rebuilds",
+            "fk_sse_stream_rebuild_authority",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) "
+            "REFERENCES sse_stream_authorities(tenant_id, run_id)",
+        ),
+        (
+            "sse_stream_rebuild_items",
+            "chk_sse_stream_rebuild_item",
+            "c",
+            "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "
+            "AND canonical_envelope_bytes <> ''::text "
+            "AND envelope_digest ~ '^[0-9a-f]{64}$'::text)",
+        ),
+        (
+            "sse_stream_rebuild_items",
+            "fk_sse_stream_rebuild_item_operation",
+            "f",
+            "FOREIGN KEY (rebuild_id) REFERENCES sse_stream_rebuilds(id)",
+        ),
+        (
+            "sse_stream_rebuild_items",
+            "uq_sse_stream_rebuild_item_event",
+            "u",
+            "UNIQUE (rebuild_id, event_id)",
+        ),
+        (
             "files",
             "chk_files_lifecycle_state",
             "c",
@@ -622,7 +685,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "768d2c0a29d95bda9d110647a6cc5fc2b51517067452c2dc8b775ace86d3cf90"
+        "f1e1ab81030cbda514b25c6a81ef726db540abfcbe38e18be93ed72d574e7d4a"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -669,6 +732,51 @@ def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():
         "visible_to_user = true and stream_publication_state = 'pending' "
         "and payload_json ? '__stream_v4'"
     )
+
+
+def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+    assert "create table if not exists sse_stream_rebuilds" in schema
+    assert "create table if not exists sse_stream_rebuild_items" in schema
+    assert "successor_incarnation > source_incarnation" in schema
+    assert "successor_authorization_epoch > source_authorization_epoch" in schema
+    assert "claim_token_digest ~ '^[0-9a-f]{64}$'" in schema
+    assert "where state in ('building', 'ready')" in schema
+    assert (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    static_indexes = {
+        definition.name: definition
+        for definition in schema_migrations.STATIC_INDEX_DEFINITIONS
+    }
+    assert static_indexes["uq_sse_stream_rebuild_active"].unique is True
+    assert static_indexes["uq_sse_stream_rebuild_active"].predicate_expression == (
+        "state = any array['building', 'ready']"
+    )
+    assert static_indexes["uq_sse_stream_rebuild_item_event"].unique is True
+
+
+@pytest.mark.asyncio
+async def test_v4_successor_rollback_removes_only_dormant_snapshot_tables():
+    class FakeRollbackConnection:
+        def __init__(self) -> None:
+            self.statements: list[tuple[str, object]] = []
+
+        async def execute(self, statement: str, params: object = None) -> None:
+            self.statements.append((" ".join(statement.lower().split()), params))
+
+    conn = FakeRollbackConnection()
+    await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
+    assert [statement for statement, _ in conn.statements[:2]] == [
+        "drop table if exists sse_stream_rebuild_items",
+        "drop table if exists sse_stream_rebuilds",
+    ]
+    assert conn.statements[2][1] == (
+        schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
+    )
+    assert all("run_events" not in statement for statement, _ in conn.statements)
+    assert all("sse_stream_authorities" not in statement for statement, _ in conn.statements)
 
 
 @pytest.mark.asyncio

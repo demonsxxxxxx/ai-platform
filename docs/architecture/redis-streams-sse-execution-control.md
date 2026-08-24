@@ -216,9 +216,23 @@ future safety-critical interaction must first define its own durable authority
 and fail-closed behavior; Pub/Sub delivery alone can never authorize a side
 effect.
 
-Redis recovery does not retroactively claim lost text replay. It may resume live
-publication only through a proven current incarnation. Loss of continuity
-allocates a new incarnation; existing cursors receive a gap and durable hydrate.
+Redis recovery does not retroactively claim lost text replay or rebuild the
+current physical stream in place. Loss of continuity is eligible for rebuild
+only after both the Run and its current RunAttempt are terminal and the current
+stream authority is terminal. Preparation is a PostgreSQL-only transaction: it
+locks the Run, RunAttempt, stream authority, and event cursor; records the exact
+source authority fingerprint and high-water mark; allocates a monotonically new
+incarnation and authorization epoch; and freezes successor canonical bytes for
+all eligible public `run_events`. It neither calls Redis nor mutates source
+`run_events`, stream authority, or leases.
+
+A later builder owns the candidate through a hashed, expiring claim token. It
+may perform Redis I/O only after the preparation transaction commits, and it may
+write only the reserved successor key. Crash takeover allocates another new
+incarnation rather than reusing a partially built candidate. Activation remains
+a separate token-CAS transaction which must revalidate the unchanged source
+fingerprint and high-water mark before changing authority. Existing cursors are
+never continuous across that change; they receive a gap and durable hydrate.
 
 ## Terminal publication intent
 
@@ -247,11 +261,14 @@ is not reported successful. Existing attempt/worker maintenance ownership retrie
 the truthful transaction; a stale owner is fenced by current run/attempt leases.
 
 If the target Redis incarnation is missing or continuity is unprovable, the
-reconciler locks the current run/attempt authority, allocates a new incarnation,
-and records a successor physical publication referencing the same frozen
-semantic intent. It publishes `stream_open`, terminal, and end in the new
-incarnation. It does not change payload bytes under the same semantic event ID.
-Old cursors see an explicit gap.
+reconciler must use the durable successor operation above. It never changes
+current authority before the candidate has a complete `stream.open`, ordered
+successor projection, terminal, and linked `stream.end`. The readiness/cutover
+transaction rejects an expired token, changed source authority, changed source
+high-water mark, or incomplete candidate. Only then may it advance authority;
+old cursors see an explicit gap. The original `run_events` semantic identity,
+sequence, payload, and commit time remain unchanged, while the successor
+physical envelope records the new incarnation.
 
 Authorized final hydrate reads PostgreSQL and replaces the provisional live fold.
 Pending Redis publication does not leave a terminal run permanently `running`.
@@ -292,5 +309,6 @@ Pending Redis publication does not leave a terminal run permanently `running`.
 - authorization open/renewal, local deadline check without PG query, expiry,
   restart, blocked-read lease expiry, and fail-closed DB errors;
 - terminal PG rollback, commit plus Redis failure/unknown outcome, exact payload
-  hash retry, successor incarnation, duplicate event, late delta, and final
-  hydrate replacement.
+  hash retry, exclusive terminal successor preparation, expired-claim takeover
+  without incarnation reuse, candidate completeness, stale-token/source-fingerprint
+  rejection, duplicate event, late delta, and final hydrate replacement.

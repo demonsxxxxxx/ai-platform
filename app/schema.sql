@@ -2269,6 +2269,71 @@ create table if not exists sse_stream_authorities (
 create unique index if not exists uq_sse_stream_authority_attempt_incarnation
   on sse_stream_authorities(tenant_id, run_id, attempt_id, stream_incarnation);
 
+create table if not exists sse_stream_rebuilds (
+  id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
+  source_incarnation bigint not null, source_authorization_epoch bigint not null,
+  successor_incarnation bigint not null, successor_authorization_epoch bigint not null,
+  source_authority_fingerprint text not null, source_cursor_sequence bigint not null,
+  source_through_sequence bigint not null,
+  successor_open_event_id text not null, successor_open_bytes text not null,
+  successor_open_digest text not null,
+  state text not null default 'building', claim_token_digest text not null,
+  claim_expires_at timestamptz not null, item_count integer not null,
+  built_through_sequence bigint not null default 0,
+  failure_code text,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp(),
+  constraint chk_sse_stream_rebuild_identity check (
+    id <> '' and attempt_id <> '' and successor_open_event_id <> ''
+    and successor_open_bytes <> ''
+    and source_authority_fingerprint ~ '^[0-9a-f]{64}$'
+    and successor_open_digest ~ '^[0-9a-f]{64}$'
+    and claim_token_digest ~ '^[0-9a-f]{64}$'
+  ),
+  constraint chk_sse_stream_rebuild_authority check (
+    source_incarnation > 0 and successor_incarnation > source_incarnation
+    and source_authorization_epoch > 0
+    and successor_authorization_epoch > source_authorization_epoch
+  ),
+  constraint chk_sse_stream_rebuild_progress check (
+    source_cursor_sequence >= source_through_sequence
+    and source_through_sequence > 0 and item_count > 0
+    and built_through_sequence >= 0
+    and built_through_sequence <= source_through_sequence
+  ),
+  constraint chk_sse_stream_rebuild_state check (
+    state in ('building', 'ready', 'cutover', 'aborted', 'expired')
+  ),
+  constraint fk_sse_stream_rebuild_authority
+    foreign key (tenant_id, run_id)
+    references sse_stream_authorities(tenant_id, run_id)
+);
+
+create unique index if not exists uq_sse_stream_rebuild_successor
+  on sse_stream_rebuilds(tenant_id, run_id, successor_incarnation);
+create unique index if not exists uq_sse_stream_rebuild_active
+  on sse_stream_rebuilds(tenant_id, run_id)
+  where state in ('building', 'ready');
+create index if not exists idx_sse_stream_rebuild_claim_expiry
+  on sse_stream_rebuilds(state, claim_expires_at, tenant_id, run_id)
+  where state in ('building', 'ready');
+
+create table if not exists sse_stream_rebuild_items (
+  rebuild_id text not null, sequence bigint not null, event_id text not null,
+  event_type text not null, canonical_envelope_bytes text not null,
+  envelope_digest text not null,
+  created_at timestamptz not null default clock_timestamp(),
+  primary key (rebuild_id, sequence),
+  constraint uq_sse_stream_rebuild_item_event unique (rebuild_id, event_id),
+  constraint chk_sse_stream_rebuild_item check (
+    sequence > 0 and event_id <> '' and event_type <> ''
+    and canonical_envelope_bytes <> ''
+    and envelope_digest ~ '^[0-9a-f]{64}$'
+  ),
+  constraint fk_sse_stream_rebuild_item_operation
+    foreign key (rebuild_id) references sse_stream_rebuilds(id)
+);
+
 create table if not exists sse_authority_leases (
   id text primary key, tenant_id text not null, run_id text not null,
   api_instance_id text not null, connection_id text not null, authorization_epoch bigint not null check (authorization_epoch > 0),

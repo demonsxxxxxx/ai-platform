@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 
 import pytest
@@ -13,10 +14,17 @@ from app.streaming.application.durable_v4 import (
     publish_claimed_v4_events,
 )
 
+from app.streaming.application.recovery_v4 import (
+    V4SuccessorRebuildClaim,
+    V4SuccessorRebuildItem,
+)
 from app.streaming.api import (
+    build_v4_control,
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
+    project_public_v4_successor,
+    successor_stream_open_event_id,
 )
 from app.streaming.authority import RunCursor
 from app.streaming.postgres import EventReceipt
@@ -720,6 +728,69 @@ def _row(payload: dict[str, object], **overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+def test_successor_rebuild_claim_binds_exact_canonical_snapshot() -> None:
+    envelope = project_public_v4_successor(
+        _row({"delta": "hello"}),
+        source_authority=_authority(),
+        successor_incarnation=3,
+        successor_authorization_epoch=5,
+    )
+    envelope_bytes = canonical_json_bytes(envelope)
+    item = V4SuccessorRebuildItem(
+        event_id="evt4_a",
+        sequence=7,
+        event_type="message.delta",
+        canonical_envelope_bytes=envelope_bytes,
+        envelope_digest=hashlib.sha256(envelope_bytes).hexdigest(),
+    )
+    open_id = successor_stream_open_event_id(
+        tenant_scope="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=3,
+    )
+    opening = build_v4_control(
+        event_id=open_id,
+        tenant_scope="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=3,
+        event_type="stream.open",
+        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        source={"kind": "stream_authority", "authority_id": open_id},
+        emitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    open_bytes = canonical_json_bytes(opening)
+    claim = V4SuccessorRebuildClaim(
+        rebuild_id="srb_a",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        tenant_scope="tenant-a",
+        source_incarnation=2,
+        source_authorization_epoch=4,
+        successor_incarnation=3,
+        successor_authorization_epoch=5,
+        source_authority_fingerprint="a" * 64,
+        source_cursor_sequence=8,
+        source_through_sequence=7,
+        successor_open_event_id=open_id,
+        successor_open_bytes=open_bytes,
+        successor_open_digest=hashlib.sha256(open_bytes).hexdigest(),
+        items=(item,),
+        claim_token="claim-a",
+        claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert json.loads(claim.items[0].canonical_envelope_bytes)[
+        "stream_incarnation"
+    ] == 3
+    with pytest.raises(ValueError, match="successor_incarnation_invalid"):
+        replace(claim, successor_incarnation=2)
+    with pytest.raises(ValueError, match="envelope_mismatch"):
+        replace(item, sequence=8)
 
 
 def test_publication_claim_keeps_only_validated_canonical_envelope_bytes() -> None:

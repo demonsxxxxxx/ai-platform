@@ -378,6 +378,29 @@ def build_public_v4_control(**kwargs: object) -> dict[str, object]:
     return public
 
 
+def successor_stream_open_event_id(
+    *, tenant_scope: str, run_id: str, attempt_id: str, stream_incarnation: int
+) -> str:
+    """Return the deterministic v4 open identity for one physical incarnation."""
+
+    _nonempty(tenant_scope, "tenant_scope")
+    _nonempty(run_id, "run_id")
+    _nonempty(attempt_id, "attempt_id")
+    _positive_int(stream_incarnation, name="stream_incarnation")
+    digest = hashlib.sha256(
+        canonical_json_bytes(
+            [
+                "ai-platform-stream-open-v4",
+                tenant_scope,
+                run_id,
+                attempt_id,
+                stream_incarnation,
+            ]
+        )
+    ).hexdigest()
+    return f"sev_{digest}"
+
+
 def stream_end_event_id(terminal_event_id: str) -> str:
     """Return the deterministic semantic identity for a terminal stream end."""
 
@@ -721,6 +744,32 @@ def project_public_v4(
         return validate_internal_envelope_v4(envelope)
     except V4ProjectionError:
         return None
+
+
+def project_public_v4_successor(
+    row: Mapping[str, object],
+    *,
+    source_authority: StreamAuthorityView,
+    successor_incarnation: int,
+    successor_authorization_epoch: int,
+) -> dict[str, object]:
+    """Project one exact source row into an unactivated successor incarnation."""
+
+    if (
+        isinstance(successor_incarnation, bool)
+        or not isinstance(successor_incarnation, int)
+        or successor_incarnation <= source_authority.stream_incarnation
+        or isinstance(successor_authorization_epoch, bool)
+        or not isinstance(successor_authorization_epoch, int)
+        or successor_authorization_epoch <= source_authority.authorization_epoch
+    ):
+        raise V4ProjectionError("v4_successor_authority_invalid")
+    source = project_public_v4(row, authority=source_authority)
+    if source is None:
+        raise V4ProjectionError("v4_successor_source_invalid")
+    successor = dict(source)
+    successor["stream_incarnation"] = successor_incarnation
+    return validate_internal_envelope_v4(successor)
 
 
 def project_public_envelope_v4(envelope: Mapping[str, object]) -> dict[str, object] | None:
