@@ -3,7 +3,7 @@
 Status: normative repository contract
 Owner: platform architecture
 Authority baseline audited: `6c010079782afe30ada5f75c44600939f0381b13`
-Ledger refreshed: 2026-08-15
+Ledger refreshed: 2026-08-23
 
 ## 1. Purpose
 
@@ -180,7 +180,9 @@ being reported as completed before the executable evidence exists.
 | backend required aggregator | Required result and most workflow self-tests remain string/static checks. | same executable contract as frontend | Pending PR #1067 terminal state because the workflow and test paths overlap. |
 | frontend static readiness builders under `tools/` | Foundation/Governance import CLI-owned modules; architecture has no backend `frontend` owner and forbids arbitrary new app-root modules. | explicit evidence input or authority-owned module | Decision pending. Do not create ad-hoc `app/frontend_*` modules or move CLI entrypoints into runtime code. |
 | privileged/root/Windows-only tests | Host capability gates make these skip on ordinary runners. | external acceptance | Keep, but assign named privileged or Windows lanes before citing them as release proof. |
-| B2 host-path redaction evidence test | The test resolved `docs/release-evidence/b2-sandbox` from the process working directory and an empty scan passed, so running outside the repository root could produce a false green. | repository-bound non-empty scan | Completed in source: resolve from the test file's repository root and require at least one JSON evidence subject before asserting that no host workspace path leaked. |
+| `app/b2_sandbox_readiness.py`, its CLI, and its dedicated test module | The 1,390-line builder scanned historical JSON and Git/source deltas, rendered a report, and exited successfully even when its status was blocked. It had no route, worker, startup, deployment, release-authority, or direct required-CI gate; its tests primarily supplied their own evidence fixtures. | delete report-only closure | Completed in this cleanup slice. Preserve `scripts/generate_sandbox_runtime_evidence.py`, `scripts/verify_sandbox_runtime.py`, typed live readiness evidence, provider/runtime tests, producer-level redaction tests, and immutable historical evidence. The obsolete workflow selector and root-module allowlist entry are removed; Foundation retains only a path-classification tombstone so historical diffs do not misreport this deletion as a runtime change. |
+| `app/b1_memory_context_readiness.py`, its CLI, and report-owned tests | The 947-line builder reread source, stage-closure JSON, historical B1 evidence, memory-erasure readiness, and office-context readiness before projecting another offline rollup into Governance. It had no route, worker, startup, deployment, dynamic entrypoint, or release-authority caller. | delete report-only closure | Completed in this cleanup slice. Preserve `tools/verify_b1_memory_context_workflow.py`, its dedicated controlled-host verifier tests, wrapper/schema mapping, session-scoped context and memory, deletion/retention/redaction controls, and immutable historical evidence. Governance no longer copies B1 report gaps/evidence; Foundation retains only the deleted-path classification tombstone. |
+| `app/backend_stage_closure_evidence.py` and its dedicated self-test | The loader only supplied reviewed issue-closure JSON to the retired B1/B2 report builders. After those reports were removed it had no route, worker, startup, deploy, tool, release-verifier, or remaining readiness consumer; only its own test and root allowlist entry remained. | delete orphan closure loader | Completed in this cleanup slice. Preserve `docs/release-evidence/backend-stage-closures/**` as immutable historical records and preserve the independent B1 controlled-host and B2 sandbox runtime verifiers. |
 
 ## 7. Retirement procedure
 

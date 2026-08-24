@@ -279,14 +279,11 @@ class RequiredEvidencePolicyTextHandler(GovernanceRuntimeHandler):
         if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
             payload = governance_payload(self.headers.get("X-AI-Tenant-ID", "default"))
             payload["governance"]["domains"]["memory_governance"]["evidence"][
-                "b1_memory_context_readiness"
-            ] = {
-                "schema_version": "ai-platform.b1-memory-context-readiness.v1",
-                "runtime_acceptance": {
-                    "required_evidence": [
-                        "redaction scan proves executor private payload and callback token material are absent",
-                    ]
-                },
+                "office_context_pack_readiness"
+            ]["runtime_acceptance"] = {
+                "required_evidence": [
+                    "redaction scan proves executor private payload and callback token material are absent",
+                ]
             }
             self._send_json(200, payload)
             return
@@ -298,14 +295,11 @@ class LeakyRequiredEvidencePolicyTextHandler(GovernanceRuntimeHandler):
         if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
             payload = governance_payload(self.headers.get("X-AI-Tenant-ID", "default"))
             payload["governance"]["domains"]["memory_governance"]["evidence"][
-                "b1_memory_context_readiness"
-            ] = {
-                "schema_version": "ai-platform.b1-memory-context-readiness.v1",
-                "runtime_acceptance": {
-                    "required_evidence": [
-                        "executor-private payload: tenant/default/runs/run-a/private.json",
-                    ]
-                },
+                "office_context_pack_readiness"
+            ]["runtime_acceptance"] = {
+                "required_evidence": [
+                    "executor-private payload: tenant/default/runs/run-a/private.json",
+                ]
             }
             self._send_json(200, payload)
             return
