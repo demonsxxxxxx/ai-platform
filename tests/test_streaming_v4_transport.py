@@ -31,10 +31,10 @@ from app.streaming.v4 import (
     V4RedisStreamBridge,
     recover_v4_and_resume,
 )
-from app.streaming.worker_projection import publish_pending_v4_events
 from tests.test_streaming_v4_postgres_integration import (
     _connection_factory as _pg_connection_factory,
     _insert_v4_row as _pg_insert_v4_row,
+    _publish_claimed as _pg_publish_claimed,
     _redis_stream as _pg_redis_stream,
     _schema as _pg_schema,
 )
@@ -539,8 +539,12 @@ async def test_real_pending_terminal_end_partial_retry_keeps_row_pending() -> No
             RedisStreamBridge(publish_client=failing_client)
         )
         try:
-            assert await publish_pending_v4_events(
-                lambda: _pg_connection_factory(dsn, schema_name),
+            assert await _pg_publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
                 limit=1,
                 bridge=bridge,
             ) == 0
@@ -567,8 +571,12 @@ async def test_real_pending_terminal_end_partial_retry_keeps_row_pending() -> No
                     "update run_events set stream_publication_next_attempt_at = now() where id = %s",
                     (terminal_id,),
                 )
-            assert await publish_pending_v4_events(
-                lambda: _pg_connection_factory(dsn, schema_name),
+            assert await _pg_publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
                 limit=1,
                 bridge=bridge,
             ) == 1

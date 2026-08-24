@@ -4,6 +4,13 @@ from app.streaming.application.callback_events_v4 import (
     V4CallbackItem,
     callback_item_to_v4,
 )
+from app.streaming.application.durable_v4 import (
+    V4PublicationClaim,
+    V4PublicationClaims,
+    V4PublicationTransport,
+    V4PublicationTransportUnavailable,
+    publish_claimed_v4_events,
+)
 from app.streaming.application.live_fanout import (
     LiveSubscription,
     LiveSubscriptionClosed,
@@ -70,6 +77,10 @@ __all__ = [
     "LiveSubscriptionClosed",
     "V4CallbackItem",
     "V4ProjectionError",
+    "V4PublicationClaim",
+    "V4PublicationClaims",
+    "V4PublicationTransport",
+    "V4PublicationTransportUnavailable",
     "V4StreamEntry",
     "build_public_v4_control",
     "build_v4_control",
@@ -77,6 +88,7 @@ __all__ = [
     "opaque_message_id",
     "project_public_envelope_v4",
     "project_public_v4",
+    "publish_claimed_v4_events",
     "stream_end_event_id",
     "validate_internal_envelope_v4",
     "ResumeDecision",

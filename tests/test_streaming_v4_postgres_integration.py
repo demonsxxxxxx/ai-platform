@@ -21,7 +21,7 @@ from app.platform.public_payload import sanitize_public_payload, sanitize_public
 from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
-from app.streaming.api import stream_key
+from app.streaming.api import publish_claimed_v4_events, stream_key
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
 from app.streaming.v4 import (
     V4CallbackItem,
@@ -38,7 +38,7 @@ from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
     V4PublicationAuthorityError,
 )
-from app.streaming.worker_projection import publish_pending_v4_events
+from app.streaming.worker_projection import V4RedisPublicationTransport
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -301,8 +301,35 @@ async def _redis_stream(tenant: str, run: str, *, incarnation: int = 2):
     )
     state_key = f"{key}:state"
     await client.delete(key, state_key)
-    await client.hset(state_key, mapping={"phase": "open"})
+    await client.hset(state_key, mapping={"phase": "open", "open_protocol": "v4"})
     return client, key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+
+async def _publish_claimed(
+    dsn: str,
+    schema_name: str,
+    *,
+    tenant: str,
+    run: str,
+    attempt: str,
+    bridge: V4RedisStreamBridge,
+    limit: int,
+    claim_ttl: timedelta = timedelta(seconds=30),
+) -> int:
+    claims = PostgresV4PublicationClaims(
+        lambda: _connection_factory(dsn, schema_name)
+    )
+    return await publish_claimed_v4_events(
+        claims,
+        V4RedisPublicationTransport(bridge),
+        tenant_id=tenant,
+        run_id=run,
+        attempt_id=attempt,
+        stream_incarnation=2,
+        limit=limit,
+        claim_ttl=claim_ttl,
+        retry_delay=timedelta(seconds=5),
+    )
 
 
 @pytest.mark.asyncio
@@ -385,16 +412,12 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
                 return await original_list_leases(conn, **kwargs)
             return []
 
-        async def unexpected_publish(*_args, **_kwargs):
-            raise AssertionError("publication must not run after the transaction rolls back")
-
         monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
         monkeypatch.setattr(
             runtime_callbacks.repositories,
             "list_current_sandbox_runtime_leases_for_attempt",
             list_leases_with_final_loss,
         )
-        monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", unexpected_publish)
 
         with pytest.raises(HTTPException) as exc_info:
             await runtime_callbacks.record_executor_callback(callback)
@@ -436,19 +459,11 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
                 events=[AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())],
             )
 
-            async def publish_pending(transaction_factory, *, limit):
-                return await publish_pending_v4_events(
-                    transaction_factory,
-                    limit=limit,
-                    bridge=bridge,
-                )
-
             monkeypatch.setattr(
                 runtime_callbacks,
                 "transaction",
                 lambda: _connection_factory(dsn, schema_name),
             )
-            monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
 
             first = await runtime_callbacks.record_executor_callback(callback)
             async with _connection_factory(dsn, schema_name) as conn:
@@ -468,8 +483,8 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
             }
             assert len(first_rows) == 1
             first_row = first_rows[0]
-            assert first_row["stream_publication_state"] == "published"
-            assert first_row["stream_publication_attempts"] == 1
+            assert first_row["stream_publication_state"] == "pending"
+            assert first_row["stream_publication_attempts"] == 0
 
             second = await runtime_callbacks.record_executor_callback(callback)
             async with _connection_factory(dsn, schema_name) as conn:
@@ -502,6 +517,31 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
             }
             assert rows == [first_row]
             assert receipts["count"] == 1
+            assert stream_rows == []
+
+            assert await _publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                limit=1,
+                bridge=bridge,
+            ) == 1
+            async with _connection_factory(dsn, schema_name) as conn:
+                published_cursor = await conn.execute(
+                    """
+                    select stream_publication_state, stream_publication_attempts
+                    from run_events where id = %s
+                    """,
+                    (first_row["id"],),
+                )
+                published_row = await published_cursor.fetchone()
+            assert published_row == {
+                "stream_publication_state": "published",
+                "stream_publication_attempts": 1,
+            }
+            stream_rows = await client.xrange(key, min="-", max="+")
             assert len(stream_rows) == 1
             assert json.loads(stream_rows[0][1]["envelope"])["event_id"] == first_row["id"]
         finally:
@@ -541,37 +581,44 @@ async def test_real_callback_handler_commits_pending_row_before_redis_outage(mon
                 async with _connection_factory(dsn, schema_name) as observer:
                     result = await observer.execute(
                         """
-                        select count(*) as count, min(stream_publication_state) as state
+                        select stream_publication_state as state
                         from run_events
                         where tenant_id = %s and run_id = %s and event_type = 'message.started'
+                        for update nowait
                         """,
                         (tenant, run),
                     )
                     observed_at_bridge.append(await result.fetchone())
                 raise StreamTransportUnavailable("redis unavailable")
 
-        async def publish_pending(transaction_factory, *, limit):
-            return await publish_pending_v4_events(
-                transaction_factory,
-                limit=limit,
-                bridge=FailingPublisher(),
-            )
-
         monkeypatch.setattr(
             runtime_callbacks,
             "transaction",
             lambda: _connection_factory(dsn, schema_name),
         )
-        monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", publish_pending)
 
         result = await runtime_callbacks.record_executor_callback(callback)
+        claims = PostgresV4PublicationClaims(
+            lambda: _connection_factory(dsn, schema_name)
+        )
+        assert await publish_claimed_v4_events(
+            claims,
+            V4RedisPublicationTransport(FailingPublisher()),
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            stream_incarnation=2,
+            limit=1,
+            claim_ttl=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=5),
+        ) == 0
 
         assert result == {
             "accepted": True,
             "batch_id": "batch-handler-transport",
             "event_count": 2,
         }
-        assert observed_at_bridge == [{"count": 1, "state": "pending"}]
+        assert observed_at_bridge == [{"state": "pending"}]
         async with _connection_factory(dsn, schema_name) as conn:
             row_cursor = await conn.execute(
                 """
@@ -619,8 +666,12 @@ async def test_real_pending_publisher_claims_and_orders_concurrent_run_rows():
         try:
             results = await asyncio.gather(
                 *(
-                    publish_pending_v4_events(
-                        lambda: _connection_factory(dsn, schema_name),
+                    _publish_claimed(
+                        dsn,
+                        schema_name,
+                        tenant=tenant,
+                        run=run,
+                        attempt=attempt,
                         limit=3,
                         bridge=bridge,
                     )
@@ -646,7 +697,7 @@ async def test_real_pending_publisher_claims_and_orders_concurrent_run_rows():
 
 
 @pytest.mark.asyncio
-async def test_real_pending_publisher_retries_same_event_after_pg_disposition_failure():
+async def test_real_claimed_publisher_converges_after_pg_disposition_failure():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
             async with conn.transaction():
@@ -679,10 +730,15 @@ async def test_real_pending_publisher_retries_same_event_after_pg_disposition_fa
         client, key, bridge = await _redis_stream(tenant, run)
         try:
             with pytest.raises(psycopg.DatabaseError, match="v4 disposition failure"):
-                await publish_pending_v4_events(
-                    lambda: _connection_factory(dsn, schema_name),
+                await _publish_claimed(
+                    dsn,
+                    schema_name,
+                    tenant=tenant,
+                    run=run,
+                    attempt=attempt,
                     limit=1,
                     bridge=bridge,
+                    claim_ttl=timedelta(seconds=1),
                 )
             async with _connection_factory(dsn, schema_name) as conn:
                 row = await conn.execute(
@@ -696,15 +752,19 @@ async def test_real_pending_publisher_retries_same_event_after_pg_disposition_fa
                 async with conn.transaction():
                     await conn.execute("drop trigger fail_v4_disposition_trigger on run_events")
                     await conn.execute("drop function fail_v4_disposition()")
-            assert await publish_pending_v4_events(
-                lambda: _connection_factory(dsn, schema_name),
+            await asyncio.sleep(1.1)
+            assert await _publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
                 limit=1,
                 bridge=bridge,
             ) == 1
             redis_rows = await client.xrange(key, min="-", max="+")
             assert [json.loads(fields["envelope"])["event_id"] for _, fields in redis_rows] == [
-                "evt4_disposition",
-                "evt4_disposition",
+                "evt4_disposition"
             ]
         finally:
             await client.delete(key, f"{key}:state")
@@ -758,8 +818,12 @@ async def test_real_terminal_publish_and_restart_need_no_live_execution_lease(
                 )
         client, key, bridge = await _redis_stream(tenant, run)
         try:
-            assert await publish_pending_v4_events(
-                lambda: _connection_factory(dsn, schema_name),
+            assert await _publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
                 limit=1,
                 bridge=bridge,
             ) == 1
@@ -777,8 +841,12 @@ async def test_real_terminal_publish_and_restart_need_no_live_execution_lease(
                         where id = 'evt4_terminal_restart'
                         """
                     )
-            assert await publish_pending_v4_events(
-                lambda: _connection_factory(dsn, schema_name),
+            assert await _publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
                 limit=1,
                 bridge=bridge,
             ) == 1

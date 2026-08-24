@@ -7,7 +7,11 @@ import json
 
 import pytest
 
-from app.streaming.application.durable_v4 import V4PublicationClaim
+from app.streaming.application.durable_v4 import (
+    V4PublicationClaim,
+    V4PublicationTransportUnavailable,
+    publish_claimed_v4_events,
+)
 
 from app.streaming.api import (
     opaque_message_id,
@@ -322,115 +326,195 @@ async def test_callback_v4_rows_keep_batch_attempt_lease_and_authority_fences(
         )
 
 
-@pytest.mark.asyncio
-async def test_v4_publisher_retries_missing_authority_without_starving_later_rows(monkeypatch):
-    from app.streaming import worker_projection
+def _publication_claim(*, event_id: str = "evt4_a", sequence: int = 7) -> V4PublicationClaim:
+    envelope = project_public_v4(
+        _row({"delta": "hello"}, id=event_id, sequence=sequence),
+        authority=_authority(),
+    )
+    assert envelope is not None
+    return V4PublicationClaim(
+        event_id=event_id,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        tenant_scope="tenant-a",
+        stream_incarnation=2,
+        authorization_epoch=4,
+        sequence=sequence,
+        canonical_envelope_bytes=canonical_json_bytes(envelope),
+        claim_token=f"claim-{event_id}",
+        claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+    )
 
-    missing = _row({"delta": "first"}, id="evt4_missing")
-    ready = _row({"delta": "second"}, id="evt4_ready")
-    ready["run_id"] = "run-b"
-    ready["payload_json"]["__stream_v4"]["attempt_id"] = "attempt-b"
-    ready["payload_json"]["__stream_v4"]["message_id"] = opaque_message_id("tenant-a", "run-b")
-    ready["payload_json"]["__stream_v4"]["execution_lease_id"] = "lease-b"
-    ready_authority = replace(_authority(), run_id="run-b", attempt_id="attempt-b")
-    missing["payload_json"]["__stream_v4"]["execution_lease_id"] = "lease-a"
-    retries = []
-    published = []
-    attempts = []
 
-    remaining = [missing, ready]
+class _RecordingPublicationClaims:
+    def __init__(
+        self,
+        claims: list[V4PublicationClaim],
+        *,
+        mark_published_result: bool = True,
+    ) -> None:
+        self.claims = claims
+        self.mark_published_result = mark_published_result
+        self.calls: list[str] = []
 
-    async def pending(_conn, *, limit):
-        assert limit == 1
-        return (remaining.pop(0),) if remaining else ()
+    async def claim_next(self, **_kwargs):
+        self.calls.append("claim:committed")
+        return self.claims.pop(0) if self.claims else None
 
-    async def mark_attempt(_conn, *, event_id):
-        attempts.append(event_id)
+    async def mark_published(self, claim, *, redis_id):
+        self.calls.append(f"published:{claim.event_id}:{redis_id}")
+        return self.mark_published_result
 
-    async def retry(_conn, *, event_id, error):
-        retries.append((event_id, error))
-
-    async def suppress(*_args, **_kwargs):
-        raise AssertionError("neither row should be suppressed")
-
-    async def identity(_conn, *, run_id):
-        return {"tenant_id": "tenant-a", "run_id": run_id, "status": "running"}
-
-    async def authority(_conn, *, tenant_id, run_id):
-        return None if run_id == "run-a" else ready_authority
-
-    async def cancel_requested(*_args, **_kwargs):
-        return False
-
-    async def published_row(_conn, *, event_id, redis_id):
-        published.append((event_id, redis_id))
+    async def schedule_retry(self, claim, *, error, delay):
+        self.calls.append(f"retry:{claim.event_id}:{error}:{delay.total_seconds():g}")
         return True
 
-    class Cursor:
-        async def fetchone(self):
-            return {"id": "lease"}
-
-    class Connection:
-        async def execute(self, _statement, _params):
-            return Cursor()
-
-    class Transaction:
-        async def __aenter__(self):
-            return Connection()
-
-        async def __aexit__(self, *_args):
-            return None
-
-    class Bridge:
-        async def append(self, envelope):
-            published.append((envelope["event_id"], "redis-1"))
-            return "redis-1"
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(worker_projection, "list_pending_v4_rows", pending)
-    monkeypatch.setattr(worker_projection, "mark_v4_attempt", mark_attempt)
-    monkeypatch.setattr(worker_projection, "mark_v4_retry_error", retry)
-    monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
-    monkeypatch.setattr(worker_projection, "mark_v4_published", published_row)
-    monkeypatch.setattr(worker_projection.repositories, "get_run_identity", identity)
-    monkeypatch.setattr(worker_projection, "get_stream_authority", authority)
-    monkeypatch.setattr(worker_projection.repositories, "is_cancel_requested", cancel_requested)
-
-    result = await worker_projection.publish_pending_v4_events(
-        lambda: Transaction(), limit=2, bridge=Bridge()
-    )
-    assert result == 1
-    assert attempts == ["evt4_missing", "evt4_ready"]
-    assert retries == [("evt4_missing", "stream_authority_missing")]
-    assert published[-1] == ("evt4_ready", "redis-1")
+    async def release(self, claim):
+        self.calls.append(f"release:{claim.event_id}")
+        return True
 
 
 @pytest.mark.asyncio
-async def test_v4_retry_keeps_permanently_stuck_authority_rows_pending(monkeypatch):
-    from app.streaming import worker_projection
+async def test_v4_application_publishes_only_after_claim_commit_and_fences_disposition() -> None:
+    claims = _RecordingPublicationClaims([_publication_claim()])
 
-    retries = []
-    suppressed = []
+    class Transport:
+        async def publish(self, canonical_envelope_bytes):
+            assert claims.calls == ["claim:committed"]
+            assert json.loads(canonical_envelope_bytes)["event_id"] == "evt4_a"
+            claims.calls.append("transport:evt4_a")
+            return "12-0"
 
-    async def suppress(_conn, *, event_id, reason):
-        suppressed.append((event_id, reason))
-
-    async def retry(_conn, *, event_id, error):
-        retries.append((event_id, error))
-
-    monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
-    monkeypatch.setattr(worker_projection, "mark_v4_retry_error", retry)
-
-    await worker_projection._retry_or_suppress_v4_event(
-        object(),
-        event_id="evt4_stuck",
-        attempts=worker_projection.V4_MAX_PUBLICATION_ATTEMPTS,
-        reason="stream_authority_missing",
+    result = await publish_claimed_v4_events(
+        claims,
+        Transport(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+        limit=2,
+        claim_ttl=timedelta(seconds=30),
+        retry_delay=timedelta(seconds=5),
     )
-    assert retries == [("evt4_stuck", "stream_authority_missing")]
-    assert suppressed == []
+
+    assert result == 1
+    assert claims.calls == [
+        "claim:committed",
+        "transport:evt4_a",
+        "published:evt4_a:12-0",
+        "claim:committed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v4_application_lost_disposition_is_not_counted_as_published() -> None:
+    claims = _RecordingPublicationClaims(
+        [_publication_claim()],
+        mark_published_result=False,
+    )
+
+    class Transport:
+        async def publish(self, _canonical_envelope_bytes):
+            return "12-0"
+
+    assert await publish_claimed_v4_events(
+        claims,
+        Transport(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+        limit=1,
+        claim_ttl=timedelta(seconds=30),
+        retry_delay=timedelta(seconds=5),
+    ) == 0
+    assert claims.calls == ["claim:committed", "published:evt4_a:12-0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tenant_id", " tenant-a"),
+        ("run_id", ""),
+        ("attempt_id", object()),
+        ("stream_incarnation", True),
+        ("limit", 257),
+        ("claim_ttl", timedelta(0)),
+        ("retry_delay", timedelta(microseconds=-1)),
+    ],
+)
+async def test_v4_application_rejects_invalid_publication_scope_before_claim(
+    field, value
+) -> None:
+    claims = _RecordingPublicationClaims([])
+
+    class Transport:
+        async def publish(self, _canonical_envelope_bytes):
+            raise AssertionError("transport must not run")
+
+    kwargs = {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "stream_incarnation": 2,
+        "limit": 1,
+        "claim_ttl": timedelta(seconds=30),
+        "retry_delay": timedelta(seconds=5),
+    }
+    kwargs[field] = value
+    with pytest.raises(ValueError, match="v4_publication_"):
+        await publish_claimed_v4_events(claims, Transport(), **kwargs)
+    assert claims.calls == []
+
+
+@pytest.mark.asyncio
+async def test_v4_application_retries_transport_outage_without_release() -> None:
+    claims = _RecordingPublicationClaims([_publication_claim()])
+
+    class Transport:
+        async def publish(self, _canonical_envelope_bytes):
+            raise V4PublicationTransportUnavailable("StreamTransportUnavailable")
+
+    assert await publish_claimed_v4_events(
+        claims,
+        Transport(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+        limit=1,
+        claim_ttl=timedelta(seconds=30),
+        retry_delay=timedelta(seconds=5),
+    ) == 0
+    assert claims.calls == [
+        "claim:committed",
+        "retry:evt4_a:StreamTransportUnavailable:5",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v4_application_releases_claim_on_unexpected_transport_error() -> None:
+    claims = _RecordingPublicationClaims([_publication_claim()])
+
+    class Transport:
+        async def publish(self, _canonical_envelope_bytes):
+            raise RuntimeError("invalid transport result")
+
+    with pytest.raises(RuntimeError, match="invalid transport result"):
+        await publish_claimed_v4_events(
+            claims,
+            Transport(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            limit=1,
+            claim_ttl=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=5),
+        )
+    assert claims.calls == ["claim:committed", "release:evt4_a"]
 
 
 @pytest.mark.asyncio
@@ -464,100 +548,31 @@ async def test_v4_route_recovery_keeps_pg_gap_and_redis_resume_in_one_seam(monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("event_type", "status", "payload"),
-    [
-        (
-            "run.succeeded",
-            "succeeded",
-            {"terminal_event_id": "evt4_terminal", "hydrate_required": True},
-        ),
-        (
-            "run.cancelled",
-            "cancelled",
-            {
-                "terminal_event_id": "evt4_terminal",
-                "hydrate_required": True,
-                "reason_code": "user_cancelled",
-            },
-        ),
-    ],
-)
-async def test_terminal_events_bypass_cancellation_fence(
-    monkeypatch, event_type, status, payload
-):
+async def test_v4_redis_publication_transport_decodes_claimed_canonical_bytes() -> None:
     from app.streaming import worker_projection
+    from app.streaming.redis import StreamTransportUnavailable
 
-    row = _row(payload, id="evt4_terminal", event_type=event_type, sequence=1)
-    published = []
-    suppressed = []
-
-    async def pending(_conn, *, limit):
-        assert limit == 1
-        return (row,)
-
-    async def identity(_conn, *, run_id):
-        return {"tenant_id": "tenant-a", "run_id": run_id, "status": status}
-
-    async def authority(_conn, *, tenant_id, run_id):
-        return replace(_authority(), state="terminal")
-
-    async def cancel_requested(*_args, **_kwargs):
-        return True
-
-    async def mark_attempt(_conn, *, event_id):
-        return None
-
-    async def mark_published(_conn, *, event_id, redis_id):
-        published.append((event_id, redis_id))
-        return True
-
-    async def suppress(_conn, *, event_id, reason):
-        suppressed.append((event_id, reason))
-        return True
-
-    class Cursor:
-        def __init__(self, value):
-            self.value = value
-
-        async def fetchone(self):
-            return self.value
-
-    class Connection:
-        async def execute(self, statement, _params):
-            if "min(sequence)" in statement:
-                return Cursor({"sequence": 1})
-            return Cursor({"id": "lease"})
-
-    class Transaction:
-        async def __aenter__(self):
-            return Connection()
-
-        async def __aexit__(self, *_args):
-            return None
+    claim = _publication_claim()
+    calls = []
 
     class Bridge:
         async def append(self, envelope):
+            calls.append(envelope)
             return "12-0"
 
-        async def aclose(self):
-            return None
+    transport = worker_projection.V4RedisPublicationTransport(Bridge())
+    assert await transport.publish(claim.canonical_envelope_bytes) == "12-0"
+    assert calls[0]["event_id"] == claim.event_id
 
-    monkeypatch.setattr(worker_projection, "list_pending_v4_rows", pending)
-    monkeypatch.setattr(worker_projection, "mark_v4_attempt", mark_attempt)
-    monkeypatch.setattr(worker_projection, "mark_v4_published", mark_published)
-    monkeypatch.setattr(worker_projection, "suppress_v4_event", suppress)
-    monkeypatch.setattr(worker_projection.repositories, "get_run_identity", identity)
-    monkeypatch.setattr(worker_projection, "get_stream_authority", authority)
-    monkeypatch.setattr(worker_projection.repositories, "is_cancel_requested", cancel_requested)
+    class FailingBridge:
+        async def append(self, _envelope):
+            raise StreamTransportUnavailable("redis unavailable")
 
-    result = await worker_projection.publish_pending_v4_events(
-        lambda: Transaction(), limit=1, bridge=Bridge()
-    )
-
-    assert result == 1
-    assert published == [("evt4_terminal", "12-0")]
-    assert suppressed == []
+    with pytest.raises(V4PublicationTransportUnavailable) as exc_info:
+        await worker_projection.V4RedisPublicationTransport(FailingBridge()).publish(
+            claim.canonical_envelope_bytes
+        )
+    assert exc_info.value.error_code == "StreamTransportUnavailable"
 
 
 @pytest.mark.asyncio
