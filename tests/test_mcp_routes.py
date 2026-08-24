@@ -96,18 +96,13 @@ def live_catalog_service(
             static_headers={"X-Static": "configured"},
         )
 
-    async def target_validator(_endpoint):
-        return SimpleNamespace(
-            connect_url="https://203.0.113.10/api/internal/cache-revisions",
-            host_header="gateway.example",
-            sni_hostname="gateway.example",
-        )
+    async def revision_reader(_endpoint):
+        return None
 
     return LiveMcpCatalogService(
         redis_provider=redis.handle,
         target_resolver=target_resolver,
-        target_validator=target_validator,
-        service_token_provider=lambda: "service-token",
+        revision_reader=revision_reader,
         discovery=discovery,
     )
 

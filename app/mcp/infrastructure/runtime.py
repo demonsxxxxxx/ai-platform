@@ -46,6 +46,7 @@ MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT = 10
 MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT = 1000
 MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS = 60
 MCP_CAPABILITY_HEADER = "X-MCP-Broker-Capability"
+MCP_GATEWAY_SERVICE_TOKEN_HEADER = "X-MCP-Gateway-Service-Token"
 _MCP_CONTEXT_AAD_PREFIX = b"ai-platform:mcp-runtime-context:v1:"
 _MCP_PRINCIPAL_JWT_AAD_PREFIX = b"ai-platform:mcp-principal-jwt:v1:"
 _MCP_SERVER_CREDENTIAL_AAD_PREFIX = b"ai-platform:mcp-server-credential:v1:"
@@ -1287,6 +1288,39 @@ async def validate_registered_mcp_target(raw: str) -> McpValidatedTarget:
         host_header=parsed.netloc,
         sni_hostname=hostname,
     )
+
+
+async def read_gateway_cache_revisions(
+    endpoint: str,
+    *,
+    service_token: str,
+) -> dict[str, Any] | None:
+    """Read bounded Gateway revisions through the pinned infrastructure client."""
+
+    token = str(service_token or "").strip()
+    if not token:
+        return None
+    try:
+        parsed = urlsplit(_registered_mcp_target(endpoint))
+        revision_endpoint = urlunsplit(
+            (parsed.scheme, parsed.netloc, "/api/internal/cache-revisions", "", "")
+        )
+        target = await validate_registered_mcp_target(revision_endpoint)
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            response = await client.get(
+                target.connect_url,
+                headers={
+                    MCP_GATEWAY_SERVICE_TOKEN_HEADER: token,
+                    "Host": target.host_header,
+                },
+                extensions={"sni_hostname": target.sni_hostname},
+            )
+        if response.status_code != 200 or len(response.content) > 16_384:
+            return None
+        payload = json.loads(response.content)
+        return payload if isinstance(payload, dict) else None
+    except (McpRelayError, httpx.HTTPError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def _schema_bytes(tool: Mapping[str, Any]) -> int:

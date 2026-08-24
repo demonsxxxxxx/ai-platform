@@ -37,8 +37,8 @@ from app.mcp.api import (
     seal_mcp_server_credentials,
 )
 from app.mcp.infrastructure.runtime import (
+    read_gateway_cache_revisions,
     resolve_registered_mcp_target,
-    validate_registered_mcp_target,
 )
 from app.redis_client import get_redis_client
 from app.settings import get_settings
@@ -48,11 +48,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
+
+
+async def _read_gateway_cache_revisions(endpoint: str) -> object | None:
+    return await read_gateway_cache_revisions(
+        endpoint,
+        service_token=str(get_settings().mcp_gateway_service_token),
+    )
+
+
 LIVE_MCP_CATALOG = LiveMcpCatalogService(
     redis_provider=get_redis_client,
     target_resolver=resolve_registered_mcp_target,
-    target_validator=validate_registered_mcp_target,
-    service_token_provider=lambda: str(get_settings().mcp_gateway_service_token),
+    revision_reader=_read_gateway_cache_revisions,
 )
 MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
 MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()

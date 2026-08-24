@@ -6,15 +6,11 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit, urlunsplit
-
-import httpx
 
 from app.mcp.catalog import McpToolDiscoveryError, StreamableHttpMcpToolDiscoveryAdapter
 from app.mcp.domain.tool_references import build_mcp_tool_reference
 
 
-MCP_GATEWAY_SERVICE_TOKEN_HEADER = "X-MCP-Gateway-Service-Token"
 MCP_CACHE_INVALIDATION_TOKEN_HEADER = "X-AI-Platform-Callback-Token"
 MCP_TOOL_CACHE_TTL_SECONDS = 24 * 60 * 60
 MCP_REVISION_CACHE_TTL_SECONDS = 5 * 60
@@ -70,13 +66,6 @@ def _revision_payload(value: object) -> GatewayRevisions:
     )
 
 
-def _version_url(endpoint: str) -> str:
-    parsed = urlsplit(endpoint)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("mcp_gateway_revision_endpoint_invalid")
-    return urlunsplit((parsed.scheme, parsed.netloc, "/api/internal/cache-revisions", "", ""))
-
-
 class LiveMcpCatalogService:
     """Resolve user-effective Gateway tools without creating a platform catalog."""
 
@@ -85,15 +74,13 @@ class LiveMcpCatalogService:
         *,
         redis_provider: Callable[[], Any],
         target_resolver: Callable[[str, str], Awaitable[Any]],
-        target_validator: Callable[[str], Awaitable[Any]],
-        service_token_provider: Callable[[], str],
+        revision_reader: Callable[[str], Awaitable[object | None]],
         discovery: StreamableHttpMcpToolDiscoveryAdapter | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._redis_provider = redis_provider
         self._target_resolver = target_resolver
-        self._target_validator = target_validator
-        self._service_token_provider = service_token_provider
+        self._revision_reader = revision_reader
         self._discovery = discovery or StreamableHttpMcpToolDiscoveryAdapter()
         self._clock = clock
 
@@ -158,24 +145,10 @@ class LiveMcpCatalogService:
             return None
 
     async def _query_revisions(self, endpoint: str) -> GatewayRevisions | None:
-        token = self._service_token_provider().strip()
-        if not token:
-            return None
         try:
-            validated = await self._target_validator(_version_url(endpoint))
-            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-                response = await client.get(
-                    validated.connect_url,
-                    headers={
-                        MCP_GATEWAY_SERVICE_TOKEN_HEADER: token,
-                        "Host": validated.host_header,
-                    },
-                    extensions={"sni_hostname": validated.sni_hostname},
-                )
-            if response.status_code != 200 or len(response.content) > 16_384:
-                return None
-            return _revision_payload(response.json())
-        except (httpx.HTTPError, ValueError, json.JSONDecodeError, AttributeError):
+            payload = await self._revision_reader(endpoint)
+            return _revision_payload(payload) if payload is not None else None
+        except (ValueError, TypeError):
             return None
 
     async def _revisions(self, tenant_id: str, server_id: str, endpoint: str) -> GatewayRevisions | None:
