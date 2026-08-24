@@ -3656,7 +3656,10 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
         input_payload={},
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
-    monkeypatch.setattr("app.skills.snapshot_materialization.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
+    monkeypatch.setattr(
+        "app.skills.application.snapshot_materialization.MAX_SKILL_SNAPSHOT_FILE_BYTES",
+        8,
+    )
     async def no_files(payload, workspace):
         return []
 

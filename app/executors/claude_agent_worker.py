@@ -84,12 +84,12 @@ from app.skills.catalog import (
     load_runtime_authorized_skill_catalog,
 )
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
-from app.skills.snapshot_materialization import (
+from app.skills.api import (
     pin_manifests_for_result as _pin_manifests_for_result,
     pinned_skill_manifests as _pinned_skill_manifests,
     select_pinned_skills as _select_pinned_skills,
 )
-from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry
+from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 
@@ -952,6 +952,8 @@ class ClaudeAgentWorkerAdapter:
             pinned_manifests,
             _pinned_snapshot_root(workspace),
             path_guard=ensure_creatable_inside,
+            skill_factory=BuiltinSkill,
+            content_hash_reader=skill_content_hash,
         )
         if not pin_mismatches:
             return None
@@ -1242,6 +1244,8 @@ class ClaudeAgentWorkerAdapter:
                 pinned_manifests,
                 _pinned_snapshot_root(resolved_workspace),
                 path_guard=ensure_creatable_inside,
+                skill_factory=BuiltinSkill,
+                content_hash_reader=skill_content_hash,
             )
         if pin_mismatches:
             if event_sink is not None:
