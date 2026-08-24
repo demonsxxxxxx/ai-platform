@@ -29,6 +29,7 @@ def mcp_tool_tenant_authority_sql() -> str:
       and mcp_tools.auth_mode = 'platform-managed'
       and mcp_tools.allowed_tools = '[\"{TRUSTED_BUILTIN_MCP_REMOTE_NAME}\"]'::jsonb
       and mcp_tools.write_capable = false
+      and %s::text <> ''
     """
 
 
@@ -93,13 +94,20 @@ async def get_mcp_tool_registry_entry(
         server_id, public_tool_name = parse_mcp_tool_reference(tool_id)
     except ValueError:
         return None
-    server = await _repositories().get_mcp_server_registry_entry(
-        conn,
-        tenant_id=tenant_id,
-        name=server_id,
+    cursor = await conn.execute(
+        """
+        select name, transport, status
+        from mcp_servers
+        where tenant_id = %s
+          and name = %s
+          and status <> 'deleted'
+        """,
+        (tenant_id, server_id),
     )
-    if server is None:
+    row = await cursor.fetchone()
+    if row is None:
         return None
+    server = dict(row)
     server_status = str(server.get("status") or "disabled")
     return {
         "tool_id": build_mcp_tool_reference(server_id, public_tool_name),

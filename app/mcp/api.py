@@ -107,6 +107,30 @@ async def record_mcp_server_credential(conn: Any, **kwargs: Any) -> Any:
     return await mcp_runtime_services().record_server_credential(conn, **kwargs)
 
 
+async def list_mcp_server_registry(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    return await mcp_runtime_services().list_server_registry(conn, **kwargs)
+
+
+async def upsert_mcp_server_registry(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await mcp_runtime_services().upsert_server_registry(conn, **kwargs)
+
+
+async def toggle_mcp_server_registry(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await mcp_runtime_services().toggle_server_registry(conn, **kwargs)
+
+
+async def delete_mcp_server_registry(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await mcp_runtime_services().delete_server_registry(conn, **kwargs)
+
+
+async def upsert_mcp_distribution(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await mcp_runtime_services().upsert_distribution(conn, **kwargs)
+
+
+async def toggle_mcp_distribution(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await mcp_runtime_services().toggle_distribution(conn, **kwargs)
+
+
 async def bind_run_mcp_context(conn: Any, **kwargs: Any) -> None:
     await mcp_runtime_services().bind_run_context(conn, **kwargs)
 
@@ -217,6 +241,7 @@ __all__ = [
     "configure_mcp_runtime_services",
     "create_host_mcp_relay",
     "discard_unbound_mcp_runtime_context",
+    "delete_mcp_server_registry",
     "get_mcp_relay_auth_failure_limiter",
     "get_mcp_runtime_context_manager",
     "get_live_mcp_catalog",
@@ -226,6 +251,7 @@ __all__ = [
     "invalidate_terminal_mcp_runtime_context",
     "is_safe_mcp_id",
     "is_valid_mcp_public_tool_name",
+    "list_mcp_server_registry",
     "mcp_targets_from_policy_subjects",
     "normalize_mcp_targets",
     "normalize_static_mcp_headers",
@@ -239,4 +265,8 @@ __all__ = [
     "seal_mcp_server_credentials",
     "service_token_matches",
     "store_mcp_principal_jwt",
+    "toggle_mcp_distribution",
+    "toggle_mcp_server_registry",
+    "upsert_mcp_distribution",
+    "upsert_mcp_server_registry",
 ]

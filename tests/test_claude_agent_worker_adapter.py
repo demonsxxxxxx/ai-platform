@@ -2293,7 +2293,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
             skill_id="general-chat",
             input={
                 "message": "search with the selected tool",
-                "mcp_tool_ids": ["tenant-search"],
+                "mcp_tool_ids": ["tenant-search::search"],
                 "_runtime_tool_policy_subjects": [
                     {
                         "identity": "mcp__tenant-server__search",
@@ -2400,7 +2400,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         skill_id="general-chat",
         input={
             "message": "answer or search as needed",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-search::search"],
             "_runtime_tool_policy_subjects": [_mcp_subject()],
         },
     )
@@ -2408,7 +2408,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
     assert result.status == "succeeded"
-    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search"]
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search::search"]
     assert [event for event in events if event["payload"].get("tool_category") == "mcp"] == []
 
 
@@ -2604,7 +2604,7 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
         skill_id="general-chat",
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-search::search"],
             "_runtime_tool_policy_subjects": [
                 {
                     "identity": "mcp__tenant-server__search",

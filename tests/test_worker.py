@@ -8878,7 +8878,7 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
 
 
 @pytest.mark.asyncio
-async def test_worker_does_not_read_legacy_platform_tool_policy_before_dispatch(monkeypatch):
+async def test_worker_does_not_read_platform_tool_policy_for_gateway_reference(monkeypatch):
     calls = []
 
     class HarnessAdapterMustNotRun:
@@ -8898,6 +8898,24 @@ async def test_worker_does_not_read_legacy_platform_tool_policy_before_dispatch(
         calls.append(("policy", tenant_id, tool_id))
         raise AssertionError("legacy platform Tool policy must not be read")
 
+    async def get_mcp_tool_registry_entry(conn, *, tenant_id, tool_id):
+        assert (tenant_id, tool_id) == ("tenant-a", "gateway::search")
+        return {
+            "tool_id": tool_id,
+            "server_id": "gateway",
+            "registry_status": "disabled",
+            "policy_status": "active",
+            "effective_status": "disabled",
+            "server_status": "active",
+            "visible_to_user": True,
+            "write_capable": True,
+            "risk_level": "high",
+            "allowed_tools": ["search"],
+            "transport_type": "streamable_http",
+            "endpoint": "",
+            "auth_mode": "none",
+        }
+
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
@@ -8908,11 +8926,19 @@ async def test_worker_does_not_read_legacy_platform_tool_policy_before_dispatch(
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
+    monkeypatch.setattr(
+        "app.worker.repositories.get_mcp_tool_registry_entry",
+        get_mcp_tool_registry_entry,
+    )
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="claude-agent-worker"),
+        base_payload(
+            skill_id="general-chat",
+            executor_type="claude-agent-worker",
+            input={"mode": "file", "mcp_tool_ids": ["gateway::search"]},
+        ),
         registry=Registry(),
         worker_id="worker-harness",
     )
@@ -8924,7 +8950,7 @@ async def test_worker_does_not_read_legacy_platform_tool_policy_before_dispatch(
     assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
     denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
     assert denied_event[2] == "authorization"
-    assert denied_event[3]["capability_id"] == "ragflow::ragflow_search"
+    assert denied_event[3]["capability_id"] == "gateway::search"
     assert denied_event[3]["visible_to_user"] is True
 
 

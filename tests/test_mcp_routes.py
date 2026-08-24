@@ -498,7 +498,7 @@ def install_mcp_route_fakes(
     async def fake_upsert_distribution(conn, **kwargs):
         calls.append(("upsert_distribution", dict(kwargs)))
         row = {
-            "capability_kind": kwargs["capability_kind"],
+            "capability_kind": kwargs.get("capability_kind", "mcp_server"),
             "capability_id": kwargs["capability_id"],
             "status": kwargs["status"],
             "visible_to_user": kwargs["visible_to_user"],
@@ -618,18 +618,12 @@ def install_mcp_route_fakes(
         "get_authorized_session",
         fake_get_authorized_session,
     )
-    monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry", fake_list_servers, raising=False)
-    monkeypatch.setattr(mcp.repositories, "list_tenant_mcp_server_registry", fake_list_servers, raising=False)
+    monkeypatch.setattr(mcp, "list_mcp_server_registry", fake_list_servers)
     monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry_names", fake_list_server_names, raising=False)
     monkeypatch.setattr(mcp.repositories, "list_capability_distribution_rows", fake_list_distributions, raising=False)
     monkeypatch.setattr(mcp.repositories, "get_capability_distribution_row", fake_get_distribution, raising=False)
-    monkeypatch.setattr(mcp.repositories, "upsert_mcp_server_registry", fake_upsert_server, raising=False)
-    monkeypatch.setattr(
-        mcp.repositories,
-        "upsert_capability_distribution_row",
-        fake_upsert_distribution,
-        raising=False,
-    )
+    monkeypatch.setattr(mcp, "upsert_mcp_server_registry", fake_upsert_server)
+    monkeypatch.setattr(mcp, "upsert_mcp_distribution", fake_upsert_distribution)
     monkeypatch.setattr(
         mcp.repositories,
         "set_capability_distribution_status",
@@ -637,8 +631,8 @@ def install_mcp_route_fakes(
         raising=False,
     )
     monkeypatch.setattr(mcp.repositories, "archive_capability_distribution_row", fake_archive_distribution, raising=False)
-    monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
-    monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
+    monkeypatch.setattr(mcp, "toggle_mcp_server_registry", fake_toggle_server)
+    monkeypatch.setattr(mcp, "delete_mcp_server_registry", fake_delete_server)
     monkeypatch.setattr(mcp, "record_mcp_server_credential", fake_record_credential)
     monkeypatch.setattr(mcp.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(mcp.repositories, "append_audit_log", fake_append_audit_log)
@@ -910,7 +904,7 @@ def test_mcp_cross_tenant_server_and_tool_reads_fail_closed(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "app.routes.mcp.repositories.list_tenant_mcp_server_registry",
+        "app.routes.mcp.list_mcp_server_registry",
         tenant_scoped_servers,
     )
     client = TestClient(create_app())

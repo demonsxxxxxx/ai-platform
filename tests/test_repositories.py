@@ -2950,9 +2950,6 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_platform_catalog(
     enabled,
     distribution_status,
 ):
-    async def no_backfill(conn, *, tenant_id):
-        assert tenant_id == "tenant-a"
-
     class Cursor:
         def __init__(self, row):
             self.row = row
@@ -2967,10 +2964,6 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_platform_catalog(
         async def execute(self, sql, params=()):
             compact = " ".join(sql.split())
             self.calls.append((compact, params))
-            if "pg_advisory_xact_lock" in compact:
-                return Cursor(None)
-            if compact.startswith("select metadata_json"):
-                return Cursor({"metadata_json": {}})
             if compact.startswith("update tenant_capability_distributions"):
                 assert "catalog_status" not in compact
                 assert params == (
@@ -2978,7 +2971,6 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_platform_catalog(
                     enabled,
                     "admin-a",
                     "tenant-a",
-                    "mcp_server",
                     "qa-mcp",
                 )
                 return Cursor(
@@ -2997,11 +2989,9 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_platform_catalog(
                 )
             raise AssertionError(compact)
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    row = await repositories.toggle_capability_distribution_row(
+    row = await mcp_persistence.toggle_mcp_distribution(
         Connection(),
         tenant_id="tenant-a",
-        capability_kind="mcp_server",
         capability_id="qa-mcp",
         enabled=enabled,
         updated_by="admin-a",
@@ -6594,7 +6584,7 @@ async def test_ensure_mcp_tool_active_applies_tenant_tool_policy_fail_closed():
     sql, params = conn.calls[0]
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", "ragflow-knowledge-search")
+    assert params == ("tenant-a", "ragflow-knowledge-search", "tenant-a")
 
 
 @pytest.mark.asyncio
@@ -6708,7 +6698,7 @@ async def test_list_admin_tool_policies_returns_missing_tenant_policy_as_disable
     assert "from mcp_tools" in sql
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", True, 500)
+    assert params == ("tenant-a", "tenant-a", True, 500)
     assert "endpoint" not in rows[0]
     assert "auth_mode" not in rows[0]
     assert rows == [
@@ -6768,7 +6758,7 @@ async def test_list_admin_tool_policies_filters_hidden_when_disabled_excluded():
     assert "coalesce(mcp_tools.visible_to_user, false) = true" in sql
     assert "tool_policies.status = 'active'" in sql
     assert "tool_policies.visible_to_user = true" in sql
-    assert params == ("tenant-a", False, 50)
+    assert params == ("tenant-a", "tenant-a", False, 50)
 
 
 @pytest.mark.asyncio
@@ -6828,6 +6818,7 @@ async def test_upsert_admin_tool_policy_writes_tenant_policy_and_returns_effecti
         "controlled write",
         "tool-admin",
         "ragflow-knowledge-search",
+        "tenant-a",
     )
     assert row["source"] == "tenant"
     assert row["effective_status"] == "active"
@@ -6892,7 +6883,7 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
 
     conn = RegistryConnection()
 
-    rows = await repositories.list_mcp_server_registry(
+    rows = await mcp_persistence.list_mcp_server_registry(
         conn,
         tenant_id="tenant-a",
         department_id="qa",
@@ -6955,7 +6946,7 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
 
     conn = RegistryConnection()
 
-    row = await repositories.upsert_mcp_server_registry(
+    row = await mcp_persistence.upsert_mcp_server_registry(
         conn,
         tenant_id="tenant-a",
         name="qa-mcp",
@@ -6974,11 +6965,11 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
 
     sql, params = conn.calls[0]
     assert "insert into mcp_servers" in sql
-    assert "existing.is_system <> %s" in sql
-    assert "where mcp_servers.is_system = excluded.is_system returning *" in sql
+    assert "where mcp_servers.is_system = excluded.is_system" in sql
     assert "credential_fingerprint" in sql
     assert "credential-sha" in params
-    assert params[:3] == ("tenant-a", "qa-mcp", False)
+    assert params[1:3] == ("tenant-a", "qa-mcp")
+    assert params[6] is False
     assert "raw-secret" not in str(params)
     assert row["name"] == "qa-mcp"
     assert row["credential_state"] == "configured"
@@ -7011,20 +7002,26 @@ async def test_list_mcp_server_registry_names_excludes_deleted_registry_override
 
 @pytest.mark.asyncio
 async def test_get_mcp_tool_registry_entry_resolves_qualified_reference_through_parent_server(monkeypatch):
-    calls = []
+    class Cursor:
+        async def fetchone(self):
+            return {"name": "qa-mcp", "transport": "streamable_http", "status": "active"}
 
-    async def get_server(conn, *, tenant_id, name):
-        calls.append((tenant_id, name))
-        return {"name": name, "transport": "streamable_http", "status": "active"}
+    class Connection:
+        def __init__(self):
+            self.calls = []
 
-    monkeypatch.setattr(repositories, "get_mcp_server_registry_entry", get_server)
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return Cursor()
+
+    conn = Connection()
     row = await repositories.get_mcp_tool_registry_entry(
-        object(),
+        conn,
         tenant_id="tenant-a",
         tool_id="qa-mcp::qa_search",
     )
 
-    assert calls == [("tenant-a", "qa-mcp")]
+    assert conn.calls[0][1] == ("tenant-a", "qa-mcp")
     assert row is not None
     assert row["tool_id"] == "qa-mcp::qa_search"
     assert row["server_id"] == "qa-mcp"

@@ -3,13 +3,30 @@ import pytest
 from app.mcp import repository as mcp_repository
 
 
+class _ServerCursor:
+    def __init__(self, row):
+        self.row = row
+
+    async def fetchone(self):
+        return self.row
+
+
+class _ServerConnection:
+    def __init__(self, row=None):
+        self.row = row or {
+            "name": "compatible-server",
+            "transport": "streamable_http",
+            "status": "active",
+        }
+        self.calls = []
+
+    async def execute(self, sql, params):
+        self.calls.append((" ".join(sql.split()), params))
+        return _ServerCursor(self.row)
+
+
 @pytest.mark.asyncio
 async def test_lightweight_reference_uses_server_distribution_without_platform_tool_catalog(monkeypatch):
-    async def get_server(conn, *, tenant_id, name):
-        assert tenant_id == "tenant-a"
-        assert name == "compatible-server"
-        return {"name": name, "transport": "streamable_http", "status": "active"}
-
     async def active_distribution(conn, **kwargs):
         return {
             "capability_kind": "mcp_server",
@@ -23,11 +40,11 @@ async def test_lightweight_reference_uses_server_distribution_without_platform_t
         }
 
     repositories = mcp_repository._repositories()
-    monkeypatch.setattr(repositories, "get_mcp_server_registry_entry", get_server)
     monkeypatch.setattr(repositories, "get_capability_distribution_row", active_distribution)
+    conn = _ServerConnection()
 
     authorized = await mcp_repository.authorize_selected_chat_mcp_tools(
-        object(),
+        conn,
         tenant_id="tenant-a",
         tool_ids=["compatible-server::unknown_tool"],
         principal_department_id="qa",
@@ -37,7 +54,7 @@ async def test_lightweight_reference_uses_server_distribution_without_platform_t
     )
     with pytest.raises(repositories.RepositoryAuthorizationError):
         await mcp_repository.authorize_selected_chat_mcp_tools(
-            object(),
+            conn,
             tenant_id="tenant-a",
             tool_ids=["compatible-server::unknown_tool"],
             principal_department_id="rd",
@@ -51,25 +68,16 @@ async def test_lightweight_reference_uses_server_distribution_without_platform_t
 
 @pytest.mark.asyncio
 async def test_lightweight_reference_resolves_only_through_registered_server(monkeypatch):
-    calls = []
-
-    async def get_server(conn, *, tenant_id, name):
-        calls.append((tenant_id, name))
-        return {"name": name, "transport": "streamable_http", "status": "active"}
-
-    monkeypatch.setattr(
-        mcp_repository._repositories(),
-        "get_mcp_server_registry_entry",
-        get_server,
-    )
+    conn = _ServerConnection()
 
     tool = await mcp_repository.get_mcp_tool_registry_entry(
-        object(),
+        conn,
         tenant_id="tenant-a",
         tool_id="compatible-server::unknown_tool",
     )
 
-    assert calls == [("tenant-a", "compatible-server")]
+    assert conn.calls[0][1] == ("tenant-a", "compatible-server")
+    assert "mcp_tool_catalog_entries" not in conn.calls[0][0]
     assert tool["tool_id"] == "compatible-server::unknown_tool"
     assert tool["allowed_tools"] == ["unknown_tool"]
     assert tool["write_capable"] is True
@@ -81,17 +89,12 @@ async def test_lightweight_reference_resolves_only_through_registered_server(mon
 
 @pytest.mark.asyncio
 async def test_invalid_reference_is_rejected_without_registry_or_catalog_lookup(monkeypatch):
-    async def must_not_run(*args, **kwargs):
-        raise AssertionError("invalid references must fail before repository access")
-
-    monkeypatch.setattr(
-        mcp_repository._repositories(),
-        "get_mcp_server_registry_entry",
-        must_not_run,
-    )
+    class MustNotRun:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("invalid references must fail before repository access")
 
     assert await mcp_repository.get_mcp_tool_registry_entry(
-        object(),
+        MustNotRun(),
         tenant_id="tenant-a",
         tool_id="legacy-unqualified-tool",
     ) is None
@@ -128,4 +131,4 @@ def test_only_code_owned_ragflow_builtin_has_legacy_mcp_tools_authority():
     authority_sql = mcp_repository.mcp_tool_tenant_authority_sql()
     assert "ragflow-knowledge-search" in authority_sql
     assert "mcp_tool_catalog_entries" not in authority_sql
-    assert "%s" not in authority_sql
+    assert authority_sql.count("%s") == 1

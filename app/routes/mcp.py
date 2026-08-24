@@ -24,15 +24,20 @@ from app.mcp.api import (
     MCP_CACHE_INVALIDATION_TOKEN_HEADER,
     McpRuntimeContextError,
     create_host_mcp_relay,
+    delete_mcp_server_registry,
     discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
     get_mcp_runtime_context_manager,
     get_live_mcp_catalog,
+    list_mcp_server_registry,
     normalize_static_mcp_headers,
     read_mcp_principal_jwt,
     record_mcp_server_credential,
     seal_mcp_server_credentials,
     service_token_matches,
+    toggle_mcp_server_registry,
+    upsert_mcp_distribution,
+    upsert_mcp_server_registry,
 )
 from app.settings import get_settings
 from app.validation import assert_safe_id
@@ -386,7 +391,7 @@ async def _public_server_access(
     name: str,
 ) -> tuple[dict[str, Any], dict[str, Any], CapabilityAccessDecision]:
     async with transaction() as conn:
-        registry_rows = await repositories.list_tenant_mcp_server_registry(
+        registry_rows = await list_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=True,
@@ -407,7 +412,7 @@ async def _public_server_access(
 
 async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
     async with transaction() as conn:
-        rows = await repositories.list_tenant_mcp_server_registry(
+        rows = await list_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=True,
@@ -450,7 +455,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
     """Fetch the current user's effective tools from every usable MCP server."""
 
     async with transaction() as conn:
-        rows = await repositories.list_tenant_mcp_server_registry(
+        rows = await list_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=False,
@@ -531,7 +536,7 @@ async def _write_server(
                 capability_kind="mcp_server",
                 capability_id=name,
             )
-            row = await repositories.upsert_mcp_server_registry(
+            row = await upsert_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=name,
@@ -547,10 +552,9 @@ async def _write_server(
                 credential_fingerprint=fingerprint,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.upsert_capability_distribution_row(
+            distribution = await upsert_mcp_distribution(
                 conn,
                 tenant_id=principal.tenant_id,
-                capability_kind="mcp_server",
                 capability_id=name,
                 status="active" if request.enabled else "disabled",
                 visible_to_user=bool(
@@ -904,7 +908,7 @@ async def delete_mcp_server(
     safe_name = _safe_name(name)
     try:
         async with transaction() as conn:
-            row = await repositories.delete_mcp_server_registry(
+            row = await delete_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=safe_name,
@@ -947,7 +951,7 @@ async def toggle_mcp_server(
     request = _request_model(McpServerToggleRequest, payload)
     try:
         async with transaction() as conn:
-            row = await repositories.toggle_mcp_server_registry(
+            row = await toggle_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=safe_name,
@@ -1083,7 +1087,7 @@ async def delete_admin_mcp_server(
     safe_name = _safe_name(name)
     try:
         async with transaction() as conn:
-            row = await repositories.delete_mcp_server_registry(
+            row = await delete_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=safe_name,

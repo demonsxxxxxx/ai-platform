@@ -62,6 +62,24 @@ class _McpRuntimeServices:
     async def get_run_context_id(self, conn: Any, **kwargs: Any) -> str | None:
         return await mcp_postgres.get_run_mcp_context_id(conn, **kwargs)
 
+    async def list_server_registry(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return await mcp_postgres.list_mcp_server_registry(conn, **kwargs)
+
+    async def upsert_server_registry(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        return await mcp_postgres.upsert_mcp_server_registry(conn, **kwargs)
+
+    async def toggle_server_registry(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        return await mcp_postgres.toggle_mcp_server_registry(conn, **kwargs)
+
+    async def delete_server_registry(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        return await mcp_postgres.delete_mcp_server_registry(conn, **kwargs)
+
+    async def upsert_distribution(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        return await mcp_postgres.upsert_mcp_distribution(conn, **kwargs)
+
+    async def toggle_distribution(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        return await mcp_postgres.toggle_mcp_distribution(conn, **kwargs)
+
 
 def configure_mcp_runtime() -> None:
     configure_mcp_runtime_services(_McpRuntimeServices())
