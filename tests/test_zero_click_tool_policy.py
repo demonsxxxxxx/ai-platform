@@ -30,12 +30,16 @@ def policy_tool(**overrides: object) -> dict[str, object]:
 
 def test_declared_active_read_and_write_capabilities_allow_without_approval_state():
     read = evaluate_tool_policy(tool=policy_tool())
+    grep = evaluate_tool_policy(
+        tool=policy_tool(requested_identity="Grep", declared_identities=["Grep"])
+    )
     write = evaluate_tool_policy(
         tool=policy_tool(requested_identity="Write", declared_identities=["Write"], risk_level="high", write_capable=True)
     )
 
-    assert (read.outcome, write.outcome) == ("allow", "allow")
+    assert (read.outcome, grep.outcome, write.outcome) == ("allow", "allow", "allow")
     assert read.reason == "tool_policy_allowed"
+    assert grep.reason == "tool_policy_allowed"
     assert write.reason == "tool_policy_allowed"
     assert not hasattr(read, "permission_request_id")
     assert not hasattr(write, "decision")
@@ -45,6 +49,7 @@ def test_declared_active_read_and_write_capabilities_allow_without_approval_stat
     "overrides, reason",
     [
         ({"requested_identity": ""}, "tool_identity_malformed"),
+        ({"requested_identity": "GREP", "declared_identities": ["GREP"]}, "tool_identity_malformed"),
         ({"requested_identity": "mcp__server"}, "tool_identity_malformed"),
         ({"requested_identity": "mcp__server__tool__suffix", "declared_identities": ["mcp__server__tool"]}, "tool_identity_undeclared"),
         ({"requested_identity": "mcp__server__search_extra", "declared_identities": ["mcp__server__search"]}, "tool_identity_undeclared"),

@@ -50,6 +50,7 @@ from app.execution.api import (
     mcp_capability_subject,
     payload_with_authorized_mcp_registration,
     reauthorize_mcp_capabilities,
+    restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
     worker_capability_context,
@@ -1780,7 +1781,7 @@ async def _create_worker_runtime_sandbox_lease(
         sandbox_mode="ephemeral",
         provider="fake",
         browser_enabled=False,
-        ttl_seconds=1800,
+        ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
         resource_limits_json={},
         user_visible_payload_json=_runtime_sandbox_workspace_payload(),
         lease_payload_json=lease_payload,
@@ -3204,7 +3205,7 @@ async def reconcile_executor_terminal_result(
     run_payload_value = context.get("run_payload")
     if not isinstance(run_payload_value, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
-    run_payload = RunPayload(**run_payload_value)
+    run_payload = _restored_run_payload(run_payload_value, RunPayload, result.result)
     adapter_name = str(context.get("adapter_name") or "").strip()
     if not adapter_name:
         raise ValueError("executor_reconciliation_adapter_name_missing")

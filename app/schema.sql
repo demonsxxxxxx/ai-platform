@@ -528,6 +528,8 @@ create table if not exists sessions (
   user_id text references users(id),
   agent_id text not null,
   title text not null default '',
+  title_source text not null default 'initial'
+    check (title_source in ('initial', 'generated', 'user')),
   status text not null default 'active',
   purpose text not null default 'conversation'
     check (purpose in ('conversation', 'builder_test')),
@@ -542,6 +544,11 @@ create table if not exists sessions (
     tenant_id, agent_id, admitted_agent_profile_revision
   ) references agent_profile_revisions(tenant_id, agent_id, revision)
 );
+
+alter table sessions add column if not exists title_source text not null default 'initial';
+alter table sessions drop constraint if exists chk_sessions_title_source;
+alter table sessions add constraint chk_sessions_title_source
+  check (title_source in ('initial', 'generated', 'user'));
 
 create table if not exists runs (
   id text primary key,

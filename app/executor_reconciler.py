@@ -11,6 +11,7 @@ from dataclasses import replace
 
 from app import repositories
 from app.db import transaction
+from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.mcp.api import (
@@ -65,7 +66,10 @@ def _reconciliation_request(lease_row: dict[str, Any], run_payload: RunPayload) 
     )
 
 
-def _context_payload(lease_row: dict[str, Any]) -> tuple[dict[str, Any], RunPayload]:
+def _context_payload(
+    lease_row: dict[str, Any],
+    terminal_result: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], RunPayload]:
     context = lease_row.get("executor_reconciliation_context_json")
     if not isinstance(context, dict):
         raise ValueError("executor_reconciliation_context_missing")
@@ -75,14 +79,18 @@ def _context_payload(lease_row: dict[str, Any]) -> tuple[dict[str, Any], RunPayl
     run_payload_data = context.get("run_payload")
     if not isinstance(run_payload_data, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
-    return context, RunPayload(**run_payload_data)
+    return context, restored_sandbox_run_payload(
+        run_payload_data,
+        RunPayload,
+        terminal_result if terminal_result is not None else {},
+    )
 
 
 def _context_and_payload(lease_row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], RunPayload]:
-    context, run_payload = _context_payload(lease_row)
     terminal_result = lease_row.get("executor_terminal_json")
     if not isinstance(terminal_result, dict):
         raise ValueError("executor_terminal_result_missing")
+    context, run_payload = _context_payload(lease_row, terminal_result)
     return context, terminal_result, run_payload
 
 
@@ -90,8 +98,20 @@ async def _collect_workspace_and_convert_result(
     lease_row: dict[str, Any],
     *,
     registry: AdapterRegistry,
+    claim_token: str,
 ) -> tuple[ExecutorResult, Any, Any]:
     context, terminal_result, run_payload = _context_and_payload(lease_row)
+    diagnostics = terminal_result.get("diagnostics")
+    if isinstance(diagnostics, list) and diagnostics:
+        async with transaction() as conn:
+            persisted = await sandbox_lease_repository.record_sandbox_executor_terminal_diagnostics(
+                conn,
+                lease_id=str(lease_row["id"]),
+                claim_token=claim_token,
+                diagnostics=[str(item) for item in diagnostics],
+            )
+        if not persisted:
+            raise RuntimeError("executor_reconciliation_claim_lost")
     adapter_name = str(context.get("adapter_name") or "").strip()
     adapter = registry.get(adapter_name)
     request = _reconciliation_request(lease_row, run_payload)
@@ -310,6 +330,7 @@ async def reconcile_pending_executor_terminals_once(
                 result, provider, lease = await _collect_workspace_and_convert_result(
                     lease_row,
                     registry=adapter_registry,
+                    claim_token=claim_token,
                 )
                 await reconcile_executor_terminal_result(
                     lease_row=lease_row,
@@ -338,6 +359,18 @@ async def reconcile_pending_executor_terminals_once(
                 )
             raise
         except Exception as exc:  # noqa: BLE001 - durable retry boundary.
+            _logger.exception(
+                "executor_terminal_reconciliation_attempt_failed",
+                extra={
+                    "lease_id": str(lease_row["id"]),
+                    "run_id": str(lease_row["run_id"]),
+                    "attempt_id": str(lease_row.get("attempt_id") or ""),
+                    "attempt_count": int(
+                        lease_row.get("executor_reconciliation_attempt_count") or 0
+                    ),
+                    "error_type": type(exc).__name__,
+                },
+            )
             async with transaction() as conn:
                 await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
                     conn,

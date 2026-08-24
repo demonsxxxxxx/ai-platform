@@ -39,7 +39,35 @@ test("projects the controlled native Skill sandbox admission failure stage", () 
   );
 });
 
-test("projects an actionable bounded file-size terminal without backend detail", () => {
+test("projects tool evidence mismatch as a specific safe terminal without backend detail", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-tool-evidence",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "tool_invocation_evidence_mismatch",
+      message: "/workspace/private-command --token private-token",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-tool-evidence",
+  );
+
+  assert.equal(result.content.includes("tool_invocation_evidence_mismatch"), true);
+  const terminal = result.parts[0];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "tool_invocation_evidence_mismatch");
+  assert.equal(terminal.stage, "tool_evidence");
+  assert.doesNotMatch(JSON.stringify(result), /workspace|private-token/);
+});
+
+test("projects oversized context files as a specific safe terminal", () => {
   const result = processMessageEvent(
     "final_detail",
     {
@@ -58,7 +86,7 @@ test("projects an actionable bounded file-size terminal without backend detail",
     "run-file-too-large",
   );
 
-  assert.equal(result.content, "文件超过 32 MB 处理上限，请选择更小的文件后重试。");
+  assert.equal(result.content, "文件超过 32 MB 处理上限。请选择更小的文件后重试。");
   const terminal = result.parts[0];
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected run status");
@@ -248,11 +276,13 @@ test("keeps safe partial live output while surfacing a result-unavailable termin
 test("fails closed for unknown or mismatched terminal detail", () => {
   for (const data of [
     {
+      projection_version: "ai-platform.chat-public-projection.v1",
       detail_kind: "failed",
       detail_code: "private_executor_failure",
       message: "secret token at /home/private/runtime.log",
     },
     {
+      projection_version: "ai-platform.chat-public-projection.v1",
       detail_kind: "cancelled",
       detail_code: "run_timeout",
       message: "secret token at /home/private/runtime.log",
@@ -271,6 +301,31 @@ test("fails closed for unknown or mismatched terminal detail", () => {
     );
     assert.deepEqual(result.parts, []);
     assert.equal(result.content, "");
+  }
+});
+
+test("fails closed for an absent or foreign terminal projection version", () => {
+  for (const projectionVersion of [undefined, "foreign-projection.v1"]) {
+    const result = processMessageEvent(
+      "final_detail",
+      {
+        run_id: "run-version-rejected",
+        projection_version: projectionVersion,
+        detail_kind: "failed",
+        detail_code: "context_file_pdf_password_required",
+        message: "secret token at /home/private/runtime.log",
+      },
+      [],
+      "",
+      [],
+      0,
+      [],
+      false,
+      "run-version-rejected",
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.content, "");
+    assert.doesNotMatch(JSON.stringify(result), /secret|runtime|token/i);
   }
 });
 

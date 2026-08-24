@@ -62,7 +62,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
         "tests/test_sandbox_runtime_evidence_script.py",
-        "tests/test_b2_sandbox_readiness.py",
         "tests/test_contract.py",
     ),
     "repository-worker-streaming": (
@@ -79,17 +78,21 @@ BACKEND_TEST_SHARDS = {
         "tests/test_app_lifespan.py",
         "tests/test_runtime_launch_script.py",
     ),
-    "release-governance": (
+    "release-governance-policy": (
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
         "tests/test_ci_image_scope.py",
-        "tests/test_pre_push_readiness.py",
         "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
-        "tests/test_s72_atomic_recovery_authority.py",
         "tests/test_release_image_manifest.py",
+    ),
+    "release-governance-readiness": (
+        "tests/test_pre_push_readiness.py",
+    ),
+    "release-governance-authority": (
+        "tests/test_s72_atomic_recovery_authority.py",
         "tests/test_governance_readiness.py",
         "tests/test_release_authority.py",
     ),
@@ -125,7 +128,7 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "name: packaged backend image build" in workflow
     assert "if: ${{ always() }}" in workflow
     assert "python -m compileall -q app tools scripts" in workflow
-    assert "tests/test_b2_sandbox_readiness.py" in workflow
+    assert "tests/test_b2_sandbox_readiness.py" not in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
@@ -158,14 +161,28 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     actual_shards = {
         entry["shard"]: tuple(entry["test_files"].split()) for entry in matrix_entries
     }
+    actual_redis = {
+        entry["shard"]: (entry["redis_image"], entry["redis_url"])
+        for entry in matrix_entries
+    }
     assert actual_shards == BACKEND_TEST_SHARDS
+    assert actual_redis == {
+        "sandbox-runtime": ("redis:7.4-alpine", "redis://localhost:6379/15"),
+        "repository-worker-streaming": (
+            "redis:7.4-alpine",
+            "redis://localhost:6379/15",
+        ),
+        "release-governance-policy": ("", ""),
+        "release-governance-readiness": ("", ""),
+        "release-governance-authority": ("", ""),
+    }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 39
-    assert tests_job.count("image: redis:7.4-alpine") == 1
+    assert len(all_selectors) == len(set(all_selectors)) == 38
+    assert "image: ${{ matrix.redis_image }}" in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job
     assert (
-        "AI_PLATFORM_SSE_REDIS_TEST_URL: redis://localhost:6379/15" in tests_job
+        "AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}" in tests_job
     )
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")

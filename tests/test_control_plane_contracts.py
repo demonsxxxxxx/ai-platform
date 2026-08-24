@@ -1,3 +1,5 @@
+import pytest
+
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
@@ -326,6 +328,24 @@ def test_public_payload_sanitizer_redacts_secret_like_executor_values():
     assert "slack-access-secret" not in serialized
     assert "nested-bearer-token" not in serialized
     assert "smoke-secret-token" not in serialized
+
+
+@pytest.mark.parametrize(
+    "secret_text",
+    [
+        "ordinary api_key=sk-abcdefghi12 text",
+        "ordinary Bearer abcdefgh1 text",
+        "ordinary abcdefghij.klmnopqrst.uvwxyzabcd text",
+    ],
+)
+def test_public_payload_strict_mode_redacts_provider_secret_corpus_only(
+    secret_text: str,
+):
+    payload = sanitize_public_payload({"message": secret_text})
+
+    assert isinstance(payload, dict)
+    assert secret_text not in payload["message"]
+    assert "ordinary" in payload["message"]
 
 
 def test_public_payload_sanitizer_preserves_safe_token_like_text():

@@ -223,6 +223,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "mcp_tools",
     )
     assert (
+        "sessions",
+        "title_source",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
         "agent_profile_revisions",
         "skill_set",
         "jsonb",
@@ -240,6 +246,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "sessions",
+        "chk_sessions_title_source",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "runs",
         "mcp_context_id",
@@ -442,7 +452,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "83cd476628e2a7814da471b600804fde3f4c3fc2204426663718bef3b46235d5"
+        "365b972f65f791ff1da58ba9fc4a4628a9bc3fcac7d36963ec6706a83ff29473"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

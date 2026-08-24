@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  PUBLIC_RUN_STREAM_SCHEMA,
+  STREAM_DESIGN_ID,
+} from "../../../generated/publicRunStreamV3.ts";
 import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type {
@@ -379,6 +383,174 @@ function nonClosingSseEventResponse(event: string, data: Record<string, unknown>
     { headers: { "content-type": "text/event-stream" } },
   );
 }
+
+function controlledPublicRunLifecycle(runId: string) {
+  const streamIncarnation = 1;
+  const encoder = new TextEncoder();
+  let finish: (() => void) | null = null;
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        const streamOpen = {
+          schema: PUBLIC_RUN_STREAM_SCHEMA,
+          event_id: `stream-open-${runId}`,
+          run_id: runId,
+          stream_incarnation: streamIncarnation,
+          emitted_at: "2026-08-21T00:00:00Z",
+          event_type: "stream_open",
+          payload: { design_id: STREAM_DESIGN_ID },
+        };
+        controller.enqueue(
+          encoder.encode(
+            `id: ${runId}:${streamIncarnation}:1-0\nevent: stream_open\ndata: ${JSON.stringify(streamOpen)}\n\n`,
+          ),
+        );
+        finish = () => {
+          const terminal = {
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: `terminal-${runId}`,
+            run_id: runId,
+            stream_incarnation: streamIncarnation,
+            emitted_at: "2026-08-21T00:00:01Z",
+            event_type: "terminal",
+            payload: {
+              event_id: `terminal-${runId}`,
+              hydrate_required: true,
+              status: "cancelled",
+            },
+          };
+          const end = {
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: `end-${runId}`,
+            run_id: runId,
+            stream_incarnation: streamIncarnation,
+            emitted_at: "2026-08-21T00:00:02Z",
+            event_type: "end",
+            payload: { terminal_event_id: terminal.event_id },
+          };
+          controller.enqueue(
+            encoder.encode(
+              `id: ${runId}:${streamIncarnation}:2-0\nevent: terminal\ndata: ${JSON.stringify(terminal)}\n\n` +
+                `id: ${runId}:${streamIncarnation}:3-0\nevent: end\ndata: ${JSON.stringify(end)}\n\n`,
+            ),
+          );
+          controller.close();
+        };
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  return {
+    response,
+    finish: () => {
+      if (!finish) throw new Error("stream controller not initialized");
+      const complete = finish;
+      finish = null;
+      complete();
+    },
+  };
+}
+
+test("queued submit clears chat-queue when the current SSE v3 stream opens", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const toast = (await import("react-hot-toast")).default;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = dom.window.fetch;
+  const originalToastLoading = toast.loading;
+  const originalToastDismiss = toast.dismiss;
+  const loadedToastIds: Array<string | undefined> = [];
+  const dismissedToastIds: Array<string | undefined> = [];
+  let finishStream: (() => void) | null = null;
+  let forcedTerminal = false;
+  let releasedOnQueueTransition = false;
+  let forcedTerminalTimer: ReturnType<typeof setTimeout> | null = null;
+
+  dom.window.fetch = async () => {
+    const stream = controlledPublicRunLifecycle("run-queue-open");
+    finishStream = stream.finish;
+    forcedTerminalTimer = setTimeout(() => {
+      forcedTerminal = true;
+      const finish = finishStream;
+      finishStream = null;
+      finish?.();
+    }, 1_000);
+    return stream.response;
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "队列切换会话",
+    session_id: "session-queue-open",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-queue-open",
+    run_id: "run-queue-open",
+    trace_id: "trace-queue-open",
+    status: "queued",
+    queue_position: 1,
+  })) as typeof sessionApi.submitChat;
+  sessionApi.getEvents = async () => ({
+    events: [
+      {
+        id: "run-cancelled-run-queue-open",
+        event_type: "final_detail",
+        run_id: "run-queue-open",
+        timestamp: "2026-08-21T00:00:01Z",
+        data: {
+          run_id: "run-queue-open",
+          detail_kind: "cancelled",
+          detail_code: "run_cancelled",
+        },
+      },
+    ],
+  });
+  toast.loading = ((...args: Parameters<typeof toast.loading>) => {
+    loadedToastIds.push(args[1]?.id as string | undefined);
+    return originalToastLoading(...args);
+  }) as typeof toast.loading;
+  toast.dismiss = ((...args: Parameters<typeof toast.dismiss>) => {
+    dismissedToastIds.push(args[0]);
+    if (args[0] === "chat-queue" && !forcedTerminal) {
+      releasedOnQueueTransition = true;
+      if (forcedTerminalTimer) clearTimeout(forcedTerminalTimer);
+      forcedTerminalTimer = null;
+      const finish = finishStream;
+      finishStream = null;
+      finish?.();
+    }
+    return originalToastDismiss(...args);
+  }) as typeof toast.dismiss;
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("执行排队任务"), {
+        status: "accepted",
+      });
+    });
+    await settle(harness.act);
+
+    assert.deepEqual(loadedToastIds, ["chat-queue"]);
+    assert.equal(releasedOnQueueTransition, true);
+    assert.equal(dismissedToastIds[0], "chat-queue");
+    assert.equal(
+      dismissedToastIds.every((toastId) => toastId === "chat-queue"),
+      true,
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalFetch;
+    if (forcedTerminalTimer) clearTimeout(forcedTerminalTimer);
+    toast.loading = originalToastLoading;
+    toast.dismiss = originalToastDismiss;
+    await harness.cleanup();
+  }
+});
 
 test("useAgent defers the locked Skill label until the server projects it", async () => {
   const harness = await loadReactHarness();
@@ -3238,6 +3410,7 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
         event: "final_detail",
         data: {
           run_id: "run-failed",
+          projection_version: "ai-platform.chat-public-projection.v1",
           detail_kind: "failed",
           detail_code: "run_failed",
         },
@@ -3422,7 +3595,7 @@ test("useAgent consumes lambchat's runless error then done fallback exactly once
   }
 });
 
-test("useAgent waits for a failed done status when the fallback error is public text", async () => {
+test("useAgent preserves an actionable hydrated failure without a generic duplicate", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -3462,8 +3635,10 @@ test("useAgent waits for a failed done status when the fallback error is public 
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-public-fallback-failed",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
-            detail_code: "run_failed",
+            detail_code: "context_file_pdf_password_required",
+            message: "PdfReadError at C:\\private\\encrypted.pdf?token=secret",
           },
         }]
       : [],
@@ -3476,19 +3651,23 @@ test("useAgent waits for a failed done status when the fallback error is public 
     await settle(harness.act);
 
     const serializedMessages = JSON.stringify(harness.hook.messages);
+    const runStatusParts = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .filter((part) => part.type === "run_status");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
+    assert.equal(runStatusParts.length, 1);
     assert.equal(
-      harness.hook.messages
-        .flatMap((message) => message.parts || [])
-        .filter(
-          (part) =>
-            part.type === "run_status" &&
-            part.event_id === "terminal-failure:run-public-fallback-failed",
-        ).length,
-      1,
+      runStatusParts[0]?.type === "run_status" && runStatusParts[0].event_type,
+      "context_file_pdf_password_required",
     );
+    assert.equal(
+      runStatusParts[0]?.type === "run_status" && runStatusParts[0].message,
+      "PDF 文件需要密码。请先解除密码保护后重新上传。",
+    );
+    assert.equal(serializedMessages.includes("任务未能完成。请稍后重试"), false);
     assert.equal(serializedMessages.includes("Executor failed"), false);
+    assert.doesNotMatch(serializedMessages, /PdfReadError|private|token=secret/i);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
@@ -3689,6 +3868,7 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-transport-interruption",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -3774,6 +3954,7 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-reconcile-owner",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -3893,6 +4074,7 @@ test("useAgent production 401 fails closed without refresh or status reconciliat
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-initial-post-refresh",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -4124,6 +4306,7 @@ test("useAgent uses the backend current run subject before normalizing a failed 
           timestamp: "2026-07-15T00:00:02Z",
           data: {
             run_id: "run-history-failed",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -4470,6 +4653,7 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
           timestamp: "2026-07-15T00:00:02Z",
           data: {
             run_id: "run-history-interrupted",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },
@@ -5041,6 +5225,95 @@ test("useAgent presents a safe local card when terminal history hydration fails"
   }
 });
 
+test("useAgent rehydrates durable partial text for a failed terminal run", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let eventQueries = 0;
+  const historyEvents = [
+    {
+      id: "durable-partial:user",
+      event_type: "user:message",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:00Z",
+      data: { content: "生成报告" },
+    },
+    {
+      id: "durable-partial:delta",
+      event_type: "message:chunk",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:01Z",
+      data: { content: "已完成可公开的部分。" },
+    },
+    {
+      id: "durable-partial:detail",
+      event_type: "final_detail",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:02Z",
+      data: { detail_kind: "failed", detail_code: "executor_reported_failure" },
+    },
+    {
+      id: "durable-partial:done",
+      event_type: "done",
+      run_id: "run-durable-partial",
+      timestamp: "2026-08-12T00:00:02Z",
+      data: { status: "failed" },
+    },
+  ];
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-durable-partial",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async () => {
+    eventQueries += 1;
+    return {
+      current_run_id: "run-durable-partial",
+      events: eventQueries === 1 ? historyEvents.slice(0, 1) : historyEvents,
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-durable-partial",
+    run_id: "run-durable-partial",
+    status: "failed",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-durable-partial");
+    });
+    await settle(harness.act);
+
+    assert.equal(eventQueries, 2);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.ok(
+      harness.hook.messages.some(
+        (message) => message.role === "assistant" && message.content === "已完成可公开的部分。",
+      ),
+    );
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .filter((part) => part.type === "run_status").length,
+      0,
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent fails closed after initial reload status retries are exhausted", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -5168,6 +5441,7 @@ test("useAgent immediately reconciles a non-terminal application error without s
           timestamp: "2026-07-15T00:00:01Z",
           data: {
             run_id: "run-nonterminal-error",
+            projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
           },

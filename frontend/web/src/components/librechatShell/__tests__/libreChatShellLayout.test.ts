@@ -86,7 +86,8 @@ test("composer and right panel expose LibreChat-style regions without backend au
     sidePanel,
     /<section\b[^>]*aria-labelledby="librechat-context-overview-label"[^>]*>[\s\S]*?<h2\b[^>]*id="librechat-context-overview-label"[^>]*>[\s\S]*?workbench\.workspaceContext/,
   );
-  assert.match(sidePanel, /section="run"/);
+  assert.match(sidePanel, /data-librechat-context-section="files"/);
+  assert.doesNotMatch(sidePanel, /section="run"/);
   assert.doesNotMatch(sidePanel, /data-librechat-side-tab=/);
   assert.doesNotMatch(sidePanel, /role="tablist"|role="tab"/);
   assert.doesNotMatch(sidePanel, /activeTab|setActiveTab/);

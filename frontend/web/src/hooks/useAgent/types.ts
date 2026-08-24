@@ -8,12 +8,17 @@ import type {
 } from "../../types";
 import type { ExecutionTimelineKind } from "../../types/message";
 import type { SelectedSkillRecoverableCode } from "../useSelectedSkillTask";
-import type { RunControlLifecycle } from "./runControlLifecycle";
+import type {
+  RunControlCancelResult,
+  RunControlLifecycle,
+} from "./runControlLifecycle";
 
 export type SubmissionOutcome =
   | { status: "accepted" }
   | { status: "recoverable_error"; code: SelectedSkillRecoverableCode }
   | { status: "failed" };
+
+export type StopGenerationResult = RunControlCancelResult;
 
 export const CHAT_PUBLIC_PROJECTION_VERSION =
   "ai-platform.chat-public-projection.v1";
@@ -98,6 +103,7 @@ export type AssistantTextProjectionKind =
 // Event types from backend
 export type EventType =
   | "metadata"
+  | "stream_open"
   | "message:chunk"
   | "final_detail"
   | "user:message"
@@ -121,7 +127,6 @@ export type EventType =
   | "sandbox:error"
   | "token:usage"
   | "skills:changed"
-  | "queue_update"
   | "heartbeat"
   | "complete"
   | "done"
@@ -189,9 +194,8 @@ export interface EventData {
   action?: string;
   skill_name?: string;
   files_count?: number;
-  // queue_update event fields
+  // Public terminal and transport status fields
   status?: string;
-  queue_position?: number;
   // Versioned public Chat projection fields
   projection_version?: string;
   projection_kind?: string;
@@ -568,7 +572,7 @@ export interface UseAgentReturn {
   ) => Promise<SubmissionOutcome>;
   canRetryPendingSubmission: boolean;
   retryPendingSubmission: () => Promise<void>;
-  stopGeneration: () => Promise<void>;
+  stopGeneration: () => Promise<StopGenerationResult>;
   clearMessages: () => void;
   loadHistory: (
     targetSessionId: string,

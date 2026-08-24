@@ -18,7 +18,6 @@ from openpyxl import Workbook
 
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.file_parser_contracts import (
-    MaterializedAttachmentFact,
     build_attachment_preprocessing_contract,
 )
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
@@ -243,6 +242,9 @@ def test_removed_v1_execute_route_returns_404(tmp_path):
 
 
 def write_minimal_docx(path: Path) -> None:
+    if path.parent.name != "inputs":
+        path = path.parent / "inputs" / path.name
+    path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
             "[Content_Types].xml",
@@ -267,17 +269,6 @@ def write_minimal_docx(path: Path) -> None:
   <w:body><w:p><w:r><w:t>translated</w:t></w:r></w:p></w:body>
 </w:document>""",
         )
-
-
-def write_minimal_xlsx(path: Path, *, formula: str = "=1+2") -> None:
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet["A1"] = "metric"
-    sheet["B1"] = "value"
-    sheet["A2"] = "total"
-    sheet["B2"] = formula
-    workbook.save(path)
-    workbook.close()
 
 
 def write_dimensionless_validation_xlsx(path: Path) -> None:
@@ -566,6 +557,56 @@ async def test_executor_optional_bash_can_complete_without_invocation(monkeypatc
 
     assert result["status"] == "completed"
     assert result[TOOL_INVOCATION_EVIDENCE_KEY] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_acknowledged", [True, False])
+async def test_executor_records_read_only_grep_without_terminal_evidence_failure(
+    monkeypatch,
+    tmp_path,
+    callback_acknowledged,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        assert (
+            await lifecycle(
+                {
+                    "tool_name": "Grep",
+                    "invocation_id": "grep-call-1",
+                    "lifecycle": "started",
+                }
+            )
+        ) is callback_acknowledged
+        return sdk_result("safe answer")
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [{"identity": "Grep"}]
+    request = ExecutorTaskRequest.model_validate(raw)
+    callbacks = []
+
+    async def emit_event(event):
+        callbacks.append(event)
+        return callback_acknowledged
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert result["message"] == "safe answer"
+    assert result[TOOL_INVOCATION_EVIDENCE_KEY] == []
+    assert any(
+        isinstance(event, executor_app._PrivateExecutionFact)
+        and event.fact == {
+            "invocation_id": "grep-call-1",
+            "tool_name": "Grep",
+            "lifecycle": "started",
+        }
+        for event in callbacks
+    )
 
 
 @pytest.mark.asyncio
@@ -1026,6 +1067,73 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     assert "tool-call-1" not in json.dumps(capability_events)
 
 
+@pytest.mark.asyncio
+async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
+    monkeypatch,
+    tmp_path,
+):
+    """A real SDK failure (timeout) must not be masked by pending evidence.
+
+    Before the fix, a started-but-incomplete tool invocation downgraded a
+    claude_agent_sdk_timeout into tool_invocation_evidence_mismatch, hiding
+    the real cause ("Capability lifecycle sequence is invalid").
+    """
+
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        await kwargs["on_tool_lifecycle"](
+            {
+                "tool_name": "Skill",
+                "invocation_id": "skill-call-1",
+                "lifecycle": "started",
+            }
+        )
+        return sdk_result(
+            "timed out",
+            error="claude_agent_sdk_timeout",
+            received_structured_terminal=False,
+            terminal_reason=None,
+            turn_diagnostics={
+                "terminal_class": "timeout",
+                "error_code": "claude_agent_sdk_timeout",
+                "action": "retry_or_split_request",
+                "retryable": True,
+                "counters": {
+                    "assistant_messages": 85,
+                    "tool_policy_denials": 4,
+                },
+                "tool_policy_denials_detail": [
+                    {"tool_name": "Bash", "reason": "parameter_not_authorized"}
+                ],
+            },
+        )
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "claude_agent_sdk_timeout"
+    message = body["error_message"]
+    assert message.startswith("error=claude_agent_sdk_timeout")
+    assert "terminal_class=timeout" in message
+    assert "action=retry_or_split_request" in message
+    assert "assistant_messages=85" in message
+    assert "tool_policy_denials=4" in message
+    assert "denied_tools=Bash(parameter_not_authorized)" in message
+
+
 @pytest.mark.parametrize(
     ("first_owner", "expected_error_code"),
     [
@@ -1141,11 +1249,19 @@ def test_executor_rejects_call_id_reused_across_write_and_mcp(tmp_path, monkeypa
     assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
 
 
-@pytest.mark.parametrize("tool_name", ["Read", "Write"])
-def test_executor_rejects_incomplete_non_bash_local_tool(
+@pytest.mark.parametrize(
+    ("tool_name", "expected_status", "expected_error"),
+    [
+        ("Read", "completed", None),
+        ("Write", "failed", "tool_invocation_evidence_mismatch"),
+    ],
+)
+def test_executor_treats_incomplete_read_only_lifecycle_as_telemetry(
     tmp_path,
     monkeypatch,
     tool_name,
+    expected_status,
+    expected_error,
 ):
     class StubSettings:
         claude_agent_sdk_enabled = True
@@ -1176,9 +1292,9 @@ def test_executor_rejects_incomplete_non_bash_local_tool(
         headers=auth_headers(),
     ).json()
 
-    assert body["status"] == "failed"
-    assert body["message"] == ""
-    assert body["error_code"] == "tool_invocation_evidence_mismatch"
+    assert body["status"] == expected_status
+    assert body["message"] == ("must not qualify" if expected_error is None else "")
+    assert body.get("error_code") == expected_error
     assert body["capability_evidence"] == []
     assert body[TOOL_INVOCATION_EVIDENCE_KEY] == []
 
@@ -1845,7 +1961,8 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
     assert body["status"] == "failed"
     assert body["sdk_used"] is used_sdk
     assert body["error_code"] == expected_error_code
-    assert body["error_message"] == sdk_error
+    assert body["error_message"].startswith(f"error={sdk_error}")
+    assert "terminal_class=upstream_error" in body["error_message"]
     assert body["used_skills"] == []
     assert body["sdk_turn_diagnostics"] == {
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
@@ -1983,12 +2100,8 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert not any("tool-permission" in str(callback) for callback in callbacks)
 
 
-def test_executor_runs_selected_authorized_baoyu_docx_skill_without_sdk_discretion(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
     workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
+    write_minimal_docx(workspace / "inputs" / "source.docx")
     script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
     script.parent.mkdir(parents=True)
     script.write_text(
@@ -2638,7 +2751,56 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_context(tmp_path, monkeypatch):
+async def test_default_executor_runs_raw_xlsx_from_inputs_without_typed_attachment_context(tmp_path, monkeypatch):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "book.xlsx").write_bytes(b"not-a-workbook")
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_sdk(**kwargs):
+        captured.update(kwargs)
+        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
+    payload = task_payload()
+    payload["config"].update(
+        {
+            "skill_ids": ["qa-rag-skill"],
+            "input_files": ["file-a"],
+            "materialized_file_names": ["book.xlsx"],
+            "context_manifest": {
+                "queue_attempt_id": "qat-attempt-a",
+                "schema_version": "ai-platform.context-manifest.v1",
+                "files": [{"file_id": "file-a"}],
+            },
+            "context_retrieval_scope": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "agent_id": "general-agent",
+            },
+        }
+    )
+
+    result = await _default_executor_runner(
+        ExecutorTaskRequest.model_validate(payload),
+        tmp_path,
+        lambda _event: asyncio.sleep(0),
+    )
+
+    assert result["status"] == "completed"
+    assert "attachment_contexts" not in captured
+    assert (inputs / "book.xlsx").read_bytes() == b"not-a-workbook"
+
+
+@pytest.mark.asyncio
+async def test_default_executor_uses_raw_xlsx_without_typed_context(tmp_path, monkeypatch):
     source = tmp_path / "source.xlsx"
     write_dimensionless_validation_xlsx(source)
     raw = source.read_bytes()
@@ -2669,7 +2831,7 @@ async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_
         }
 
     async def fake_sdk(**kwargs):
-        captured["attachment_contexts"] = kwargs["attachment_contexts"]
+        captured.update(kwargs)
         return sdk_result(
             "xlsx answer",
             used_skills=["qa-rag-skill"],
@@ -2717,124 +2879,11 @@ async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_
     result = await _default_executor_runner(request, tmp_path, emit_event)
 
     assert result["status"] == "completed"
-    evidence = result["attachment_parser_evidence"][0]
-    assert evidence["status"] == "parsed"
-    assert evidence["file_id"] == "file-a"
-    assert evidence["nonempty_cells"] >= 4
-    assert evidence["rows_emitted"] == 2
-    assert evidence["truncated"] is True
-    typed_context = captured["attachment_contexts"][0]
-    rendered = json.dumps(typed_context.content, ensure_ascii=False, sort_keys=True)
-    assert "Validation" in rendered
-    assert "GMP-VAL-002 Requirement" in rendered
-    assert "ACCEPT-XLSX-9472" in rendered
+    assert "attachment_contexts" not in captured
 
 
 @pytest.mark.asyncio
-async def test_default_executor_keeps_duplicate_xlsx_basenames_bound_to_distinct_file_ids(
-    tmp_path,
-    monkeypatch,
-):
-    first_path = tmp_path / "first.xlsx"
-    second_path = tmp_path / "second.xlsx"
-    write_minimal_xlsx(first_path, formula="=1+2")
-    write_minimal_xlsx(second_path, formula="=3+4")
-    raw_by_file = {
-        "file-a": first_path.read_bytes(),
-        "file-b": second_path.read_bytes(),
-    }
-    first_path.unlink()
-    second_path.unlink()
-    captured = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_stage(_self, *, file_id, workspace_root, max_bytes, **_scope):
-        raw = raw_by_file[file_id]
-        target = Path(workspace_root) / "context" / file_id / "book.xlsx"
-        target.parent.mkdir(parents=True)
-        target.write_bytes(raw)
-        return {
-            "file_id": file_id,
-            "workspace_path": f"context/{file_id}/book.xlsx",
-            "bytes_staged": len(raw),
-            "max_bytes": max_bytes,
-        }
-
-    async def fake_sdk(**kwargs):
-        captured["attachment_contexts"] = kwargs["attachment_contexts"]
-        return sdk_result(
-            "two workbook answer",
-            used_skills=["qa-rag-skill"],
-            used_skills_source="executor_hook",
-        )
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
-        fake_stage,
-    )
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
-    facts = [
-        MaterializedAttachmentFact(
-            file_id=file_id,
-            file_name="book.xlsx",
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            byte_count=len(raw),
-            sha256=hashlib.sha256(raw).hexdigest(),
-        )
-        for file_id, raw in raw_by_file.items()
-    ]
-    payload = task_payload()
-    payload["config"].update(
-        {
-            "skill_ids": ["qa-rag-skill"],
-            "input_files": ["file-a", "file-b"],
-            "materialized_file_names": ["book.xlsx", "book.xlsx"],
-            "tool_policy_subjects": context_stage_policy(),
-            "context_manifest": {
-                "queue_attempt_id": "qat-attempt-a",
-                "schema_version": "ai-platform.context-manifest.v1",
-                "files": [{"file_id": "file-a"}, {"file_id": "file-b"}],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    attachment_facts=facts,
-                ),
-            },
-            "context_retrieval_scope": {
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "agent_id": "general-agent",
-            },
-        }
-    )
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    async def emit_event(_event):
-        return None
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-    assert [row["file_id"] for row in result["attachment_parser_evidence"]] == [
-        "file-a",
-        "file-b",
-    ]
-    assert result["attachment_parser_evidence"][0]["sha256"] != result[
-        "attachment_parser_evidence"
-    ][1]["sha256"]
-    formulas = [
-        context.content["workbook"]["sheets"][0]["rows"][1]["cells"][1]["value"]
-        for context in captured["attachment_contexts"]
-    ]
-    assert formulas == ["=1+2", "=3+4"]
-
-
-@pytest.mark.asyncio
-async def test_default_executor_fails_before_sdk_for_malformed_xlsx(tmp_path, monkeypatch):
+async def test_default_executor_allows_malformed_xlsx_for_skill_handling(tmp_path, monkeypatch):
     class StubSettings:
         claude_agent_sdk_enabled = True
 
@@ -2850,7 +2899,7 @@ async def test_default_executor_fails_before_sdk_for_malformed_xlsx(tmp_path, mo
         }
 
     async def fail_sdk(**_kwargs):
-        raise AssertionError("SDK must not run without positive XLSX parser evidence")
+        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr(
@@ -2891,24 +2940,19 @@ async def test_default_executor_fails_before_sdk_for_malformed_xlsx(tmp_path, mo
 
     result = await _default_executor_runner(request, tmp_path, emit_event)
 
-    assert result["status"] == "failed"
-    assert result["error_code"] == "xlsx_parse_failed"
-    assert result["sdk_used"] is False
+    assert result["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_default_executor_requires_server_context_stage_subject_for_xlsx(tmp_path, monkeypatch):
+async def test_default_executor_does_not_require_parser_stage_authorization(tmp_path, monkeypatch):
     class StubSettings:
         claude_agent_sdk_enabled = True
 
-    async def fail_stage(*_args, **_kwargs):
-        raise AssertionError("staging must not start without the exact server-owned subject")
+    async def fake_sdk(**_kwargs):
+        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
-        fail_stage,
-    )
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
     payload = task_payload()
     payload["config"].update(
         {
@@ -2941,23 +2985,19 @@ async def test_default_executor_requires_server_context_stage_subject_for_xlsx(t
 
     result = await _default_executor_runner(request, tmp_path, emit_event)
 
-    assert result["status"] == "failed"
-    assert result["error_code"] == "attachment_parser_staging_not_authorized"
+    assert result["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_default_executor_rejects_parser_file_absent_from_dispatched_manifest(tmp_path, monkeypatch):
+async def test_default_executor_ignores_legacy_parser_manifest_entries(tmp_path, monkeypatch):
     class StubSettings:
         claude_agent_sdk_enabled = True
 
-    async def fail_stage(*_args, **_kwargs):
-        raise AssertionError("staging must not expand beyond dispatched manifest file IDs")
+    async def fake_sdk(**_kwargs):
+        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
-        fail_stage,
-    )
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
     payload = task_payload()
     payload["config"].update(
         {
@@ -2992,8 +3032,7 @@ async def test_default_executor_rejects_parser_file_absent_from_dispatched_manif
 
     result = await _default_executor_runner(request, tmp_path, emit_event)
 
-    assert result["status"] == "failed"
-    assert result["error_code"] == "attachment_parser_manifest_file_mismatch"
+    assert result["status"] == "completed"
 
 
 def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path, monkeypatch):

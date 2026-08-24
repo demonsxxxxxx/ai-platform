@@ -29,19 +29,11 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
-from app.context.retrieval import ContextRetrievalDenied
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     _translation_target_language,
     run_claude_agent_sdk,
-)
-from app.file_parser_contracts import (
-    AttachmentPreprocessingError,
-    ParsedAttachmentContext,
-    attachment_requirements_from_contract,
-    dispatched_context_file_ids,
-    parse_xlsx_attachment,
 )
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
@@ -52,7 +44,8 @@ from app.public_execution import (
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
-    SANDBOX_LOCAL_TOOL_IDENTITIES,
+    SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
+    SANDBOX_READ_ONLY_TOOL_IDENTITIES,
     TOOL_INVOCATION_EVIDENCE_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
@@ -471,6 +464,45 @@ class _ExecutorCleanupError(RuntimeError):
         self.error_message = error_message
 
 
+def _expand_sdk_error_message(raw_error: str, sdk_result: object) -> str:
+    """Expand a structured SDK failure into a concrete, non-generic message.
+
+    The error_code stays machine-stable (e.g. claude_agent_sdk_timeout); the
+    error_message carries the actionable details a user or support needs to
+    understand exactly what happened: terminal class, recommended action,
+    output volume, and any tools the policy denied.
+    """
+
+    diagnostics = getattr(sdk_result, "turn_diagnostics", None)
+    if not isinstance(diagnostics, dict):
+        return raw_error
+    parts = [f"error={raw_error}"]
+    terminal_class = str(diagnostics.get("terminal_class") or "").strip()
+    if terminal_class:
+        parts.append(f"terminal_class={terminal_class}")
+    action = str(diagnostics.get("action") or "").strip()
+    if action:
+        parts.append(f"action={action}")
+    counters = diagnostics.get("counters")
+    if isinstance(counters, dict):
+        assistant_messages = counters.get("assistant_messages")
+        if assistant_messages is not None:
+            parts.append(f"assistant_messages={assistant_messages}")
+        denied_count = counters.get("tool_policy_denials")
+        if denied_count is not None:
+            parts.append(f"tool_policy_denials={denied_count}")
+    detail = diagnostics.get("tool_policy_denials_detail")
+    if isinstance(detail, list) and detail:
+        denied = ", ".join(
+            f"{item.get('tool_name')}({item.get('reason')})"
+            for item in detail[:8]
+            if isinstance(item, dict)
+        )
+        if denied:
+            parts.append(f"denied_tools={denied}")
+    return " | ".join(parts)
+
+
 def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
     """Keep known SDK terminal codes while classifying post-start SDK failures."""
 
@@ -781,19 +813,6 @@ def _authorized_capability_subject(subject: dict[str, Any]) -> bool:
     )
 
 
-def _attachment_stage_subject_authorized(request: ExecutorTaskRequest) -> bool:
-    identity = "mcp__ai-platform-context__stage_context_file_to_workspace"
-    return any(
-        str(subject.get("identity") or "") == identity
-        and _authorized_capability_subject(subject)
-        and bool(subject.get("write_capable"))
-        and {"file_id", "max_bytes"}.issubset(
-            {str(key) for key in subject.get("allowed_parameter_keys") or []}
-        )
-        for subject in _task_tool_policy_subjects(request)
-    )
-
-
 def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[str | None, str | None]:
     """Return a controlled Skill only with its canonical builtin execution identities."""
 
@@ -847,90 +866,6 @@ def _resolved_workspace_file(workspace_root: Path, candidate: Path) -> Path | No
     return resolved
 
 
-async def _preprocess_typed_attachments(
-    request: ExecutorTaskRequest,
-    workspace_root: Path,
-    emit_event: ExecutorEventEmitter,
-    *,
-    retrieval: PlatformContextRetrievalClient | None,
-    identity: ScopedContextRetrievalIdentity | None,
-) -> tuple[list[ParsedAttachmentContext], str | None]:
-    """Stage and parse server-required attachments through the scoped broker."""
-
-    manifest = request.config.get("context_manifest")
-    raw_contract = manifest.get("attachment_preprocessing") if isinstance(manifest, dict) else None
-    try:
-        requirements = attachment_requirements_from_contract(raw_contract)
-    except AttachmentPreprocessingError as exc:
-        return [], exc.code
-    if not requirements:
-        return [], None
-    manifest_file_ids = dispatched_context_file_ids(manifest)
-    if any(requirement.file_id not in manifest_file_ids for requirement in requirements):
-        return [], "attachment_parser_manifest_file_mismatch"
-    if not _attachment_stage_subject_authorized(request):
-        return [], "attachment_parser_staging_not_authorized"
-    if retrieval is None or identity is None:
-        return [], "attachment_parser_context_retrieval_unavailable"
-    contexts: list[ParsedAttachmentContext] = []
-    for requirement in requirements:
-        if not requirement.supported:
-            return contexts, "attachment_parser_unsupported"
-        await emit_event(
-            AgentEvent(
-                type="tool_call_started",
-                message=f"Platform attachment parser started: {requirement.parser_id}",
-                payload={
-                    "tool_name": "AttachmentParser",
-                    "file_id": requirement.file_id,
-                    "parser_id": requirement.parser_id,
-                    "parser_version": requirement.parser_version,
-                    "source": "platform_attachment_preprocessor",
-                },
-                admin_only=True,
-            )
-        )
-        try:
-            staged = await retrieval.stage_context_file_to_workspace(
-                file_id=requirement.file_id,
-                workspace_root=str(workspace_root),
-                max_bytes=requirement.max_bytes,
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-            )
-        except ContextRetrievalDenied:
-            return contexts, "attachment_parser_staging_denied"
-        except Exception:
-            return contexts, "attachment_parser_staging_failed"
-        if int(staged.get("bytes_staged") or -1) < 0 or int(staged.get("bytes_staged") or -1) > requirement.max_bytes:
-            return contexts, "attachment_parser_file_too_large"
-        workspace_path = str(staged.get("workspace_path") or "").replace("\\", "/")
-        staged_path = _resolved_workspace_file(workspace_root, workspace_root / workspace_path)
-        if staged_path is None:
-            return contexts, "attachment_parser_staged_file_invalid"
-        try:
-            parsed = parse_xlsx_attachment(path=staged_path, requirement=requirement)
-        except AttachmentPreprocessingError as exc:
-            return contexts, exc.code
-        contexts.append(parsed)
-        await emit_event(
-            AgentEvent(
-                type="tool_call_completed",
-                message=f"Platform attachment parser completed: {requirement.parser_id}",
-                payload={
-                    "tool_name": "AttachmentParser",
-                    **parsed.evidence.model_dump(mode="json"),
-                    "source": "platform_attachment_preprocessor",
-                },
-                admin_only=True,
-            )
-        )
-    return contexts, None
-
-
 def _user_message_from_skill_prompt(prompt: str) -> str:
     _, marker, remainder = str(prompt or "").partition("User request: ")
     if not marker:
@@ -962,7 +897,10 @@ def _ordered_materialized_docx(request: ExecutorTaskRequest, workspace_root: Pat
         name = _safe_materialized_basename(raw_name)
         if name is None:
             return None, "controlled_skill_input_name_invalid"
-        materialized = _resolved_workspace_file(workspace_root, workspace_root / name)
+        materialized = _resolved_workspace_file(
+            workspace_root,
+            workspace_root / "inputs" / name,
+        )
         if materialized is None:
             return None, "controlled_skill_input_file_invalid"
         if materialized.suffix.lower() == ".docx":
@@ -1467,42 +1405,16 @@ async def _default_executor_runner(
             "executor_mode": "context_retrieval_invalid",
         }
     await emit_event(
-        _PlatformExecutionPhaseFact("attachment_materialization", "started")
-    )
-    attachment_contexts, attachment_error = await _preprocess_typed_attachments(
-        request,
-        workspace_root,
-        emit_event,
-        retrieval=context_retrieval,
-        identity=context_retrieval_identity,
-    )
-    parser_evidence = [context.evidence.model_dump(mode="json") for context in attachment_contexts]
-    if attachment_error:
-        await emit_event(
-            _PlatformExecutionPhaseFact("attachment_materialization", "failed")
-        )
-        return {
-            "status": "failed",
-            "message": "Platform attachment preprocessing failed",
-            "error_code": attachment_error,
-            "error_message": "Platform attachment preprocessing failed",
-            "sdk_used": False,
-            "executor_mode": "platform_attachment_preprocessor",
-            "attachment_parser_evidence": parser_evidence,
-        }
-    await emit_event(
         _PlatformExecutionPhaseFact("attachment_materialization", "completed")
     )
 
-    if not attachment_contexts:
-        controlled_result = await _run_selected_authorized_file_skill(
-            request,
-            workspace_root,
-            emit_event,
-        )
-        if controlled_result is not None:
-            controlled_result["attachment_parser_evidence"] = parser_evidence
-            return controlled_result
+    controlled_result = await _run_selected_authorized_file_skill(
+        request,
+        workspace_root,
+        emit_event,
+    )
+    if controlled_result is not None:
+        return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         return {
             "status": "failed",
@@ -1511,7 +1423,6 @@ async def _default_executor_runner(
             "error_message": "Claude Agent SDK is disabled",
             "sdk_used": False,
             "executor_mode": "claude_agent_sdk_disabled",
-            "attachment_parser_evidence": parser_evidence,
         }
 
     skill_ids = _task_skill_ids(request)
@@ -1539,7 +1450,6 @@ async def _default_executor_runner(
             "error_message": "Required capability declaration is invalid",
             "sdk_used": False,
             "executor_mode": "required_capability_declaration_invalid",
-            "attachment_parser_evidence": parser_evidence,
         }
     required_tool_invocation_states: dict[tuple[str, str], str] = {}
     required_capability_evidence: dict[str, Any] | None = None
@@ -1589,10 +1499,14 @@ async def _default_executor_runner(
             else "tool_invocation_evidence_mismatch"
         )
         is_governed_bash = bash_subject is not None and tool_name == "Bash"
-        is_governed_tool = (
-            tool_name in SANDBOX_LOCAL_TOOL_IDENTITIES or tool_name == "MCP"
+        is_read_only_tool = tool_name in SANDBOX_READ_ONLY_TOOL_IDENTITIES
+        is_strict_tool = (
+            is_required_tool
+            or tool_name in SANDBOX_EFFECTFUL_TOOL_IDENTITIES
+            or tool_name == "MCP"
         )
-        if invocation_id and not claim_invocation_id(
+        is_lifecycle_tool = is_strict_tool or is_read_only_tool
+        if invocation_id and is_strict_tool and not claim_invocation_id(
             invocation_id,
             f"tool:{tool_name}",
             lifecycle_error,
@@ -1600,11 +1514,12 @@ async def _default_executor_runner(
             if is_governed_bash:
                 required_capability_evidence = None
             return False
-        if is_governed_tool and (
+        if is_lifecycle_tool and (
             not invocation_id or lifecycle not in {"started", "completed", "failed"}
         ):
-            required_capability_evidence = None
-            reject_capability_evidence(lifecycle_error)
+            if is_strict_tool:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
             return False
         try:
             acknowledged = await emit_event(
@@ -1617,16 +1532,19 @@ async def _default_executor_runner(
                 )
             )
         except Exception:
-            if is_governed_tool:
+            if is_strict_tool:
                 required_capability_evidence = None
                 reject_capability_evidence(lifecycle_error)
             return False
-        if not is_governed_tool:
+        if not is_lifecycle_tool:
             return acknowledged is True
         if acknowledged is not True or not invocation_id:
-            required_capability_evidence = None
-            reject_capability_evidence(lifecycle_error)
+            if is_strict_tool:
+                required_capability_evidence = None
+                reject_capability_evidence(lifecycle_error)
             return False
+        if not is_strict_tool:
+            return True
         invocation_key = (tool_name, invocation_id)
         current_state = required_tool_invocation_states.get(invocation_key)
         if lifecycle == "started":
@@ -1803,7 +1721,6 @@ async def _default_executor_runner(
             "error_code": "claude_agent_sdk_unavailable",
             "error_message": "Claude Agent SDK is unavailable",
             "sdk_used": False,
-            "attachment_parser_evidence": parser_evidence,
         }
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
@@ -1813,13 +1730,18 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
-    if required_capability_declaration is not None:
-        required_tool_states = set(required_tool_invocation_states.values())
-        if "started" in required_tool_states or "completed" not in required_tool_states:
-            required_capability_evidence = None
-            reject_capability_evidence("required_tool_completion_evidence_mismatch")
-    elif any(state == "started" for state in required_tool_invocation_states.values()):
-        reject_capability_evidence("tool_invocation_evidence_mismatch")
+    if used_sdk and not error:
+        # Only a successful SDK run may be downgraded by missing completion
+        # evidence.  When the SDK already failed (timeout, cancelled, upstream
+        # error, ...) preserve that structured error so callers see the real
+        # terminal cause instead of a misleading evidence mismatch.
+        if required_capability_declaration is not None:
+            required_tool_states = set(required_tool_invocation_states.values())
+            if "started" in required_tool_states or "completed" not in required_tool_states:
+                required_capability_evidence = None
+                reject_capability_evidence("required_tool_completion_evidence_mismatch")
+        elif any(state == "started" for state in required_tool_invocation_states.values()):
+            reject_capability_evidence("tool_invocation_evidence_mismatch")
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",
@@ -1838,7 +1760,6 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
         "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
-        "attachment_parser_evidence": parser_evidence,
         "capability_evidence": bound_capability_evidence,
         TOOL_INVOCATION_EVIDENCE_KEY: tool_invocation_evidence,
     }
@@ -1847,7 +1768,7 @@ async def _default_executor_runner(
     if error:
         raw_error = str(error)
         response["error_code"] = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
-        response["error_message"] = raw_error
+        response["error_message"] = _expand_sdk_error_message(raw_error, sdk_result)
     elif not used_sdk:
         response["error_code"] = "claude_agent_sdk_disabled"
         response["error_message"] = "Claude Agent SDK is disabled"
@@ -2403,7 +2324,6 @@ def create_executor_app(
             "used_skills",
             "used_skills_source",
             "sdk_turn_diagnostics",
-            "attachment_parser_evidence",
             "capability_evidence",
             REQUIRED_CAPABILITY_EVIDENCE_KEY,
             TOOL_INVOCATION_EVIDENCE_KEY,

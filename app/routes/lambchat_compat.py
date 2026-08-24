@@ -1,6 +1,8 @@
 # ruff: noqa: B008
 
+import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +25,7 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.model_catalog import build_model_catalog
+from app.platform.model_upstream import fetch_upstream_openai_models
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
     capability_id_from_skill,
@@ -75,10 +78,26 @@ from app.streaming.redis import (
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
 _SSE_RETRYABLE_STARTUP_CODES = frozenset(
     {"sse_stream_not_admitted", "sse_stream_not_confirmed"}
 )
+_SSE_EXIT_REASONS = frozenset(
+    {
+        "terminal_completed",
+        "client_disconnected",
+        "live_source_closed",
+        "transport_failure",
+        "stream_contract_failure",
+        "stream_setup_failure",
+        "stream_cleanup_failure",
+    }
+)
+
+
+def _safe_sse_correlation(value: object) -> str:
+    return str(value or "")[:12]
 
 
 def _sse_conflict(code: str) -> HTTPException:
@@ -1110,7 +1129,22 @@ async def update_profile_metadata(
 
 @router.get("/agent/models/available")
 async def available_models() -> dict[str, object]:
-    return build_model_catalog(get_settings())
+    settings = get_settings()
+    upstream_models = await fetch_upstream_openai_models(settings)
+    if upstream_models:
+        model_ids = {str(model["id"]) for model in upstream_models}
+        runtime_default = str(
+            getattr(settings, "default_model_id", "") or ""
+        ).strip()
+        if runtime_default not in model_ids:
+            runtime_default = str(upstream_models[0]["id"])
+        return {
+            "models": upstream_models,
+            "count": len(upstream_models),
+            "enabled_count": len(upstream_models),
+            "default_model_id": runtime_default,
+        }
+    return build_model_catalog(settings)
 
 
 @router.get("/agent/models/")
@@ -1429,9 +1463,34 @@ async def session_events(
 
 
 @router.post("/sessions/{session_id}/generate-title")
-async def generate_title(session_id: str, message: str = "", lang: str = "en") -> dict[str, str]:
+async def generate_title(
+    session_id: str,
+    message: str = "",
+    lang: str = "en",
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
     title = (message or "").strip().replace("\n", " ")[:32] or "新会话"
-    return {"session_id": session_id, "title": title}
+    async with transaction() as conn:
+        projection = await repositories.get_authorized_session_projection(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        try:
+            session = await session_actions.initialize_session_title(
+                conn,
+                principal=principal,
+                session_id=session_id,
+                title=title,
+            )
+        except session_actions.SessionActionValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except session_actions.SessionActionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="session_not_found") from exc
+    return {"session_id": session_id, "title": str(session["title"])}
 
 
 @router.post("/sessions/{session_id}/mark-read")
@@ -1582,18 +1641,35 @@ async def chat_session_stream(
     if lease is None:
         raise _sse_conflict("sse_authority_lease_unavailable")
 
-    async def release_lease() -> None:
+    async def release_lease(*, reason: str) -> bool:
         try:
             async with transaction() as conn:
-                await close_sse_authority_lease(
-                    conn, lease_id=lease.lease_id, reason="connection_closed"
+                return bool(
+                    await close_sse_authority_lease(
+                        conn, lease_id=lease.lease_id, reason=reason
+                    )
                 )
         except Exception:
-            pass
+            return False
+
+    async def record_sse_exit(reason: str) -> None:
+        if reason not in _SSE_EXIT_REASONS:
+            reason = "transport_failure"
+        lease_released = await release_lease(reason=reason)
+        logger.info(
+            "sse_stream_exit",
+            extra={
+                "reason": reason,
+                "run_id_prefix": _safe_sse_correlation(run_id),
+                "attempt_id_prefix": _safe_sse_correlation(authority.attempt_id),
+                "stream_incarnation": authority.stream_incarnation,
+                "lease_released": lease_released,
+            },
+        )
 
     runtime = getattr(request.app.state, "run_stream_runtime", None)
     if runtime is None:
-        await release_lease()
+        await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
     channel = stream_live_channel(
@@ -1636,20 +1712,52 @@ async def chat_session_stream(
                 through_redis_id=resume.after_redis_id or "0-0",
             )
     except StreamContractError as exc:
+        cleanup_failed = False
         if subscription is not None:
-            await subscription.aclose()
-        await release_lease()
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+        await record_sse_exit(
+            "stream_cleanup_failure" if cleanup_failed else "stream_contract_failure"
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
+        cleanup_failed = False
         if subscription is not None:
-            await subscription.aclose()
-        await release_lease()
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+        await record_sse_exit(
+            "stream_cleanup_failure" if cleanup_failed else "transport_failure"
+        )
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
+    except Exception as exc:  # noqa: BLE001
+        cleanup_failed = False
+        if subscription is not None:
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+        await record_sse_exit(
+            "stream_cleanup_failure" if cleanup_failed else "stream_setup_failure"
+        )
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
         terminal_event_id: str | None = restored_terminal_event_id
+        exit_reason = "transport_failure"
+        exit_recorded = False
+
+        async def record_exit() -> None:
+            nonlocal exit_recorded
+            if exit_recorded:
+                return
+            exit_recorded = True
+            await record_sse_exit(exit_reason)
 
         async def refresh_lease() -> bool:
             nonlocal lease
@@ -1736,11 +1844,14 @@ async def chat_session_stream(
 
         try:
             if resume.gap is not None:
+                exit_reason = "stream_contract_failure"
                 yield _sse("gap", resume.gap.as_public_dict())
                 return
             if resume_already_ended:
+                exit_reason = "terminal_completed"
                 return
             if not await refresh_lease():
+                exit_reason = "transport_failure"
                 return
             await publish_pending_terminal()
             while after != replay_tail:
@@ -1756,17 +1867,20 @@ async def chat_session_stream(
                     raise StreamContractError("stream_replay_history_unavailable")
                 for entry in entries:
                     if not await refresh_lease():
+                        exit_reason = "transport_failure"
                         return
                     after = entry.cursor.redis_id
                     frame, ended = project_entry(entry)
                     if frame is not None:
                         yield frame
                     if ended:
+                        exit_reason = "terminal_completed"
                         return
                 if after == previous_after:
                     raise StreamContractError("stream_replay_history_unavailable")
             while True:
                 if not await refresh_lease():
+                    exit_reason = "transport_failure"
                     return
                 await publish_pending_terminal()
                 try:
@@ -1775,6 +1889,7 @@ async def chat_session_stream(
                     yield ": heartbeat\n\n"
                     continue
                 except LiveSubscriptionClosed:
+                    exit_reason = "live_source_closed"
                     return
                 if publication.channel != channel:
                     raise StreamContractError("stream_live_channel_mismatch")
@@ -1791,12 +1906,26 @@ async def chat_session_stream(
                 if frame is not None:
                     yield frame
                 if ended:
+                    exit_reason = "terminal_completed"
                     return
-        except (StreamTransportUnavailable, StreamContractError):
+        except asyncio.CancelledError:
+            exit_reason = "client_disconnected"
+            raise
+        except StreamTransportUnavailable:
+            exit_reason = "transport_failure"
+            return
+        except StreamContractError:
+            exit_reason = "stream_contract_failure"
             return
         finally:
-            await subscription.aclose()
-            await release_lease()
+            cleanup_failed = False
+            try:
+                await subscription.aclose()
+            except Exception:  # noqa: BLE001
+                cleanup_failed = True
+            if cleanup_failed:
+                exit_reason = "stream_cleanup_failure"
+            await record_exit()
 
     return StreamingResponse(
         stream(),

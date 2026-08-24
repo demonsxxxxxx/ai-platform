@@ -51,6 +51,7 @@ from app.intent_router import (
 )
 from app.model_catalog import resolve_model_selection
 from app.mcp import api as mcp
+from app.platform.model_upstream import upstream_model_cache_snapshot
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -987,7 +988,15 @@ def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | N
     if not isinstance(raw_model_id, str):
         raise HTTPException(status_code=400, detail="model_id_not_available")
     try:
-        return resolve_model_selection(raw_model_id, get_settings())
+        upstream_ids = None
+        upstream_models, _ = upstream_model_cache_snapshot()
+        if upstream_models:
+            upstream_ids = {str(model["id"]) for model in upstream_models}
+        return resolve_model_selection(
+            raw_model_id,
+            get_settings(),
+            upstream_ids=upstream_ids,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="model_id_not_available") from exc
 

@@ -54,6 +54,12 @@ does not represent deployed runtime state.
   reuses existing Run/attempt/runtime/worker fences and replaces per-browser
   Redis blocking readers with one process-local Pub/Sub fan-out plus Stream
   replay.
+- `architecture/chat-run-lifecycle-and-public-error-projection.md` records the
+  repository-wide module disposition for queued-to-processing Chat state and
+  disclosure-safe terminal-error presentation. It identifies the current
+  authorities, retired browser compatibility, retained queue and safety
+  fallbacks, owning tests, and deployment evidence ceiling without redefining
+  the SSE wire or Run lifecycle.
 - `adr/0009-redis-streams-sse-v3-live-fanout.md` records the accepted v3
   decision. ADR 0004 (v2.1), ADR 0003 (v2), and ADR 0002 (v1) are superseded
   audit history after the release-atomic cutover, not runnable fallbacks.

@@ -2297,7 +2297,7 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []
 
-    def fake_resolve_model_selection(model_id, _settings):
+    def fake_resolve_model_selection(model_id, _settings, **kwargs):
         assert model_id == "deepseek-v4-pro"
         return {"id": model_id, "value": model_id}
 

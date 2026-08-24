@@ -755,8 +755,9 @@ def test_windows_cleanup_retry_window_uses_monotonic_deadline(
     monkeypatch.setattr(module.time, "sleep", delays.append)
 
     assert retry.wait(error)
+    retry.record_directory_removed()
     assert not retry.wait(error)
-    assert retry.attempts == 1
+    assert retry.attempts == 0
     assert delays == [0.05]
 
 
@@ -812,6 +813,40 @@ def test_windows_cleanup_retries_transient_directory_not_empty(
 
     assert calls == [target, target, target]
     assert delays == [0.05, 0.1]
+    assert not target.exists()
+
+
+def test_windows_cleanup_retries_new_directory_after_prior_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _readiness_module()
+    target = tmp_path / "multiple-transient"
+    directories = [
+        target / f"directory-{index}"
+        for index in range(module.WINDOWS_DIRECTORY_REMOVE_RETRY_LIMIT + 1)
+    ]
+    for directory in directories:
+        directory.mkdir(parents=True)
+    real_rmdir = module.os.rmdir
+    calls: dict[Path, int] = {}
+    delays: list[float] = []
+
+    def transient_once_per_directory(path: str) -> None:
+        directory = Path(path)
+        calls[directory] = calls.get(directory, 0) + 1
+        if directory != target and calls[directory] == 1:
+            raise _windows_removal_error(module.WINDOWS_ERROR_DIRECTORY_NOT_EMPTY)
+        real_rmdir(path)
+
+    monkeypatch.setattr(module.os, "rmdir", transient_once_per_directory)
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    module._remove_windows_cleanup_tree(str(target))
+
+    assert all(calls[directory] == 2 for directory in directories)
+    assert calls[target] == 1
+    assert delays == [0.05] * len(directories)
     assert not target.exists()
 
 

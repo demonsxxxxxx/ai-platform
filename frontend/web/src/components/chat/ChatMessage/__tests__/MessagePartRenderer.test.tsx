@@ -3,6 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MessagePart } from "../../../../types";
+import { PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS } from "../../../../hooks/useAgent/publicTerminalPresentation.ts";
 import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
@@ -112,7 +113,83 @@ test("renders run status from allowlisted event type instead of backend message 
   );
 });
 
-test("renders a specific safe file-size failure instead of a generic failure", async () => {
+test("renders every public terminal detail without exposing backend message or stage", () => {
+  for (const [detailCode, definition] of Object.entries(
+    PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS,
+  )) {
+    const markup = renderToStaticMarkup(
+      createElement(MessagePartRenderer, {
+        part: {
+          type: "run_status",
+          event_id: `evt-${detailCode}`,
+          event_type: detailCode,
+          stage: "C:\\private\\runtime",
+          message: "backend token-bearing private detail",
+          severity: definition.severity,
+        } satisfies Extract<MessagePart, { type: "run_status" }>,
+        isLast: true,
+      }),
+    );
+
+    assert.ok(markup.includes(definition.defaultEventLabel), detailCode);
+    assert.ok(markup.includes(definition.defaultMessage), detailCode);
+    assert.doesNotMatch(
+      markup,
+      /执行状态更新|backend|token-bearing|private|runtime/i,
+      detailCode,
+    );
+  }
+});
+
+test("renders a validated reconciliation correlation ID without backend text", () => {
+  const basePart = {
+    type: "run_status",
+    event_id: "evt-terminal-reconciliation",
+    event_type: "terminal_reconciliation_failed",
+    stage: "private repository stage",
+    message: "backend exception with token",
+    severity: "error",
+  } satisfies Extract<MessagePart, { type: "run_status" }>;
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      part: { ...basePart, run_reference: "run-correlation-123" },
+      isLast: true,
+    }),
+  );
+
+  assert.match(markup, /任务编号：run-correlation-123/);
+  assert.doesNotMatch(markup, /backend exception|token|repository stage/i);
+
+  const invalidMarkup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      part: { ...basePart, run_reference: "<private-run>" },
+      isLast: true,
+    }),
+  );
+  assert.doesNotMatch(invalidMarkup, /private-run|任务编号：/i);
+});
+
+test("renders password-protected PDF guidance instead of a generic failure", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      part: {
+        type: "run_status",
+        event_id: "evt-pdf-password",
+        event_type: "context_file_pdf_password_required",
+        stage: "private parser path",
+        message: "PdfReadError at /runtime/private.pdf",
+        severity: "error",
+      } satisfies Extract<MessagePart, { type: "run_status" }>,
+      isLast: true,
+    }),
+  );
+
+  assert.match(markup, /PDF 文件需要密码/);
+  assert.match(markup, /请先解除密码保护后重新上传/);
+  assert.doesNotMatch(markup, /执行状态更新|PdfReadError|runtime|private/i);
+});
+
+test("renders a specific safe file-size failure instead of a generic failure", () => {
   const part: Extract<MessagePart, { type: "run_status" }> = {
     type: "run_status",
     event_id: "evt-file-too-large",

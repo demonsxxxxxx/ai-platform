@@ -119,7 +119,7 @@ def test_reviewed_uploaded_skill_retains_native_bash_isolation():
     )
 
     assert profile["strategy"] == SDK_NATIVE
-    assert profile["builtin_tool_identities"] == ["Read", "Glob", "LS", "Bash", "Write", "Edit"]
+    assert profile["builtin_tool_identities"] == ["Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep"]
     assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
 
 
@@ -132,7 +132,7 @@ def test_governed_opensandbox_admits_file_tools_only_for_the_selected_authorized
     )
 
     assert admission is not None
-    assert admission.tool_names == ("Read", "Glob", "LS", "Bash", "Write", "Edit")
+    assert admission.tool_names == ("Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep")
     assert admission.command_isolation == OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION
     assert (
         sdk_skill_tool_admission_for_execution_profile(

@@ -12,10 +12,12 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
+from app.execution.application import stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
 from app.mcp.infrastructure import postgres as mcp_persistence
+from app.persistence import artifacts as artifact_persistence
 from app.persistence_limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.errors import (
     RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
@@ -28,6 +30,7 @@ from app.platform.postgres.sandbox_leases import (
     SandboxLeaseReleaseScopeMismatchError,
     create_sandbox_lease,
     fence_sandbox_lease_release,
+    record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
 from app.streaming import redis as streaming_redis
@@ -333,6 +336,36 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
 
     assert lost is None
     assert [call[0] for call in calls] == ["sql"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_fenced_stale_terminalization_never_cancels_completed_executor(monkeypatch):
+    calls = []
+
+    class Connection:
+        async def execute(self, sql, params):
+            calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    staged = await stale_terminalization.stage_stale_run_reconciliation(
+        Connection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        run_id="run-a",
+        expected_status="running",
+        stale_before="2026-07-21T11:00:00Z",
+        terminal_status="failed",
+        error_code="stale_run_interrupted",
+        error_message="Run interrupted because no live execution owner remains.",
+        append_event=_record_noop_event,
+        append_audit_log=_record_noop_event,
+    )
+
+    assert staged is None
+    assert "executor_terminal_json is not null" in calls[0][0]
+    assert "executor_reconciliation_status is distinct from 'finalized'" in calls[0][0]
+    assert calls[0][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
 
 
 class FakeCursor:
@@ -908,11 +941,24 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
         tenant_id="tenant-a",
         session_id="session-a",
         title="Renamed",
+        title_source="user",
     )
     rename_sql, rename_params = conn.calls[-1]
     assert "update sessions" in rename_sql
     assert "status = 'active'" in rename_sql
-    assert rename_params == ("Renamed", "tenant-a", "session-a")
+    assert rename_params == ("Renamed", "user", "tenant-a", "session-a")
+
+    await repositories.update_session_title(
+        conn,
+        tenant_id="tenant-a",
+        session_id="session-a",
+        title="First task",
+        title_source="generated",
+        expected_title_source="initial",
+    )
+    initialize_sql, initialize_params = conn.calls[-1]
+    assert "title_source = %s" in initialize_sql
+    assert initialize_params == ("First task", "generated", "tenant-a", "session-a", "initial")
 
     await repositories.mark_session_deleted(
         conn,
@@ -935,6 +981,26 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "order by created_at asc, id asc" in messages_sql
     assert "limit %s" in messages_sql
     assert messages_params == ("tenant-a", "session-a", 201)
+
+
+@pytest.mark.asyncio
+async def test_initialize_session_title_returns_none_when_user_rename_wins():
+    class NoUpdateCursor:
+        async def fetchone(self):
+            return None
+
+    class NoUpdateConnection:
+        async def execute(self, _sql, *_params):
+            return NoUpdateCursor()
+
+    assert await repositories.update_session_title(
+        NoUpdateConnection(),
+        tenant_id="tenant-a",
+        session_id="session-a",
+        title="First task",
+        title_source="generated",
+        expected_title_source="initial",
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -962,6 +1028,49 @@ async def test_authorized_artifact_requires_an_active_exact_scope_owning_session
     assert "runs.user_id = %s" in conn.sql
     assert "sessions.status = 'active'" in conn.sql
     assert conn.params == ("tenant-a", "artifact-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_revealed_session_artifacts_are_acl_scoped_and_not_globally_capped():
+    expected_rows = [{"id": f"artifact-{index}"} for index in range(501)]
+
+    class Cursor:
+        async def fetchall(self):
+            return expected_rows
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split()).lower()
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+
+    rows = await artifact_persistence.list_revealed_session_artifacts(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    assert rows == expected_rows
+    assert len(rows) == 501
+    assert "count(*) over()" not in conn.sql
+    assert "join sessions on sessions.id = runs.session_id" in conn.sql
+    assert "sessions.tenant_id = runs.tenant_id" in conn.sql
+    assert "sessions.workspace_id = runs.workspace_id" in conn.sql
+    assert "sessions.user_id = runs.user_id" in conn.sql
+    assert "sessions.agent_id = runs.agent_id" in conn.sql
+    assert "sessions.status = 'active'" in conn.sql
+    assert "artifacts.lifecycle_state = 'active'" in conn.sql
+    assert "artifacts.expires_at is null or artifacts.expires_at > now()" in conn.sql
+    assert "order by artifacts.created_at desc, artifacts.id desc" in conn.sql
+    assert " limit " not in f" {conn.sql} "
+    assert conn.params == ("tenant-a", "user-a", "session-a")
 
 
 @pytest.mark.asyncio
@@ -5430,6 +5539,7 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
         None,
         "agent-a",
         "Agent A",
+        "initial",
         None,
         None,
         "conversation",
@@ -9632,6 +9742,44 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
 
 
 @pytest.mark.asyncio
+async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
+    class NoMatchConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    conn = NoMatchConnection()
+
+    recorded = await record_sandbox_executor_heartbeat(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="running",
+        ttl_seconds=731,
+    )
+
+    heartbeat_sql, heartbeat_params = conn.calls[0]
+    assert recorded is None
+    assert "expires_at = now() + make_interval(secs => %s)" in heartbeat_sql
+    assert "(expires_at is null or expires_at > now())" in heartbeat_sql
+    assert "executor_terminal_json is null" in heartbeat_sql
+    assert heartbeat_params == (
+        "running",
+        "running",
+        731,
+        "lease-a",
+        "tenant-a",
+        "run-a",
+        "attempt-a",
+    )
+
+
+@pytest.mark.asyncio
 async def test_sandbox_executor_terminal_receipt_is_attempt_fenced_and_idempotent():
     class TerminalConnection:
         def __init__(self):
@@ -13751,6 +13899,22 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
     assert "sessions.status = 'active'" in sql
     assert "join agent_profile_revisions profile" in sql
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
+    assert "coalesce(legacy_first_user.title, sessions.title) as title" in sql
+    assert "left join lateral" in sql
+    assert "sessions.title_source = 'initial'" in sql
+    assert "sessions.title = profile.name" in sql
+    assert "messages.tenant_id = sessions.tenant_id" in sql
+    assert "messages.session_id = sessions.id" in sql
+    assert "messages.role = 'user'" in sql
+    normalizer = (
+        "translate( messages.content, "
+        "chr(13) || chr(10) || chr(9) || chr(11) || chr(12), ' ' )"
+    )
+    assert sql.count(normalizer) == 2
+    assert f"btrim( {normalizer} ) <> ''" in sql
+    assert f"left( btrim( {normalizer} ), 32 )" in sql
+    assert "e'\\r\\n\\t\\v\\f'" not in sql
+    assert "order by messages.created_at asc, messages.id asc limit 1" in sql
     assert "sessions.updated_at < %s" in sql
     assert "sessions.id < %s" in sql
     assert (

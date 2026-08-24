@@ -13,6 +13,7 @@ import uuid
 from app import queue
 from app import repositories
 from app.bootstrap.mcp import configure_mcp_runtime
+from app.execution.api import stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -390,7 +391,7 @@ async def reconcile_stale_runs_for_worker(
                 fenced_transaction = _fenced_transaction_factory(fence_guard)
                 try:
                     async with fenced_transaction() as conn:
-                        staged = await repositories.stage_stale_run_reconciliation(
+                        staged = await stage_stale_run_reconciliation(
                             conn,
                             tenant_id=tenant_id,
                             workspace_id=workspace_id,
@@ -402,6 +403,8 @@ async def reconcile_stale_runs_for_worker(
                             terminal_status=terminal_status,
                             error_code=error_code,
                             error_message=error_message,
+                            append_event=repositories.append_event,
+                            append_audit_log=repositories.append_audit_log,
                         )
                 except ReconciliationFenceLost:
                     results.append(

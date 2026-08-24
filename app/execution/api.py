@@ -23,6 +23,13 @@ from app.execution.application.worker_capabilities import (
     worker_capability_context,
     worker_capability_record,
 )
+from app.execution.application.executor_reconciliation import (
+    restored_sandbox_run_payload,
+    sandbox_reconciliation_payload,
+)
+from app.execution.application.stale_terminalization import (
+    stage_stale_run_reconciliation,
+)
 
 __all__ = [
     "SkillInvocationEvidenceBinder",
@@ -37,6 +44,9 @@ __all__ = [
     "mcp_capability_subject",
     "payload_with_authorized_mcp_registration",
     "reauthorize_mcp_capabilities",
+    "restored_sandbox_run_payload",
+    "sandbox_reconciliation_payload",
+    "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "time",
     "validated_context_file_diagnostic",

@@ -464,7 +464,6 @@ async def test_materialize_files_uses_real_scoped_repository_query_for_prior_run
         "run_1",
         "file-prior",
     )
-    assert (workspace / "prior.docx").read_bytes() == raw
     assert (workspace / "inputs" / "prior.docx").read_bytes() == raw
 
 
@@ -544,7 +543,9 @@ async def test_materialize_files_preserves_preexisting_target_and_fails_before_o
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    existing = workspace / "file-a.docx"
+    inputs = workspace / "inputs"
+    inputs.mkdir()
+    existing = inputs / "file-a.docx"
     existing.write_bytes(b"preexisting-content")
 
     class FakeStorage:
@@ -576,4 +577,5 @@ async def test_materialize_files_preserves_preexisting_target_and_fails_before_o
         await adapter._materialize_files(payload(file_ids=["file-a"]), workspace)
 
     assert existing.read_bytes() == b"preexisting-content"
-    assert list(workspace.iterdir()) == [existing]
+    assert list(workspace.iterdir()) == [inputs]
+    assert list(inputs.iterdir()) == [existing]

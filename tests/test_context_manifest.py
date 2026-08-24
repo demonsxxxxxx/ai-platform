@@ -86,7 +86,6 @@ def test_context_planner_builds_non_conversation_manifest_without_private_payloa
     ]
     assert set(available_context_retrieval_tools(manifest)) == {
         "read_session_messages",
-        "read_context_file",
         "read_run_artifact",
         "stage_context_file_to_workspace",
         "stage_run_artifact_to_workspace",

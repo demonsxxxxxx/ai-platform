@@ -6,10 +6,10 @@ from pydantic import ValidationError
 from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, Settings
 
 
-def test_claude_agent_sdk_timeout_defaults_to_document_workflow_budget(monkeypatch):
+def test_claude_agent_sdk_timeout_defaults_to_unbounded(monkeypatch):
     monkeypatch.delenv("CLAUDE_AGENT_SDK_TIMEOUT_SECONDS", raising=False)
 
-    assert Settings(_env_file=None).claude_agent_sdk_timeout_seconds == 1200.0
+    assert Settings(_env_file=None).claude_agent_sdk_timeout_seconds == 0.0
     assert (
         Settings(
             _env_file=None,
@@ -282,7 +282,7 @@ def test_capacity_and_redis_pool_defaults_are_bounded_independently():
     assert settings.worker_concurrency == 10
     assert settings.max_active_worker_runs == 10
     assert settings.max_active_runs_per_user == 3
-    assert settings.redis_max_connections == 10
+    assert settings.redis_max_connections == 64
     assert settings.database_pool_max_size == 10
 
 

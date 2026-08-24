@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
@@ -7,6 +8,7 @@ import {
   connectToSSE,
   getSSECloseAction,
   isNonRetryableSSEAuthenticationError,
+  isSSEHeartbeatComment,
   isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
   MAX_SSE_STARTUP_RETRIES,
@@ -25,6 +27,88 @@ import {
 import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+test("actual SSE parser ignores colon-space heartbeat comments without state mutation", async () => {
+  const events: unknown[] = [];
+  let reducerMutations = 0;
+  let assistantTextMutations = 0;
+  let terminalMutations = 0;
+  let warningMutations = 0;
+  let cursor: string | null = null;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(": heartbeat\n\n"));
+      controller.close();
+    },
+  });
+
+  const previousDocument = (globalThis as typeof globalThis & {
+    document?: unknown;
+  }).document;
+  const previousWindow = (globalThis as typeof globalThis & {
+    window?: unknown;
+  }).window;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { addEventListener() {}, removeEventListener() {} },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      addEventListener() {},
+      removeEventListener() {},
+      setTimeout,
+      clearTimeout,
+    },
+  });
+  try {
+    await fetchEventSource("https://example.test/stream", {
+      fetch: async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      openWhenHidden: true,
+      onopen: async (response) => {
+        assert.equal(response.status, 200);
+      },
+      onmessage: (event) => {
+        if (isSSEHeartbeatComment(event)) return;
+        events.push(event);
+        reducerMutations += 1;
+        assistantTextMutations += 1;
+        terminalMutations += 1;
+        warningMutations += 1;
+        cursor = event.id || null;
+      },
+      onclose: () => undefined,
+    });
+  } finally {
+    if (previousDocument === undefined) {
+      Reflect.deleteProperty(globalThis, "document");
+    } else {
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        value: previousDocument,
+      });
+    }
+    if (previousWindow === undefined) {
+      Reflect.deleteProperty(globalThis, "window");
+    } else {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: previousWindow,
+      });
+    }
+  }
+
+  assert.deepEqual(events, []);
+  assert.equal(reducerMutations, 0);
+  assert.equal(assistantTextMutations, 0);
+  assert.equal(terminalMutations, 0);
+  assert.equal(warningMutations, 0);
+  assert.equal(cursor, null);
+});
 
 function v3Frame({
   cursor,

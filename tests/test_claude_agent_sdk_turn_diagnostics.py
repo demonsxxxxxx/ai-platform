@@ -135,11 +135,14 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
             "text_blocks": 0,
             "result_messages": 1,
             "tool_admission_denials": 0,
+            "tool_policy_denials": 0,
+            "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
         },
         "last_public_stage": "runtime",
         "selected_skill": None,
         "used_skills": [],
+        "tool_policy_denials_detail": [],
     }
 
 
@@ -416,6 +419,8 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         "text_blocks": 1,
         "result_messages": 1,
         "tool_admission_denials": 0,
+        "tool_policy_denials": 0,
+        "tool_lifecycle_denials": 0,
         "skill_invocations": 1,
     }
     assert "internal-review-id" not in str(diagnostics)

@@ -35,6 +35,7 @@ CRITICAL_RELATIONS = (
     "mcp_tools",
 )
 CRITICAL_COLUMNS = (
+    ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
     # Temporary physical compatibility for the previous binary; product DTOs ignore it.
@@ -83,6 +84,7 @@ CRITICAL_COLUMNS = (
     ("mcp_server_credentials", "credential_envelope", "text", True),
 )
 CRITICAL_CONSTRAINTS = (
+    ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),

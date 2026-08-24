@@ -16,6 +16,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.memory_redaction import sanitizer_unstable_suffix_length
 from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
 from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,
@@ -69,6 +70,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
     "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
+    "tool_invocation_evidence_mismatch": "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
     "required_capability_unavailable": required_tool_public_detail("unavailable")["message"],
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
     "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
@@ -153,6 +155,7 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "tool_denied": "tool_permission_denied",
     "mcp_tool_denied": "tool_permission_denied",
     "tool_permission_denied": "tool_permission_denied",
+    "tool_invocation_evidence_mismatch": "tool_invocation_evidence_mismatch",
     "required_tool_unavailable": "required_capability_unavailable",
     "required_tool_declaration_mismatch": "required_capability_unavailable",
     "required_tool_scope_mismatch": "required_capability_unavailable",
@@ -301,6 +304,13 @@ class PublicChatAnswerStreamProjector:
             for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
                 if self._raw.endswith(marker[:length]):
                     unstable = max(unstable, length)
+        unstable = max(
+            unstable,
+            sanitizer_unstable_suffix_length(
+                self._raw,
+                track_ambiguous_prefixes=True,
+            ),
+        )
         return unstable
 
     def push(self, value: object, *, final: bool = False) -> str:

@@ -19,6 +19,7 @@ from app.context.file_content import (
     PDF_CONTENT_TYPE,
     _pdf_has_active_content,
     parse_context_file,
+    validate_context_file_for_stage,
 )
 from app.file_parser_contracts import AttachmentPreprocessingError, XLSX_CONTENT_TYPE
 
@@ -95,6 +96,22 @@ def _xlsx_bytes() -> bytes:
     sheet.append(["alpha", 1])
     workbook.save(stream)
     return stream.getvalue()
+
+
+def _xlsx_bytes_with_cells(cell_count: int) -> bytes:
+    stream = io.BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in range(1, cell_count + 1):
+        sheet.cell(row=row, column=1, value=row)
+    workbook.save(stream)
+    return stream.getvalue()
+
+
+def test_validate_context_file_for_stage_accepts_xlsx_above_legacy_cell_limit():
+    raw = _xlsx_bytes_with_cells(2_049)
+
+    validate_context_file_for_stage(_row("large.xlsx", XLSX_CONTENT_TYPE, raw), raw)
 
 
 @pytest.mark.parametrize(

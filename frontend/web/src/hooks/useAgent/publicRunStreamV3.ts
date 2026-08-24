@@ -75,6 +75,60 @@ function isRfc3339DateTime(value: unknown): value is string {
   );
 }
 
+export function comparePublicRunStreamCursors(
+  left: string,
+  right: string,
+): number | null {
+  const leftParts = parsePublicRunStreamCursor(left);
+  const rightParts = parsePublicRunStreamCursor(right);
+  if (!leftParts || !rightParts) return null;
+  if (
+    leftParts.runId !== rightParts.runId ||
+    leftParts.streamIncarnation !== rightParts.streamIncarnation
+  ) {
+    return null;
+  }
+  if (leftParts.redisMs !== rightParts.redisMs) {
+    return leftParts.redisMs < rightParts.redisMs ? -1 : 1;
+  }
+  if (leftParts.redisSequence === rightParts.redisSequence) return 0;
+  return leftParts.redisSequence < rightParts.redisSequence ? -1 : 1;
+}
+
+function parsePublicRunStreamCursor(value: string): {
+  runId: string;
+  streamIncarnation: bigint;
+  redisMs: bigint;
+  redisSequence: bigint;
+} | null {
+  const redisSeparator = value.lastIndexOf(":");
+  if (redisSeparator <= 0) return null;
+  const incarnationSeparator = value.lastIndexOf(":", redisSeparator - 1);
+  if (incarnationSeparator <= 0) return null;
+  const runId = value.slice(0, incarnationSeparator);
+  const incarnation = value.slice(incarnationSeparator + 1, redisSeparator);
+  const redisId = value.slice(redisSeparator + 1);
+  if (
+    !RUN_ID_PATTERN.test(runId) ||
+    !/^\d+$/.test(incarnation) ||
+    (incarnation.length > 1 && incarnation.startsWith("0")) ||
+    !REDIS_ID_PATTERN.test(redisId)
+  ) {
+    return null;
+  }
+  const redisParts = redisId.split("-");
+  try {
+    return {
+      runId,
+      streamIncarnation: BigInt(incarnation),
+      redisMs: BigInt(redisParts[0]),
+      redisSequence: BigInt(redisParts[1]),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface AdaptedPublicRunStreamEvent {
   event: EventType;
   data: EventData;
@@ -135,7 +189,7 @@ export function adaptPublicRunStreamEventV3({
         return null;
       }
       return {
-        event: "metadata",
+        event: "stream_open",
         data: base,
         emittedAt: parsed.emitted_at,
         streamIncarnation: parsed.stream_incarnation,

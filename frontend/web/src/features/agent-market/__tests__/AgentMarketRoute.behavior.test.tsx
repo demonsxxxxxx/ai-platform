@@ -792,7 +792,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   }
 });
 
-test("Marketplace Start and workspace Start New Task each submit on the first action", async () => {
+test("Agent starter prompts draft before explicit first-message submission", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
@@ -902,7 +902,7 @@ test("Marketplace Start and workspace Start New Task each submit on the first ac
       });
     }
   }
-  async function submitStarterPrompt(expectedCount: number, expectedSessionId: string) {
+  async function draftStarterPrompt(expectedCount: number) {
     const starterPrompt = container
       .querySelectorAll("button")
       .find((button) => button.textContent.includes("帮我处理企业任务"));
@@ -910,6 +910,31 @@ test("Marketplace Start and workspace Start New Task each submit on the first ac
     assert.equal(starterPrompt.hasAttribute("disabled"), false);
     await React.act(async () => {
       starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+    });
+
+    const textarea = container.querySelector("textarea");
+    assert.ok(textarea);
+    await waitUntil(() => textarea.value === "帮我处理企业任务");
+    assert.equal(textarea.value, "帮我处理企业任务");
+    assert.equal(
+      selections.length,
+      expectedCount,
+      "drafting a starter prompt must not create a conversation",
+    );
+    assert.equal(
+      submissions.length,
+      expectedCount,
+      "drafting a starter prompt must not submit a run",
+    );
+    return textarea;
+  }
+  async function submitDraft(expectedCount: number, expectedSessionId: string) {
+    const textarea = container.querySelector("textarea");
+    assert.ok(textarea);
+    const form = textarea.closest("form");
+    assert.ok(form);
+    await React.act(async () => {
+      form.dispatchEvent({ type: "submit", bubbles: true });
     });
     await waitUntil(
       () => selections.length === expectedCount && submissions.length === expectedCount,
@@ -919,7 +944,7 @@ test("Marketplace Start and workspace Start New Task each submit on the first ac
     assert.equal(
       submissions.length,
       expectedCount,
-      `the first action must reach submitChat; rendered UI: ${container.textContent}`,
+      `explicit submit must reach submitChat; rendered UI: ${container.textContent}`,
     );
     assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
     assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
@@ -979,7 +1004,9 @@ test("Marketplace Start and workspace Start New Task each submit on the first ac
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
 
-    await submitStarterPrompt(1, "session-support-1");
+    await draftStarterPrompt(0);
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    await submitDraft(1, "session-support-1");
     assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-1");
 
     const startNewTask = container
@@ -999,7 +1026,9 @@ test("Marketplace Start and workspace Start New Task each submit on the first ac
     assert.equal(selections.length, 1, "Start New Task must remain creation-free");
     assert.equal(submissions.length, 1);
 
-    await submitStarterPrompt(2, "session-support-2");
+    await draftStarterPrompt(1);
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    await submitDraft(2, "session-support-2");
     assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-2");
     assert.deepEqual(
       selections.map(({ selection }) => selection),

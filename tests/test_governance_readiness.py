@@ -10,9 +10,6 @@ from app.governance_readiness import (
 )
 
 
-B1_GATE_BOUNDARY_GAPS: list[str] = []
-
-
 class SecretBearingSettings:
     sandbox_container_provider = "docker://token@internal/path"
     sandbox_callback_token = "callback-secret"
@@ -238,61 +235,11 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split_runtime_acceptance" in domains["memory_governance"]["gaps"]
-    assert "controlled_host_memory_enabled_document_workflow_smoke" in domains["memory_governance"]["gaps"]
-    assert "controlled_host_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
-    assert "b1_memory_export_boundary" not in domains["memory_governance"]["gaps"]
-    assert "b1_memory_export_boundary" not in readiness["open_gaps"]
-    assert "b1_rollback_boundary" not in domains["memory_governance"]["gaps"]
-    assert "b1_rollback_boundary" not in readiness["open_gaps"]
-    assert "b1_issue_review_and_closure_evidence" not in domains["memory_governance"]["gaps"]
-    assert "b1_issue_review_and_closure_evidence" not in readiness["open_gaps"]
-    for gap in B1_GATE_BOUNDARY_GAPS:
-        assert gap in domains["memory_governance"]["gaps"]
-        assert gap in readiness["open_gaps"]
-    b1_evidence = domains["memory_governance"]["evidence"]["b1_memory_context_readiness"]
-    assert b1_evidence["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
-    assert b1_evidence["status"] == "blocked_missing_context_pack_evidence"
-    assert b1_evidence["status_label"] == "local partial"
-    assert b1_evidence["runtime_acceptance"]["acceptance_gap"] == (
-        "controlled_host_memory_enabled_document_workflow_smoke"
-    )
-    assert b1_evidence["runtime_acceptance"]["verifier_script"] == (
-        "tools/verify_b1_memory_context_workflow.py"
-    )
-    assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
-    assert set(B1_GATE_BOUNDARY_GAPS).issubset(set(b1_evidence["open_gaps"]))
-    assert "controlled_host_memory_enabled_document_workflow_smoke" in b1_evidence["open_gaps"]
-    assert "b1_issue_review_and_closure_evidence" in b1_evidence["closed_gate_boundary_gaps"]
-    assert "b1_memory_export_boundary" in b1_evidence["closed_gate_boundary_gaps"]
-    assert "b1_rollback_boundary" in b1_evidence["closed_gate_boundary_gaps"]
-    assert b1_evidence["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
-        "recorded_local_contract"
-    )
-    assert b1_evidence["gate_boundary_evidence"]["b1_memory_export_boundary"]["does_not_close_b1_gate"] is True
-    assert b1_evidence["gate_boundary_evidence"]["b1_rollback_boundary"]["status"] == (
-        "recorded_local_contract"
-    )
-    assert b1_evidence["gate_boundary_evidence"]["b1_rollback_boundary"]["does_not_close_b1_gate"] is True
-    issue_closure = b1_evidence["gate_boundary_evidence"]["b1_issue_review_and_closure_evidence"]
-    assert issue_closure["status"] == "recorded_issue_closure_evidence"
-    assert issue_closure["closed_gap"] == "b1_issue_review_and_closure_evidence"
-    assert issue_closure["issue_state"] == "closed"
-    runtime_review = b1_evidence["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"]
-    assert "b1_runtime_evidence_review_against_merged_source" in domains["memory_governance"]["gaps"]
-    assert "b1_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
-    assert runtime_review["status"] == "open_missing_runtime_subject_evidence"
-    assert runtime_review["closed_gap"] is None
-    assert runtime_review["required_next_step"] == (
-        "record reviewed controlled-host B1 smoke evidence before reviewing merged-source drift"
-    )
-    assert b1_evidence["runtime_acceptance_evidence"] == {}
-    assert b1_evidence["non_expansion_invariants"] == {
-        "long_term_cross_session_memory_enabled": False,
-        "public_projection_only_for_ordinary_users": True,
-        "stores_private_executor_material_as_memory": False,
-        "frontend_state_is_canonical_context": False,
-        "production_claim_allowed": False,
-    }
+    assert "b1_memory_context_readiness" not in domains["memory_governance"]["evidence"]
+    assert not any(gap.startswith("b1_") for gap in domains["memory_governance"]["gaps"])
+    assert "controlled_host_memory_enabled_document_workflow_smoke" not in domains[
+        "memory_governance"
+    ]["gaps"]
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
     assert context_evidence["status"] == "partial_blocked"
@@ -485,8 +432,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "tenant-secret" not in serialized
     assert "docker://token" not in serialized
     assert "211 verified" not in serialized
-    assert "controlled_host_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
-    assert "b1_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" not in readiness[
+        "open_gaps"
+    ]
+    assert "b1_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
     assert "gate closable" not in serialized
     assert "sandbox_workspace_root" not in serialized
     assert "sandbox_workdir" not in serialized
@@ -610,11 +559,11 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "source_route_tests_recorded" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
-    assert "b1 memory/context readiness" in markdown.lower()
-    assert "ai-platform.b1-memory-context-readiness.v1" in markdown
-    assert "controlled_host_memory_enabled_document_workflow_smoke" in markdown
+    assert "b1 memory/context readiness" not in markdown.lower()
+    assert "ai-platform.b1-memory-context-readiness.v1" not in markdown
+    assert "controlled_host_memory_enabled_document_workflow_smoke" not in markdown
     assert "211 verified" not in markdown.lower()
-    assert "b1_runtime_evidence_review_against_merged_source" in open_gaps
+    assert "b1_runtime_evidence_review_against_merged_source" not in open_gaps
     assert "context_snapshot_public_provenance_projection_contract" in markdown
     assert "user_visible_context_provenance_api_projection_source_tests" in markdown
     assert "frontend_context_provenance_playback_source_tests" in markdown
@@ -654,6 +603,8 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     assert "callback-secret" not in result.stdout
     assert "tenant-secret" not in result.stdout
     assert "211 verified" not in result.stdout.lower()
-    assert "controlled_host_memory_enabled_document_workflow_smoke" in payload["open_gaps"]
-    assert "b1_runtime_evidence_review_against_merged_source" in payload["open_gaps"]
+    assert "controlled_host_memory_enabled_document_workflow_smoke" not in payload[
+        "open_gaps"
+    ]
+    assert "b1_runtime_evidence_review_against_merged_source" not in payload["open_gaps"]
     assert "gate closable" not in result.stdout.lower()

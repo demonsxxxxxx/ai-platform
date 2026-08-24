@@ -469,7 +469,6 @@ class ExecutorContextRetrievalRequest(BaseModel):
     callback_token_id: str
     action: Literal[
         "read_session_messages",
-        "read_context_file",
         "read_run_artifact",
         "stage_context_file_to_workspace",
         "stage_run_artifact_to_workspace",

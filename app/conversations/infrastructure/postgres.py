@@ -74,6 +74,7 @@ async def create_session(
     agent_id: str,
     user_id: str | None,
     title: str,
+    title_source: str = "initial",
     session_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
@@ -89,10 +90,10 @@ async def create_session(
     cursor = await conn.execute(
         """
         insert into sessions(
-          id, tenant_id, workspace_id, user_id, agent_id, title,
+          id, tenant_id, workspace_id, user_id, agent_id, title, title_source,
           admitted_agent_profile_revision, admitted_agent_profile_hash, purpose
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (id) do update
         set id = excluded.id
         where sessions.tenant_id = excluded.tenant_id
@@ -100,6 +101,7 @@ async def create_session(
           and sessions.user_id is not distinct from excluded.user_id
           and sessions.agent_id = excluded.agent_id
           and sessions.title = excluded.title
+          and sessions.title_source = excluded.title_source
           and sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision
           and sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash
           and sessions.purpose = excluded.purpose
@@ -112,6 +114,7 @@ async def create_session(
             user_id,
             agent_id,
             title,
+            title_source,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
             purpose,
@@ -220,7 +223,7 @@ async def get_authorized_lambchat_session(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        select id, workspace_id, agent_id, title, status, created_at, updated_at
+        select id, workspace_id, agent_id, title, title_source, status, created_at, updated_at
         from sessions
         where tenant_id = %s
           and id = %s
@@ -242,7 +245,7 @@ async def get_session_for_action(
 
     cursor = await conn.execute(
         """
-        select id, tenant_id, workspace_id, user_id, agent_id, title, status, created_at, updated_at
+        select id, tenant_id, workspace_id, user_id, agent_id, title, title_source, status, created_at, updated_at
         from sessions
         where tenant_id = %s and id = %s
         for update
@@ -258,17 +261,26 @@ async def update_session_title(
     tenant_id: str,
     session_id: str,
     title: str,
+    title_source: str = "user",
+    expected_title_source: str | None = None,
 ) -> dict[str, Any] | None:
     """Rename an active tenant session after application-layer authorization."""
 
+    expected_source_clause = "" if expected_title_source is None else " and title_source = %s"
+    params: tuple[Any, ...] = (title, title_source, tenant_id, session_id)
+    if expected_title_source is not None:
+        params += (expected_title_source,)
     cursor = await conn.execute(
         """
         update sessions
-        set title = %s, updated_at = now()
+        set title = %s, title_source = %s, updated_at = now()
         where tenant_id = %s and id = %s and status = 'active'
-        returning id, tenant_id, workspace_id, user_id, agent_id, title, status, created_at, updated_at
+        """
+        + expected_source_clause
+        + """
+        returning id, tenant_id, workspace_id, user_id, agent_id, title, title_source, status, created_at, updated_at
         """,
-        (title, tenant_id, session_id),
+        params,
     )
     return await cursor.fetchone()
 
@@ -458,7 +470,8 @@ async def list_authorized_agent_conversations(
     params.append(limit)
     result = await conn.execute(
         f"""
-        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
+        select sessions.id, sessions.workspace_id, sessions.agent_id,
+               coalesce(legacy_first_user.title, sessions.title) as title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                profile.name as agent_profile_name,
@@ -480,6 +493,33 @@ async def list_authorized_agent_conversations(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
+        left join lateral (
+          select left(
+            btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ),
+            32
+          ) as title
+          from messages
+          where sessions.title_source = 'initial'
+            and sessions.title = profile.name
+            and messages.tenant_id = sessions.tenant_id
+            and messages.session_id = sessions.id
+            and messages.role = 'user'
+            and btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ) <> ''
+          order by messages.created_at asc, messages.id asc
+          limit 1
+        ) legacy_first_user on true
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.agent_id = %s

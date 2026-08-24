@@ -24,6 +24,8 @@ _EXACT_INPUTS = {
             ".dockerignore",
             ".gitattributes",
             ".github/workflows/ai-platform-frontend.yml",
+            "app/required_tool_contract.py",
+            "app/run_projection.py",
             "tests/test_frontend_linux_contracts.py",
         }
     ),

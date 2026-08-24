@@ -74,11 +74,13 @@ test("composer exposes first-phase command and file reference affordances", () =
   assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
 });
 
-test("feature menu names current ai-platform capabilities in PRD terms", () => {
+test("feature menu exposes file and enhancement capabilities without redundant settings", () => {
   assert.match(featureMenuSource, /featureMenu\.skillsMarketplace/);
   assert.match(featureMenuSource, /featureMenu\.mcpTools/);
   assert.match(featureMenuSource, /featureMenu\.fileReference/);
-  assert.match(featureMenuSource, /featureMenu\.model/);
+  assert.doesNotMatch(featureMenuSource, /featureMenu\.settings/);
+  assert.doesNotMatch(featureMenuSource, /featureMenu\.model/);
+  assert.doesNotMatch(featureMenuSource, /chat\.thinkingIntensity/);
   assert.doesNotMatch(featureMenuSource, /featureMenu\.context/);
 });
 

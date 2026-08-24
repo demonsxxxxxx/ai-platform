@@ -40,6 +40,7 @@ _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Bash",
     "Write",
     "Edit",
+    "Grep",
 )
 _OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS = (
     "Read",
@@ -48,6 +49,7 @@ _OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS = (
     "Bash",
     "Write",
     "Edit",
+    "Grep",
 )
 _TRUSTED_UPLOADED_STATUSES = frozenset({SKILL_VERSION_REVIEWED, SKILL_VERSION_RELEASED})
 _TRUSTED_BUILTIN_STATUSES = frozenset(

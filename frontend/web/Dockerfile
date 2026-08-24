@@ -28,6 +28,7 @@ COPY frontend/web/postcss.config.js frontend/web/tailwind.config.js frontend/web
 COPY frontend/web/public ./frontend/web/public
 COPY frontend/web/scripts ./frontend/web/scripts
 COPY frontend/web/src ./frontend/web/src
+COPY app/run_projection.py app/required_tool_contract.py ./app/
 COPY tools ./tools
 COPY .github/workflows/ai-platform-frontend.yml ./.github/workflows/ai-platform-frontend.yml
 

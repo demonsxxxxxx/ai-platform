@@ -240,6 +240,43 @@ async def list_revealed_artifacts(
     return list(await cursor.fetchall())
 
 
+async def list_revealed_session_artifacts(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Return an exact session's active artifacts in one deterministic query."""
+
+    cursor = await conn.execute(
+        """
+        select
+          artifacts.id, artifacts.storage_key, artifacts.label,
+          artifacts.content_type, artifacts.size_bytes, artifacts.artifact_type,
+          artifacts.created_at, artifacts.trace_id, runs.id as run_id,
+          runs.session_id, runs.workspace_id, runs.user_id,
+          sessions.title as session_name
+        from artifacts
+        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
+        where artifacts.tenant_id = %s
+          and artifacts.lifecycle_state = 'active'
+          and (artifacts.expires_at is null or artifacts.expires_at > now())
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and sessions.status = 'active'
+        order by artifacts.created_at desc, artifacts.id desc
+        """,
+        (tenant_id, user_id, session_id),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_revealed_artifact_sessions(
     conn: AsyncConnection,
     *,
