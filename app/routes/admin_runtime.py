@@ -7,6 +7,7 @@ from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
 from app.execution_boundary import REAL_SANDBOX_PROVIDERS, is_accepted_runtime_lease
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.queue import get_queue_insight, get_queue_status
 from app.runtime.sandbox.container_provider import (
     DockerPermissionDeniedError,
@@ -14,12 +15,17 @@ from app.runtime.sandbox.container_provider import (
     create_container_provider,
 )
 from app.routes.sandbox_leases import lease_response
-from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
+from app.routes.sandbox_runtime_cleanup import (
+    SandboxRuntimeCleanupError,
+    cleanup_expired_sandbox_leases,
+    cleanup_expired_sandbox_runtime_leases,
+)
 from app.settings import get_settings
 
 router = APIRouter()
 
 _SUCCESSFUL_PROVIDER_CLEANUP_STATUSES = {"stopped", "not_found"}
+_EXECUTOR_RECONCILIATION_SLO_SECONDS = 900
 _OVERVIEW_FORBIDDEN_KEYS = {"skillid"}
 _DATABASE_POOL_CONFIG_KEYS = {"min_size", "max_size", "timeout_seconds", "max_waiting"}
 _QUEUE_DEPTH_KEYS = {"dead_letter", "processing", "queued", "tenant_processing", "tenant_queued"}
@@ -226,6 +232,22 @@ def _sanitize_observability_summary(value: object) -> dict[str, object]:
         "p50": _coerce_int(latency["p50"]) if latency.get("p50") is not None else None,
         "p95": _coerce_int(latency["p95"]) if latency.get("p95") is not None else None,
         "p99": _coerce_int(latency["p99"]) if latency.get("p99") is not None else None,
+    }
+    reconciliation = summary.get("executor_reconciliation") if isinstance(summary.get("executor_reconciliation"), dict) else {}
+    oldest_age = reconciliation.get("oldest_pending_receipt_age_seconds")
+    summary["executor_reconciliation"] = {
+        "pending_receipt_count": _coerce_int(reconciliation.get("pending_receipt_count")),
+        "released_pending_receipt_count": _coerce_int(
+            reconciliation.get("released_pending_receipt_count")
+        ),
+        "retry_receipt_count": _coerce_int(reconciliation.get("retry_receipt_count")),
+        "retry_attempt_count": _coerce_int(reconciliation.get("retry_attempt_count")),
+        "cleanup_pending_receipt_count": _coerce_int(reconciliation.get("cleanup_pending_receipt_count")),
+        "quarantined_receipt_count": _coerce_int(reconciliation.get("quarantined_receipt_count")),
+        "max_attempt_count": _coerce_int(reconciliation.get("max_attempt_count")),
+        "oldest_pending_receipt_age_seconds": _coerce_int(oldest_age) if oldest_age is not None else None,
+        "terminalization_slo_seconds": _coerce_int(reconciliation.get("terminalization_slo_seconds")),
+        "terminalization_slo_breach_count": _coerce_int(reconciliation.get("terminalization_slo_breach_count")),
     }
     return summary
 
@@ -571,7 +593,10 @@ async def admin_runtime_containers(
                 tenant_id=principal.tenant_id,
                 provider_factory=create_container_provider,
             )
-            await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
+            await cleanup_expired_sandbox_leases(
+                conn,
+                tenant_id=principal.tenant_id,
+            )
         except SandboxRuntimeCleanupError as exc:
             if not _only_placeholder_cleanup_failures(exc):
                 raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
@@ -630,7 +655,10 @@ async def admin_runtime_overview(
                     tenant_id=principal.tenant_id,
                     provider_factory=create_container_provider,
                 )
-                await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
+                await cleanup_expired_sandbox_leases(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                )
             except SandboxRuntimeCleanupError as exc:
                 if not _only_placeholder_cleanup_failures(exc):
                     raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
@@ -656,6 +684,12 @@ async def admin_runtime_overview(
     async with transaction() as conn:
         run_summary = await repositories.get_admin_runtime_run_summary(conn, tenant_id=principal.tenant_id, limit=10)
         observability_summary = await repositories.get_admin_runtime_observability_summary(conn, tenant_id=principal.tenant_id)
+        executor_reconciliation_summary = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+            conn,
+            tenant_id=principal.tenant_id,
+            slo_seconds=_EXECUTOR_RECONCILIATION_SLO_SECONDS,
+        )
+        observability_summary["executor_reconciliation"] = executor_reconciliation_summary
         admission_summary = await repositories.get_admin_runtime_admission_summary(
             conn,
             tenant_id=principal.tenant_id,

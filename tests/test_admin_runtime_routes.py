@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.routes.admin_runtime import _backpressure_snapshot
+from app.routes.admin_runtime import _backpressure_snapshot, _sanitize_observability_summary
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError
 from app.runtime.sandbox.contracts import ContainerStatus, StopResult
 from app.settings import Settings
@@ -19,6 +19,21 @@ def signed_runtime_proof_key(monkeypatch):
     async def ignore_orphan_cleanup_audit(principal, failures):
         return None
 
+    async def empty_executor_reconciliation_summary(_conn, *, tenant_id, slo_seconds):
+        assert tenant_id == "default"
+        return {
+            "pending_receipt_count": 0,
+            "released_pending_receipt_count": 0,
+            "retry_receipt_count": 0,
+            "retry_attempt_count": 0,
+            "cleanup_pending_receipt_count": 0,
+            "quarantined_receipt_count": 0,
+            "max_attempt_count": 0,
+            "oldest_pending_receipt_age_seconds": None,
+            "terminalization_slo_seconds": slo_seconds,
+            "terminalization_slo_breach_count": 0,
+        }
+
     monkeypatch.setattr(
         "app.execution_boundary.get_settings",
         lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
@@ -26,6 +41,10 @@ def signed_runtime_proof_key(monkeypatch):
     monkeypatch.setattr(
         "app.routes.admin_runtime._record_admin_orphan_cleanup_failure",
         ignore_orphan_cleanup_audit,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.sandbox_lease_repository.get_sandbox_executor_reconciliation_summary",
+        empty_executor_reconciliation_summary,
     )
 
 
@@ -117,6 +136,45 @@ def user_headers():
     }
 
 
+def test_admin_runtime_reconciliation_summary_is_aggregate_only():
+    payload = _sanitize_observability_summary(
+        {
+            "error_types": {},
+            "latency_ms": {},
+            "executor_reconciliation": {
+                "pending_receipt_count": 3,
+                "released_pending_receipt_count": 1,
+                "retry_receipt_count": 2,
+                "retry_attempt_count": 7,
+                "cleanup_pending_receipt_count": 4,
+                "quarantined_receipt_count": 1,
+                "max_attempt_count": 5,
+                "oldest_pending_receipt_age_seconds": 901,
+                "terminalization_slo_seconds": 900,
+                "terminalization_slo_breach_count": 1,
+                "run_id": "private-run",
+                "lease_id": "private-lease",
+                "error": "private-error",
+            },
+        }
+    )
+
+    reconciliation = payload["executor_reconciliation"]
+    assert reconciliation == {
+        "pending_receipt_count": 3,
+        "released_pending_receipt_count": 1,
+        "retry_receipt_count": 2,
+        "retry_attempt_count": 7,
+        "cleanup_pending_receipt_count": 4,
+        "quarantined_receipt_count": 1,
+        "max_attempt_count": 5,
+        "oldest_pending_receipt_age_seconds": 901,
+        "terminalization_slo_seconds": 900,
+        "terminalization_slo_breach_count": 1,
+    }
+    assert not {"run_id", "lease_id", "error"} & set(reconciliation)
+
+
 def patch_db_only_cleanup(monkeypatch):
     async def fake_cleanup_expired_sandbox_leases(conn, *, tenant_id=None, reason="expired"):
         assert tenant_id == "default"
@@ -124,7 +182,7 @@ def patch_db_only_cleanup(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.cleanup_expired_sandbox_leases",
+        "app.routes.admin_runtime.cleanup_expired_sandbox_leases",
         fake_cleanup_expired_sandbox_leases,
     )
 
@@ -1214,7 +1272,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.cleanup_expired_sandbox_leases",
+        "app.routes.admin_runtime.cleanup_expired_sandbox_leases",
         fake_cleanup_expired_sandbox_leases,
         raising=False,
     )
@@ -1428,7 +1486,7 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.cleanup_expired_sandbox_leases",
+        "app.routes.admin_runtime.cleanup_expired_sandbox_leases",
         fail_db_cleanup,
         raising=False,
     )

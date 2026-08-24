@@ -8,9 +8,6 @@ import { PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS } from "../publicTerminalPrese
 import type { HistoryEvent } from "../types.ts";
 
 const repositoryRoot = resolve(process.cwd(), "../..");
-const ADR_REQUIRED_DORMANT_PRESENTATIONS = [
-  "terminal_reconciliation_failed",
-] as const;
 
 function pythonObjectBody(source: string, name: string): string {
   const match = source.match(
@@ -29,7 +26,7 @@ function literalStringMapping(body: string): Map<string, string> {
 }
 
 test("frontend public terminal presentations exactly cover backend public detail codes", () => {
-  const projectionSource = readFileSync(
+  const terminalProjectionSource = readFileSync(
     resolve(repositoryRoot, "app/run_projection.py"),
     "utf8",
   );
@@ -38,10 +35,13 @@ test("frontend public terminal presentations exactly cover backend public detail
     "utf8",
   );
   const backendMessages = literalStringMapping(
-    pythonObjectBody(projectionSource, "PUBLIC_TERMINAL_DETAIL_MESSAGES"),
+    pythonObjectBody(terminalProjectionSource, "PUBLIC_TERMINAL_DETAIL_MESSAGES"),
   );
   assert.match(
-    pythonObjectBody(projectionSource, "PUBLIC_TERMINAL_DETAIL_MESSAGES"),
+    pythonObjectBody(
+      terminalProjectionSource,
+      "PUBLIC_TERMINAL_DETAIL_MESSAGES",
+    ),
     /"required_capability_unavailable"\s*:\s*required_tool_public_detail/,
   );
   const requiredMessage = requiredToolSource.match(
@@ -50,7 +50,7 @@ test("frontend public terminal presentations exactly cover backend public detail
   assert.ok(requiredMessage);
   backendMessages.set("required_capability_unavailable", requiredMessage);
 
-  const resultUnavailableMessage = projectionSource.match(
+  const resultUnavailableMessage = terminalProjectionSource.match(
     /^RESULT_UNAVAILABLE_MESSAGE\s*=\s*"([^"]+)"/m,
   )?.[1];
   assert.ok(resultUnavailableMessage);
@@ -58,10 +58,7 @@ test("frontend public terminal presentations exactly cover backend public detail
 
   assert.deepEqual(
     Object.keys(PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS).sort(),
-    [
-      ...backendMessages.keys(),
-      ...ADR_REQUIRED_DORMANT_PRESENTATIONS,
-    ].sort(),
+    [...backendMessages.keys()].sort(),
   );
   for (const [detailCode, publicMessage] of backendMessages) {
     assert.equal(
@@ -74,7 +71,10 @@ test("frontend public terminal presentations exactly cover backend public detail
   }
 
   const aliases = literalStringMapping(
-    pythonObjectBody(projectionSource, "PUBLIC_TERMINAL_ERROR_CODE_ALIASES"),
+    pythonObjectBody(
+      terminalProjectionSource,
+      "PUBLIC_TERMINAL_ERROR_CODE_ALIASES",
+    ),
   );
   for (const [rawCode, publicCode] of aliases) {
     assert.ok(

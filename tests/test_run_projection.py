@@ -255,6 +255,18 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert "Bash" not in str(ordinary)
 
 
+def test_terminal_reconciliation_failure_uses_fixed_public_projection():
+    projection = public_terminal_projection("failed", "terminal_reconciliation_failed")
+
+    assert projection["detail_code"] == "terminal_reconciliation_failed"
+    assert projection["error_code"] == "terminal_reconciliation_failed"
+    assert projection["message"] == (
+        "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。"
+        "已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。"
+    )
+    assert projection["event_payload"] == {}
+
+
 def test_tool_evidence_terminal_projection_preserves_safe_code_without_private_detail():
     projection = public_terminal_projection("failed", "tool_invocation_evidence_mismatch")
 

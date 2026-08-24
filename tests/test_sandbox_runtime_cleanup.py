@@ -8,8 +8,13 @@ from app.execution_boundary import (
     build_governed_egress_proof,
     governed_egress_proof_label,
 )
-from app.runtime.sandbox.container_provider import _opensandbox_governed_runtime_subject
+from app.runtime.sandbox.container_provider import (
+    _executor_identity_labels,
+    _opensandbox_governed_denial_subject,
+    _opensandbox_governed_runtime_subject,
+)
 from app.runtime.sandbox.contracts import StopResult
+from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
 
 
 TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
@@ -72,7 +77,10 @@ def opensandbox_cleanup_proof():
         runtime_subject=_opensandbox_governed_runtime_subject("runsc", "runtime-subject-a"),
         policy_subject="gateway-policy-subject-a",
         callback_subject="callback-boundary-subject-a",
-        denial_subject="gateway-deny-audit-subject-a:gateway-deny-counter-subject-a",
+        denial_subject=_opensandbox_governed_denial_subject(
+            "gateway-deny-audit-subject-a",
+            "gateway-deny-counter-subject-a",
+        ),
         network_id="profile-a",
         network_name="http://opensandbox.local:8080",
         network_internal=False,
@@ -136,11 +144,11 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
 
@@ -156,6 +164,261 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
         ("stop", "docker", "executor-exec-run-a", "tenant-a", "run-a", "expired"),
         ("release", "tenant-a", "expired", ["lease-a"], None),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry"])
+async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
+    monkeypatch,
+    reconciliation_status,
+):
+    from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
+
+    row = expired_lease_row(
+        executor_terminal_json={"run_id": "run-a", "status": "succeeded"},
+        executor_reconciliation_status=reconciliation_status,
+    )
+
+    async def fake_list_expired_active_sandbox_leases(_conn, **_kwargs):
+        return [row]
+
+    async def fail_release(*_args, **_kwargs):
+        pytest.fail("a terminal receipt with recovery work must not be generically released")
+
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
+        fake_list_expired_active_sandbox_leases,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
+        fail_release,
+    )
+
+    cleaned = await cleanup_expired_sandbox_runtime_leases(
+        object(),
+        tenant_id="tenant-a",
+        provider_factory=lambda _provider_name: pytest.fail(
+            "a terminal receipt with recovery work must remain available to reconciliation"
+        ),
+    )
+
+    assert cleaned == []
+
+
+@pytest.mark.parametrize("lease_status", ["active", "released"])
+@pytest.mark.asyncio
+async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
+    monkeypatch,
+    lease_status,
+):
+    from app.routes.sandbox_runtime_cleanup import (
+        cleanup_failed_sandbox_executor_reconciliation_leases,
+    )
+
+    row = expired_lease_row(
+        status=lease_status,
+        executor_terminal_json={"run_id": "run-a", "status": "failed"},
+        executor_reconciliation_status="failed",
+    )
+    calls = []
+
+    async def claim(_conn, **kwargs):
+        calls.append(("claim", kwargs))
+        return [row]
+
+    async def has_claim(_conn, **kwargs):
+        calls.append(("has_claim", kwargs))
+        return True
+
+    async def finalize(_conn, **kwargs):
+        calls.append(("finalize", kwargs))
+        return {**row, "status": "released", "executor_reconciliation_status": "finalized"}
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    class Provider:
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", lease.container_id, reason))
+            return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    owner = "app.routes.sandbox_runtime_cleanup"
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups",
+        claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup",
+        finalize,
+    )
+    monkeypatch.setattr(f"{owner}.repositories.append_event", append_event)
+
+    released = await cleanup_failed_sandbox_executor_reconciliation_leases(
+        object(),
+        tenant_id="tenant-a",
+        provider_factory=lambda _provider: Provider(),
+    )
+
+    assert [call[0] for call in calls] == ["claim", "has_claim", "stop", "finalize", "event"]
+    claim_token = calls[0][1]["claim_token"]
+    assert calls[0][1]["limit"] == 1
+    assert calls[1][1] == {"lease_id": "lease-a", "claim_token": claim_token}
+    assert calls[2] == ("stop", "exec-run-a", "executor_reconciliation_cleanup")
+    assert calls[3][1]["claim_token"] == claim_token
+    assert released == [
+        {**row, "status": "released", "executor_reconciliation_status": "finalized"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import (
+        cleanup_failed_sandbox_executor_reconciliation_leases,
+    )
+
+    row = expired_lease_row(
+        executor_terminal_json={"run_id": "run-a", "status": "failed"},
+        executor_reconciliation_status="failed",
+    )
+    calls = []
+
+    async def claim(_conn, **kwargs):
+        calls.append(("claim", kwargs))
+        return [row]
+
+    async def has_claim(_conn, **kwargs):
+        calls.append(("has_claim", kwargs))
+        return True
+
+    async def release_claim(_conn, **kwargs):
+        calls.append(("release_claim", kwargs))
+        return True
+
+    class Provider:
+        async def stop(self, _lease, *, reason):
+            calls.append(("stop", reason))
+            return StopResult(container_id="container-a", status="failed", message=reason)
+
+    owner = "app.routes.sandbox_runtime_cleanup"
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups",
+        claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.release_failed_sandbox_executor_reconciliation_cleanup_claim",
+        release_claim,
+    )
+
+    released = await cleanup_failed_sandbox_executor_reconciliation_leases(
+        object(),
+        provider_factory=lambda _provider: Provider(),
+    )
+
+    assert released == []
+    assert [call[0] for call in calls] == ["claim", "has_claim", "stop", "release_claim"]
+    assert calls[-1][1]["error"] == "executor_reconciliation_sandbox_stop_failed"
+
+
+@pytest.mark.asyncio
+async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effect(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import (
+        cleanup_failed_sandbox_executor_reconciliation_leases,
+    )
+
+    row = expired_lease_row(
+        executor_terminal_json={"run_id": "run-a", "status": "failed"},
+        executor_reconciliation_status="failed",
+    )
+    calls = []
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    async def has_claim(_conn, **kwargs):
+        calls.append(("has_claim", kwargs))
+        return False
+
+    owner = "app.routes.sandbox_runtime_cleanup"
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups",
+        claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+        has_claim,
+    )
+
+    released = await cleanup_failed_sandbox_executor_reconciliation_leases(
+        object(),
+        provider_factory=lambda _provider: pytest.fail(
+            "a stale cleanup claimant must not select or stop a provider"
+        ),
+    )
+
+    assert released == []
+    assert [call[0] for call in calls] == ["has_claim"]
+
+
+@pytest.mark.asyncio
+async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import (
+        cleanup_failed_sandbox_executor_reconciliation_leases,
+    )
+
+    row = expired_lease_row(
+        runtime_container_id=None,
+        lease_payload_json=None,
+        executor_terminal_json={"run_id": "run-a", "status": "failed"},
+        executor_reconciliation_status="failed",
+    )
+    calls = []
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    async def has_claim(_conn, **_kwargs):
+        calls.append("has_claim")
+        return True
+
+    async def quarantine(_conn, **kwargs):
+        calls.append(("quarantine", kwargs))
+        return True
+
+    owner = "app.routes.sandbox_runtime_cleanup"
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups",
+        claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup",
+        quarantine,
+    )
+
+    released = await cleanup_failed_sandbox_executor_reconciliation_leases(
+        object(),
+        provider_factory=lambda _provider: pytest.fail(
+            "an invalid runtime handle must never select or stop a provider"
+        ),
+    )
+
+    assert released == []
+    assert calls[0] == "has_claim"
+    assert calls[1][0] == "quarantine"
+    assert calls[1][1]["lease_id"] == "lease-a"
+    assert calls[1][1]["claim_token"]
+    assert calls[1][1]["error"] == "executor_reconciliation_runtime_handle_invalid"
 
 
 @pytest.mark.asyncio
@@ -210,11 +473,11 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_c
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -270,11 +533,11 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
         return [row]
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
 
@@ -334,11 +597,11 @@ async def test_trusted_internal_cleanup_rebuilds_verified_scope_without_governed
         return [row]
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         list_expired,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         release_stopped,
     )
 
@@ -392,10 +655,10 @@ async def test_trusted_internal_cleanup_rejects_cross_scope_persisted_payload(mo
         return [row]
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases", list_expired
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases", list_expired
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases", release_stopped
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases", release_stopped
     )
 
     with pytest.raises(SandboxRuntimeCleanupError):
@@ -490,10 +753,10 @@ async def test_internal_test_expired_lease_cleanup_stops_before_db_release(monke
 
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases", list_expired
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases", list_expired
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases", release_stopped
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases", release_stopped
     )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
@@ -532,11 +795,11 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
         return [row]
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
 
@@ -551,8 +814,21 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_mode", ("attempt-mismatch", "ambiguous-identity", "get-info-404"))
-async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unconfirmed(monkeypatch, failure_mode):
+@pytest.mark.parametrize(
+    "failure_mode",
+    (
+        "expired-authorized",
+        "failed-receipt-authorized",
+        "attempt-mismatch",
+        "ambiguous-identity",
+        "non-string-remote-metadata",
+        "get-info-404",
+    ),
+)
+async def test_production_opensandbox_cleanup_requires_authoritative_identity(
+    monkeypatch,
+    failure_mode,
+):
     from opensandbox.exceptions import SandboxApiException
 
     from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
@@ -578,6 +854,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
         "ai-platform.external_egress.profile_version": "v1",
         "ai-platform.external_egress.profile_id": "profile-a",
+        "ai-platform.external_egress.endpoint_sha256": proof["network_name_sha256"],
         "ai-platform.external_egress.runtime_identity": "runsc",
         "ai-platform.runtime_subject": "runtime-subject-a",
         "ai-platform.external_egress.gateway_policy_subject": "gateway-policy-subject-a",
@@ -587,7 +864,18 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         "ai-platform.external_egress.profile_requested_image": image,
         "ai-platform.external_egress.profile_requested_image_digest": "sha256:" + "a" * 64,
         "ai-platform.external_egress.profile_expires_at": proof["expires_at"],
+        GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
     }
+    metadata.update(
+        opensandbox_metadata.normalize_opensandbox_metadata(
+            _executor_identity_labels()
+        )
+    )
+    if failure_mode != "ambiguous-identity":
+        metadata["ai-platform.attempt_id"] = "attempt-a"
+    metadata = opensandbox_metadata.normalize_opensandbox_metadata(metadata)
+    if failure_mode == "non-string-remote-metadata":
+        metadata["ai-platform.owner"] = 1
     remote = SimpleNamespace(
         id="osb-run-a",
         metadata=metadata,
@@ -669,13 +957,82 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
     monkeypatch.setattr("app.runtime.sandbox.container_provider.get_settings", lambda: Settings())
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: Settings())
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
+
+    if failure_mode == "failed-receipt-authorized":
+        from app.routes.sandbox_runtime_cleanup import (
+            cleanup_failed_sandbox_executor_reconciliation_leases,
+        )
+
+        finalized = []
+
+        async def claim_failed(_conn, **_kwargs):
+            return [row]
+
+        async def has_failed_claim(_conn, **_kwargs):
+            return True
+
+        async def finalize_failed(_conn, **kwargs):
+            finalized.append(kwargs)
+            return row
+
+        async def append_event(_conn, **_kwargs):
+            return "event-a"
+
+        monkeypatch.setattr(
+            "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups",
+            claim_failed,
+        )
+        monkeypatch.setattr(
+            "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+            has_failed_claim,
+        )
+        monkeypatch.setattr(
+            "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup",
+            finalize_failed,
+        )
+        monkeypatch.setattr(
+            "app.routes.sandbox_runtime_cleanup.repositories.append_event",
+            append_event,
+        )
+
+        cleaned = await cleanup_failed_sandbox_executor_reconciliation_leases(
+            object(),
+            tenant_id="tenant-a",
+            provider_factory=lambda _provider_name: provider,
+        )
+        assert cleaned == [row]
+        assert remote_trace == ["connect", "get_info"]
+        assert remote.kill_calls == 1
+        assert remote.close_calls == 1
+        assert len(finalized) == 1
+        assert finalized[0]["lease_id"] == "lease-a"
+        return
+
+    if failure_mode == "expired-authorized":
+        cleaned = await cleanup_expired_sandbox_runtime_leases(
+            object(),
+            tenant_id="tenant-a",
+            provider_factory=lambda _provider_name: provider,
+        )
+        assert cleaned == [row]
+        assert len(received_leases) == 1
+        assert received_leases[0].labels == {
+            "ai-platform.attempt_id": "attempt-a",
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+        }
+        assert remote_trace == ["connect", "get_info"]
+        assert remote.kill_calls == 1
+        assert remote.close_calls == 1
+        assert len(releases) == 1
+        assert releases[0]["lease_ids"] == ["lease-a"]
+        return
 
     with pytest.raises(SandboxRuntimeCleanupError) as exc_info:
         await cleanup_expired_sandbox_runtime_leases(
@@ -738,11 +1095,11 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -814,11 +1171,11 @@ async def test_cleanup_expired_sandbox_runtime_leases_partial_failure_uses_commi
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.transaction", fake_transaction, raising=False)
