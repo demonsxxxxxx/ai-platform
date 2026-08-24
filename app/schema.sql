@@ -1927,9 +1927,14 @@ create table if not exists run_events (
   stream_publication_next_attempt_at timestamptz,
   stream_publication_redis_id text,
   stream_publication_last_error text,
+  stream_publication_claim_token text,
+  stream_publication_claim_expires_at timestamptz,
   created_at timestamptz not null default now(),
   constraint chk_run_events_stream_publication_state
-    check (stream_publication_state is null or (stream_publication_state in ('pending', 'published', 'suppressed')))
+    check (stream_publication_state is null or (stream_publication_state in ('pending', 'published', 'suppressed'))),
+  constraint chk_run_events_stream_publication_claim
+    check ((stream_publication_claim_token is null and stream_publication_claim_expires_at is null)
+      or (stream_publication_claim_token is not null and stream_publication_claim_expires_at is not null))
 );
 
 create index if not exists idx_run_events_run_created on run_events(run_id, created_at);
@@ -1950,6 +1955,8 @@ alter table run_events add column if not exists stream_publication_attempts inte
 alter table run_events add column if not exists stream_publication_next_attempt_at timestamptz;
 alter table run_events add column if not exists stream_publication_redis_id text;
 alter table run_events add column if not exists stream_publication_last_error text;
+alter table run_events add column if not exists stream_publication_claim_token text;
+alter table run_events add column if not exists stream_publication_claim_expires_at timestamptz;
 
 do $$
 begin
@@ -1965,6 +1972,22 @@ begin
 end $$;
 
 alter table run_events validate constraint chk_run_events_stream_publication_state;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_run_events_stream_publication_claim'
+      and conrelid = 'run_events'::regclass
+  ) then
+    alter table run_events
+      add constraint chk_run_events_stream_publication_claim
+      check ((stream_publication_claim_token is null and stream_publication_claim_expires_at is null)
+        or (stream_publication_claim_token is not null and stream_publication_claim_expires_at is not null)) not valid;
+  end if;
+end $$;
+
+alter table run_events validate constraint chk_run_events_stream_publication_claim;
 
 create index if not exists idx_run_events_run_sequence on run_events(tenant_id, run_id, sequence);
 

@@ -211,7 +211,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.21.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.24.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -266,6 +266,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_run_events_stream_publication_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
+        "run_events",
+        "chk_run_events_stream_publication_claim",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
         "files",
         "chk_files_lifecycle_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
@@ -315,6 +319,15 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
             "'pending'::text, 'published'::text, 'suppressed'::text])))",
+        ),
+        (
+            "run_events",
+            "chk_run_events_stream_publication_claim",
+            "c",
+            "CHECK ((stream_publication_claim_token IS NULL AND "
+            "stream_publication_claim_expires_at IS NULL) OR ("
+            "stream_publication_claim_token IS NOT NULL AND "
+            "stream_publication_claim_expires_at IS NOT NULL))",
         ),
         (
             "files",
@@ -430,7 +443,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "5b054efc0229bd159a54063a03b3db89b4e0dc64de2435a073cad431a88ee053"
+        "865a16b7f42e5bc0a0ddf2533b0a286305f3a3e9ca3b08a9e8995051319abe0f"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -449,19 +462,33 @@ def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():
         "stream_publication_next_attempt_at timestamptz",
         "stream_publication_redis_id text",
         "stream_publication_last_error text",
+        "stream_publication_claim_token text",
+        "stream_publication_claim_expires_at timestamptz",
     ):
         assert column in schema
     assert "create index if not exists idx_run_events_stream_publication_retry" not in schema
-    migration = next(
+    assert "create index if not exists idx_run_events_stream_publication_claim" not in schema
+    assert "chk_run_events_stream_publication_claim" in schema
+    retry_migration = next(
         item
         for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
         if item.name == "idx_run_events_stream_publication_retry"
     )
-    assert migration.predicate_expression == (
+    assert retry_migration.predicate_expression == (
         "visible_to_user = true and stream_publication_state = 'pending'"
     )
-    assert migration.sql.endswith(
+    assert retry_migration.sql.endswith(
         "where visible_to_user = true and stream_publication_state = 'pending'"
+    )
+    claim_migration = next(
+        item
+        for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+        if item.name == "idx_run_events_stream_publication_claim"
+    )
+    assert claim_migration.column_names == ("tenant_id", "run_id", "sequence", "id")
+    assert claim_migration.predicate_expression == (
+        "visible_to_user = true and stream_publication_state = 'pending' "
+        "and payload_json ? '__stream_v4'"
     )
 
 
@@ -478,10 +505,14 @@ async def test_v4_rollback_removes_only_publication_bookkeeping():
     conn = FakeRollbackConnection()
     await schema_migrations.rollback_v4_publication_migration(conn)
     assert conn.event_facts == [{"id": "evt4_fact", "sequence": 9}]
+    assert any("drop index if exists idx_run_events_stream_publication_claim" in item for item in conn.statements)
     assert any("drop index if exists idx_run_events_stream_publication_retry" in item for item in conn.statements)
     assert any("delete from schema_index_migrations" in item for item in conn.statements)
     assert any("delete from schema_migrations" in item for item in conn.statements)
+    assert any("drop constraint if exists chk_run_events_stream_publication_claim" in item for item in conn.statements)
     assert any("drop constraint if exists chk_run_events_stream_publication_state" in item for item in conn.statements)
+    assert any("drop column if exists stream_publication_claim_token" in item for item in conn.statements)
+    assert any("drop column if exists stream_publication_claim_expires_at" in item for item in conn.statements)
     assert any("drop column if exists stream_publication_state" in item for item in conn.statements)
     assert all("delete from run_events" not in item for item in conn.statements)
 

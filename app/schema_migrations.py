@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.21.1"
+TARGET_SCHEMA_VERSION = "2026.08.24.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -65,6 +65,8 @@ CRITICAL_COLUMNS = (
     ("run_events", "stream_publication_next_attempt_at", "timestamptz", False),
     ("run_events", "stream_publication_redis_id", "text", False),
     ("run_events", "stream_publication_last_error", "text", False),
+    ("run_events", "stream_publication_claim_token", "text", False),
+    ("run_events", "stream_publication_claim_expires_at", "timestamptz", False),
     ("sandbox_leases", "attempt_id", "text", False),
     ("sandbox_leases", "runtime_container_id", "text", False),
     ("sandbox_leases", "runtime_container_name", "text", False),
@@ -95,6 +97,7 @@ CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
     ("run_events", "chk_run_events_stream_publication_state"),
+    ("run_events", "chk_run_events_stream_publication_claim"),
     ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
@@ -125,6 +128,15 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
         "'pending'::text, 'published'::text, 'suppressed'::text])))",
+    ),
+    (
+        "run_events",
+        "chk_run_events_stream_publication_claim",
+        "c",
+        "CHECK ((stream_publication_claim_token IS NULL AND "
+        "stream_publication_claim_expires_at IS NULL) OR ("
+        "stream_publication_claim_token IS NOT NULL AND "
+        "stream_publication_claim_expires_at IS NOT NULL))",
     ),
     (
         "files",
@@ -213,6 +225,18 @@ CONCURRENT_INDEX_MIGRATIONS = (
         ("stream_publication_next_attempt_at", "created_at", "id"),
         (False, False, False),
         "visible_to_user = true and stream_publication_state = 'pending'",
+    ),
+    ConcurrentIndexMigration(
+        "idx_run_events_stream_publication_claim",
+        "create index concurrently if not exists idx_run_events_stream_publication_claim "
+        "on run_events(tenant_id, run_id, sequence asc, id asc) "
+        "where visible_to_user = true and stream_publication_state = 'pending' "
+        "and payload_json ? '__stream_v4'",
+        "run_events",
+        ("tenant_id", "run_id", "sequence", "id"),
+        (False, False, False, False),
+        "visible_to_user = true and stream_publication_state = 'pending' "
+        "and payload_json ? '__stream_v4'",
     ),
     ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
@@ -601,14 +625,21 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
 async def rollback_v4_publication_migration(conn: Any) -> None:
     """Remove only additive publication bookkeeping; event facts stay intact."""
 
+    await conn.execute("drop index if exists idx_run_events_stream_publication_claim")
     await conn.execute("drop index if exists idx_run_events_stream_publication_retry")
     await conn.execute(
-        "delete from schema_index_migrations where index_name = %s",
-        ("idx_run_events_stream_publication_retry",),
+        "delete from schema_index_migrations where index_name in (%s, %s)",
+        (
+            "idx_run_events_stream_publication_claim",
+            "idx_run_events_stream_publication_retry",
+        ),
     )
     await conn.execute(
         "delete from schema_migrations where version = %s",
         (TARGET_SCHEMA_VERSION,),
+    )
+    await conn.execute(
+        "alter table run_events drop constraint if exists chk_run_events_stream_publication_claim"
     )
     await conn.execute(
         "alter table run_events drop constraint if exists chk_run_events_stream_publication_state"
@@ -616,6 +647,8 @@ async def rollback_v4_publication_migration(conn: Any) -> None:
     await conn.execute(
         """
         alter table run_events
+          drop column if exists stream_publication_claim_token,
+          drop column if exists stream_publication_claim_expires_at,
           drop column if exists stream_publication_state,
           drop column if exists stream_publication_attempts,
           drop column if exists stream_publication_next_attempt_at,

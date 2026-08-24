@@ -305,6 +305,7 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
     "damage_sql",
     [
         "alter table runs drop column authz_policy_version",
+        "alter table run_events drop constraint chk_run_events_stream_publication_claim",
         "alter table files drop constraint chk_files_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target",
@@ -361,6 +362,11 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
 @pytest.mark.parametrize(
     "damage_sql",
     [
+        """
+        alter table run_events drop constraint chk_run_events_stream_publication_claim;
+        alter table run_events add constraint chk_run_events_stream_publication_claim
+          check (stream_publication_claim_token is null)
+        """,
         """
         alter table files drop constraint chk_files_lifecycle_state;
         alter table files add constraint chk_files_lifecycle_state

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import timedelta
 import json
 import os
 from unittest.mock import patch
@@ -32,6 +33,10 @@ from app.streaming.v4 import (
     project_public_envelope_v4,
     project_public_v4,
     recover_v4_rows,
+)
+from app.streaming.infrastructure.postgres_v4 import (
+    PostgresV4PublicationClaims,
+    V4PublicationAuthorityError,
 )
 from app.streaming.worker_projection import publish_pending_v4_events
 
@@ -891,6 +896,229 @@ async def test_recovery_scope_and_private_or_unknown_event_values_fail_closed():
 
 
 @pytest.mark.asyncio
+async def test_publication_claims_serialize_takeover_and_fence_stale_tokens():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=1,
+                event_id="evt4_claim_first",
+            )
+            await _insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=2,
+                event_id="evt4_claim_second",
+            )
+        tokens = iter(("claim-one", "claim-two", "claim-three", "claim-four"))
+        claims = PostgresV4PublicationClaims(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: next(tokens),
+        )
+
+        concurrent = await asyncio.gather(
+            *(
+                claims.claim_next(
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                    stream_incarnation=2,
+                )
+                for _ in range(2)
+            )
+        )
+        first = next(item for item in concurrent if item is not None)
+        assert first.event_id == "evt4_claim_first"
+        assert first.tenant_scope == f"scope_{tenant[2:]}"
+        assert first.authorization_epoch == 4
+        assert sum(item is not None for item in concurrent) == 1
+        assert b"__stream_v4" not in first.canonical_envelope_bytes
+
+        async with _connection_factory(dsn, schema_name) as conn:
+            await conn.execute(
+                """
+                update run_events
+                set stream_publication_claim_expires_at = clock_timestamp() - interval '1 second'
+                where id = %s
+                """,
+                (first.event_id,),
+            )
+        takeover = await claims.claim_next(
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            stream_incarnation=2,
+        )
+        assert takeover is not None
+        assert takeover.event_id == first.event_id
+        assert takeover.claim_token != first.claim_token
+        assert await claims.mark_published(first, redis_id="1-0") is False
+        assert await claims.mark_published(takeover, redis_id="2-0") is True
+
+        second = await claims.claim_next(
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            stream_incarnation=2,
+        )
+        assert second is not None
+        assert second.event_id == "evt4_claim_second"
+        assert await claims.schedule_retry(
+            second,
+            error="redis_unavailable",
+            delay=timedelta(seconds=5),
+        ) is True
+        async with _connection_factory(dsn, schema_name) as conn:
+            rows = await conn.execute(
+                """
+                select id, stream_publication_state, stream_publication_attempts,
+                       stream_publication_redis_id,
+                       payload_json -> '__stream_v4' ->> 'publication_attempts' as metadata_attempts
+                from run_events
+                where id in ('evt4_claim_first', 'evt4_claim_second')
+                order by sequence
+                """
+            )
+            assert await rows.fetchall() == [
+                {
+                    "id": "evt4_claim_first",
+                    "stream_publication_state": "published",
+                    "stream_publication_attempts": 1,
+                    "stream_publication_redis_id": "2-0",
+                    "metadata_attempts": "1",
+                },
+                {
+                    "id": "evt4_claim_second",
+                    "stream_publication_state": "pending",
+                    "stream_publication_attempts": 1,
+                    "stream_publication_redis_id": None,
+                    "metadata_attempts": "1",
+                },
+            ]
+
+
+@pytest.mark.asyncio
+async def test_publication_claim_preserves_predecessor_order_and_release_is_noncounting():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=1,
+                event_id="evt4_delayed_predecessor",
+            )
+            await _insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=2,
+                event_id="evt4_ready_successor",
+            )
+            await conn.execute(
+                """
+                update run_events
+                set stream_publication_next_attempt_at = clock_timestamp() + interval '1 hour'
+                where id = 'evt4_delayed_predecessor'
+                """
+            )
+        claims = PostgresV4PublicationClaims(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "claim-order",
+        )
+        assert (
+            await claims.claim_next(
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                stream_incarnation=2,
+            )
+            is None
+        )
+        async with _connection_factory(dsn, schema_name) as conn:
+            await conn.execute(
+                """
+                update run_events
+                set stream_publication_next_attempt_at = clock_timestamp()
+                where id = 'evt4_delayed_predecessor'
+                """
+            )
+        predecessor = await claims.claim_next(
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            stream_incarnation=2,
+        )
+        assert predecessor is not None
+        assert predecessor.event_id == "evt4_delayed_predecessor"
+        assert await claims.release(predecessor) is True
+        async with _connection_factory(dsn, schema_name) as conn:
+            row = await conn.execute(
+                """
+                select stream_publication_attempts,
+                       payload_json -> '__stream_v4' ->> 'publication_attempts' as metadata_attempts
+                from run_events where id = 'evt4_delayed_predecessor'
+                """
+            )
+            assert await row.fetchone() == {
+                "stream_publication_attempts": 0,
+                "metadata_attempts": "0",
+            }
+
+
+@pytest.mark.asyncio
+async def test_publication_claim_rejects_wrong_authority_and_rolls_back_invalid_projection():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        claims = PostgresV4PublicationClaims(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "claim-invalid",
+        )
+        with pytest.raises(V4PublicationAuthorityError, match="authority_conflict"):
+            await claims.claim_next(
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                stream_incarnation=1,
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=1,
+                event_id="evt4_invalid_projection",
+                payload={"delta": ""},
+            )
+        with pytest.raises(RuntimeError, match="projection_invalid"):
+            await claims.claim_next(
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                stream_incarnation=2,
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            row = await conn.execute(
+                """
+                select stream_publication_claim_token,
+                       stream_publication_claim_expires_at
+                from run_events where id = 'evt4_invalid_projection'
+                """
+            )
+            assert await row.fetchone() == {
+                "stream_publication_claim_token": None,
+                "stream_publication_claim_expires_at": None,
+            }
+
+
+@pytest.mark.asyncio
 async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_back_facts_only():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
@@ -932,6 +1160,29 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 )
                 definition = (await constraint.fetchone())["definition"]
                 assert "pending" in definition and "published" in definition and "suppressed" in definition
+                claim_constraint = await conn.execute(
+                    """
+                    select pg_get_constraintdef(oid, true) as definition
+                    from pg_constraint
+                    where conrelid = 'run_events'::regclass
+                      and conname = 'chk_run_events_stream_publication_claim'
+                    """
+                )
+                assert "stream_publication_claim_token" in (
+                    await claim_constraint.fetchone()
+                )["definition"]
+                claim_index = await conn.execute(
+                    """
+                    select indexdef from pg_indexes
+                    where schemaname = current_schema()
+                      and indexname = 'idx_run_events_stream_publication_claim'
+                    """
+                )
+                normalized_claim_index = " ".join(
+                    (await claim_index.fetchone())["indexdef"].lower().split()
+                )
+                assert "tenant_id, run_id, sequence, id" in normalized_claim_index
+                assert "payload_json ? '__stream_v4'::text" in normalized_claim_index
                 await schema_migrations.rollback_v4_publication_migration(conn)
                 columns = await conn.execute(
                     """
@@ -942,9 +1193,28 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 )
                 assert await columns.fetchall() == []
                 index_after = await conn.execute(
-                    "select to_regclass('idx_run_events_stream_publication_retry') as name"
+                    """
+                    select to_regclass('idx_run_events_stream_publication_retry') as retry,
+                           to_regclass('idx_run_events_stream_publication_claim') as claim
+                    """
                 )
-                assert (await index_after.fetchone())["name"] is None
+                assert await index_after.fetchone() == {"retry": None, "claim": None}
+                schema_ledger = await conn.execute(
+                    "select version from schema_migrations where version = %s",
+                    (schema_migrations.TARGET_SCHEMA_VERSION,),
+                )
+                assert await schema_ledger.fetchone() is None
+                index_ledger = await conn.execute(
+                    """
+                    select index_name from schema_index_migrations
+                    where index_name in (
+                      'idx_run_events_stream_publication_retry',
+                      'idx_run_events_stream_publication_claim'
+                    )
+                    order by index_name
+                    """
+                )
+                assert await index_ledger.fetchall() == []
                 fact = await conn.execute("select id, sequence from run_events where id = 'evt4_migration_fact'")
                 assert await fact.fetchone() == {"id": "evt4_migration_fact", "sequence": 1}
         await schema_migrations.apply_migrations(

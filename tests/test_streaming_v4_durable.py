@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
+
+from app.streaming.application.durable_v4 import V4PublicationClaim
 
 from app.streaming.api import (
     opaque_message_id,
@@ -13,6 +17,11 @@ from app.streaming.api import (
 from app.streaming.authority import RunCursor
 from app.streaming.postgres import EventReceipt
 from app.streaming.redis import StreamAuthority
+from app.streaming.domain.transport import canonical_json_bytes
+from app.streaming.infrastructure.postgres_v4 import (
+    PostgresV4PublicationClaims,
+    V4PublicationAuthorityError,
+)
 from app.streaming.v4 import (
     V4RedisStreamBridge,
     recover_v4_and_resume,
@@ -696,6 +705,239 @@ def _row(payload: dict[str, object], **overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+def test_publication_claim_keeps_only_validated_canonical_envelope_bytes() -> None:
+    envelope = project_public_v4(_row({"delta": "hello"}), authority=_authority())
+    assert envelope is not None
+    claim = V4PublicationClaim(
+        event_id="evt4_a",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        tenant_scope="tenant-a",
+        stream_incarnation=2,
+        authorization_epoch=4,
+        sequence=7,
+        canonical_envelope_bytes=canonical_json_bytes(envelope),
+        claim_token="claim-a",
+        claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+    )
+
+    decoded = json.loads(claim.canonical_envelope_bytes)
+    decoded["payload"]["delta"] = "mutated"
+
+    assert json.loads(claim.canonical_envelope_bytes)["payload"] == {"delta": "hello"}
+    assert b"__stream_v4" not in claim.canonical_envelope_bytes
+    with pytest.raises(ValueError, match="envelope_mismatch"):
+        replace(claim, run_id="other-run")
+
+
+def test_publication_claim_rejects_noncanonical_or_invalid_envelope_bytes() -> None:
+    envelope = project_public_v4(_row({"delta": "hello"}), authority=_authority())
+    assert envelope is not None
+    noncanonical = json.dumps(envelope, ensure_ascii=False).encode()
+
+    with pytest.raises(ValueError, match="envelope_mismatch"):
+        V4PublicationClaim(
+            event_id="evt4_a",
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            tenant_scope="tenant-a",
+            stream_incarnation=2,
+            authorization_epoch=4,
+            sequence=7,
+            canonical_envelope_bytes=noncanonical,
+            claim_token="claim-a",
+            claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+        )
+
+
+class _PublicationClaimCursor:
+    def __init__(self, row):
+        self._row = row
+
+    async def fetchone(self):
+        return self._row
+
+
+class _PublicationClaimConnection:
+    def __init__(self, *, malformed_event: bool = False):
+        self.statements: list[tuple[str, object]] = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.authority = {
+            "tenant_id": "tenant-a",
+            "tenant_scope": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "stream_incarnation": 2,
+            "authorization_epoch": 4,
+            "design_id": "ai-platform.redis-streams-sse-event-channel.v4",
+            "projection_version": "public-stream-v4",
+            "state": "confirmed",
+            "revocation_state": "active",
+        }
+        self.event = _row({"delta": "" if malformed_event else "hello"})
+        self.event["stream_publication_claim_expires_at"] = datetime(
+            2026, 1, 1, 0, 1, tzinfo=timezone.utc
+        )
+
+    async def execute(self, statement: str, params: object):
+        normalized = " ".join(statement.lower().split())
+        self.statements.append((normalized, params))
+        if normalized.startswith("select id, tenant_id from runs"):
+            return _PublicationClaimCursor({"id": "run-a", "tenant_id": "tenant-a"})
+        if normalized.startswith("select tenant_id, tenant_scope"):
+            return _PublicationClaimCursor(dict(self.authority))
+        if normalized.startswith("select event.id from run_events"):
+            return _PublicationClaimCursor({"id": "evt4_a"})
+        if normalized.startswith("update run_events as event set stream_publication_claim_token = %s"):
+            return _PublicationClaimCursor(dict(self.event))
+        if normalized.startswith("update run_events as event"):
+            return _PublicationClaimCursor({"id": "evt4_a"})
+        raise AssertionError(statement)
+
+
+def _publication_claim_transaction_factory(conn: _PublicationClaimConnection):
+    @asynccontextmanager
+    async def transaction():
+        try:
+            yield conn
+        except Exception:
+            conn.rollbacks += 1
+            raise
+        else:
+            conn.commits += 1
+
+    return transaction
+
+
+@pytest.mark.asyncio
+async def test_publication_claim_locks_run_then_authority_and_validates_before_commit() -> None:
+    conn = _PublicationClaimConnection()
+    adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(conn),
+        claim_token_factory=lambda: "claim-a",
+    )
+
+    claim = await adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+        claim_ttl=timedelta(seconds=30),
+    )
+
+    assert claim is not None
+    assert claim.tenant_scope == "tenant-a"
+    assert claim.authorization_epoch == 4
+    assert json.loads(claim.canonical_envelope_bytes)["payload"] == {"delta": "hello"}
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+    assert [statement.split()[0:3] for statement, _params in conn.statements[:4]] == [
+        ["select", "id,", "tenant_id"],
+        ["select", "tenant_id,", "tenant_scope,"],
+        ["select", "event.id", "from"],
+        ["update", "run_events", "as"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publication_claim_rolls_back_malformed_row_and_rejects_stale_authority() -> None:
+    malformed = _PublicationClaimConnection(malformed_event=True)
+    malformed_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(malformed),
+        claim_token_factory=lambda: "claim-a",
+    )
+    with pytest.raises(RuntimeError, match="projection_invalid"):
+        await malformed_adapter.claim_next(
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+        )
+    assert malformed.commits == 0
+    assert malformed.rollbacks == 1
+
+    stale = _PublicationClaimConnection()
+    stale.authority["attempt_id"] = "attempt-new"
+    stale_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(stale),
+        claim_token_factory=lambda: "claim-a",
+    )
+    with pytest.raises(V4PublicationAuthorityError, match="authority_conflict"):
+        await stale_adapter.claim_next(
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+        )
+    assert not any(statement.startswith("select event.id") for statement, _ in stale.statements)
+
+
+@pytest.mark.asyncio
+async def test_publication_disposition_sql_locks_authority_and_counts_only_transport_attempts() -> None:
+    published_conn = _PublicationClaimConnection()
+    published_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(published_conn),
+        claim_token_factory=lambda: "claim-published",
+    )
+    published_claim = await published_adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert published_claim is not None
+    published_conn.statements.clear()
+    assert await published_adapter.mark_published(published_claim, redis_id="1-0") is True
+    published_sql = published_conn.statements[-1][0]
+    assert [statement.split()[0:3] for statement, _ in published_conn.statements] == [
+        ["select", "id,", "tenant_id"],
+        ["select", "tenant_id,", "tenant_scope,"],
+        ["update", "run_events", "as"],
+    ]
+    assert "stream_publication_attempts = coalesce" in published_sql
+    assert "'publication_attempts'" in published_sql
+    assert "'authorization_epoch' = %s" in published_sql
+
+    retry_conn = _PublicationClaimConnection()
+    retry_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(retry_conn),
+        claim_token_factory=lambda: "claim-retry",
+    )
+    retry_claim = await retry_adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert retry_claim is not None
+    retry_conn.statements.clear()
+    assert await retry_adapter.schedule_retry(
+        retry_claim,
+        error="redis_unavailable",
+        delay=timedelta(seconds=5),
+    ) is True
+    assert "stream_publication_attempts = coalesce" in retry_conn.statements[-1][0]
+
+    release_conn = _PublicationClaimConnection()
+    release_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(release_conn),
+        claim_token_factory=lambda: "claim-release",
+    )
+    release_claim = await release_adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert release_claim is not None
+    release_conn.statements.clear()
+    assert await release_adapter.release(release_claim) is True
+    assert "stream_publication_attempts" not in release_conn.statements[-1][0]
 
 
 def test_v4_projection_is_internal_and_public_projection_strips_authority_fields() -> None:
