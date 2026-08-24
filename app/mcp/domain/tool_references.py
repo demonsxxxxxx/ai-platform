@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.validation import SAFE_ID_PATTERN
+from app.mcp.domain.identifiers import MCP_SAFE_ID_PATTERN
 
 
 MCP_TOOL_REFERENCE_SEPARATOR = "::"
@@ -12,7 +12,7 @@ MCP_PUBLIC_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,383}$"
 def build_mcp_tool_reference(server_id: str, public_tool_name: str) -> str:
     server = str(server_id or "").strip()
     tool = str(public_tool_name or "").strip()
-    if not SAFE_ID_PATTERN.fullmatch(server) or MCP_TOOL_REFERENCE_SEPARATOR in server:
+    if not MCP_SAFE_ID_PATTERN.fullmatch(server) or MCP_TOOL_REFERENCE_SEPARATOR in server:
         raise ValueError("mcp_server_id_invalid")
     if not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(tool):
         raise ValueError("mcp_public_tool_name_invalid")
