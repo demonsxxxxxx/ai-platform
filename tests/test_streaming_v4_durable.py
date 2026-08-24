@@ -5,14 +5,16 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.streaming.api import (
+    opaque_message_id,
+    project_public_envelope_v4,
+    project_public_v4,
+)
 from app.streaming.authority import RunCursor
 from app.streaming.postgres import EventReceipt
 from app.streaming.redis import StreamAuthority
 from app.streaming.v4 import (
     V4RedisStreamBridge,
-    opaque_message_id,
-    project_public_envelope_v4,
-    project_public_v4,
     recover_v4_and_resume,
     list_pending_v4_rows,
 )

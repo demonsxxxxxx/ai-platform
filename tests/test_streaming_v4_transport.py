@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 import pytest
 from redis.asyncio import Redis
 
-from app.streaming.api import stream_key
+from app.streaming.api import (
+    V4ProjectionError,
+    build_v4_control,
+    opaque_message_id,
+    project_public_envelope_v4,
+    stream_end_event_id,
+    stream_key,
+)
 from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 
 from app.streaming.contracts import STREAM_DESIGN_ID, canonical_json_bytes
@@ -21,13 +28,8 @@ from app.streaming.redis import (
     create_or_get_stream_admission_v4,
 )
 from app.streaming.v4 import (
-    V4ProjectionError,
     V4RedisStreamBridge,
-    build_v4_control,
-    project_public_envelope_v4,
     recover_v4_and_resume,
-    opaque_message_id,
-    stream_end_event_id,
 )
 from app.streaming.worker_projection import publish_pending_v4_events
 from tests.test_streaming_v4_postgres_integration import (

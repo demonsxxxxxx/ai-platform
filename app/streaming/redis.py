@@ -731,7 +731,7 @@ async def create_or_get_stream_admission_v4(
 ) -> StreamAuthority:
     """Persist a strict v4 stream.open authority without changing v3 callers."""
 
-    from app.streaming.v4 import build_v4_control
+    from app.streaming.api import build_v4_control
 
     result = await conn.execute(
         "select * from sse_stream_authorities where tenant_id = %s and run_id = %s for update",
@@ -743,7 +743,7 @@ async def create_or_get_stream_admission_v4(
         if current.attempt_id != attempt_id or current.tenant_scope != tenant_scope:
             raise SseAuthorityConflictError("sse_stream_attempt_conflict")
         try:
-            from app.streaming.v4 import _validate_internal_envelope
+            from app.streaming.api import validate_internal_envelope_v4
 
             raw = current.open_payload_bytes
             if (
@@ -754,7 +754,7 @@ async def create_or_get_stream_admission_v4(
                 or raw != canonical_json_bytes(json.loads(raw)).decode()
             ):
                 raise ValueError("authority_metadata_mismatch")
-            envelope = _validate_internal_envelope(json.loads(raw))
+            envelope = validate_internal_envelope_v4(json.loads(raw))
             if (
                 envelope["event_type"] != "stream.open"
                 or envelope["event_id"] != current.open_event_id

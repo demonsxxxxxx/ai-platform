@@ -6,9 +6,13 @@ import os
 from redis.asyncio import Redis
 import pytest
 
-from app.streaming.api import stream_key
+from app.streaming.api import (
+    V4ProjectionError,
+    project_public_envelope_v4,
+    stream_key,
+)
 from app.streaming.redis import RedisStreamBridge, StreamContractError, StreamTransportUnavailable
-from app.streaming.v4 import V4ProjectionError, V4RedisStreamBridge, project_public_envelope_v4
+from app.streaming.v4 import V4RedisStreamBridge
 
 
 REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"
