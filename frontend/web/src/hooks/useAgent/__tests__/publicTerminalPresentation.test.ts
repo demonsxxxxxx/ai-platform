@@ -27,30 +27,17 @@ function literalStringMapping(body: string): Map<string, string> {
 
 test("frontend public terminal presentations exactly cover backend public detail codes", () => {
   const terminalProjectionSource = readFileSync(
-    resolve(repositoryRoot, "app/run_projection.py"),
+    resolve(repositoryRoot, "app/runs/domain/public_terminal.py"),
     "utf8",
   );
-  const requiredToolSource = readFileSync(
-    resolve(repositoryRoot, "app/required_tool_contract.py"),
+  const legacyProjectionSource = readFileSync(
+    resolve(repositoryRoot, "app/run_projection.py"),
     "utf8",
   );
   const backendMessages = literalStringMapping(
     pythonObjectBody(terminalProjectionSource, "PUBLIC_TERMINAL_DETAIL_MESSAGES"),
   );
-  assert.match(
-    pythonObjectBody(
-      terminalProjectionSource,
-      "PUBLIC_TERMINAL_DETAIL_MESSAGES",
-    ),
-    /"required_capability_unavailable"\s*:\s*required_tool_public_detail/,
-  );
-  const requiredMessage = requiredToolSource.match(
-    /"detail_code": "required_capability_unavailable",\s*\n\s*"message": "([^"]+)"/,
-  )?.[1];
-  assert.ok(requiredMessage);
-  backendMessages.set("required_capability_unavailable", requiredMessage);
-
-  const resultUnavailableMessage = terminalProjectionSource.match(
+  const resultUnavailableMessage = legacyProjectionSource.match(
     /^RESULT_UNAVAILABLE_MESSAGE\s*=\s*"([^"]+)"/m,
   )?.[1];
   assert.ok(resultUnavailableMessage);
