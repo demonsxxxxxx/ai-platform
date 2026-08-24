@@ -78,7 +78,7 @@ async def _stream():
     )
     state_key = f"{key}:state"
     await client.delete(key, state_key)
-    await client.hset(state_key, mapping={"phase": "open"})
+    await client.hset(state_key, mapping={"phase": "open", "open_protocol": "v4"})
     return client, key, state_key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
 
 
@@ -87,6 +87,7 @@ async def test_real_redis_rejects_v4_append_to_legacy_v3_phase_without_mutation(
     client, key, state_key, _legacy_bridge = await _stream()
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
     try:
+        await client.hset(state_key, mapping={"phase": "open", "open_protocol": "v3"})
         before_state = await client.hgetall(state_key)
         with pytest.raises(StreamContractError, match="stream_protocol_conflict"):
             await bridge.append(_envelope(event_id="evt4_on_v3"))
