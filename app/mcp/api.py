@@ -25,13 +25,6 @@ from app.mcp.domain.targets import (
     mcp_targets_from_policy_subjects,
     normalize_mcp_targets,
 )
-from app.mcp.infrastructure.catalog import (
-    McpDiscoveredTool,
-    McpToolDiscoveryError,
-    StreamableHttpMcpToolDiscoveryAdapter,
-)
-
-
 _CONTEXT_MANAGER_PROXY = RuntimeContextManagerProxy()
 _FAILURE_LIMITER_PROXY = RelayAuthFailureLimiterProxy()
 _TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -196,12 +189,9 @@ async def preflight_mcp_admission(
 
 __all__ = [
     "MCP_JWT_AUTHORIZATION_HEADER",
-    "McpDiscoveredTool",
     "McpRelayError",
     "McpRuntimeContextError",
-    "McpToolDiscoveryError",
     "McpToolSelectionRequired",
-    "StreamableHttpMcpToolDiscoveryAdapter",
     "bind_run_mcp_context",
     "configure_mcp_runtime_services",
     "create_host_mcp_relay",

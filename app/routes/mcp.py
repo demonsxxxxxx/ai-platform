@@ -27,7 +27,6 @@ from app.mcp.application.live_catalog import (
 )
 from app.mcp.api import (
     McpRuntimeContextError,
-    StreamableHttpMcpToolDiscoveryAdapter,
     create_host_mcp_relay,
     discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
@@ -37,6 +36,7 @@ from app.mcp.api import (
     record_mcp_server_credential,
     seal_mcp_server_credentials,
 )
+from app.mcp.infrastructure.catalog import StreamableHttpMcpToolDiscoveryAdapter
 from app.mcp.infrastructure.runtime import (
     read_gateway_cache_revisions,
     resolve_registered_mcp_target,

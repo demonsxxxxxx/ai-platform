@@ -1,6 +1,6 @@
 """Compatibility exports for MCP catalog consumers."""
 
-from app.mcp.api import (
+from app.mcp.infrastructure.catalog import (
     McpDiscoveredTool,
     McpToolDiscoveryError,
     StreamableHttpMcpToolDiscoveryAdapter,
