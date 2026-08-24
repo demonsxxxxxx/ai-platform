@@ -1623,7 +1623,7 @@ async def test_successor_rebuild_readiness_fences_persisted_and_authority_mutati
                         """
                         update run_events
                         set payload_json = jsonb_set(
-                          payload_json, '{__stream_v4,payload,delta}', '"changed"'::jsonb
+                          payload_json, '{delta}', '"changed"'::jsonb
                         )
                         where id = 'evt4_rebuild_delta'
                         """
