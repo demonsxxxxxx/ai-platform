@@ -91,8 +91,16 @@ elseif ARGV[5] == 'end' then
   end
   local terminal_event_id=redis.call('HGET',KEYS[2],'terminal_event_id')
   if phase ~= 'terminal' or terminal_event_id ~= ARGV[7] then return redis.error_reply('stream_end_without_terminal') end
-elseif phase ~= 'open' then
-  return redis.error_reply('stream_terminal_closed')
+else
+  if phase ~= 'open' then return redis.error_reply('stream_terminal_closed') end
+  if request_protocol == 'v4'
+     and redis.call('HGET',KEYS[2],'last_event_id') == ARGV[2] then
+    if redis.call('HGET',KEYS[2],'last_event_digest') ~= ARGV[6] then
+      return redis.error_reply('stream_event_receipt_conflict')
+    end
+    redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
+    return redis.call('HGET',KEYS[2],'last_event_redis_id')
+  end
 end
 local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
 if ARGV[5] == 'stream_open' then
@@ -107,6 +115,8 @@ if ARGV[5] == 'terminal' then
 end
 if ARGV[5] == 'end' then
   redis.call('HSET',KEYS[2],'phase','ended','end_event_id',ARGV[2],'end_digest',ARGV[6],'end_redis_id',id)
+elseif request_protocol == 'v4' and ARGV[5] ~= 'stream_open' and ARGV[5] ~= 'terminal' then
+  redis.call('HSET',KEYS[2],'last_event_id',ARGV[2],'last_event_digest',ARGV[6],'last_event_redis_id',id)
 end
 redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
 redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
@@ -126,7 +136,7 @@ if phase
 end
 local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
 redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[5],'open_redis_id',id,'open_protocol','v4')
-redis.call('HDEL',KEYS[2],'terminal_event_id','terminal_digest','terminal_redis_id','end_event_id','end_digest','end_redis_id')
+redis.call('HDEL',KEYS[2],'terminal_event_id','terminal_digest','terminal_redis_id','end_event_id','end_digest','end_redis_id','last_event_id','last_event_digest','last_event_redis_id')
 redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
 redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
 return id
@@ -135,6 +145,7 @@ return id
 _SCRIPT_CONTRACT_ERRORS = frozenset(
     {
         "stream_end_without_terminal",
+        "stream_event_receipt_conflict",
         "stream_open_conflict",
         "stream_protocol_conflict",
         "stream_restore_authority_conflict",

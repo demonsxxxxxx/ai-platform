@@ -417,7 +417,78 @@ def test_append_lua_protocol_guard_is_closed_and_precedes_mutation():
     assert "if not request_protocol or request_protocol == '' then request_protocol='v3' end" in script
     assert "if not stored_protocol or stored_protocol == '' then stored_protocol='v3' end" in script
     assert "stream_protocol_conflict" in stream_redis._SCRIPT_CONTRACT_ERRORS
-    assert script.index("stream_protocol_conflict") < script.index("local id=redis.call('XADD'")
+    assert "stream_event_receipt_conflict" in stream_redis._SCRIPT_CONTRACT_ERRORS
+    xadd_index = script.index("local id=redis.call('XADD'")
+    assert script.index("stream_protocol_conflict") < xadd_index
+    assert script.index("last_event_redis_id") < xadd_index
+    assert script.rindex("'last_event_redis_id',id") > xadd_index
+    assert script.index("last_event_redis_id") < script.index("redis.call('PUBLISH'")
+
+
+@pytest.mark.asyncio
+async def test_real_redis_v4_ordinary_retry_reuses_one_semantic_receipt():
+    redis_url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL")
+    if not redis_url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+
+    publish = stream_redis.Redis.from_url(redis_url, decode_responses=True)
+    bridge = stream_redis.RedisStreamBridge(publish_client=publish)
+    key = stream_redis.stream_key(
+        tenant_scope_value="scope-receipt",
+        run_id="run-receipt",
+        stream_incarnation=1,
+    )
+    await publish.delete(key, f"{key}:state")
+    try:
+        await bridge.append_canonical(
+            tenant_scope_value="scope-receipt",
+            run_id="run-receipt",
+            stream_incarnation=1,
+            event_id="evt4_open",
+            event_type="stream.open",
+            envelope_bytes=b'{"event_id":"evt4_open"}',
+            protocol="v4",
+        )
+        event_bytes = b'{"event_id":"evt4_one","value":"same"}'
+        first = await bridge.append_canonical(
+            tenant_scope_value="scope-receipt",
+            run_id="run-receipt",
+            stream_incarnation=1,
+            event_id="evt4_one",
+            event_type="message.delta",
+            envelope_bytes=event_bytes,
+            protocol="v4",
+        )
+        second = await bridge.append_canonical(
+            tenant_scope_value="scope-receipt",
+            run_id="run-receipt",
+            stream_incarnation=1,
+            event_id="evt4_one",
+            event_type="message.delta",
+            envelope_bytes=event_bytes,
+            protocol="v4",
+        )
+
+        assert second == first
+        assert await publish.xlen(key) == 2
+        with pytest.raises(
+            stream_redis.StreamContractError,
+            match="stream_event_receipt_conflict",
+        ):
+            await bridge.append_canonical(
+                tenant_scope_value="scope-receipt",
+                run_id="run-receipt",
+                stream_incarnation=1,
+                event_id="evt4_one",
+                event_type="message.delta",
+                envelope_bytes=b'{"event_id":"evt4_one","value":"changed"}',
+                protocol="v4",
+            )
+        assert await publish.xlen(key) == 2
+    finally:
+        await publish.delete(key, f"{key}:state")
+        await bridge.aclose()
+        await publish.aclose()
 
 
 @pytest.mark.asyncio

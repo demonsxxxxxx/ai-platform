@@ -171,10 +171,11 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
         """
         insert into sandbox_leases(
           id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
-          trace_id, sandbox_mode, provider, status, expires_at
-        ) values ('lease', %s, %s, %s, %s, %s, %s, %s, 'chat', 'fake', 'active', now() + interval '15 minutes')
+          trace_id, sandbox_mode, provider, status, expires_at, lease_payload_json
+        ) values ('lease', %s, %s, %s, %s, %s, %s, %s, 'chat', 'fake', 'active',
+                  now() + interval '15 minutes', jsonb_build_object('attempt_id', %s))
         """,
-        (tenant, workspace, user, session, run, attempt, f"trace_{run}"),
+        (tenant, workspace, user, session, run, attempt, f"trace_{run}", attempt),
     )
     await conn.execute(
         """
@@ -851,8 +852,10 @@ async def test_real_terminal_publish_and_restart_need_no_live_execution_lease(
                 bridge=bridge,
             ) == 1
             rows = await client.xrange(key, min="-", max="+")
-            assert len(rows) == 1
-            assert json.loads(rows[0][1]["envelope"])["event_type"] == event_type
+            assert [json.loads(fields["envelope"])["event_type"] for _, fields in rows] == [
+                event_type,
+                "stream.end",
+            ]
         finally:
             await client.delete(key, f"{key}:state")
             await client.aclose()
