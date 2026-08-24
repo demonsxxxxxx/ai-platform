@@ -308,31 +308,96 @@ async def _terminal_rebuild_source(
     attempt: str,
     status: str = "succeeded",
 ) -> None:
-    spec_json = '{"schema_version":"1"}'
+    run_row = await conn.execute(
+        """
+        select workspace_id, user_id, session_id, agent_id, skill_id,
+               execution_kind
+        from runs where tenant_id = %s and id = %s
+        """,
+        (tenant, run),
+    )
+    run_values = await run_row.fetchone()
+    assert run_values is not None
+    spec_json = json.dumps(
+        {
+            "schema_version": "ai-platform.execution-spec.v1",
+            "tenant_id": tenant,
+            "run_id": run,
+            **run_values,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     await conn.execute(
-        "update runs set status = %s where tenant_id = %s and id = %s",
-        (status, tenant, run),
+        """
+        update runs
+        set status = 'queued', started_at = null, finished_at = null
+        where tenant_id = %s and id = %s
+        """,
+        (tenant, run),
     )
     await conn.execute(
         """
         insert into run_attempts(
           id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
           queue_attempt_id, execution_spec_schema_version, execution_spec_json,
-          execution_spec_canonical_json, execution_spec_sha256, finished_at
-        ) values (%s, %s, %s, 1, %s, 'queue_worker', 'worker-a',
-                  %s, '1', %s::jsonb, %s, %s, clock_timestamp())
+          execution_spec_canonical_json, execution_spec_sha256
+        ) values (%s, %s, %s, 1, 'created', 'queue_worker', 'worker-a',
+                  %s, 'ai-platform.execution-spec.v1', %s::jsonb, %s, %s)
         """,
         (
             attempt,
             tenant,
             run,
-            status,
             f"queue_{attempt}",
             spec_json,
             spec_json,
             hashlib.sha256(spec_json.encode("utf-8")).hexdigest(),
         ),
     )
+    if status == "cancelled":
+        await conn.execute(
+            """
+            update run_attempts
+            set status = 'cancelled', owner_generation = owner_generation + 1,
+                finished_at = clock_timestamp()
+            where tenant_id = %s and id = %s
+            """,
+            (tenant, attempt),
+        )
+    else:
+        for next_status in ("queued", "claimed"):
+            await conn.execute(
+                """
+                update run_attempts
+                set status = %s, owner_generation = owner_generation + 1,
+                    queue_message_id = case
+                      when %s = 'queued' then 'message-a'
+                      else queue_message_id
+                    end
+                where tenant_id = %s and id = %s
+                """,
+                (next_status, next_status, tenant, attempt),
+            )
+        if status == "succeeded":
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'running', owner_generation = owner_generation + 1,
+                    started_at = clock_timestamp()
+                where tenant_id = %s and id = %s
+                """,
+                (tenant, attempt),
+            )
+        await conn.execute(
+            """
+            update run_attempts
+            set status = %s, owner_generation = owner_generation + 1,
+                finished_at = clock_timestamp()
+            where tenant_id = %s and id = %s
+            """,
+            (status, tenant, attempt),
+        )
     await conn.execute(
         """
         update sse_stream_authorities
@@ -1473,10 +1538,11 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
             status = await schema_migrations.schema_status(conn)
-            assert status["version_current"] is True
-            assert status["checksum_current"] is True
+            assert status["ledger_current"] is True
+            assert status["index_ledger_current"] is True
             assert status["columns_current"] is True
-            assert status["index_definitions_current"] is True
+            assert status["indexes_current"] is True
+            assert status["static_index_definitions_current"] is True
             async with conn.transaction():
                 await _insert_v4_row(
                     conn,
