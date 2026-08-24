@@ -310,7 +310,7 @@ async def _terminal_rebuild_source(
 ) -> None:
     spec_json = '{"schema_version":"1"}'
     await conn.execute(
-        "update runs set status = %s, updated_at = clock_timestamp() where tenant_id = %s and id = %s",
+        "update runs set status = %s where tenant_id = %s and id = %s",
         (status, tenant, run),
     )
     await conn.execute(
@@ -1473,7 +1473,10 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         async with _connection_factory(dsn, schema_name) as conn:
             status = await schema_migrations.schema_status(conn)
-            assert status["ready"] is True
+            assert status["version_current"] is True
+            assert status["checksum_current"] is True
+            assert status["columns_current"] is True
+            assert status["index_definitions_current"] is True
             async with conn.transaction():
                 await _insert_v4_row(
                     conn,
@@ -1533,6 +1536,36 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 )
                 assert "tenant_id, run_id, sequence, id" in normalized_claim_index
                 assert "payload_json ? '__stream_v4'::text" in normalized_claim_index
+                successor_constraints = await conn.execute(
+                    """
+                    select conrelid::regclass::text as relation_name,
+                           conname as constraint_name,
+                           contype::text as constraint_type,
+                           pg_get_constraintdef(oid, true) as definition
+                    from pg_constraint
+                    where conrelid in (
+                      to_regclass('sse_stream_rebuilds'),
+                      to_regclass('sse_stream_rebuild_items')
+                    )
+                    """
+                )
+                actual_constraints = {
+                    (
+                        row["relation_name"],
+                        row["constraint_name"],
+                        row["constraint_type"],
+                        "".join(row["definition"].lower().split()),
+                    )
+                    for row in await successor_constraints.fetchall()
+                }
+                expected_constraints = {
+                    (relation_name, name, kind, "".join(definition.lower().split()))
+                    for relation_name, name, kind, definition in (
+                        schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+                    )
+                    if relation_name.startswith("sse_stream_rebuild")
+                }
+                assert expected_constraints <= actual_constraints
                 await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
                 successor_tables = await conn.execute(
                     """
