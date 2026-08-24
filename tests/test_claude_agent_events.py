@@ -9,6 +9,7 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
+from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import AgentEvent
 
@@ -17,6 +18,8 @@ def _adapter():
     return ClaudeSdkAgentEventAdapter(
         run_id="run-1187",
         attempt_id="attempt-1",
+        sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
         authorized_capabilities={
             "Read": ("read", "Read file"),
             "mcp__server__search": ("mcp", "Tenant search"),
@@ -103,6 +106,7 @@ def test_v4_candidate_rejects_private_nested_public_strings():
             message_id="message-1",
             causation_event_id=None,
             payload={"delta": "agent-workspaces/private nested text"},
+            payload_sanitizer=sanitize_public_payload,
         )
 
 
@@ -300,6 +304,7 @@ def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields()
             message_id="msg-1",
             causation_event_id=None,
             payload={"delta": "safe"},
+            payload_sanitizer=sanitize_public_payload,
         ).as_agent_event_fields()
     )
     malformed.event_id = None
@@ -316,6 +321,7 @@ def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields()
             "hydrate_required": True,
             "reason_code": "user_cancelled",
         },
+        payload_sanitizer=sanitize_public_payload,
     )
     assert agent_event_to_executor_event(AgentEvent(**cancelled.as_agent_event_fields()))["event_type"] == "run.cancelled"
 
@@ -389,6 +395,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         message_id="msg_1",
         causation_event_id=None,
         payload={"delta": delta},
+        payload_sanitizer=sanitize_public_payload,
     )
     ClaudeAgentEventCandidate(
         run_id="run-1187",
@@ -397,6 +404,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         message_id="msg_1",
         causation_event_id=None,
         payload={"content": final},
+        payload_sanitizer=sanitize_public_payload,
     )
     with pytest.raises(ValueError):
         ClaudeAgentEventCandidate(
@@ -406,6 +414,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
             message_id="msg_1",
             causation_event_id=None,
             payload={},
+            payload_sanitizer=sanitize_public_payload,
         )
     with pytest.raises(ValueError):
         ClaudeAgentEventCandidate(
@@ -415,6 +424,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
             message_id="msg_1",
             causation_event_id=None,
             payload={"delta": "ok", "extra": "private"},
+            payload_sanitizer=sanitize_public_payload,
         )
     multibyte_delta = "é" * 8_192
     ClaudeAgentEventCandidate(
@@ -424,6 +434,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         message_id="msg_1",
         causation_event_id=None,
         payload={"delta": multibyte_delta},
+        payload_sanitizer=sanitize_public_payload,
     )
     multibyte_content = "界" * 262_144
     ClaudeAgentEventCandidate(
@@ -433,6 +444,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         message_id="msg_1",
         causation_event_id=None,
         payload={"content": multibyte_content},
+        payload_sanitizer=sanitize_public_payload,
     )
     with pytest.raises(ValueError):
         ClaudeAgentEventCandidate(
@@ -442,6 +454,7 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
             message_id="msg_1",
             causation_event_id=None,
             payload={"delta": "d" * 8_193},
+            payload_sanitizer=sanitize_public_payload,
         )
 
 

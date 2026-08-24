@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 
 from app import repositories, schema_migrations
 from app.repositories import complete_run
+from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
@@ -317,7 +318,12 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
                     (attempt,),
                 )
 
-        adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
+        adapter = ClaudeSdkAgentEventAdapter(
+            run_id=run,
+            attempt_id=attempt,
+            sanitizer=sanitize_public_text,
+            payload_sanitizer=sanitize_public_payload,
+        )
         callback = ExecutorCallbackEvent(
             session_id=f"s_{run[2:]}",
             run_id=run,
@@ -372,7 +378,12 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
             from app.execution.api import ClaudeSdkAgentEventAdapter
             from app.runtime.kernel_contracts import AgentEvent
 
-            adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
+            adapter = ClaudeSdkAgentEventAdapter(
+                run_id=run,
+                attempt_id=attempt,
+                sanitizer=sanitize_public_text,
+                payload_sanitizer=sanitize_public_payload,
+            )
             callback = ExecutorCallbackEvent(
                 session_id=f"s_{run[2:]}",
                 run_id=run,
@@ -465,7 +476,12 @@ async def test_real_callback_handler_commits_pending_row_before_redis_outage(mon
         from app.execution.api import ClaudeSdkAgentEventAdapter
         from app.runtime.kernel_contracts import AgentEvent
 
-        adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt)
+        adapter = ClaudeSdkAgentEventAdapter(
+            run_id=run,
+            attempt_id=attempt,
+            sanitizer=sanitize_public_text,
+            payload_sanitizer=sanitize_public_payload,
+        )
         callback = ExecutorCallbackEvent(
             session_id=f"s_{run[2:]}",
             run_id=run,

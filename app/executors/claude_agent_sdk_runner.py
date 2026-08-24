@@ -1276,6 +1276,8 @@ async def run_claude_agent_sdk(
             attempt_id=attempt_id,
             tool_policy_subjects=tool_policy_subjects,
             public_skill_metadata=public_skill_metadata,
+            sanitizer=sanitize_public_text,
+            payload_sanitizer=sanitize_public_payload,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None

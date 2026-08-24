@@ -195,6 +195,7 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
             message_id=event.message_id,
             causation_event_id=event.causation_event_id,
             payload=dict(event.payload),
+            payload_sanitizer=sanitize_public_payload,
         )
     except (TypeError, ValueError):
         return _private_executor_event()

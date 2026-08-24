@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app import repositories
 from app.auth import AuthPrincipal
 from app.main import create_app
+from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import lambchat_compat
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -1044,7 +1045,12 @@ def test_executor_callback_uses_adapter_events_and_pending_publisher(monkeypatch
     from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
 
-    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-a",
+        attempt_id="attempt-a",
+        sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
+    )
     from app.runtime.kernel_contracts import AgentEvent
     sdk_events = tuple(
         AgentEvent(**event.as_agent_event_fields())
@@ -1233,6 +1239,8 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
     adapter = ClaudeSdkAgentEventAdapter(
         run_id="run-a",
         attempt_id="attempt-a",
+        sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
         authorized_capabilities={"Read": {"category": "read", "display_name": "Read"}},
     )
     ThinkingBlock = type("ThinkingBlock", (), {})
@@ -1335,7 +1343,12 @@ def test_executor_callback_propagates_v4_correctness_errors(monkeypatch):
     from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.runtime.kernel_contracts import AgentEvent
 
-    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-a",
+        attempt_id="attempt-a",
+        sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
+    )
     event = AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())
     authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
 
@@ -1367,7 +1380,12 @@ async def test_record_executor_callback_rolls_back_receipt_and_v4_rows_after_fin
     from app.runtime.kernel_contracts import AgentEvent
 
     patch_callback_settings(monkeypatch, callback_settings("secret"))
-    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-a",
+        attempt_id="attempt-a",
+        sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
+    )
     event = AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())
     callback = ExecutorCallbackEvent(
         session_id="session-a",
@@ -1465,7 +1483,12 @@ async def test_record_executor_callback_enforces_v4_batch_authority_attempt_and_
     from app.runtime.kernel_contracts import AgentEvent
 
     patch_callback_settings(monkeypatch, callback_settings("secret"))
-    adapter = ClaudeSdkAgentEventAdapter(run_id="run-a", attempt_id="attempt-a")
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-a",
+        attempt_id="attempt-a",
+        sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
+    )
     event = AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())
     callback = ExecutorCallbackEvent(
         session_id="session-a",

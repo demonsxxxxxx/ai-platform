@@ -24,6 +24,7 @@ from app.file_parser_contracts import (
     build_attachment_preprocessing_contract,
 )
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
+from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
@@ -3424,6 +3425,7 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
             message_id="msg-1",
             causation_event_id=None,
             payload={"delta": "safe"},
+            payload_sanitizer=sanitize_public_payload,
         )
         assert await kwargs["on_agent_event"]((candidate,)) is False
         return SimpleNamespace(

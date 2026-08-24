@@ -11,10 +11,9 @@ import hashlib
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
@@ -119,10 +118,15 @@ def _bounded_int(value: object, *, maximum: int, default: int = 0) -> int:
     return max(0, min(value, maximum))
 
 
-def _safe_text(value: object, *, maximum: int) -> str | None:
+def _safe_text(
+    value: object,
+    *,
+    maximum: int,
+    sanitizer: Callable[[object], object],
+) -> str | None:
     if not isinstance(value, str) or not value:
         return None
-    sanitized = sanitize_public_text(value)
+    sanitized = sanitizer(value)
     if not isinstance(sanitized, str) or sanitized != value:
         return None
     if len(sanitized) > maximum:
@@ -130,13 +134,21 @@ def _safe_text(value: object, *, maximum: int) -> str | None:
     return sanitized
 
 
-def _safe_display(value: object) -> str | None:
-    text = _safe_text(value, maximum=_MAX_DISPLAY)
+def _safe_display(
+    value: object,
+    *,
+    sanitizer: Callable[[object], object],
+) -> str | None:
+    text = _safe_text(value, maximum=_MAX_DISPLAY, sanitizer=sanitizer)
     return text.strip() if text and text.strip() else None
 
 
-def _safe_filename(value: object) -> str | None:
-    text = _safe_text(value, maximum=_MAX_FILENAME)
+def _safe_filename(
+    value: object,
+    *,
+    sanitizer: Callable[[object], object],
+) -> str | None:
+    text = _safe_text(value, maximum=_MAX_FILENAME, sanitizer=sanitizer)
     if text is None or any(ord(char) < 32 or ord(char) == 127 or char in "/\\\\" for char in text):
         return None
     return text
@@ -216,8 +228,9 @@ class ClaudeAgentEventCandidate:
     message_id: str | None
     causation_event_id: str | None
     payload: dict[str, object]
+    payload_sanitizer: InitVar[Callable[[object], object]]
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, payload_sanitizer: Callable[[object], object]) -> None:
         _assert_run_id(self.run_id)
         _assert_event_id(self.event_id)
         if self.message_id is not None:
@@ -232,7 +245,7 @@ class ClaudeAgentEventCandidate:
             "causation_event_id": self.causation_event_id,
             "payload": self.payload,
         }
-        if sanitize_public_payload(public_candidate) != _without_none_public_values(public_candidate):
+        if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
             raise ValueError("public event candidate contains private text")
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
@@ -416,7 +429,8 @@ class ClaudeSdkAgentEventAdapter:
         authorized_capabilities: Mapping[str, object] | None = None,
         tool_policy_subjects: list[dict[str, Any]] | None = None,
         public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
-        sanitizer: Callable[[object], object] = sanitize_public_text,
+        sanitizer: Callable[[object], object],
+        payload_sanitizer: Callable[[object], object],
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         _assert_run_id(run_id)
@@ -425,6 +439,7 @@ class ClaudeSdkAgentEventAdapter:
         self.attempt_id = attempt_id
         self._clock = clock
         self._sanitizer = sanitizer
+        self._payload_sanitizer = payload_sanitizer
         self._sealed = False
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
         self._answer_started = False
@@ -471,8 +486,9 @@ class ClaudeSdkAgentEventAdapter:
                 elif isinstance(value, (tuple, list)) and len(value) >= 2:
                     category = value[0] if isinstance(value[0], str) else None
                     label = value[1]
-                if category in _TOOL_CATEGORIES and _safe_display(label):
-                    self._capabilities[identity] = (category, _safe_display(label) or "")
+                safe_label = _safe_display(label, sanitizer=self._sanitizer)
+                if category in _TOOL_CATEGORIES and safe_label:
+                    self._capabilities[identity] = (category, safe_label)
         for subject in subjects or []:
             if not isinstance(subject, dict) or subject.get("active") is False or subject.get("identity_authorized") is False:
                 continue
@@ -487,15 +503,18 @@ class ClaudeSdkAgentEventAdapter:
                         if not isinstance(name, str):
                             continue
                         label = labels.get(name) if isinstance(labels, dict) else None
-                        if not _safe_display(label) and isinstance(skill_metadata, Mapping):
+                        safe_label = _safe_display(label, sanitizer=self._sanitizer)
+                        if not safe_label and isinstance(skill_metadata, Mapping):
                             metadata = skill_metadata.get(name)
                             label = metadata.get("display_name") if isinstance(metadata, Mapping) else None
-                        self._capabilities[name] = ("skill", _safe_display(label) or "Skill")
+                            safe_label = _safe_display(label, sanitizer=self._sanitizer)
+                        self._capabilities[name] = ("skill", safe_label or "Skill")
                 continue
             category = _tool_category(identity, identity)
             label = subject.get("public_tool_label") or identity if category != "mcp" else subject.get("public_tool_label")
-            if category in _TOOL_CATEGORIES and _safe_display(label):
-                self._capabilities[identity] = (category, _safe_display(label) or "")
+            safe_label = _safe_display(label, sanitizer=self._sanitizer)
+            if category in _TOOL_CATEGORIES and safe_label:
+                self._capabilities[identity] = (category, safe_label)
 
     def _candidate(
         self,
@@ -521,6 +540,7 @@ class ClaudeSdkAgentEventAdapter:
             message_id=self._message_id if message_id is None else message_id,
             causation_event_id=causation,
             payload=payload,
+            payload_sanitizer=self._payload_sanitizer,
         )
         self._accepted_event_ids[identity] = candidate.event_id
         return candidate
@@ -531,7 +551,11 @@ class ClaudeSdkAgentEventAdapter:
         sanitized = self._sanitizer(value)
         if not isinstance(sanitized, str) or sanitized != value:
             return ()
-        if not already_gated and _safe_text(value, maximum=_MAX_TEXT) is None:
+        if not already_gated and _safe_text(
+            value,
+            maximum=_MAX_TEXT,
+            sanitizer=self._sanitizer,
+        ) is None:
             return ()
         if len(self._answer_content + value) > _MAX_TEXT:
             self._sealed = True
@@ -547,7 +571,7 @@ class ClaudeSdkAgentEventAdapter:
     def complete_answer(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed or not self._answer_started:
             return ()
-        content = _safe_text(value, maximum=_MAX_TEXT)
+        content = _safe_text(value, maximum=_MAX_TEXT, sanitizer=self._sanitizer)
         if content is None:
             return ()
         self._answer_content = content
@@ -830,8 +854,12 @@ class ClaudeSdkAgentEventAdapter:
         status = reference.get("status")
         if not all(isinstance(value, str) and value for value in (artifact_id, filename, media_type)) or not isinstance(size, int) or isinstance(size, bool) or not 0 <= size <= _MAX_SIZE_BYTES:
             return ()
-        safe_filename = _safe_filename(filename)
-        safe_media_type = _safe_text(media_type, maximum=_MAX_MEDIA_TYPE)
+        safe_filename = _safe_filename(filename, sanitizer=self._sanitizer)
+        safe_media_type = _safe_text(
+            media_type,
+            maximum=_MAX_MEDIA_TYPE,
+            sanitizer=self._sanitizer,
+        )
         if safe_filename is None or safe_media_type is None:
             return ()
         if status not in {"created", "ready", "failed"}:
