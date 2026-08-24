@@ -162,11 +162,15 @@ async def test_real_redis_terminal_authority_blocks_late_frames_and_preserves_pu
         with pytest.raises(StreamContractError, match="stream_terminal_closed"):
             await bridge.append(_envelope(event_id="evt4_after_terminal", seq=3))
         rows = await client.xrange(key, min="-", max="+")
-        assert [json.loads(fields["envelope"])["event_id"] for _, fields in rows] == [
+        decoded = [json.loads(fields["envelope"]) for _, fields in rows]
+        assert [item["event_id"] for item in decoded[:2]] == [
             "evt4_before_terminal",
             "evt4_terminal",
         ]
-        public = project_public_envelope_v4(json.loads(rows[-1][1]["envelope"]))
+        assert len(decoded) == 3
+        assert decoded[-1]["event_type"] == "stream.end"
+        assert decoded[-1]["payload"]["terminal_event_id"] == "evt4_terminal"
+        public = project_public_envelope_v4(decoded[-2])
         assert public is not None
         assert public["event_type"] == "run.succeeded"
         assert "tenant_scope" not in public
