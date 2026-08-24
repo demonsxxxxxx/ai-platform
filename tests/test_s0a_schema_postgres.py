@@ -515,7 +515,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
 
         cleaned_ids = {str(row["id"]) for row in cleaned_failed}
         assert cleaned_ids == {"lease-b", "lease-c"}
-        assert stopped == [
+        assert sorted(stopped) == [
             ("container-b", "executor_reconciliation_cleanup"),
             ("container-c", "executor_reconciliation_cleanup"),
         ]

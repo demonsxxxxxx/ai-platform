@@ -131,9 +131,9 @@ that untrusted payload; it operates only on the claim-locked lease identity and 
 verified persisted runtime handle. Terminal reconciliation preserves independently
 authorized artifact rows and never injects a false `artifact_count = 0` into the
 failed Run result. A single active, unexpired artifact-count authority shared by
-successful, failed, and cancelled terminal projections is tracked separately by Issue
-#1188 because it requires completing the Runs persistence migration rather than
-adding logic to the controlled repository bridge. Each entry fixes:
+successful, failed, and cancelled terminal projections is tracked separately by
+Issue `#1188` because it requires completing the Runs persistence migration rather
+than adding logic to the controlled repository bridge. Each entry fixes:
 
 - expected detail kind;
 - localized message key and source-owned default message;
