@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-import hashlib
+import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -7,6 +8,321 @@ import pytest
 from app.main import create_app
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
+from app.mcp.application.live_catalog import (
+    GatewayRevisions,
+    LiveMcpServerResult,
+    LiveMcpCatalogService,
+    LiveMcpTool,
+    read_cached_live_mcp_tool,
+    service_token_matches,
+)
+from app.mcp.api import McpRuntimeContextError
+from app.mcp.catalog import McpToolDiscoveryError
+from app.mcp.domain.tool_references import (
+    build_mcp_tool_reference,
+    parse_mcp_tool_reference,
+)
+
+
+class FakeLiveCatalogRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def handle(self):
+        backend = self
+
+        class Handle:
+            async def get(self, key):
+                return backend.values.get(key)
+
+            async def set(self, key, value, **kwargs):
+                if kwargs.get("nx") and key in backend.values:
+                    return False
+                backend.values[key] = str(value)
+                return True
+
+            async def eval(self, _script, _key_count, event_key, revision_key, latest_key, catalog, acl, *_ttls):
+                if event_key in backend.values:
+                    return 0
+                existing = json.loads(backend.values.get(latest_key, "{}"))
+                payload = json.dumps(
+                    {
+                        "catalog_revision": max(int(catalog), int(existing.get("catalog_revision", 0))),
+                        "acl_revision": max(int(acl), int(existing.get("acl_revision", 0))),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                backend.values[event_key] = "1"
+                backend.values[revision_key] = payload
+                backend.values[latest_key] = payload
+                return 1
+
+            async def aclose(self):
+                return None
+
+        return Handle()
+
+
+class FakeLiveCatalogDiscovery:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def discover_definitions(self, endpoint, *, static_headers, jwt_authorization):
+        self.calls.append(
+            {
+                "endpoint": endpoint,
+                "static_headers": dict(static_headers),
+                "jwt_authorization": jwt_authorization,
+            }
+        )
+        return (
+            {
+                "name": "pmm.query_projects",
+                "description": "Query permitted projects.",
+                "inputSchema": {"type": "object"},
+                "annotations": {"readOnlyHint": True},
+            },
+        )
+
+
+def live_catalog_service(
+    redis: FakeLiveCatalogRedis,
+    discovery: FakeLiveCatalogDiscovery,
+) -> LiveMcpCatalogService:
+    async def target_resolver(_tenant_id, _server_id):
+        return SimpleNamespace(
+            endpoint="https://gateway.example/mcp",
+            static_headers={"X-Static": "configured"},
+        )
+
+    async def target_validator(_endpoint):
+        return SimpleNamespace(
+            connect_url="https://203.0.113.10/api/internal/cache-revisions",
+            host_header="gateway.example",
+            sni_hostname="gateway.example",
+        )
+
+    return LiveMcpCatalogService(
+        redis_provider=redis.handle,
+        target_resolver=target_resolver,
+        target_validator=target_validator,
+        service_token_provider=lambda: "service-token",
+        discovery=discovery,
+    )
+
+
+def test_tool_reference_is_server_qualified_and_strict():
+    reference = build_mcp_tool_reference("gateway", "pmm.query_projects")
+    assert reference == "gateway::pmm.query_projects"
+    assert parse_mcp_tool_reference(reference) == ("gateway", "pmm.query_projects")
+    with pytest.raises(ValueError):
+        parse_mcp_tool_reference("pmm.query_projects")
+
+
+@pytest.mark.asyncio
+async def test_live_catalog_cache_is_revision_and_user_scoped(monkeypatch):
+    redis = FakeLiveCatalogRedis()
+    discovery = FakeLiveCatalogDiscovery()
+    catalog = live_catalog_service(redis, discovery)
+
+    async def revisions(_endpoint):
+        return GatewayRevisions(catalog_revision=7, acl_revision=11)
+
+    monkeypatch.setattr(catalog, "_query_revisions", revisions)
+    first = await catalog.list_server_tools(
+        tenant_id="default", user_id="alice", server_id="gateway", jwt="alice.jwt"
+    )
+    second = await catalog.list_server_tools(
+        tenant_id="default", user_id="alice", server_id="gateway", jwt="alice.jwt"
+    )
+    other_user = await catalog.list_server_tools(
+        tenant_id="default", user_id="bob", server_id="gateway", jwt="bob.jwt"
+    )
+
+    assert first.tools[0].tool_id == "gateway::pmm.query_projects"
+    assert first.tools[0].cached is False
+    assert first.tools[0].write_capable is False
+    assert first.tools[0].risk_level == "low"
+    assert second.tools[0].cached is True
+    assert other_user.tools[0].cached is False
+    assert [call["jwt_authorization"] for call in discovery.calls] == [
+        "Bearer alice.jwt",
+        "Bearer bob.jwt",
+    ]
+    cached_tool = await read_cached_live_mcp_tool(
+        redis_provider=redis.handle,
+        tenant_id="default",
+        user_id="alice",
+        server_id="gateway",
+        public_tool_name="pmm.query_projects",
+    )
+    assert cached_tool is not None
+    assert cached_tool.write_capable is False
+    assert cached_tool.risk_level == "low"
+
+
+@pytest.mark.asyncio
+async def test_gateway_failure_uses_only_same_user_unexpired_stale_cache(monkeypatch):
+    redis = FakeLiveCatalogRedis()
+    discovery = FakeLiveCatalogDiscovery()
+    catalog = live_catalog_service(redis, discovery)
+
+    async def revisions(_endpoint):
+        return GatewayRevisions(catalog_revision=7, acl_revision=11)
+
+    monkeypatch.setattr(catalog, "_query_revisions", revisions)
+    populated = await catalog.list_server_tools(
+        tenant_id="default",
+        user_id="alice",
+        server_id="gateway",
+        jwt="alice.jwt",
+    )
+    await catalog.invalidate(
+        tenant_id="default",
+        server_id="gateway",
+        revisions=GatewayRevisions(8, 12),
+        event_id="event-new-revision",
+    )
+
+    async def unavailable(*_args, **_kwargs):
+        raise McpToolDiscoveryError("transport_failure")
+
+    monkeypatch.setattr(discovery, "discover_definitions", unavailable)
+    stale = await catalog.list_server_tools(
+        tenant_id="default",
+        user_id="alice",
+        server_id="gateway",
+        jwt="alice.jwt",
+    )
+    other_user = await catalog.list_server_tools(
+        tenant_id="default",
+        user_id="bob",
+        server_id="gateway",
+        jwt="bob.jwt",
+    )
+
+    assert populated.tools[0].cached is False
+    assert stale.tools[0].cached is True
+    assert stale.unavailable_reason is None
+    assert other_user.tools == ()
+    assert other_user.unavailable_reason == "discovery_failed"
+
+
+@pytest.mark.asyncio
+async def test_cache_invalidation_is_idempotent_and_revisions_never_regress():
+    redis = FakeLiveCatalogRedis()
+    catalog = live_catalog_service(redis, FakeLiveCatalogDiscovery())
+    assert await catalog.invalidate(
+        tenant_id="default",
+        server_id="gateway",
+        revisions=GatewayRevisions(10, 20),
+        event_id="event-1",
+    )
+    assert not await catalog.invalidate(
+        tenant_id="default",
+        server_id="gateway",
+        revisions=GatewayRevisions(99, 99),
+        event_id="event-1",
+    )
+    assert await catalog.invalidate(
+        tenant_id="default",
+        server_id="gateway",
+        revisions=GatewayRevisions(8, 21),
+        event_id="event-2",
+    )
+    latest = json.loads(redis.values[catalog._revision_latest_key("default", "gateway")])
+    assert latest == {"catalog_revision": 10, "acl_revision": 21}
+
+
+def test_service_token_comparison_requires_exact_nonempty_value():
+    assert service_token_matches("configured", "configured")
+    assert not service_token_matches("configured", "Bearer configured")
+    assert not service_token_matches("", "configured")
+
+
+@pytest.mark.parametrize("supplied_token", [None, "wrong-token"])
+def test_cache_invalidation_route_rejects_missing_or_wrong_service_identity(
+    monkeypatch,
+    supplied_token,
+):
+    from app.routes import mcp
+
+    monkeypatch.setattr(
+        mcp,
+        "get_settings",
+        lambda: Settings(mcp_cache_invalidation_token="callback-secret"),
+    )
+    client = TestClient(create_app())
+    request_headers = {}
+    if supplied_token is not None:
+        request_headers["X-AI-Platform-Callback-Token"] = supplied_token
+
+    response = client.post(
+        "/api/internal/mcp/cache-invalidation",
+        headers=request_headers,
+        json={
+            "mcp_server_id": "gateway",
+            "catalog_revision": 10,
+            "acl_revision": 20,
+            "reason": "acl_changed",
+            "event_id": "event-1",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "mcp_service_unauthorized"}
+
+
+def test_cache_invalidation_route_accepts_duplicate_event_without_reapplying(monkeypatch):
+    from app.routes import mcp
+
+    class FakeInvalidationCatalog:
+        def __init__(self):
+            self.events = set()
+
+        async def invalidate(self, *, tenant_id, server_id, revisions, event_id):
+            key = (tenant_id, server_id, event_id)
+            if key in self.events:
+                return False
+            self.events.add(key)
+            return True
+
+    monkeypatch.setattr(
+        mcp,
+        "get_settings",
+        lambda: Settings(
+            default_tenant_id="default",
+            mcp_cache_invalidation_token="callback-secret",
+        ),
+    )
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", FakeInvalidationCatalog())
+    client = TestClient(create_app())
+    payload = {
+        "mcp_server_id": "gateway",
+        "catalog_revision": 10,
+        "acl_revision": 20,
+        "reason": "acl_changed",
+        "event_id": "event-1",
+    }
+    request_headers = {"X-AI-Platform-Callback-Token": "callback-secret"}
+
+    first = client.post(
+        "/api/internal/mcp/cache-invalidation",
+        headers=request_headers,
+        json=payload,
+    )
+    duplicate = client.post(
+        "/api/internal/mcp/cache-invalidation",
+        headers=request_headers,
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert first.json()["applied"] is True
+    assert duplicate.status_code == 200
+    assert duplicate.json()["applied"] is False
+    assert first.headers["cache-control"] == "no-store"
 
 
 def headers(
@@ -85,33 +401,46 @@ def install_mcp_route_fakes(
             "updated_at": "2026-06-23T00:00:00Z",
         }
     ])
-
-    async def fake_list(conn, *, tenant_id, include_disabled=True):
-        calls.append(
-            (
-                "list",
-                {
-                    "tenant_id": tenant_id,
-                    "include_disabled": include_disabled,
-                    "conn_type": type(conn).__name__,
-                },
-            )
-        )
-        return [dict(row) for row in registry_tools]
-
-    async def fake_list_authorized_chat_mcp_tools(conn, **kwargs):
-        calls.append(("list_chat_tools", dict(kwargs)))
-        return [dict(row) for row in registry_tools]
-
-    async def fake_list_chat_mcp_catalog_unavailable(conn, **kwargs):
-        calls.append(("list_chat_unavailable", dict(kwargs)))
-        return []
+    for tool in registry_tools if tool_rows is not None else []:
+        server_id = str(tool.get("server_id") or "")
+        if server_id and server_id not in servers:
+            servers[server_id] = {
+                "name": server_id,
+                "transport": "streamable_http",
+                "status": "active",
+                "is_system": False,
+                "allowed_roles": ["user"],
+                "role_quotas": {},
+                "department_ids": [],
+                "credential_state": "configured",
+                "created_at": None,
+                "updated_at": "2026-06-23T00:00:00Z",
+            }
+            distributions[server_id] = {
+                "capability_kind": "mcp_server",
+                "capability_id": server_id,
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": ["user"],
+                "metadata_json": {},
+            }
 
     async def fake_get_authorized_session(conn, **kwargs):
         calls.append(("get_authorized_session", dict(kwargs)))
         if kwargs["session_id"] != "session-1":
             return None
-        selected = [str(registry_tools[0]["tool_id"])] if registry_tools else []
+        selected = (
+            [
+                build_mcp_tool_reference(
+                    str(registry_tools[0].get("server_id") or "gateway"),
+                    str(registry_tools[0].get("public_tool_name") or registry_tools[0].get("tool_id") or "tool"),
+                )
+            ]
+            if registry_tools
+            else []
+        )
         return {
             "id": "session-1",
             "latest_run_input_json": {"input": {"mcp_tool_ids": selected}},
@@ -238,35 +567,6 @@ def install_mcp_route_fakes(
         servers[kwargs["name"]] = server
         return dict(server)
 
-    async def fake_mark_catalog_unavailable(conn, **kwargs):
-        calls.append(("mark_catalog_unavailable", dict(kwargs)))
-
-    class FakeCatalogSynchronizer:
-        async def synchronize(self, command):
-            calls.append(
-                (
-                    "catalog_sync",
-                    {
-                        "server_name": command.server_name,
-                        "generation": command.observed_generation,
-                        "jwt_authorization": command.jwt_authorization,
-                    },
-                )
-            )
-
-            class Result:
-                def public_payload(self):
-                    return {
-                        "status": "unavailable",
-                        "reason": "invalid_endpoint",
-                        "catalog_revision": 0,
-                        "discovered_count": 0,
-                        "selectable_count": 0,
-                        "published": False,
-                    }
-
-            return Result()
-
     async def fake_record_credential(conn, **kwargs):
         calls.append(("record_credential", dict(kwargs)))
         if kwargs["server_name"] in servers:
@@ -275,17 +575,6 @@ def install_mcp_route_fakes(
             server["credential_metadata"] = kwargs["metadata"]
             servers[kwargs["server_name"]] = server
         return {"id": "mcpcred-test", **kwargs}
-
-    async def fake_catalog_sync_snapshot(conn, *, tenant_id, name):
-        server = servers.get(name)
-        if server is None:
-            return None
-        return {
-            **server,
-            "credential_fingerprint": hashlib.sha256("https://mcp.example/tools".encode("utf-8")).hexdigest(),
-            "credential_metadata_json": {},
-            "catalog_generation": 1,
-        }
 
     async def fake_ensure_user(conn, **kwargs):
         calls.append(("ensure_user", dict(kwargs)))
@@ -304,6 +593,24 @@ def install_mcp_route_fakes(
         )
         return "current-user.jwt"
 
+    class FakeRouteLiveCatalog:
+        async def list_server_tools(self, *, server_id, **_kwargs):
+            tools = []
+            for row in registry_tools:
+                if str(row.get("server_id") or "") != server_id:
+                    continue
+                public_name = str(row.get("public_tool_name") or row.get("tool_id") or "")
+                tools.append(
+                    LiveMcpTool(
+                        tool_id=build_mcp_tool_reference(server_id, public_name),
+                        server_id=server_id,
+                        public_tool_name=public_name,
+                        label=public_name,
+                        description=str(row.get("description") or ""),
+                    )
+                )
+            return LiveMcpServerResult(server_id=server_id, tools=tuple(tools))
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(
         mcp,
@@ -311,18 +618,6 @@ def install_mcp_route_fakes(
         lambda **_kwargs: "sealed-mcp-credential-envelope",
     )
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
-    monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list)
-    monkeypatch.setattr(
-        mcp.mcp_repository,
-        "list_authorized_chat_mcp_tools",
-        fake_list_authorized_chat_mcp_tools,
-    )
-    monkeypatch.setattr(
-        mcp.mcp_repository,
-        "list_chat_mcp_catalog_unavailable",
-        fake_list_chat_mcp_catalog_unavailable,
-        raising=False,
-    )
     monkeypatch.setattr(
         mcp.repositories,
         "get_authorized_session",
@@ -349,23 +644,11 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.repositories, "archive_capability_distribution_row", fake_archive_distribution, raising=False)
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
-    monkeypatch.setattr(
-        mcp.mcp_repository,
-        "mark_mcp_catalog_lifecycle_unavailable",
-        fake_mark_catalog_unavailable,
-        raising=False,
-    )
     monkeypatch.setattr(mcp, "record_mcp_server_credential", fake_record_credential)
-    monkeypatch.setattr(
-        mcp.mcp_repository,
-        "get_mcp_server_catalog_sync_snapshot",
-        fake_catalog_sync_snapshot,
-        raising=False,
-    )
     monkeypatch.setattr(mcp.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(mcp.repositories, "append_audit_log", fake_append_audit_log)
     monkeypatch.setattr(mcp, "read_mcp_principal_jwt", fake_read_mcp_principal_jwt)
-    monkeypatch.setattr(mcp, "MCP_TOOL_CATALOG_SYNCHRONIZER", FakeCatalogSynchronizer())
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", FakeRouteLiveCatalog())
     return calls
 
 
@@ -373,11 +656,11 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
     calls = install_mcp_route_fakes(
         monkeypatch,
         tool_rows=[
-            {
-                "tool_id": "tenant-search",
-                "server_id": "private-server-production",
-                "name": "https://user:credential@private.example/mcp",
-                "description": "Bearer secret-token from /internal/private/path",
+                {
+                    "tool_id": "tenant-search",
+                    "server_id": "private-server-production",
+                    "name": "Tenant Search",
+                    "description": "Search permitted tenant records.",
                 "endpoint": "https://private.example/mcp",
                 "credential_state": "platform-managed-secret",
             }
@@ -391,25 +674,24 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
     assert response.json() == {
         "tools": [
             {
-                "tool_id": "tenant-search",
-                "label": "受管 MCP 工具",
-                "description": "由平台治理的工具。",
+                "tool_id": "private-server-production::tenant-search",
+                "label": "tenant-search",
+                "description": "Search permitted tenant records.",
                 "category": "mcp",
+                "server": "private-server-production",
+                "cached": False,
             }
         ],
         "unavailable": [],
         "count": 1,
-        "selected_mcp_tool_ids": ["tenant-search"],
+        "selected_mcp_tool_ids": ["private-server-production::tenant-search"],
     }
     encoded = response.text
     assert "private.example" not in encoded
     assert "platform-managed-secret" not in encoded
     assert "secret-token" not in encoded
-    assert "private-server-production" not in encoded
-    catalog_call = next(payload for name, payload in calls if name == "list_chat_tools")
-    assert catalog_call["tenant_id"] == "default"
-    assert catalog_call["principal_department_id"] == "qa"
-    assert catalog_call["principal_roles"] == ["user"]
+    assert "private.example" not in encoded
+    assert ("principal_jwt", {"tenant_id": "default", "user_id": "ordinary"}) in calls
 
 
 def test_chat_mcp_catalog_truthfully_returns_actionable_empty_selection(monkeypatch):
@@ -427,7 +709,80 @@ def test_chat_mcp_catalog_truthfully_returns_actionable_empty_selection(monkeypa
     }
 
 
-def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_returns_bounded_result(monkeypatch):
+def test_chat_mcp_catalog_preserves_revoked_session_reference_outside_visible_picker(monkeypatch):
+    from app.routes import mcp
+
+    install_mcp_route_fakes(
+        monkeypatch,
+        tool_rows=[
+            {
+                "tool_id": "current-tool",
+                "server_id": "gateway",
+                "description": "Current authorized tool.",
+            }
+        ],
+    )
+
+    async def session_with_revoked_reference(conn, **_kwargs):
+        return {
+            "id": "session-1",
+            "latest_run_input_json": {
+                "input": {
+                    "mcp_tool_ids": [
+                        "gateway::current-tool",
+                        "gateway::revoked-tool",
+                    ]
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        mcp.repositories,
+        "get_authorized_session",
+        session_with_revoked_reference,
+    )
+    response = TestClient(create_app()).get(
+        "/api/mcp/chat-tools?session_id=session-1",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [tool["tool_id"] for tool in payload["tools"]] == ["gateway::current-tool"]
+    assert payload["selected_mcp_tool_ids"] == [
+        "gateway::current-tool",
+        "gateway::revoked-tool",
+    ]
+
+
+def test_chat_mcp_catalog_missing_or_expired_jwt_never_uses_catalog_cache(monkeypatch):
+    from app.routes import mcp
+
+    install_mcp_route_fakes(
+        monkeypatch,
+        tool_rows=[{"tool_id": "cached-tool", "server_id": "gateway"}],
+    )
+
+    async def expired_jwt(_principal):
+        raise McpRuntimeContextError("mcp_principal_jwt_expired", status_code=401)
+
+    class CacheMustNotRun:
+        async def list_server_tools(self, **_kwargs):
+            raise AssertionError("missing or expired JWT must fail before cache access")
+
+    monkeypatch.setattr(mcp, "read_mcp_principal_jwt", expired_jwt)
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", CacheMustNotRun())
+    response = TestClient(create_app()).get("/api/mcp/chat-tools", headers=headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tools"] == []
+    assert payload["count"] == 0
+    assert {item["label"] for item in payload["unavailable"]} == {"ragflow", "gateway"}
+    assert {item["reason"] for item in payload["unavailable"]} == {"authorization_required"}
+
+
+def test_explicit_catalog_sync_route_is_removed(monkeypatch):
     calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -437,26 +792,9 @@ def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_re
         headers=headers(roles="admin"),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "server_name": "ragflow",
-        "catalog_sync": {
-            "status": "unavailable",
-            "reason": "invalid_endpoint",
-            "catalog_revision": 0,
-            "discovered_count": 0,
-            "selectable_count": 0,
-            "published": False,
-        },
-        "catalog_event": {
-            "type": "mcp-tools-changed",
-            "catalog_revision": 0,
-            "status": "unavailable",
-        },
-    }
+    assert response.status_code == 404
     assert "mcp.example" not in response.text
-    assert any(name == "catalog_sync" for name, _ in calls)
-    assert ("principal_jwt", {"tenant_id": "default", "user_id": "ordinary"}) in calls
+    assert not any(name == "catalog_sync" for name, _ in calls)
 
 
 def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):
@@ -505,8 +843,10 @@ def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monk
         "server_name": "ragflow",
         "tools": [
             {
-                "name": "ragflow-knowledge-search",
-                "description": "Search governed knowledge bases.",
+                    "name": "ragflow::ragflow-knowledge-search",
+                    "description": "Search governed knowledge bases.",
+                    "server": "ragflow",
+                    "cached": False,
                 "parameters": [],
                 "system_disabled": False,
                 "user_disabled": False,
@@ -601,7 +941,7 @@ def test_mcp_distribution_denies_role_hidden_disabled_and_missing_rows(monkeypat
         assert client.get("/api/mcp/ragflow/tools", headers=denied).status_code == 404
 
 
-def test_mcp_tool_inherits_parent_distribution_and_preserves_tool_lifecycle_gate(monkeypatch):
+def test_gateway_live_tools_do_not_inherit_stale_platform_tool_lifecycle(monkeypatch):
     install_mcp_route_fakes(
         monkeypatch,
         distribution_rows=[_mcp_distribution(department_ids=["qa"])],
@@ -623,10 +963,12 @@ def test_mcp_tool_inherits_parent_distribution_and_preserves_tool_lifecycle_gate
 
     response = client.get("/api/mcp/ragflow/tools", headers=headers(department_id="qa"))
     assert response.status_code == 200
-    assert response.json()["tools"] == []
+    assert [tool["name"] for tool in response.json()["tools"]] == [
+        "ragflow::ragflow-knowledge-search"
+    ]
 
 
-def test_mcp_tool_discovery_preserves_existing_risk_write_policy_gate(monkeypatch):
+def test_gateway_live_tools_do_not_use_stale_platform_tool_risk_policy(monkeypatch):
     install_mcp_route_fakes(
         monkeypatch,
         distribution_rows=[_mcp_distribution(department_ids=["qa"])],
@@ -649,7 +991,9 @@ def test_mcp_tool_discovery_preserves_existing_risk_write_policy_gate(monkeypatc
     response = client.get("/api/mcp/ragflow/tools", headers=headers(department_id="qa"))
 
     assert response.status_code == 200
-    assert response.json()["tools"] == []
+    assert [tool["name"] for tool in response.json()["tools"]] == [
+        "ragflow::ragflow-knowledge-search"
+    ]
 
 
 def test_mcp_admin_bypass_read_audits_target_scope(monkeypatch):
@@ -884,12 +1228,9 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
     )
     assert registry_write["endpoint_redacted"] == ""
     assert credential_write["credential_envelope"] == "sealed-mcp-credential-envelope"
-    catalog_sync = next(
-        payload
-        for name, payload in calls
-        if name == "catalog_sync" and payload["server_name"] == "custom"
-    )
-    assert catalog_sync["jwt_authorization"] == "Bearer current-user.jwt"
+    assert "catalog" not in created
+    assert "catalog_sync" not in created
+    assert not any(name == "catalog_sync" for name, _ in calls)
 
     toggle_response = client.patch("/api/mcp/ragflow/toggle", headers=headers(roles="admin"))
     assert toggle_response.status_code == 200

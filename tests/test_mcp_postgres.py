@@ -72,7 +72,7 @@ async def test_record_mcp_server_credential_normalizes_empty_envelope(
 
 
 @pytest.mark.asyncio
-async def test_mcp_relay_target_uses_current_available_catalog_entries():
+async def test_mcp_relay_target_does_not_read_platform_tool_catalog():
     conn = _RelayConnection(
         {
             "credential_envelope": "sealed-envelope",
@@ -90,15 +90,9 @@ async def test_mcp_relay_target_uses_current_available_catalog_entries():
     assert target == {
         "credential_envelope": "sealed-envelope",
         "metadata_json": {},
-        "active_tool_names": ["remote-search"],
+        "active_tool_names": [],
     }
-    assert "array_agg(distinct catalog_entry.remote_tool_name)" in conn.sql
-    assert "join mcp_tool_catalog_entries catalog_entry" in conn.sql
-    assert "catalog_entry.tool_id = mcp_tools.id" in conn.sql
-    assert "catalog_entry.catalog_generation = mcp_servers.catalog_generation" in conn.sql
-    assert "mcp_servers.catalog_status = 'available'" in conn.sql
-    assert "catalog_entry.status = 'active'" in conn.sql
-    assert "mcp_tools.status = 'active'" in conn.sql
-    assert "tool_policies.status = 'active'" in conn.sql
-    assert "mcp_tools.allowed_tools" not in conn.sql
+    assert "mcp_tool_catalog_entries" not in conn.sql
+    assert "mcp_tools" not in conn.sql
+    assert "tool_policies" not in conn.sql
     assert conn.params == ("tenant-a", "gateway")

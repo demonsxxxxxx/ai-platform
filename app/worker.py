@@ -76,11 +76,14 @@ from app.mcp.api import (
     persisted_mcp_context_id,
     queue_input_with_mcp_context,
 )
+from app.mcp.application.live_catalog import read_cached_live_mcp_tool
+from app.mcp.domain.tool_references import parse_mcp_tool_reference
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
+from app.redis_client import get_redis_client
 from app.runs.api import RunTerminalizationProgress
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -127,6 +130,20 @@ from app.worker_principal_authority import (
     _resolve_current_principal_before_dispatch,
 )
 
+
+async def _get_live_mcp_tool_metadata(*, tenant_id: str, user_id: str, tool_id: str):
+    try:
+        server_id, public_tool_name = parse_mcp_tool_reference(tool_id)
+    except ValueError:
+        return None
+    return await read_cached_live_mcp_tool(
+        redis_provider=get_redis_client,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        server_id=server_id,
+        public_tool_name=public_tool_name,
+    )
+
 _WORKER_CAPABILITY_PORTS = _WorkerCapabilityPorts(
     capability_access_context=CapabilityAccessContext,
     capability_access_decision=CapabilityAccessDecision,
@@ -138,6 +155,7 @@ _WORKER_CAPABILITY_PORTS = _WorkerCapabilityPorts(
     get_mcp_tool_registry_entry=lambda *args, **kwargs: repositories.get_mcp_tool_registry_entry(
         *args, **kwargs
     ),
+    get_live_mcp_tool_metadata=lambda **kwargs: _get_live_mcp_tool_metadata(**kwargs),
     is_ai_admin=is_ai_admin,
     mcp_runtime_metadata_usable=repositories.mcp_runtime_metadata_usable,
     repository_conflict_error=repositories.RepositoryConflictError,

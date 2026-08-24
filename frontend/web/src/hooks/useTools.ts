@@ -73,8 +73,10 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
   if (
     !isNonEmptyString(value.tool_id) ||
     !isNonEmptyString(value.label) ||
+    !isNonEmptyString(value.server) ||
     typeof value.description !== "string" ||
-    value.category !== "mcp"
+    value.category !== "mcp" ||
+    typeof value.cached !== "boolean"
   ) {
     return null;
   }
@@ -84,7 +86,7 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
     label: value.label,
     description: value.description,
     category: "mcp",
-    server: undefined,
+    server: value.server,
     parameters: [],
     system_disabled: false,
     user_disabled: false,

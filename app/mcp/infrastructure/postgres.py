@@ -47,15 +47,11 @@ async def get_mcp_relay_target(
     tenant_id: str,
     server_name: str,
 ) -> dict[str, Any] | None:
-    """Resolve an active MCP target and its current tool-name fence."""
+    """Resolve an active MCP target without reading a platform Tool Catalog."""
 
     cursor = await conn.execute(
         """
-        select credentials.credential_envelope, credentials.metadata_json,
-          coalesce(
-            array_agg(distinct catalog_entry.remote_tool_name),
-            array[]::text[]
-          ) as active_tool_names
+        select credentials.credential_envelope, credentials.metadata_json
         from mcp_servers
         join mcp_server_credentials credentials
           on credentials.tenant_id = mcp_servers.tenant_id
@@ -65,31 +61,16 @@ async def get_mcp_relay_target(
          and distributions.capability_kind = 'mcp_server'
          and distributions.capability_id = mcp_servers.name
          and distributions.status = 'active'
-        join mcp_tool_catalog_entries catalog_entry
-          on catalog_entry.tenant_id = mcp_servers.tenant_id
-         and catalog_entry.server_name = mcp_servers.name
-         and catalog_entry.catalog_generation = mcp_servers.catalog_generation
-         and catalog_entry.status = 'active'
-        join mcp_tools
-          on catalog_entry.tool_id = mcp_tools.id
-         and mcp_tools.server_id = mcp_servers.name
-         and mcp_tools.status = 'active'
-        join tool_policies
-          on tool_policies.tenant_id = mcp_servers.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
-         and tool_policies.status = 'active'
         where mcp_servers.tenant_id = %s
           and mcp_servers.name = %s
           and mcp_servers.status = 'active'
-          and mcp_servers.catalog_status = 'available'
-        group by credentials.credential_envelope, credentials.metadata_json
         """,
         (tenant_id, server_name),
     )
     row = await cursor.fetchone()
     if row is None:
         return None
-    return dict(row)
+    return {**dict(row), "active_tool_names": []}
 
 
 async def bind_run_mcp_context(

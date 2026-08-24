@@ -205,7 +205,7 @@ async def test_apply_schema_runs_only_the_one_shot_schema_migration(monkeypatch)
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.19.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.21.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -452,7 +452,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "365b972f65f791ff1da58ba9fc4a4628a9bc3fcac7d36963ec6706a83ff29473"
+        "433b174068c4a29c79a84b01e87c9b7b2cc7f9436b96c1b3f0d018d7bc314ec3"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

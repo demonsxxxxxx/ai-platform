@@ -1808,7 +1808,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     observed: list[tuple[str, bool | None]] = []
     profile_row = _profile_row()
     if bound:
-        profile_row["mcp_tool_ids"] = ["profile-tool"]
+        profile_row["mcp_tool_ids"] = ["gateway::profile-tool"]
         _seal_profile_row(profile_row)
 
     async def get_current(*_args, **kwargs):
@@ -1897,7 +1897,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
     from app.models import ChatStreamRequest, SelectedAgentProfileRequest
 
     profile_row = _profile_row()
-    profile_row["mcp_tool_ids"] = ["profile-tool"]
+    profile_row["mcp_tool_ids"] = ["gateway::profile-tool"]
     _seal_profile_row(profile_row)
 
     async def get_current(*_args, **_kwargs):
@@ -1922,7 +1922,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
                 "agent_id": "agt_support",
                 "expected_revision": 7,
             },
-            "selected_mcp_tool_ids": ["profile-tool"],
+            "selected_mcp_tool_ids": ["gateway::profile-tool"],
             "submission_id": "8eb026d4-2839-44db-83dd-5196ed80d9e8",
         }
     )
@@ -2025,8 +2025,8 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"modelId": "model-b"}, None),
         ({"disabled_skills": ["other-skill"]}, None),
         ({"enabled_skills": ["other-skill"]}, None),
-        ({"disabled_mcp_tools": ["other-tool"]}, None),
-        ({"selected_mcp_tool_ids": ["other-tool"]}, None),
+        ({"disabled_mcp_tools": ["gateway::other-tool"]}, None),
+        ({"selected_mcp_tool_ids": ["gateway::other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
         ({"agent_options": {"enable_thinking": "high"}}, None),
         ({"agent_options": {"model_id": "model-b"}}, None),
@@ -2043,7 +2043,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"confirmed_capability_id": "general_chat"}, None),
         ({"input": {"model": "model-b"}}, None),
         ({"input": {"multi_agent_steps": [{"skillIds": ["other-skill"]}]}}, None),
-        ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["other-tool"]}]}]}}, None),
+        ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["gateway::other-tool"]}]}]}}, None),
         ({"input": {"multiAgentSteps": [{"mcpServerIds": ["other-server"]}]}}, None),
         (
             {

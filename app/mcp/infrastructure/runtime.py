@@ -1576,8 +1576,6 @@ class HostMcpRelay:
         if not allowed_tool_names:
             raise McpRelayError("mcp_server_not_selected", status_code=403)
         target = await self.target_resolver(resolved.capability.tenant_id, safe_server_id)
-        if not set(allowed_tool_names).issubset(set(target.active_tool_names)):
-            raise McpRelayError("mcp_tool_revoked", status_code=403)
         max_bytes = int(getattr(get_settings(), "mcp_relay_max_response_bytes", 1024 * 1024))
         if method == "tools/call":
             params = payload.get("params")
@@ -1617,10 +1615,8 @@ class HostMcpRelay:
             current_by_name = {
                 str(tool["name"]): dict(tool) for tool in current_tools
             }
-            if not set(allowed_tool_names).issubset(set(current_by_name)):
-                raise McpRelayError("mcp_tool_revoked", status_code=403)
             bounded = bounded_tool_view(
-                [current_by_name[name] for name in allowed_tool_names]
+                [current_by_name[name] for name in allowed_tool_names if name in current_by_name]
             )
             result["result"] = {**result_body, "tools": bounded}
             return result

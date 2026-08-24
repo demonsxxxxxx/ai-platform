@@ -667,11 +667,7 @@ export function ChatAppContent({
 
     const serverSelection =
       sessionId && serverSelectedToolIds !== undefined
-        ? reconcileChatMcpToolSelection(
-            serverSelectedToolIds,
-            tools,
-            mcpCatalogState.status,
-          )
+        ? serverSelectedToolIds
         : undefined;
     const restoreKey =
       serverSelection === undefined ? null : `${sessionId}:${JSON.stringify(serverSelection)}`;
@@ -681,13 +677,7 @@ export function ChatAppContent({
       restoredMcpSelectionRef.current = restoreKey;
     }
 
-    const reconciled = shouldRestoreServerSelection
-      ? serverSelection
-      : reconcileChatMcpToolSelection(
-          sessionConfig.selectedMcpToolIds,
-          tools,
-          mcpCatalogState.status,
-        );
+    const reconciled = shouldRestoreServerSelection ? serverSelection : undefined;
     if (
       reconciled === undefined ||
       (sessionConfig.selectedMcpToolIds !== undefined &&
@@ -793,7 +783,7 @@ export function ChatAppContent({
       }
       : {
         ...sessionConfig,
-        selectedMcpToolIds: authoritativeMcpSelection,
+        selectedMcpToolIds: sessionConfig.selectedMcpToolIds,
         agentOptions: {
           ...agentOptionValues,
           ...(currentModelValue ? { model: currentModelValue } : {}),

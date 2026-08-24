@@ -16,6 +16,7 @@ from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.model_catalog import resolve_model_selection
+from app.mcp.domain.tool_references import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -815,7 +816,7 @@ class AgentProfileAuthority:
                         skill_id=selected_skill.skill_id,
                         expected_version=selected_skill.expected_version,
                         rollout_key=principal.user_id,
-                        normalized_input={"mcp_tool_ids": list(definition.mcp_tool_ids)},
+                        normalized_input={},
                         principal_department_id=principal.department_id,
                         principal_roles=principal.roles,
                         is_admin=is_ai_admin(principal),
@@ -824,15 +825,20 @@ class AgentProfileAuthority:
                     for selected_skill in definition.skill_set
                 ]
             )
-            await repositories.authorize_selected_chat_mcp_tools(
-                conn,
-                tenant_id=principal.tenant_id,
-                tool_ids=list(definition.mcp_tool_ids),
-                principal_department_id=principal.department_id,
-                principal_roles=principal.roles,
-                is_admin=is_ai_admin(principal),
-                permissions=principal.permissions,
-            )
+            for tool_reference in definition.mcp_tool_ids:
+                server_id, _public_tool_name = parse_mcp_tool_reference(tool_reference)
+                server = await repositories.get_mcp_server_registry_entry(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    name=server_id,
+                )
+                if server is None:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="agent_profile_capability_not_available",
+                    )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="agent_profile_mcp_reference_invalid") from exc
         except repositories.RepositoryConflictError as exc:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except repositories.RepositoryAuthorizationError as exc:

@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.runtime.kernel_contracts import AgentEvent
+from app.mcp.domain.tool_references import assert_mcp_tool_reference
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
@@ -196,10 +197,15 @@ class SandboxRuntimeRequest(BaseModel):
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
 
-    @field_validator("skill_ids", "mcp_tool_ids", "file_ids")
+    @field_validator("skill_ids", "file_ids")
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
+
+    @field_validator("mcp_tool_ids")
+    @classmethod
+    def validate_mcp_tool_ids(cls, values: list[str]):
+        return [assert_mcp_tool_reference(value, "mcp_tool_ids") for value in values]
 
     @field_validator("trace_id")
     @classmethod

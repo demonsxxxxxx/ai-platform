@@ -5,8 +5,8 @@ import ipaddress
 import json
 import socket
 import asyncio
-from dataclasses import dataclass, field, replace
-from typing import Any, Mapping, Protocol
+from dataclasses import dataclass
+from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -15,14 +15,11 @@ from app.mcp.api import (
     MCP_JWT_AUTHORIZATION_HEADER,
     normalize_static_mcp_headers,
 )
-from app.validation import SAFE_ID_PATTERN
+from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 
 
 MCP_DISCOVERY_PAGE_LIMIT = 100
 MCP_PROTOCOL_VERSION = "2025-03-26"
-MCP_PUBLIC_TOOL_LABEL = "受管 MCP 工具"
-MCP_PUBLIC_TOOL_DESCRIPTION = "由平台治理的工具。"
-MCP_PUBLIC_UNAVAILABLE_LABEL = "已配置 MCP 服务"
 MCP_TOOL_ANNOTATION_READ_ONLY = "read_only"
 MCP_TOOL_ANNOTATION_WRITE_CAPABLE = "write_capable"
 MCP_TOOL_ANNOTATION_UNKNOWN = "unknown"
@@ -45,7 +42,7 @@ class McpToolDiscoveryError(ValueError):
 
 @dataclass(frozen=True)
 class McpDiscoveredTool:
-    """Private canonical tool identity retained only long enough to publish a catalog."""
+    """Ephemeral canonical tool metadata returned by one Gateway discovery."""
 
     remote_name: str
     schema_hash: str
@@ -78,84 +75,6 @@ class McpDiscoveredTool:
         if self.annotation_state == MCP_TOOL_ANNOTATION_WRITE_CAPABLE:
             return "mcp_catalog_write_capable"
         return "mcp_catalog_annotation_unknown"
-
-
-@dataclass(frozen=True)
-class McpToolCatalogSyncCommand:
-    """One bounded catalog refresh tied to a persisted server generation."""
-
-    tenant_id: str
-    server_name: str
-    observed_generation: int
-    transport: str
-    endpoint: str | None
-    credentialed: bool
-    actor_id: str
-    observed_attempt: int | None = None
-    static_headers: dict[str, str] = field(default_factory=dict, repr=False)
-    jwt_authorization: str = field(default="", repr=False)
-
-
-@dataclass(frozen=True)
-class McpToolCatalogSyncResult:
-    """Safe durable outcome of a catalog synchronization attempt."""
-
-    status: str
-    reason: str | None
-    catalog_revision: int
-    discovered_count: int
-    selectable_count: int
-    published: bool
-
-    def public_payload(self) -> dict[str, Any]:
-        """Return the public lifecycle state without transport or policy internals."""
-
-        return {
-            "status": self.status,
-            "reason": self.reason,
-            "catalog_revision": self.catalog_revision,
-            "discovered_count": self.discovered_count,
-            "selectable_count": self.selectable_count,
-            "published": self.published,
-        }
-
-
-class McpToolDiscoveryAdapter(Protocol):
-    """Discover every tool page from one already-authorized remote MCP transport."""
-
-    async def discover(
-        self,
-        endpoint: str,
-        *,
-        static_headers: Mapping[str, str] | None = None,
-        jwt_authorization: str,
-    ) -> tuple[McpDiscoveredTool, ...]:
-        """Return the complete remote manifest or raise a bounded discovery error."""
-
-
-class McpCatalogStore(Protocol):
-    """Persist catalog state through the generation-fenced catalog seam."""
-
-    async def begin(self, command: McpToolCatalogSyncCommand) -> dict[str, Any]:
-        """Claim the observed generation before discovery."""
-
-    async def record_outcome(
-        self,
-        command: McpToolCatalogSyncCommand,
-        *,
-        observed_attempt: int,
-        reason: str,
-    ) -> dict[str, Any]:
-        """Durably record a retryable unavailable result."""
-
-    async def publish(
-        self,
-        command: McpToolCatalogSyncCommand,
-        *,
-        observed_attempt: int,
-        tools: tuple[McpDiscoveredTool, ...],
-    ) -> dict[str, Any]:
-        """Atomically publish one complete manifest or fail closed."""
 
 
 def _parsed_discovery_endpoint(endpoint: str | None):
@@ -314,7 +233,7 @@ def _canonical_tool(raw: Any) -> McpDiscoveredTool:
     if not isinstance(raw, dict):
         raise McpToolDiscoveryError("protocol_error")
     remote_name = str(raw.get("name") or "").strip()
-    if not SAFE_ID_PATTERN.fullmatch(remote_name):
+    if not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(remote_name):
         raise McpToolDiscoveryError("protocol_error")
     input_schema = raw.get("inputSchema")
     if input_schema is not None and not isinstance(input_schema, dict):
@@ -327,6 +246,31 @@ def _canonical_tool(raw: Any) -> McpDiscoveredTool:
         read_only=annotation_state == MCP_TOOL_ANNOTATION_READ_ONLY,
         annotation_state=annotation_state,
     )
+
+
+def _canonical_live_definition(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise McpToolDiscoveryError("protocol_error")
+    remote_name = str(raw.get("name") or "").strip()
+    if not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(remote_name):
+        raise McpToolDiscoveryError("protocol_error")
+    description = raw.get("description")
+    if description is None:
+        description = ""
+    if not isinstance(description, str) or len(description) > 2048:
+        raise McpToolDiscoveryError("protocol_error")
+    input_schema = raw.get("inputSchema")
+    if input_schema is not None and not isinstance(input_schema, dict):
+        raise McpToolDiscoveryError("protocol_error")
+    annotations = raw.get("annotations")
+    if annotations is not None and not isinstance(annotations, dict):
+        raise McpToolDiscoveryError("protocol_error")
+    return {
+        "name": remote_name,
+        "description": description,
+        "inputSchema": dict(input_schema or {}),
+        "annotations": dict(annotations or {}),
+    }
 
 
 def _json_rpc_result(response: httpx.Response) -> dict[str, Any]:
@@ -454,6 +398,22 @@ class StreamableHttpMcpToolDiscoveryAdapter:
         static_headers: Mapping[str, str] | None = None,
         jwt_authorization: str,
     ) -> tuple[McpDiscoveredTool, ...]:
+        definitions = await self.discover_definitions(
+            endpoint,
+            static_headers=static_headers,
+            jwt_authorization=jwt_authorization,
+        )
+        return tuple(_canonical_tool(tool) for tool in definitions)
+
+    async def discover_definitions(
+        self,
+        endpoint: str,
+        *,
+        static_headers: Mapping[str, str] | None = None,
+        jwt_authorization: str,
+    ) -> tuple[dict[str, Any], ...]:
+        """Return bounded user-effective definitions without persisting a catalog."""
+
         target = await _validated_discovery_target(endpoint)
         async with httpx.AsyncClient(timeout=self._timeout_seconds, follow_redirects=False) as client:
             initialize, session_id = await self._request(
@@ -487,7 +447,7 @@ class StreamableHttpMcpToolDiscoveryAdapter:
 
             cursor: str | None = None
             seen_cursors: set[str] = set()
-            tools: list[McpDiscoveredTool] = []
+            tools: list[dict[str, Any]] = []
             seen_names: set[str] = set()
             for page_number in range(MCP_DISCOVERY_PAGE_LIMIT):
                 params: dict[str, Any] = {} if cursor is None else {"cursor": cursor}
@@ -507,10 +467,10 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                 raw_tools = result.get("tools")
                 if not isinstance(raw_tools, list):
                     raise McpToolDiscoveryError("protocol_error")
-                page_tools = [_canonical_tool(item) for item in raw_tools]
-                if any(tool.remote_name in seen_names for tool in page_tools):
+                page_tools = [_canonical_live_definition(item) for item in raw_tools]
+                if any(tool["name"] in seen_names for tool in page_tools):
                     raise McpToolDiscoveryError("protocol_error")
-                seen_names.update(tool.remote_name for tool in page_tools)
+                seen_names.update(tool["name"] for tool in page_tools)
                 tools.extend(page_tools)
                 next_cursor = result.get("nextCursor")
                 if next_cursor is None:
@@ -520,86 +480,3 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                 seen_cursors.add(next_cursor)
                 cursor = next_cursor
         raise McpToolDiscoveryError("page_limit_exceeded")
-
-
-class McpToolCatalogSynchronizer:
-    """Publish complete generation-fenced MCP manifests through one deep seam."""
-
-    def __init__(
-        self,
-        *,
-        discovery: McpToolDiscoveryAdapter | None = None,
-        store: McpCatalogStore | None = None,
-        max_response_bytes: int = 1024 * 1024,
-    ) -> None:
-        if store is None:
-            from app.mcp.repository import PostgresMcpCatalogStore
-
-            store = PostgresMcpCatalogStore()
-        self._discovery = discovery or StreamableHttpMcpToolDiscoveryAdapter(
-            max_response_bytes=max_response_bytes
-        )
-        self._store = store
-
-    async def synchronize(self, command: McpToolCatalogSyncCommand) -> McpToolCatalogSyncResult:
-        """Discover outside SQL, then publish only for the claimed generation and attempt."""
-
-        started = await self._store.begin(command)
-        if not bool(started.get("started")):
-            return _result_from_row(started, published=False)
-        attempt = int(started["catalog_sync_attempt"])
-        command = replace(command, observed_attempt=attempt)
-        reason = self._preflight_reason(command)
-        if reason is not None:
-            row = await self._store.record_outcome(command, observed_attempt=attempt, reason=reason)
-            return _result_from_row(row, published=False)
-        try:
-            tools = await self._discovery.discover(
-                command.endpoint or "",
-                static_headers=command.static_headers,
-                jwt_authorization=command.jwt_authorization,
-            )
-        except McpToolDiscoveryError as exc:
-            row = await self._store.record_outcome(command, observed_attempt=attempt, reason=exc.reason)
-            return _result_from_row(row, published=False)
-        except BaseException:
-            # A best-effort durable outcome makes cancellation retryable; lease expiry
-            # remains the process-loss recovery path when this transaction cannot run.
-            try:
-                await asyncio.shield(
-                    self._store.record_outcome(
-                        command,
-                        observed_attempt=attempt,
-                        reason="discovery_aborted",
-                    )
-                )
-            except Exception:
-                pass
-            raise
-        row = await self._store.publish(command, observed_attempt=attempt, tools=tools)
-        return _result_from_row(row, published=bool(row.get("published")))
-
-    @staticmethod
-    def _preflight_reason(command: McpToolCatalogSyncCommand) -> str | None:
-        if command.transport != "streamable_http":
-            return "unsupported_transport"
-        if command.credentialed:
-            return "credentials_not_supported"
-        if _parsed_discovery_endpoint(command.endpoint) is None:
-            return "invalid_endpoint"
-        try:
-            _normalized_jwt_authorization(command.jwt_authorization)
-        except McpToolDiscoveryError as exc:
-            return exc.reason
-        return None
-
-
-def _result_from_row(row: dict[str, Any], *, published: bool) -> McpToolCatalogSyncResult:
-    return McpToolCatalogSyncResult(
-        status=str(row.get("catalog_status") or "unavailable"),
-        reason=(str(row["catalog_unavailable_reason"]) if row.get("catalog_unavailable_reason") else None),
-        catalog_revision=int(row.get("catalog_revision") or 0),
-        discovered_count=int(row.get("catalog_discovered_count") or 0),
-        selectable_count=int(row.get("catalog_selectable_count") or 0),
-        published=published,
-    )

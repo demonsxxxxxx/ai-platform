@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.validation import SAFE_ID_PATTERN
+from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
@@ -70,7 +71,7 @@ def _canonical_identity(value: object) -> str:
     if len(parts) != 2:
         return ""
     server, tool = parts
-    if not SAFE_ID_PATTERN.fullmatch(server) or not SAFE_ID_PATTERN.fullmatch(tool):
+    if not SAFE_ID_PATTERN.fullmatch(server) or not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(tool):
         return ""
     return value
 

@@ -40,6 +40,7 @@ class WorkerCapabilityPorts:
     evaluate_tool_policy: Any
     get_capability_distribution_row: Any
     get_mcp_tool_registry_entry: Any
+    get_live_mcp_tool_metadata: Any
     is_ai_admin: Any
     mcp_runtime_metadata_usable: Any
     repository_conflict_error: type[Exception]
@@ -210,6 +211,20 @@ async def reauthorize_mcp_capabilities(
                 denied_capability_decision("distribution_missing", ports=ports),
             )
             return WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+        live_tool = await ports.get_live_mcp_tool_metadata(
+            tenant_id=run_identity["tenant_id"],
+            user_id=principal.user_id,
+            tool_id=tool_id,
+        )
+        if live_tool is not None:
+            tool = {
+                **tool,
+                "name": live_tool.label,
+                "description": live_tool.description,
+                "write_capable": live_tool.write_capable,
+                "risk_level": live_tool.risk_level,
+                "discovery_state": "current_user_cache",
+            }
         server_id = str(tool.get("server_id") or "").strip()
         if not server_id:
             denial = worker_capability_record(

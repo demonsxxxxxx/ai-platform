@@ -2940,14 +2940,13 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("enabled", "distribution_status", "expected_catalog_status"),
-    [(True, "active", "refresh_required"), (False, "disabled", "disabled")],
+    ("enabled", "distribution_status"),
+    [(True, "active"), (False, "disabled")],
 )
-async def test_mcp_distribution_toggle_invalidates_server_catalog(
+async def test_mcp_distribution_toggle_does_not_mutate_removed_platform_catalog(
     monkeypatch,
     enabled,
     distribution_status,
-    expected_catalog_status,
 ):
     async def no_backfill(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -2994,13 +2993,6 @@ async def test_mcp_distribution_toggle_invalidates_server_catalog(
                         "metadata_json": {},
                     }
                 )
-            if compact.startswith("update mcp_servers"):
-                assert "catalog_generation = catalog_generation + 1" in compact
-                assert "catalog_discovered_count = 0" in compact
-                assert "catalog_selectable_count = 0" in compact
-                assert params == (enabled, enabled, "tenant-a", "qa-mcp")
-                assert expected_catalog_status in compact
-                return Cursor({"name": "qa-mcp"})
             raise AssertionError(compact)
 
     monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
@@ -6600,7 +6592,7 @@ async def test_ensure_mcp_tool_active_applies_tenant_tool_policy_fail_closed():
     sql, params = conn.calls[0]
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", "ragflow-knowledge-search", "tenant-a")
+    assert params == ("tenant-a", "ragflow-knowledge-search")
 
 
 @pytest.mark.asyncio
@@ -6714,7 +6706,7 @@ async def test_list_admin_tool_policies_returns_missing_tenant_policy_as_disable
     assert "from mcp_tools" in sql
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", "tenant-a", True, 500)
+    assert params == ("tenant-a", True, 500)
     assert "endpoint" not in rows[0]
     assert "auth_mode" not in rows[0]
     assert rows == [
@@ -6774,7 +6766,7 @@ async def test_list_admin_tool_policies_filters_hidden_when_disabled_excluded():
     assert "coalesce(mcp_tools.visible_to_user, false) = true" in sql
     assert "tool_policies.status = 'active'" in sql
     assert "tool_policies.visible_to_user = true" in sql
-    assert params == ("tenant-a", "tenant-a", False, 50)
+    assert params == ("tenant-a", False, 50)
 
 
 @pytest.mark.asyncio
@@ -6834,7 +6826,6 @@ async def test_upsert_admin_tool_policy_writes_tenant_policy_and_returns_effecti
         "controlled write",
         "tool-admin",
         "ragflow-knowledge-search",
-        "tenant-a",
     )
     assert row["source"] == "tenant"
     assert row["effective_status"] == "active"
@@ -6925,13 +6916,6 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "department_ids": ["qa"],
             "credential_state": "configured",
             "credential_metadata": {"header_names": ["Authorization"]},
-            "catalog_generation": 0,
-            "catalog_revision": 0,
-            "catalog_status": "legacy",
-            "catalog_unavailable_reason": "",
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-            "catalog_last_synced_at": None,
             "created_at": "2026-06-23T00:00:00Z",
             "updated_at": "2026-06-23T00:00:00Z",
         }
@@ -7024,106 +7008,30 @@ async def test_list_mcp_server_registry_names_excludes_deleted_registry_override
 
 
 @pytest.mark.asyncio
-async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_tenant():
-    class RegistryCursor:
-        async def fetchone(self):
-            return {
-                "tool_id": "qa-search",
-                "server_id": "qa-mcp",
-                "name": "QA Search",
-                "description": "Search QA records.",
-                "registry_status": "active",
-                "server_status": "active",
-                "registry_write_capable": False,
-                "registry_risk_level": "low",
-                "registry_visible_to_user": True,
-                "policy_status": "active",
-                "policy_write_capable": False,
-                "policy_risk_level": "low",
-                "policy_visible_to_user": True,
-            }
+async def test_get_mcp_tool_registry_entry_resolves_qualified_reference_through_parent_server(monkeypatch):
+    calls = []
 
-    class RegistryConnection:
-        def __init__(self):
-            self.calls = []
+    async def get_server(conn, *, tenant_id, name):
+        calls.append((tenant_id, name))
+        return {"name": name, "transport": "streamable_http", "status": "active"}
 
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return RegistryCursor()
-
-    conn = RegistryConnection()
-
+    monkeypatch.setattr(repositories, "get_mcp_server_registry_entry", get_server)
     row = await repositories.get_mcp_tool_registry_entry(
-        conn,
+        object(),
         tenant_id="tenant-a",
-        tool_id="qa-search",
+        tool_id="qa-mcp::qa_search",
     )
 
-    sql, params = conn.calls[0]
-    assert "join mcp_servers" in sql
-    assert "mcp_servers.tenant_id = %s" in sql
-    assert "mcp_servers.name = mcp_tools.server_id" in sql
-    assert "mcp_tools.id = %s" in sql
-    assert "catalog_entry.tenant_id = %s" in sql
-    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
-    assert "catalog_server.catalog_status = 'available'" in sql
-    assert "catalog_any" not in sql
-    assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-search", "tenant-a")
+    assert calls == [("tenant-a", "qa-mcp")]
     assert row is not None
-    assert {
-        key: row[key]
-        for key in (
-            "tool_id",
-            "server_id",
-            "name",
-            "description",
-            "registry_status",
-            "server_status",
-            "write_capable",
-            "risk_level",
-            "visible_to_user",
-            "effective_status",
-            "source",
-        )
-    } == {
-        "tool_id": "qa-search",
-        "server_id": "qa-mcp",
-        "name": "QA Search",
-        "description": "Search QA records.",
-        "registry_status": "active",
-        "server_status": "active",
-        "write_capable": False,
-        "risk_level": "low",
-        "visible_to_user": True,
-        "effective_status": "active",
-        "source": "tenant",
-    }
+    assert row["tool_id"] == "qa-mcp::qa_search"
+    assert row["server_id"] == "qa-mcp"
+    assert row["allowed_tools"] == ["qa_search"]
+    assert "catalog_revision" not in row
 
 
-@pytest.mark.asyncio
-async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
-    class Cursor:
-        async def fetchall(self):
-            return []
-
-    class Connection:
-        def __init__(self):
-            self.sql = ""
-            self.params = ()
-
-        async def execute(self, sql, params):
-            self.sql = sql
-            self.params = params
-            return Cursor()
-
-    conn = Connection()
-    assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
-
-    assert "ragflow-knowledge-search" in conn.sql
-    assert "catalog_entry.tenant_id = %s" in conn.sql
-    assert "catalog_any" not in conn.sql
-    assert conn.params == ("tenant-a", "tenant-a")
+def test_chat_catalog_persistence_query_is_not_exported():
+    assert not hasattr(repositories, "list_chat_mcp_tool_catalog_entries")
 
 
 @pytest.mark.asyncio

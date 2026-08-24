@@ -58,6 +58,65 @@ def test_agent_profile_draft_rejects_retired_supported_file_types():
         )
 
 
+@pytest.mark.asyncio
+async def test_profile_definition_validates_mcp_server_existence_without_user_tool_acl(monkeypatch):
+    calls = []
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            "name": "Support expert",
+            "instructions": "Use the configured Skills autonomously.",
+            "model_id": "model-a",
+            "skill_set": [
+                {"skill_id": "general-chat", "expected_version": "version-a"}
+            ],
+            "mcp_tool_ids": ["gateway::search_docs"],
+            "expected_draft_revision": 0,
+        }
+    )
+    principal = AuthPrincipal(
+        user_id="admin-a",
+        display_name="Admin A",
+        tenant_id="tenant-a",
+        department_id="platform",
+        roles=["admin"],
+        permissions=[],
+        source="test",
+    )
+
+    async def authorize_skill(*_args, **kwargs):
+        calls.append(("skill", kwargs["normalized_input"]))
+        return {"skill_id": kwargs["skill_id"], "skill_version": "version-a"}
+
+    async def get_server(*_args, **kwargs):
+        calls.append(("server", kwargs["tenant_id"], kwargs["name"]))
+        return {"name": kwargs["name"], "status": "active"}
+
+    async def user_acl_must_not_run(*_args, **_kwargs):
+        raise AssertionError("profile publication must not evaluate user tool ACL")
+
+    monkeypatch.setattr("app.agent_apps.authority.resolve_model_selection", lambda *_: {"id": "model-a"})
+    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", authorize_skill)
+    monkeypatch.setattr(repository_module, "get_mcp_server_registry_entry", get_server)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_selected_chat_mcp_tools",
+        user_acl_must_not_run,
+    )
+
+    skills, _model = await AgentProfileAuthority()._validate_definition(
+        object(),
+        principal=principal,
+        agent_id="agt_support",
+        definition=definition,
+    )
+
+    assert skills[0]["skill_id"] == "general-chat"
+    assert calls == [
+        ("skill", {}),
+        ("server", "tenant-a", "gateway"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("model", "payload"),
     [

@@ -191,6 +191,8 @@ class Settings(BaseSettings):
     mcp_context_lease_seconds: int = Field(default=1800, ge=1, le=1800)
     mcp_relay_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     mcp_relay_max_response_bytes: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024)
+    mcp_gateway_service_token: str = Field(default="", repr=False)
+    mcp_cache_invalidation_token: str = Field(default="", repr=False)
 
     llm_gateway_provider: str = Field(default="openai_compatible")
     model_gateway_request_concurrency_limit: int = Field(default=0)
